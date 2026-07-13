@@ -3,11 +3,11 @@
 // Features: inline proxy toggle, port copy chip, global health summary,
 //   connect-all/disconnect-all/template-library/settings buttons, aria-live
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useServerStore } from "@/stores/serverStore";
 import { useLogStore } from "@/stores/logStore";
-import { ipcInvoke } from "@/hooks/useIpc";
+import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
 import { AddServerDialog } from "@/components/shared/AddServerDialog";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
@@ -39,10 +39,14 @@ export function ServerList({
   onAddServer,
   onOpenTemplates,
   onOpenSettings,
+  collapsed = false,
+  onToggleCollapse,
 }: {
   onAddServer?: () => void;
   onOpenTemplates?: () => void;
   onOpenSettings?: () => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const { t } = useTranslation();
   const servers = useServerStore((s) => s.servers);
@@ -79,26 +83,6 @@ export function ServerList({
     await loadServers();
   };
 
-  const handleConnectAll = useCallback(async () => {
-    for (const s of servers) {
-      try {
-        await ipcInvoke("ipc_connect_server", { serverId: s.id });
-      } catch (e) {
-        console.error(`connect ${s.id} failed:`, e);
-      }
-    }
-  }, [servers]);
-
-  const handleDisconnectAll = useCallback(async () => {
-    for (const s of servers) {
-      try {
-        await ipcInvoke("ipc_disconnect_server", { serverId: s.id });
-      } catch (e) {
-        console.error(`disconnect ${s.id} failed:`, e);
-      }
-    }
-  }, [servers]);
-
   const handleToggleProxy = useCallback(
     async (serverId: string, currentEnabled: boolean) => {
       try {
@@ -107,7 +91,7 @@ export function ServerList({
           enabled: !currentEnabled,
         });
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = formatIpcError(e);
         toast.error(t("server.proxy_toggle_failed"), { description: msg });
       }
     },
@@ -130,6 +114,7 @@ export function ServerList({
       const proxyEnabled = server.proxy_running;
       const socks5Port = server.proxy?.socks5_port || 1080;
       const httpPort = server.proxy?.http_port || 8080;
+      const mixedPort = server.proxy?.mixed_port || 0;
 
       const items: ContextMenuEntry[] = [
         {
@@ -143,7 +128,7 @@ export function ServerList({
                 await ipcInvoke("ipc_connect_server", { server_id: server.id });
               }
             } catch (e) {
-              const errMsg = e instanceof Error ? e.message : String(e);
+              const errMsg = formatIpcError(e);
               useLogStore.getState().addEntry({
                 id: `ctx-conn-${Date.now()}-${Math.random().toString(36).slice(2)}`,
                 timestamp: new Date().toISOString(),
@@ -157,6 +142,12 @@ export function ServerList({
                 stdout: null,
                 stderr: null,
               });
+              // If credential is missing, open edit dialog so user can re-enter password
+              if (e instanceof IpcErrorImpl && e.code === "CredentialNotFound") {
+                window.dispatchEvent(
+                  new CustomEvent("edit-server", { detail: { serverId: server.id } })
+                );
+              }
             }
           },
           disabled: server.current_status === "connecting" || server.current_status === "reconnecting",
@@ -191,20 +182,31 @@ export function ServerList({
           disabled: !isConnected || !proxyEnabled,
         },
         { separator: true },
-        {
-          label: t("server.copy_socks5", { port: socks5Port }),
-          icon: "📋",
-          onClick: () => {
-            navigator.clipboard.writeText(`127.0.0.1:${socks5Port}`).catch(() => {});
-          },
-        },
-        {
-          label: t("server.copy_http", { port: httpPort }),
-          icon: "📋",
-          onClick: () => {
-            navigator.clipboard.writeText(`127.0.0.1:${httpPort}`).catch(() => {});
-          },
-        },
+        ...(mixedPort > 0
+          ? [{
+              label: t("server.copy_mixed", { port: mixedPort }),
+              icon: "📋",
+              onClick: () => {
+                navigator.clipboard.writeText(`127.0.0.1:${mixedPort}`).catch(() => {});
+              },
+            }]
+          : [
+              {
+                label: t("server.copy_socks5", { port: socks5Port }),
+                icon: "📋",
+                onClick: () => {
+                  navigator.clipboard.writeText(`127.0.0.1:${socks5Port}`).catch(() => {});
+                },
+              },
+              {
+                label: t("server.copy_http", { port: httpPort }),
+                icon: "📋",
+                onClick: () => {
+                  navigator.clipboard.writeText(`127.0.0.1:${httpPort}`).catch(() => {});
+                },
+              },
+            ]
+        ),
         { separator: true },
         {
           label: t("server.edit"),
@@ -246,121 +248,71 @@ export function ServerList({
     return 0; // keep original order within same group
   });
 
-  // Global health summary
-  const connectedCount = servers.filter((s) => s.current_status === "connected").length;
-  const abnormalCount = servers.filter((s) => abnormalStatuses.includes(s.current_status)).length;
-  const totalActiveClients = servers.filter((s) => s.proxy_running).reduce((sum, s) => sum + (s.active_channels || 0), 0);
-  const totalBytesIn = servers.filter((s) => s.proxy_running).reduce((sum, s) => sum + (s.bytes_in || 0), 0);
-  const totalBytesOut = servers.filter((s) => s.proxy_running).reduce((sum, s) => sum + (s.bytes_out || 0), 0);
-
-  // Calculate speed from byte delta
-  const speedRef = useRef({ in: 0, out: 0, time: Date.now(), speedIn: 0, speedOut: 0 });
-  const [, forceUpdate] = useState(0);
-  useEffect(() => {
-    if (totalActiveClients === 0) {
-      speedRef.current = { in: 0, out: 0, time: Date.now(), speedIn: 0, speedOut: 0 };
-      return;
-    }
-    const now = Date.now();
-    const dt = (now - speedRef.current.time) / 1000;
-    if (dt > 0.5) {
-      const dIn = totalBytesIn - speedRef.current.in;
-      const dOut = totalBytesOut - speedRef.current.out;
-      speedRef.current = {
-        in: totalBytesIn,
-        out: totalBytesOut,
-        time: now,
-        speedIn: Math.max(0, dIn / dt),
-        speedOut: Math.max(0, dOut / dt),
-      };
-    }
-  }, [totalBytesIn, totalBytesOut, totalActiveClients]);
-
-  // Periodic refresh to update speed display even when bytes don't change
-  useEffect(() => {
-    if (totalActiveClients === 0) return;
-    const id = setInterval(() => forceUpdate((v) => v + 1), 1000);
-    return () => clearInterval(id);
-  }, [totalActiveClients]);
-
-  const fmtSpeed = (bytesPerSec: number) => {
-    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
-    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-    return `${(bytesPerSec / 1024 / 1024).toFixed(1)} MB/s`;
-  };
 
   return (
     <div
-      className="w-64 border-r border-gray-200 dark:border-gray-700 flex flex-col"
+      className={`border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-200 ${collapsed ? "w-12" : "w-64"}`}
       role="navigation"
       aria-label={t("server.list")}
     >
-      <div className="p-2 border-b border-gray-200 dark:border-gray-700 space-y-1">
-        <button
-          className="w-full px-3 py-1.5 text-sm rounded bg-blue-500 text-white hover:bg-blue-600"
-          onClick={() => (onAddServer ? onAddServer() : setShowAddDialog(true))}
-        >
-          + {t("server.add")}
-        </button>
-        <div className="flex gap-1">
+      {/* Collapse toggle + action buttons */}
+      <div className={`p-2 border-b border-gray-200 dark:border-gray-700 space-y-1 ${collapsed ? "flex flex-col items-center" : ""}`}>
+        {collapsed && (
           <button
-            className="flex-1 px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700"
-            onClick={handleConnectAll}
-            title={t("server.connectAll")}
+            className="px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 w-8"
+            onClick={onToggleCollapse}
+            title={t("server.expand")}
+            aria-label={t("server.expand")}
           >
-            {t("server.connectAll")}
+            →
+          </button>
+        )}
+        <div className={`flex gap-1 ${collapsed ? "flex-col" : ""}`}>
+          <button
+            className={`px-2 py-1.5 text-sm rounded bg-blue-500 text-white hover:bg-blue-600 ${collapsed ? "w-8" : "flex-1"}`}
+            onClick={() => (onAddServer ? onAddServer() : setShowAddDialog(true))}
+            title={t("server.add")}
+            aria-label={t("server.add")}
+          >
+            +
           </button>
           <button
-            className="flex-1 px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700"
-            onClick={handleDisconnectAll}
-            title={t("server.disconnectAll")}
-          >
-            {t("server.disconnectAll")}
-          </button>
-        </div>
-        <div className="flex gap-1">
-          <button
-            className="flex-1 px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700"
+            className={`px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 ${collapsed ? "w-8" : "flex-1"}`}
             onClick={onOpenTemplates}
             title={t("template.library")}
           >
-            {t("template.library")}
+            {collapsed ? "T" : t("template.library")}
           </button>
           <button
-            className="flex-1 px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700"
+            className={`px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 ${collapsed ? "w-8" : "flex-1"}`}
             onClick={onOpenSettings}
             title={t("settings.title")}
           >
-            {t("settings.title")}
+            {collapsed ? "S" : t("settings.title")}
           </button>
+          {!collapsed && (
+            <button
+              className="px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 w-8"
+              onClick={onToggleCollapse}
+              title={t("server.collapse")}
+              aria-label={t("server.collapse")}
+            >
+              ←
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Global health summary */}
-      {servers.length > 0 && (
-        <div
-          className="px-3 py-1.5 text-xs text-gray-600 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          {connectedCount} {t("server.connected")} / {abnormalCount} {t("server.abnormal")}
-          {totalActiveClients > 0 && (speedRef.current.speedIn > 0 || speedRef.current.speedOut > 0) && (
-            <span className="ml-2 text-blue-500">
-              ↑ {fmtSpeed(speedRef.current.speedIn)} ↓ {fmtSpeed(speedRef.current.speedOut)}
-            </span>
-          )}
-        </div>
-      )}
-
+      {/* Server list */}
       <div
-        className="flex-1 overflow-y-auto"
+        className="flex-1 overflow-y-auto overflow-x-hidden"
         role="list"
         aria-label={t("server.list")}
       >
         {loading ? (
           <SkeletonList count={3} />
         ) : sorted.length === 0 ? (
-          <div className="p-4 text-center text-sm text-gray-500">
+          <div className={`p-4 text-center text-sm text-gray-500 ${collapsed ? "hidden" : ""}`}>
             {t("server.add")}
           </div>
         ) : (
@@ -369,6 +321,7 @@ export function ServerList({
               key={server.id}
               server={server}
               selected={server.id === selectedId}
+              collapsed={collapsed}
               onSelect={() => selectServer(server.id)}
               onToggleProxy={() =>
                 handleToggleProxy(server.id, server.proxy_running)
@@ -447,6 +400,7 @@ export function ServerList({
 function ServerListItem({
   server,
   selected,
+  collapsed = false,
   onSelect,
   onToggleProxy,
   onCopyPort,
@@ -464,6 +418,7 @@ function ServerListItem({
 }: {
   server: ServerState;
   selected: boolean;
+  collapsed?: boolean;
   onSelect: () => void;
   onToggleProxy: () => void;
   onCopyPort: () => void;
@@ -484,7 +439,9 @@ function ServerListItem({
 
   return (
     <div
-      className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 ${
+      className={`flex items-center gap-2 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 ${
+        collapsed ? "justify-center px-1 py-2" : "px-3 py-2"
+      } ${
         selected ? "bg-blue-50 dark:bg-blue-900/30" : ""
       } ${isDragged ? "opacity-40" : ""} ${
         isDragOver && dragOverPos === "before" ? "border-t-2 border-blue-400" : ""
@@ -506,62 +463,67 @@ function ServerListItem({
           onSelect();
         }
       }}
+      title={collapsed ? server.name : undefined}
     >
       <div
-        className={`w-3 h-3 ${STATUS_COLORS[server.current_status]} ${STATUS_SHAPES[server.current_status]}`}
+        className={`w-3 h-3 flex-shrink-0 ${STATUS_COLORS[server.current_status]} ${STATUS_SHAPES[server.current_status]}`}
         aria-hidden
       />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium truncate">{server.name}</div>
-        <div className="text-xs text-gray-500 truncate">
-          {server.ssh?.host || server.name}
-        </div>
-      </div>
+      {!collapsed && (
+        <>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium truncate">{server.name}</div>
+            <div className="text-xs text-gray-500 truncate">
+              {server.ssh?.host || server.name}
+            </div>
+          </div>
 
-      {/* Firewall not configured badge (§9.4) */}
-      {!server.suppress_firewall_badge && server.current_status === "connected" && (
-        <span
-          className="text-xs px-1 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900/50 text-yellow-700 dark:text-yellow-400"
-          title={t("server.firewallNotConfigured")}
-        >
-          FW
-        </span>
+          {/* Firewall not configured badge (§9.4) */}
+          {!server.suppress_firewall_badge && server.current_status === "connected" && (
+            <span
+              className="text-xs px-1 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900/50 text-yellow-700 dark:text-yellow-400"
+              title={t("server.firewallNotConfigured")}
+            >
+              FW
+            </span>
+          )}
+
+          {/* Port copy chip (U8) */}
+          <button
+            className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 hover:bg-blue-100 dark:hover:bg-blue-900 text-gray-600 dark:text-gray-400"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCopyPort();
+            }}
+            title={copiedPort ? t("common.copied") : t("server.copyPort")}
+            aria-label={`${t("server.copyPort")} ${socks5Port}`}
+          >
+            {copiedPort ? "✓" : `:${socks5Port}`}
+          </button>
+
+          {/* Inline proxy toggle (U6) */}
+          <button
+            className={`w-8 h-4 rounded-full transition-colors relative ${
+              server.proxy_running
+                ? "bg-blue-500"
+                : "bg-gray-300 dark:bg-gray-600"
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleProxy();
+            }}
+            title={server.proxy_running ? t("proxy.on") : t("proxy.off")}
+            aria-label={t("proxy.toggle")}
+            aria-pressed={server.proxy_running}
+          >
+            <span
+              className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                server.proxy_running ? "left-4" : "left-0.5"
+              }`}
+            />
+          </button>
+        </>
       )}
-
-      {/* Port copy chip (U8) */}
-      <button
-        className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 hover:bg-blue-100 dark:hover:bg-blue-900 text-gray-600 dark:text-gray-400"
-        onClick={(e) => {
-          e.stopPropagation();
-          onCopyPort();
-        }}
-        title={copiedPort ? t("common.copied") : t("server.copyPort")}
-        aria-label={`${t("server.copyPort")} ${socks5Port}`}
-      >
-        {copiedPort ? "✓" : `:${socks5Port}`}
-      </button>
-
-      {/* Inline proxy toggle (U6) */}
-      <button
-        className={`w-8 h-4 rounded-full transition-colors relative ${
-          server.proxy_running
-            ? "bg-blue-500"
-            : "bg-gray-300 dark:bg-gray-600"
-        }`}
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleProxy();
-        }}
-        title={server.proxy_running ? t("proxy.on") : t("proxy.off")}
-        aria-label={t("proxy.toggle")}
-        aria-pressed={server.proxy_running}
-      >
-        <span
-          className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
-            server.proxy_running ? "left-4" : "left-0.5"
-          }`}
-        />
-      </button>
     </div>
   );
 }

@@ -37,6 +37,7 @@ function mockServer(id: string, name: string, status: ServerState["current_statu
     suppress_firewall_badge: false,
     current_status: status,
     current_ip: null,
+    client_ip: null,
     connected_since: null,
     reconnect_count: 0,
     max_attempts: 10,

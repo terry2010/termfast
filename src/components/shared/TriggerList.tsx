@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useTriggerStore } from "@/stores/triggerStore";
 import { useServerStore } from "@/stores/serverStore";
 import type { TriggerExecution, CommandResult } from "@/stores/triggerStore";
-import { ipcInvoke } from "@/hooks/useIpc";
+import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
 import { TriggerEditor } from "@/components/shared/TriggerEditor";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { TriggerInstance, TriggerType } from "@/types";
@@ -180,7 +180,7 @@ function TriggerCard({
       console.error("fire trigger failed:", e);
       useTriggerStore.getState().updateExecution(execId, {
         success: false,
-        results: [{ command: "error", exit_code: -1, stdout: "", stderr: String(e), success: false }],
+        results: [{ command: "error", exit_code: -1, stdout: "", stderr: formatIpcError(e), success: false }],
       });
     }
   };
@@ -190,7 +190,7 @@ function TriggerCard({
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className={`text-xs px-2 py-0.5 rounded ${EVENT_TYPE_COLORS[triggerType]}`}>
-            {triggerType.replace(/([A-Z])/g, " $1").trim()}
+            {t(`trigger.event_types.${triggerType}`)}
           </span>
           <span className="text-sm font-medium">{trigger.name}</span>
           {builtIn && (

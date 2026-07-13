@@ -44,7 +44,21 @@ export function LogPanel({ onExpand }: { onExpand?: () => void }) {
       ipcInvoke<{ logs: never[] }>("ipc_get_logs", { limit: 1000 })
         .then((data) => {
           if (data.logs && data.logs.length > 0) {
-            setEntries(data.logs);
+            // Backend uses field name "kind", frontend uses "category" — map it
+            const mapped = (data.logs as Record<string, unknown>[]).map((log) => ({
+              id: `${log.timestamp}-${Math.random().toString(36).slice(2)}`,
+              timestamp: log.timestamp as string,
+              server_id: (log.server_id as string) ?? null,
+              level: log.level as never,
+              category: ((log.category as string) ?? (log.kind as string) ?? "System") as never,
+              message: log.message as string,
+              execution_id: (log.execution_id as string) ?? null,
+              command: null,
+              exit_code: null,
+              stdout: null,
+              stderr: null,
+            }));
+            setEntries(mapped);
           }
         })
         .catch(() => {});
@@ -54,10 +68,13 @@ export function LogPanel({ onExpand }: { onExpand?: () => void }) {
   if (!expanded) {
     const recentErrors = filteredEntries.filter((e) => e.level === "error").slice(-3);
     return (
-      <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-1 flex items-center justify-between gap-4">
+      <div
+        className="border-t border-gray-200 dark:border-gray-700 px-4 py-1 flex items-center justify-between gap-4 cursor-pointer"
+        onClick={() => setExpanded(true)}
+      >
         <button
           className="text-sm text-gray-500 hover:text-gray-700 shrink-0"
-          onClick={() => setExpanded(true)}
+          onClick={(e) => { e.stopPropagation(); setExpanded(true); }}
         >
           {t("logs.title")} ({filteredEntries.length})
         </button>
@@ -72,7 +89,7 @@ export function LogPanel({ onExpand }: { onExpand?: () => void }) {
         )}
         <button
           className="text-xs text-gray-400 hover:text-gray-600 shrink-0"
-          onClick={() => setExpanded(true)}
+          onClick={(e) => { e.stopPropagation(); setExpanded(true); }}
         >
           ▲
         </button>
@@ -82,13 +99,16 @@ export function LogPanel({ onExpand }: { onExpand?: () => void }) {
 
   const displayEntries = filteredEntries.slice(-200);
   const levels: LogLevel[] = ["all", "info", "warn", "error"];
-  const categories: LogCategory[] = ["all", "Connection", "Trigger", "Proxy", "Config", "Error"];
+  const categories: LogCategory[] = ["all", "Connection", "Trigger", "Proxy", "Config", "Error", "System"];
 
   return (
     <div className="border-t border-gray-200 dark:border-gray-700 h-48 flex flex-col">
-      <div className="flex items-center justify-between px-4 py-1 border-b border-gray-200 dark:border-gray-700">
+      <div
+        className="flex items-center justify-between px-4 py-1 border-b border-gray-200 dark:border-gray-700 cursor-pointer"
+        onClick={() => setExpanded(false)}
+      >
         <span className="text-sm font-medium">{t("logs.title")}</span>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <select
             className="text-xs px-1 py-0.5 rounded border border-gray-300 dark:border-gray-600 bg-transparent"
             value={filterLevel}

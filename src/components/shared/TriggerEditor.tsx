@@ -9,7 +9,8 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { StreamLanguage } from "@codemirror/language";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
-import { ipcInvoke } from "@/hooks/useIpc";
+import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
+import { Modal } from "@/components/ui/Modal";
 import type { TriggerInstance, TriggerType } from "@/types";
 
 interface TriggerEditorProps {
@@ -39,6 +40,15 @@ export function TriggerEditor({ serverId, trigger, onClose, onSaved }: TriggerEd
 
   const isEditing = !!trigger;
   const commandsText = trigger?.commands.join("\n") || "";
+
+  // ESC to close
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   // Initialize CodeMirror editor
   useEffect(() => {
@@ -134,7 +144,7 @@ export function TriggerEditor({ serverId, trigger, onClose, onSaved }: TriggerEd
       onSaved?.();
       onClose();
     } catch (e) {
-      setError(String(e));
+      setError(formatIpcError(e));
     } finally {
       setSaving(false);
     }
@@ -150,147 +160,139 @@ export function TriggerEditor({ serverId, trigger, onClose, onSaved }: TriggerEd
   ];
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-3xl mx-4 max-h-[85vh] overflow-y-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-medium">
-            {isEditing ? t("trigger.edit") : t("trigger.add")}
-          </h2>
+    <Modal
+      title={isEditing ? t("trigger.edit") : t("trigger.add")}
+      onClose={onClose}
+      maxWidth="max-w-3xl"
+      footer={
+        <>
           <button
-            className="text-gray-500 hover:text-gray-700"
-            onClick={onClose}
-          >
-            {t("common.close")}
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="p-4 space-y-4">
-          {/* Name */}
-          <div>
-            <label className="block text-sm text-gray-500 mb-1">{t("trigger.name")}</label>
-            <input
-              type="text"
-              className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t("trigger.name_placeholder")}
-            />
-          </div>
-
-          {/* Event type */}
-          <div>
-            <label className="block text-sm text-gray-500 mb-1">{t("trigger.event_type")}</label>
-            <select
-              className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
-              value={eventType}
-              onChange={(e) => setEventType(e.target.value as TriggerType)}
-            >
-              {eventTypes.map((et) => (
-                <option key={et} value={et}>
-                  {et.replace(/([A-Z])/g, " $1").trim()}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* CodeMirror editor */}
-          <div>
-            <label className="block text-sm text-gray-500 mb-1">
-              {t("trigger.commands")}
-            </label>
-            <div
-              ref={editorRef}
-              className="border border-gray-300 dark:border-gray-600 rounded overflow-hidden"
-              style={{ minHeight: "200px" }}
-            />
-          </div>
-
-          {/* Settings */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-gray-500 mb-1">
-                {t("trigger.timeout")} (s)
-              </label>
-              <input
-                type="number"
-                className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
-                value={timeoutSecs}
-                onChange={(e) => setTimeoutSecs(parseInt(e.target.value) || 30)}
-                min={1}
-                max={600}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-500 mb-1">
-                {t("trigger.cooldown")} (s)
-              </label>
-              <input
-                type="number"
-                className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
-                value={cooldownSecs}
-                onChange={(e) => setCooldownSecs(parseInt(e.target.value) || 60)}
-                min={0}
-                max={3600}
-              />
-            </div>
-          </div>
-
-          {/* Checkboxes */}
-          <div className="space-y-2">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={continueOnError}
-                onChange={(e) => setContinueOnError(e.target.checked)}
-              />
-              {t("trigger.continue_on_error")}
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={notifyOnSuccess}
-                onChange={(e) => setNotifyOnSuccess(e.target.checked)}
-              />
-              {t("trigger.notify_on_success")}
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={notifyOnFailure}
-                onChange={(e) => setNotifyOnFailure(e.target.checked)}
-              />
-              {t("trigger.notify_on_failure")}
-            </label>
-          </div>
-
-          {/* Error */}
-          {error && (
-            <div className="text-sm text-red-500 bg-red-50 dark:bg-red-900/20 p-2 rounded">
-              {error}
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex justify-end gap-2 p-4 border-t border-gray-200 dark:border-gray-700">
-          <button
-            className="px-4 py-2 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
             onClick={onClose}
           >
             {t("common.cancel")}
           </button>
           <button
-            className="px-4 py-2 text-sm rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+            className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
             onClick={handleSave}
             disabled={saving}
           >
             {saving ? t("common.saving") : t("common.save")}
           </button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {/* Name */}
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">{t("trigger.name")}</label>
+          <input
+            type="text"
+            data-testid="trigger-name-input"
+            className="input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t("trigger.name_placeholder")}
+          />
         </div>
+
+        {/* Event type */}
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">{t("trigger.event_type")}</label>
+          <select
+            className="input"
+            value={eventType}
+            onChange={(e) => setEventType(e.target.value as TriggerType)}
+          >
+            {eventTypes.map((et) => (
+              <option key={et} value={et}>
+                {t(`trigger.event_types.${et}`)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* CodeMirror editor */}
+        <div>
+          <label className="block text-sm text-gray-500 mb-1">
+            {t("trigger.commands")}
+          </label>
+          <div
+            ref={editorRef}
+            className="border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden"
+            style={{ minHeight: "200px" }}
+          />
+        </div>
+
+        {/* Settings */}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">
+              {t("trigger.timeout")} (s)
+            </label>
+            <input
+              type="number"
+              className="input"
+              value={timeoutSecs}
+              onChange={(e) => setTimeoutSecs(parseInt(e.target.value) || 30)}
+              min={1}
+              max={600}
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">
+              {t("trigger.cooldown")} (s)
+            </label>
+            <input
+              type="number"
+              className="input"
+              value={cooldownSecs}
+              onChange={(e) => setCooldownSecs(parseInt(e.target.value) || 60)}
+              min={0}
+              max={3600}
+            />
+          </div>
+        </div>
+
+        {/* Checkboxes */}
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={continueOnError}
+              onChange={(e) => setContinueOnError(e.target.checked)}
+              className="rounded"
+            />
+            {t("trigger.continue_on_error")}
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={notifyOnSuccess}
+              onChange={(e) => setNotifyOnSuccess(e.target.checked)}
+              className="rounded"
+            />
+            {t("trigger.notify_on_success")}
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={notifyOnFailure}
+              onChange={(e) => setNotifyOnFailure(e.target.checked)}
+              className="rounded"
+            />
+            {t("trigger.notify_on_failure")}
+          </label>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">
+            {error}
+          </div>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
 

@@ -9,6 +9,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState, useCallback } from "react";
 import type { IpcError } from "@/types";
+import i18n from "@/i18n/config";
 
 /** Invoke a Tauri command (IPC to daemon) */
 // Convert snake_case keys to camelCase for Tauri command params
@@ -52,6 +53,21 @@ export class IpcErrorImpl extends Error {
     this.detail = error.detail;
     this.name = "IpcError";
   }
+}
+
+/**
+ * Format an IPC error into a translated message using i18n.
+ * Falls back to the raw error string if no code is available.
+ */
+export function formatIpcError(e: unknown): string {
+  if (e instanceof IpcErrorImpl) {
+    const key = `errors.${e.code}`;
+    const translated = i18n.t(key, { detail: e.detail });
+    if (translated !== key) return translated;
+    return e.detail || e.message;
+  }
+  if (e instanceof Error) return e.message;
+  return String(e);
 }
 
 // === SECTION 1 END ===

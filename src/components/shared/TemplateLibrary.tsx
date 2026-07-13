@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useTriggerStore } from "@/stores/triggerStore";
 import { ipcInvoke } from "@/hooks/useIpc";
 import type { TriggerTemplate } from "@/types";
+import { Modal } from "@/components/ui/Modal";
 
 export function TemplateLibrary({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -23,6 +24,15 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
   };
 
   useEffect(() => { reload(); }, []);
+
+  // ESC to close
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   const builtIn = templates.filter((t) => t.built_in);
   const user = templates.filter((t) => !t.built_in);
@@ -51,26 +61,25 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-40" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-2xl mx-4 max-h-[80vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-medium">{t("menu.templates")}</h2>
-          <div className="flex gap-2">
-            <button className="text-sm px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700" onClick={() => setCreating(true)}>
-              {t("common.add")}
-            </button>
-            <button className="text-sm px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700" onClick={handleImport}>
-              {t("common.import")}
-            </button>
-            <button className="text-sm px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700" onClick={handleExport}>
-              {t("logs.export")}
-            </button>
-            <button className="text-gray-500 hover:text-gray-700" onClick={onClose}>
-              {t("common.close")}
-            </button>
-          </div>
-        </div>
-        <div className="p-4 space-y-4">
+    <>
+    <Modal
+      title={t("menu.templates")}
+      onClose={onClose}
+      maxWidth="max-w-2xl"
+      zIndex="z-40"
+    >
+      <div className="flex gap-2 mb-4">
+        <button className="text-sm px-3 py-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors" onClick={() => setCreating(true)}>
+          {t("common.add")}
+        </button>
+        <button className="text-sm px-3 py-1.5 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onClick={handleImport}>
+          {t("common.import")}
+        </button>
+        <button className="text-sm px-3 py-1.5 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onClick={handleExport}>
+          {t("logs.export")}
+        </button>
+      </div>
+      <div className="space-y-4">
           <TemplateGroup
             title={t("menu.templates") + " (" + t("template.built_in") + ")"}
             templates={builtIn}
@@ -86,8 +95,8 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
             onEdit={(tpl) => setEditing(tpl)}
             onDelete={reload}
           />
-        </div>
       </div>
+    </Modal>
       {(editing || creating) && (
         <TemplateEditor
           template={editing}
@@ -95,7 +104,7 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
           onSaved={() => { setEditing(null); setCreating(false); reload(); }}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -128,7 +137,7 @@ function TemplateGroup({
                 onClick={() => onToggle(expandedId === tpl.id ? null : tpl.id)}
               >
                 <span className="text-sm font-medium">{tpl.name}</span>
-                <span className="text-xs text-gray-500">{tpl.type.replace(/([A-Z])/g, " $1").trim()}</span>
+                <span className="text-xs text-gray-500">{t(`trigger.event_types.${tpl.type}`)}</span>
               </button>
               <div className="flex gap-1 px-2">
                 <button
@@ -190,42 +199,42 @@ function TemplateEditor({ template, onClose, onSaved }: { template: TriggerTempl
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-medium">{template ? t("common.edit") : t("common.add")}</h2>
-          <button className="text-gray-400 hover:text-gray-600 text-xl" onClick={onClose}>✕</button>
-        </div>
-        <div className="p-4 space-y-3">
-          <label className="block">
-            <span className="text-sm">{t("template.name")}</span>
-            <input className="w-full mt-1 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-transparent" value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-sm">{t("template.type")}</span>
-            <select className="w-full mt-1 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-transparent" value={type} onChange={(e) => setType(e.target.value)}>
-              <option value="OnConnect">OnConnect</option>
-              <option value="OnReconnect">OnReconnect</option>
-              <option value="OnIpChange">OnIpChange</option>
-              <option value="OnProcessDead">OnProcessDead</option>
-              <option value="OnPortClosed">OnPortClosed</option>
-              <option value="ManualFire">ManualFire</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-sm">{t("template.description")}</span>
-            <input className="w-full mt-1 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-transparent" value={description} onChange={(e) => setDescription(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-sm">{t("template.commands")}</span>
-            <textarea className="w-full mt-1 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-transparent font-mono h-32" value={commands} onChange={(e) => setCommands(e.target.value)} />
-          </label>
-          <div className="flex justify-end gap-2">
-            <button className="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600" onClick={onClose}>{t("common.cancel")}</button>
-            <button className="px-3 py-1 text-sm rounded bg-blue-500 text-white hover:bg-blue-600" onClick={handleSave}>{t("common.save")}</button>
-          </div>
-        </div>
+    <Modal
+      title={template ? t("common.edit") : t("common.add")}
+      onClose={onClose}
+      maxWidth="max-w-lg"
+      footer={
+        <>
+          <button className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onClick={onClose}>{t("common.cancel")}</button>
+          <button className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium" onClick={handleSave}>{t("common.save")}</button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <label className="block">
+          <span className="text-sm text-gray-500">{t("template.name")}</span>
+          <input className="input mt-1" value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label className="block">
+          <span className="text-sm text-gray-500">{t("template.type")}</span>
+          <select className="input mt-1" value={type} onChange={(e) => setType(e.target.value)}>
+            <option value="OnConnect">{t("trigger.event_types.OnConnect")}</option>
+            <option value="OnReconnect">{t("trigger.event_types.OnReconnect")}</option>
+            <option value="OnIpChange">{t("trigger.event_types.OnIpChange")}</option>
+            <option value="OnProcessDead">{t("trigger.event_types.OnProcessDead")}</option>
+            <option value="OnPortClosed">{t("trigger.event_types.OnPortClosed")}</option>
+            <option value="ManualFire">{t("trigger.event_types.ManualFire")}</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-sm text-gray-500">{t("template.description")}</span>
+          <input className="input mt-1" value={description} onChange={(e) => setDescription(e.target.value)} />
+        </label>
+        <label className="block">
+          <span className="text-sm text-gray-500">{t("template.commands")}</span>
+          <textarea className="input mt-1 font-mono h-32" value={commands} onChange={(e) => setCommands(e.target.value)} />
+        </label>
       </div>
-    </div>
+    </Modal>
   );
 }

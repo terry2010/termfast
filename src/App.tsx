@@ -11,7 +11,6 @@ import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { ServerList } from "@/components/shared/ServerList";
 import { LogPanel } from "@/components/shared/LogPanel";
-import { GlobalIndicator } from "@/components/shared/GlobalIndicator";
 import { PendingEventsBanner } from "@/components/shared/PendingEventsBanner";
 import { ServerDetail } from "@/components/shared/ServerDetail";
 import { TitleBar } from "@/components/desktop/TitleBar";
@@ -83,9 +82,11 @@ export default function App() {
     keyPath: string;
     socks5Port: number;
     httpPort: number;
+    mixedPort: number;
   } | null>(null);
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [logPanelExpanded, setLogPanelExpanded] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{
     serverId: string;
     serverName: string;
@@ -113,6 +114,7 @@ export default function App() {
           keyPath: server.ssh?.key_path || "",
           socks5Port: server.proxy?.socks5_port || 1080,
           httpPort: server.proxy?.http_port || 8080,
+          mixedPort: server.proxy?.mixed_port || 0,
         });
       }
     };
@@ -198,6 +200,7 @@ export default function App() {
       }
     },
     onToggleLogPanel: () => setLogPanelExpanded((v) => !v),
+    onToggleSidebar: () => setSidebarCollapsed((v) => !v),
     onRefresh: () => {
       ipcInvoke("ipc_list_servers").then((data: any) => {
         if (data?.servers) useServerStore.setState({ servers: data.servers });
@@ -209,6 +212,8 @@ export default function App() {
       setShowAddServer(false);
       setShowLogViewer(false);
       setShowOnboarding(false);
+      setEditServer(null);
+      setConfirmDelete(null);
     },
   });
 
@@ -226,15 +231,16 @@ export default function App() {
     <ContextMenuProvider>
     <div className="flex flex-col h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100">
       <TitleBar />
-      <GlobalIndicator />
       <PendingEventsBanner />
       <div className="flex flex-1 overflow-hidden">
         <ServerList
           onAddServer={() => setShowAddServer(true)}
           onOpenSettings={() => setShowSettings(true)}
           onOpenTemplates={() => setShowTemplates(true)}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
         />
-        <ServerDetail onDeleteServer={(id, name) => setConfirmDelete({ serverId: id, serverName: name })} />
+        <ServerDetail />
       </div>
       <LogPanel onExpand={() => setShowLogViewer(true)} />
 

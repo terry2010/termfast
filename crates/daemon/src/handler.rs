@@ -105,6 +105,7 @@ async fn handle_list_servers(state: &DaemonState) -> HandlerResult {
     for s in &sorted_servers {
         let status = s.status().await;
         let ip = s.current_ip().await;
+        let client_ip = s.client_ip().await;
         let proxy_running = s.is_proxy_running().await;
         let active_clients = s.active_clients().await;
         let bytes_in = s.bytes_in().await;
@@ -154,6 +155,7 @@ async fn handle_list_servers(state: &DaemonState) -> HandlerResult {
                 vps_guard_core::server::instance::ServerStatus::Offline => "offline",
             },
             "current_ip": ip,
+            "client_ip": client_ip,
             "connected_since": null,
             "reconnect_count": 0,
             "max_attempts": cfg.reconnect.max_attempts,
@@ -464,16 +466,18 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
                     }),
                 )
                 .await;
+            let client_ip = server.client_ip().await;
             state
                 .broadcast(
                     "server:status_changed",
                     serde_json::json!({
                         "server_id": server_id,
-                        "status": "connected"
+                        "status": "connected",
+                        "client_ip": client_ip,
                     }),
                 )
                 .await;
-            Ok(serde_json::json!({ "server_id": server_id, "status": "connected" }))
+            Ok(serde_json::json!({ "server_id": server_id, "status": "connected", "client_ip": client_ip }))
         }
         Err(e) => {
             let err = IpcError::from(e);
@@ -679,6 +683,9 @@ async fn handle_update_server(state: &DaemonState, params: &serde_json::Value) -
             }
             if let Some(http_port) = params["http_port"].as_u64() {
                 srv.proxy.http_port = http_port as u16;
+            }
+            if let Some(mixed_port) = params["mixed_port"].as_u64() {
+                srv.proxy.mixed_port = mixed_port as u16;
             }
             // SSH config updates
             if let Some(ssh) = params["ssh"].as_object() {

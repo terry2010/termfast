@@ -17,7 +17,8 @@ function mockServer(id: string, name: string): ServerState {
     reconnect: { heartbeat_interval: 15, max_attempts: 10, initial_backoff_secs: 1, max_backoff_secs: 300 },
     ip_check: { enabled: false, interval_secs: 300 },
     last_known_ip: null, triggers: [], suppress_firewall_badge: false,
-    current_status: "disconnected", current_ip: null, connected_since: null,
+    current_status: "disconnected", current_ip: null,
+    client_ip: null, connected_since: null,
     reconnect_count: 0, max_attempts: 10, proxy_running: false, active_channels: 0, bytes_in: 0, bytes_out: 0,
   };
 }

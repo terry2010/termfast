@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useLogStore, type LogLevel } from "@/stores/logStore";
-import { ipcInvoke } from "@/hooks/useIpc";
+import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
 
 export function LogViewer({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -18,6 +18,15 @@ export function LogViewer({ onClose }: { onClose: () => void }) {
   const [searchError, setSearchError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastSeenCount = useRef(0);
+
+  // ESC to close
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   // Load logs on mount
   useEffect(() => {
@@ -62,7 +71,7 @@ export function LogViewer({ onClose }: { onClose: () => void }) {
         setSearchError(null);
         return entries.filter((e) => regex.test(e.message || ""));
       } catch (e) {
-        setSearchError(String(e));
+        setSearchError(formatIpcError(e));
         return entries;
       }
     }
@@ -94,11 +103,11 @@ export function LogViewer({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-full max-w-4xl h-[80vh] bg-white dark:bg-gray-900 rounded-lg flex flex-col">
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 animate-[fadeIn_0.15s_ease-out]" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-4xl h-[80vh] bg-white dark:bg-gray-800 rounded-xl shadow-2xl flex flex-col animate-[scaleIn_0.15s_ease-out] border border-gray-200/50 dark:border-gray-700/50 overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-bold flex items-center gap-2">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-700">
+          <h2 className="text-base font-semibold flex items-center gap-2 text-gray-900 dark:text-gray-100">
             {t("log.title")}
             {unreadCount > 0 && (
               <span className="px-2 py-0.5 text-xs bg-red-500 text-white rounded-full">
@@ -106,33 +115,37 @@ export function LogViewer({ onClose }: { onClose: () => void }) {
               </span>
             )}
           </h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-xl">×</button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors w-7 h-7 flex items-center justify-center rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M1 1L13 13M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
         </div>
 
         {/* Search bar */}
-        <div className="flex items-center gap-2 p-3 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 dark:border-gray-700">
           <input
             type="text"
-            className="flex-1 px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+            className="flex-1 input"
             placeholder={useRegex ? t("logs.regex_placeholder") : t("logs.search_logs")}
             value={searchPattern}
             onChange={(e) => setSearchPattern(e.target.value)}
           />
           <label className="flex items-center gap-1 text-xs text-gray-500">
-            <input type="checkbox" checked={useRegex} onChange={(e) => setUseRegex(e.target.checked)} />
+            <input type="checkbox" checked={useRegex} onChange={(e) => setUseRegex(e.target.checked)} className="rounded" />
             {t("logs.regex")}
           </label>
           <label className="flex items-center gap-1 text-xs text-gray-500">
-            <input type="checkbox" checked={groupByExec} onChange={(e) => setGroupByExec(e.target.checked)} />
+            <input type="checkbox" checked={groupByExec} onChange={(e) => setGroupByExec(e.target.checked)} className="rounded" />
             {t("logs.group")}
           </label>
           <label className="flex items-center gap-1 text-xs text-gray-500">
-            <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
+            <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} className="rounded" />
             {t("logs.auto")}
           </label>
         </div>
         {searchError && (
-          <div className="px-3 py-1 text-xs text-red-600 bg-red-50 dark:bg-red-900/20">{searchError}</div>
+          <div className="px-4 py-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20">{searchError}</div>
         )}
 
         {/* Log entries */}
@@ -159,10 +172,10 @@ export function LogViewer({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between p-2 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500">
+        <div className="flex items-center justify-between px-4 py-2.5 border-t border-gray-100 dark:border-gray-700 text-xs text-gray-500 bg-gray-50/50 dark:bg-gray-800/50">
           <span>{filtered.length} {t("logs.entries")}</span>
           <button
-            className="px-2 py-1 text-xs rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+            className="px-2 py-1 text-xs rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
             onClick={() => { if (containerRef.current) { containerRef.current.scrollTop = containerRef.current.scrollHeight; setUnreadCount(0); } }}
           >
             {t("logs.jump_latest")}

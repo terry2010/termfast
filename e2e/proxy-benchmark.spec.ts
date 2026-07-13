@@ -16,22 +16,17 @@ test.describe("Proxy tab rendering", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(300);
-    // Port number inputs should be visible with correct values
-    // Order: mixed_port (0), socks5_port (1080), http_port (8080)
+    // Port number inputs: SOCKS5 is first, HTTP is second
     const numInputs = page.locator("input[type='number']");
-    const socksInput = numInputs.nth(1); // socks5_port is second
+    const socksInput = numInputs.first();
     await expect(socksInput).toHaveValue("1080", { timeout: 3000 });
-    const httpInput = numInputs.nth(2); // http_port is third
+    const httpInput = numInputs.nth(1);
     await expect(httpInput).toHaveValue("8080", { timeout: 3000 });
   });
 
   test("start proxy button is disabled when not connected", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.waitForTimeout(300);
-    await page.locator("button:has-text('Proxy')").first().click();
     await page.waitForTimeout(300);
     const startBtn = page.locator("button:has-text('Start Proxy')");
     await expect(startBtn).toBeDisabled({ timeout: 3000 });
@@ -49,8 +44,6 @@ test.describe("Proxy start/stop (U6)", () => {
     await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
     // Switch to Proxy tab
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
     // Start proxy
     await page.locator("button:has-text('Start Proxy')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_toggle_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
@@ -65,8 +58,6 @@ test.describe("Proxy start/stop (U6)", () => {
     await page.locator("button.bg-blue-500:has-text('Connect')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
     await page.locator("button:has-text('Start Proxy')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_toggle_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
@@ -88,13 +79,11 @@ test.describe("System proxy (U18)", () => {
     await page.locator("button.bg-blue-500:has-text('Connect')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
     await page.locator("button:has-text('Start Proxy')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_toggle_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
-    // Click "Set as System Proxy"
-    await page.locator("button:has-text('Set as System Proxy')").click();
+    // Click "Set as System Proxy" checkbox
+    await page.locator("label:has-text('Set as System Proxy')").locator("input[type='checkbox']").check();
     await expect.poll(async () => (await getCallsFor(page, "ipc_set_system_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     const calls = await getCallsFor(page, "ipc_set_system_proxy");
     expect(calls[0].args.serverId).toBe("srv_1");
@@ -103,20 +92,26 @@ test.describe("System proxy (U18)", () => {
   test("clear system proxy calls ipc_clear_system_proxy", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
-    // Use exact text match to avoid matching "Clear Logs"
-    await page.locator("button", { hasText: /^Clear$/ }).click();
+    // Connect + start proxy, then check and uncheck system proxy
+    await page.locator("button.bg-blue-500:has-text('Connect')").click();
+    await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
+    await page.waitForTimeout(300);
+    await page.locator("button:has-text('Start Proxy')").click();
+    await expect.poll(async () => (await getCallsFor(page, "ipc_toggle_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
+    await page.waitForTimeout(300);
+    // Check then uncheck to trigger clear
+    const sysProxyCheckbox = page.locator("label:has-text('Set as System Proxy')").locator("input[type='checkbox']");
+    await sysProxyCheckbox.check();
+    await expect.poll(async () => (await getCallsFor(page, "ipc_set_system_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
+    await sysProxyCheckbox.uncheck();
     await expect.poll(async () => (await getCallsFor(page, "ipc_clear_system_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
   });
 
   test("set as system proxy is disabled when proxy not running", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
-    const setBtn = page.locator("button:has-text('Set as System Proxy')");
-    await expect(setBtn).toBeDisabled({ timeout: 3000 });
+    const sysProxyCheckbox = page.locator("label:has-text('Set as System Proxy')").locator("input[type='checkbox']");
+    await expect(sysProxyCheckbox).toBeDisabled({ timeout: 3000 });
   });
 });
 
@@ -124,9 +119,7 @@ test.describe("Port editing", () => {
   test("changing SOCKS5 port calls ipc_update_server", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
-    const socksInput = page.locator("input[type='number']").nth(1); // socks5_port is second
+    const socksInput = page.locator("input[type='number']").first(); // socks5_port is first
     await socksInput.fill("2080");
     await socksInput.press("Tab");
     await expect.poll(async () => (await getCallsFor(page, "ipc_update_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
@@ -140,13 +133,11 @@ test.describe("Port editing", () => {
     await page.locator("button.bg-blue-500:has-text('Connect')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
     await page.locator("button:has-text('Start Proxy')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_toggle_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
-    // Port inputs should now be disabled (check socks5_port = nth(1))
-    const socksInput = page.locator("input[type='number']").nth(1);
+    // Port inputs should now be disabled (check socks5_port = first)
+    const socksInput = page.locator("input[type='number']").first();
     await expect(socksInput).toBeDisabled({ timeout: 3000 });
   });
 });

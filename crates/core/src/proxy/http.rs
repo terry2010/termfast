@@ -145,7 +145,7 @@ async fn handle_connect(
     let active_clients = managed.active_clients_clone();
     let (bytes_in, bytes_out) = managed.byte_counters();
     let channel = managed.channel;
-    let (mut cli_read, mut cli_write) = socket.split();
+    let (cli_read, mut cli_write) = socket.split();
     let (mut chan_read, chan_write) = channel.split();
     let chan_reader = chan_read.make_reader();
     let mut chan_writer = chan_write.make_writer();
@@ -220,7 +220,7 @@ async fn handle_http(
         .map_err(|e| Error::Ssh(format!("failed to send data: {}", e)))?;
 
     // Bidirectional forwarding
-    let (mut cli_read, mut cli_write) = socket.split();
+    let (cli_read, mut cli_write) = socket.split();
     let (mut chan_read, chan_write) = channel.split();
     let chan_reader = chan_read.make_reader();
     let mut chan_writer = chan_write.make_writer();

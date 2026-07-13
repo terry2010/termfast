@@ -194,7 +194,7 @@ export interface LogEntry {
   timestamp: string;
   server_id: string | null;
   level: "info" | "warn" | "error";
-  category: "Connection" | "Trigger" | "Proxy" | "Error" | "Config";
+  category: "Connection" | "Trigger" | "Proxy" | "Error" | "Config" | "System";
   message: string;
   execution_id: string | null;
   command: string | null;

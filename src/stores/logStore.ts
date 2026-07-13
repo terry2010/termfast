@@ -5,7 +5,7 @@ import { create } from "zustand";
 import type { LogEntry } from "@/types";
 
 export type LogLevel = "all" | "info" | "warn" | "error";
-export type LogCategory = "all" | "Connection" | "Trigger" | "Proxy" | "Config" | "Error";
+export type LogCategory = "all" | "Connection" | "Trigger" | "Proxy" | "Config" | "Error" | "System";
 
 interface LogStore {
   entries: LogEntry[];
@@ -33,7 +33,7 @@ export const useLogStore = create<LogStore>((set, get) => ({
   filter_category: "all",
   filter_server_id: null,
   search_query: "",
-  expanded: true,
+  expanded: false,
 
   addEntry: (entry) =>
     set((state) => ({ entries: [...state.entries, entry] })),
