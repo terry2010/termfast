@@ -1,0 +1,19 @@
+[package]
+name = "russh-stress"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+russh = { version = "0.62", default-features = false, features = ["flate2", "ring"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+dotenvy = "0.15"
+clap = { version = "4", features = ["derive"] }
+rand = { version = "0.10", features = ["thread_rng"] }
+
+[[bin]]
+name = "russh-stress"
+path = "src/main.rs"

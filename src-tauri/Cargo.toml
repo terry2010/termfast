@@ -1,0 +1,37 @@
+[package]
+name = "vps-guard-app"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["VPS Guard Contributors"]
+
+[lib]
+name = "vps_guard_app_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-network = "2"
+tauri-plugin-os = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+vps-guard-core = { workspace = true }
+vps-guard-credential = { workspace = true }
+vps-guard-daemon = { workspace = true }
+vps-guard-desktop = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }

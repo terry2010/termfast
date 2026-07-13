@@ -1,0 +1,25 @@
+# 环境变量文件（含测试 VPS 凭据，不提交）
+.env
+.env.*
+
+# Rust
+target/
+Cargo.lock
+
+# Node
+node_modules/
+dist/
+
+# Tauri
+src-tauri/target/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log

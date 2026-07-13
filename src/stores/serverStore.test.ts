@@ -1,0 +1,91 @@
+// Server store tests — FP-7.1
+import { describe, it, expect, beforeEach } from "vitest";
+import { useServerStore } from "@/stores/serverStore";
+import type { ServerState } from "@/stores/serverStore";
+
+function mockServer(id: string, name: string, status: ServerState["current_status"]): ServerState {
+  return {
+    id,
+    name,
+    ssh: {
+      host: "1.2.3.4",
+      port: 22,
+      user: "root",
+      auth_method: "password",
+      key_path: "",
+      key_auto_generated: false,
+      connection_mode: "single",
+      skip_hostkey_verify: false,
+    },
+    proxy: {
+      enabled: false,
+      socks5_port: 1080,
+      http_port: 8080,
+      mixed_port: 0,
+      max_channels: 100,
+      channel_idle_timeout: 300,
+    },
+    reconnect: {
+      heartbeat_interval: 15,
+      max_attempts: 10,
+      initial_backoff_secs: 1,
+      max_backoff_secs: 300,
+    },
+    ip_check: { enabled: true, interval_secs: 300 },
+    last_known_ip: null,
+    triggers: [],
+    suppress_firewall_badge: false,
+    current_status: status,
+    current_ip: null,
+    connected_since: null,
+    reconnect_count: 0,
+    max_attempts: 10,
+    proxy_running: false,
+    active_channels: 0, bytes_in: 0, bytes_out: 0,
+  };
+}
+
+describe("serverStore", () => {
+  beforeEach(() => {
+    useServerStore.setState({ servers: [], selected_server_id: null, loading: false });
+  });
+
+  it("starts empty", () => {
+    expect(useServerStore.getState().servers).toEqual([]);
+  });
+
+  it("addServer adds to list", () => {
+    const server = mockServer("srv_1", "Tokyo", "disconnected");
+    useServerStore.getState().addServer(server);
+    expect(useServerStore.getState().servers).toHaveLength(1);
+  });
+
+  it("removeServer removes from list", () => {
+    const server = mockServer("srv_1", "Tokyo", "disconnected");
+    useServerStore.getState().addServer(server);
+    useServerStore.getState().removeServer("srv_1");
+    expect(useServerStore.getState().servers).toHaveLength(0);
+  });
+
+  it("updateServerStatus updates status", () => {
+    const server = mockServer("srv_1", "Tokyo", "disconnected");
+    useServerStore.getState().addServer(server);
+    useServerStore.getState().updateServerStatus("srv_1", "connected", "1.2.3.4");
+    const updated = useServerStore.getState().servers[0];
+    expect(updated.current_status).toBe("connected");
+    expect(updated.current_ip).toBe("1.2.3.4");
+  });
+
+  it("selectServer sets selected id", () => {
+    useServerStore.getState().selectServer("srv_1");
+    expect(useServerStore.getState().selected_server_id).toBe("srv_1");
+  });
+
+  it("removeServer clears selection if selected", () => {
+    const server = mockServer("srv_1", "Tokyo", "disconnected");
+    useServerStore.getState().addServer(server);
+    useServerStore.getState().selectServer("srv_1");
+    useServerStore.getState().removeServer("srv_1");
+    expect(useServerStore.getState().selected_server_id).toBeNull();
+  });
+});

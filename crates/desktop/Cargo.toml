@@ -1,0 +1,53 @@
+[package]
+name = "vps-guard-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "vps_guard_desktop"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+vps-guard-core = { workspace = true }
+vps-guard-credential = { workspace = true }
+vps-guard-daemon = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+directories = { workspace = true }
+async-trait = { workspace = true }
+whoami = "2"
+
+# Windows-only dependencies
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+window-vibrancy = "0.7"
+
+# macOS-only dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+window-vibrancy = "0.7"
+
+# Tauri
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-os = "2"
+tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
