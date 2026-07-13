@@ -66,6 +66,8 @@
     "host": "Host",
     "port": "Port",
     "username": "Username",
+    "overview": "Overview",
+    "connection": "Connection",
     "proxy": "Proxy",
     "socks5_port": "SOCKS5 Port",
     "http_port": "HTTP Port",
@@ -93,6 +95,7 @@
     "hostkey_mismatch": "HostKey mismatch on ! Possible MITM!",
     "copy_socks5": "Copy SOCKS5 Address ({{port}})",
     "copy_http": "Copy HTTP Address ({{port}})",
+    "copy_mixed": "Copy Mixed Proxy Address ({{port}})",
     "edit": "Edit Server",
     "password_keep": "Leave empty to keep current",
     "test_proxy": "Test Proxy",
@@ -153,7 +156,15 @@
     "name_placeholder": "My Trigger",
     "seconds": "seconds",
     "no_templates": "No templates available",
-    "commands_count": "{{count}} commands"
+    "commands_count": "{{count}} commands",
+    "event_types": {
+      "OnConnect": "On Connect",
+      "OnReconnect": "On Reconnect",
+      "OnIpChange": "On IP Change",
+      "OnProcessDead": "On Process Dead",
+      "OnPortClosed": "On Port Closed",
+      "ManualFire": "Manual Fire"
+    }
   },
   "template": {
     "library": "Template Library",
@@ -195,6 +206,7 @@
     },
     "search_placeholder": "Search...",
     "no_logs": "No logs found",
+    "expand": "Expand",
     "entries": "entries",
     "jump_latest": "Jump to latest",
     "regex": "Regex",

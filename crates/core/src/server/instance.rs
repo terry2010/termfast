@@ -66,6 +66,8 @@ pub struct ServerInstance {
     runtime_state: Mutex<Option<Arc<crate::config::RuntimeStateManager>>>,
     /// Optional callback to broadcast trigger results to frontend
     trigger_result_callback: Mutex<Option<Arc<dyn Fn(TriggerEvent, &[crate::trigger::engine::TriggerExecutionResult]) + Send + Sync>>>,
+    /// Client IP detected after SSH connection (§5.2)
+    client_ip: Mutex<Option<String>>,
 }
 
 // === SECTION 1 END ===
@@ -101,6 +103,7 @@ impl ServerInstance {
             channel_manager: Mutex::new(None),
             runtime_state: Mutex::new(None),
             trigger_result_callback: Mutex::new(None),
+            client_ip: Mutex::new(None),
         }
     }
 
@@ -122,6 +125,14 @@ impl ServerInstance {
 
     pub async fn current_ip(&self) -> Option<String> {
         self.current_ip.lock().await.clone()
+    }
+
+    pub async fn client_ip(&self) -> Option<String> {
+        self.client_ip.lock().await.clone()
+    }
+
+    pub async fn set_client_ip(&self, ip: Option<String>) {
+        *self.client_ip.lock().await = ip;
     }
 
     /// Set the runtime state manager for IP persistence (FP-1.3b)
@@ -158,7 +169,17 @@ impl ServerInstance {
             Ok(()) => {
                 let handle = self.ssh_client.get_handle().await;
                 if let Some(h) = handle {
-                    self.channel_opener.set_handle(h).await;
+                    self.channel_opener.set_handle(h.clone()).await;
+                    // Detect client IP from SSH connection (§5.2)
+                    match crate::ssh::exec::detect_client_ip(&*h).await {
+                        Ok(ip) => {
+                            tracing::debug!("detected client ip {} for {}", ip, self.config.name);
+                            *self.client_ip.lock().await = Some(ip);
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to detect client ip for {}: {}", self.config.name, e);
+                        }
+                    }
                 }
                 *self.status.lock().await = ServerStatus::Connected;
 
@@ -191,7 +212,7 @@ impl ServerInstance {
         self.ssh_client.connect_with_reconnect(auth).await?;
         let handle = self.ssh_client.get_handle().await;
         if let Some(h) = handle {
-            self.channel_opener.set_handle(h).await;
+            self.channel_opener.set_handle(h.clone()).await;
         }
         *self.status.lock().await = ServerStatus::Connected;
 

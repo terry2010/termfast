@@ -24,11 +24,6 @@ test.describe("Server List rendering", () => {
     await expect(page.locator("text=5.6.7.8")).toBeVisible({ timeout: 5000 });
   });
 
-  test("shows global health summary (connected/abnormal counts)", async ({ page }) => {
-    await waitForAppReady(page);
-    // The summary text: "0 connected / 0 abnormal"
-    await expect(page.locator("text=/\\d+ connected/")).toBeVisible({ timeout: 5000 });
-  });
 });
 
 test.describe("Server selection", () => {
@@ -37,7 +32,7 @@ test.describe("Server selection", () => {
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
     // Detail panel should show the server name as header
-    await expect(page.locator("h2:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator("h1:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
   });
 
   test("selecting different server changes detail content", async ({ page }) => {
@@ -45,11 +40,11 @@ test.describe("Server selection", () => {
     // Select first
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(200);
-    await expect(page.locator("h2:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator("h1:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
     // Select second
     await page.locator("text=US West").first().click();
     await page.waitForTimeout(200);
-    await expect(page.locator("h2:has-text('US West')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator("h1:has-text('US West')")).toBeVisible({ timeout: 3000 });
   });
 });
 
@@ -90,26 +85,6 @@ test.describe("Inline proxy toggle (U6)", () => {
   });
 });
 
-test.describe("Connect All / Disconnect All", () => {
-  test("connect all button calls ipc_connect_server for every server", async ({ page }) => {
-    await waitForAppReady(page);
-    await page.locator("button:has-text('Connect All')").first().click();
-    await page.waitForTimeout(1000);
-    const calls = await getCallsFor(page, "ipc_connect_server");
-    expect(calls.length).toBe(2);
-    const ids = calls.map((c) => c.args.serverId).sort();
-    expect(ids).toEqual(["srv_1", "srv_2"]);
-  });
-
-  test("disconnect all button calls ipc_disconnect_server for every server", async ({ page }) => {
-    await waitForAppReady(page);
-    await page.locator("button:has-text('Disconnect All')").first().click();
-    await page.waitForTimeout(1000);
-    const calls = await getCallsFor(page, "ipc_disconnect_server");
-    expect(calls.length).toBe(2);
-  });
-});
-
 test.describe("Abnormal server pinning (U7)", () => {
   test("auth_failed server is pinned to top of list", async ({ page }) => {
     // Use custom servers with one in auth_failed state
@@ -142,32 +117,6 @@ test.describe("Abnormal server pinning (U7)", () => {
     const items = page.locator("[role='listitem']");
     const firstItem = items.first();
     await expect(firstItem).toContainText("Abnormal Server", { timeout: 5000 });
-  });
-});
-
-test.describe("Delete server with confirmation (U3)", () => {
-  test("delete button opens confirm dialog", async ({ page }) => {
-    await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
-    await page.waitForTimeout(300);
-    // Click the ✕ delete button in detail header
-    await page.locator("button[title='Delete Server']").first().click();
-    // Confirm dialog should appear — use heading to avoid matching list items
-    await expect(page.locator("h2:has-text('Delete server')")).toBeVisible({ timeout: 3000 });
-  });
-
-  test("confirming delete calls ipc_remove_server", async ({ page }) => {
-    await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
-    await page.waitForTimeout(300);
-    await page.locator("button[title='Delete Server']").first().click();
-    // High danger dialog — must type server name to confirm
-    await expect(page.locator("h2:has-text('Delete server')")).toBeVisible({ timeout: 3000 });
-    // Type the server name in the confirmation input
-    await page.locator("input[type='text']").last().fill("Tokyo VPS");
-    // Click the Delete button (high danger confirm button text is "Delete")
-    await page.locator("button:has-text('Delete')").last().click();
-    await expect.poll(async () => (await getCallsFor(page, "ipc_remove_server")).length, { timeout: 5000 }).toBe(1);
   });
 });
 

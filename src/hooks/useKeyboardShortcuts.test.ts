@@ -19,6 +19,7 @@ describe("useKeyboardShortcuts", () => {
       onToggleTriggers: vi.fn(),
       onToggleConnection: vi.fn(),
       onToggleLogPanel: vi.fn(),
+      onToggleSidebar: vi.fn(),
       onRefresh: vi.fn(),
       onEscape: vi.fn(),
     };
@@ -42,6 +43,7 @@ describe("useKeyboardShortcuts", () => {
       onToggleTriggers: vi.fn(),
       onToggleConnection: vi.fn(),
       onToggleLogPanel: vi.fn(),
+      onToggleSidebar: vi.fn(),
       onRefresh: vi.fn(),
       onEscape: vi.fn(),
     };
@@ -65,6 +67,7 @@ describe("useKeyboardShortcuts", () => {
       onToggleTriggers: vi.fn(),
       onToggleConnection: vi.fn(),
       onToggleLogPanel: vi.fn(),
+      onToggleSidebar: vi.fn(),
       onRefresh: vi.fn(),
       onEscape: vi.fn(),
     };
@@ -88,6 +91,7 @@ describe("useKeyboardShortcuts", () => {
       onToggleTriggers: vi.fn(),
       onToggleConnection: vi.fn(),
       onToggleLogPanel: vi.fn(),
+      onToggleSidebar: vi.fn(),
       onRefresh: vi.fn(),
       onEscape: vi.fn(),
     };
@@ -111,6 +115,7 @@ describe("useKeyboardShortcuts", () => {
       onToggleTriggers: vi.fn(),
       onToggleConnection: vi.fn(),
       onToggleLogPanel: vi.fn(),
+      onToggleSidebar: vi.fn(),
       onRefresh: vi.fn(),
       onEscape: vi.fn(),
     };

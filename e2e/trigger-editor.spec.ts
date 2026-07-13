@@ -38,16 +38,12 @@ test.describe("Trigger list rendering", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(300);
     await expect(page.locator("text=Firewalld IP Update")).toBeVisible({ timeout: 3000 });
   });
 
   test("trigger card shows event type tag and command summary", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
     await page.waitForTimeout(300);
     // Event type tag: "On Ip Change" (split camelCase)
     await expect(page.locator("text=On Ip Change")).toBeVisible({ timeout: 3000 });
@@ -58,8 +54,6 @@ test.describe("Trigger list rendering", () => {
   test("trigger card has Fire, Edit, Delete buttons", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
     await page.waitForTimeout(300);
     await expect(page.locator("button:has-text('Fire Trigger')")).toBeVisible({ timeout: 3000 });
     await expect(page.locator("button:has-text('Edit')")).toBeVisible({ timeout: 3000 });
@@ -77,8 +71,6 @@ test.describe("Manual fire trigger (U5)", () => {
     await page.locator("button.bg-blue-500:has-text('Connect')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(300);
     await page.locator("button:has-text('Fire Trigger')").first().click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_manual_fire_trigger")).length, { timeout: 5000 }).toBe(1);
     const calls = await getCallsFor(page, "ipc_manual_fire_trigger");
@@ -92,12 +84,10 @@ test.describe("Add new trigger via editor (U11)", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(300);
     await page.locator("button:has-text('Add Trigger')").first().click();
     await page.waitForTimeout(300);
     // Editor dialog should appear
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
     // Should show "Add Trigger" heading
     await expect(page.locator("h2:has-text('Add Trigger')")).toBeVisible({ timeout: 3000 });
   });
@@ -106,12 +96,10 @@ test.describe("Add new trigger via editor (U11)", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(300);
     await page.locator("button:has-text('Add Trigger')").first().click();
     await page.waitForTimeout(300);
     // Fill trigger name
-    await page.locator("input[type='text']").first().fill("My Custom Trigger");
+    await page.locator("[data-testid='trigger-name-input']").fill("My Custom Trigger");
     // Select event type (OnConnect)
     await page.locator("select").first().selectOption("OnConnect");
     // Type into CodeMirror editor — click the editor area and type
@@ -130,8 +118,6 @@ test.describe("Add new trigger via editor (U11)", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(300);
     await page.locator("button:has-text('Add Trigger')").first().click();
     await page.waitForTimeout(300);
     // Click Save without filling name
@@ -149,14 +135,12 @@ test.describe("Edit existing trigger", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(300);
     await page.locator("button:has-text('Edit')").first().click();
     await page.waitForTimeout(300);
     // Editor should show "Edit Trigger" heading
     await expect(page.locator("h2:has-text('Edit Trigger')")).toBeVisible({ timeout: 3000 });
     // Name field should be pre-filled
-    const nameInput = page.locator("input[type='text']").first();
+    const nameInput = page.locator("[data-testid='trigger-name-input']");
     await expect(nameInput).toHaveValue("Firewalld IP Update", { timeout: 3000 });
   });
 
@@ -164,12 +148,10 @@ test.describe("Edit existing trigger", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(300);
     await page.locator("button:has-text('Edit')").first().click();
     await page.waitForTimeout(300);
     // Change the name
-    await page.locator("input[type='text']").first().fill("Updated Trigger Name");
+    await page.locator("[data-testid='trigger-name-input']").fill("Updated Trigger Name");
     await page.locator("button:has-text('Save')").last().click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_update_trigger")).length, { timeout: 5000 }).toBe(1);
     const calls = await getCallsFor(page, "ipc_update_trigger");
@@ -184,8 +166,6 @@ test.describe("Delete trigger with confirmation", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(300);
     await page.locator("button:has-text('Delete')").first().click();
     await page.waitForTimeout(300);
     // Confirm dialog should appear — use heading to avoid matching body text
@@ -195,8 +175,6 @@ test.describe("Delete trigger with confirmation", () => {
   test("confirming delete calls ipc_remove_trigger", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Delete')").first().click();
     await page.waitForTimeout(300);
@@ -210,8 +188,6 @@ test.describe("Delete trigger with confirmation", () => {
   test("canceling delete does not call ipc_remove_trigger", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.waitForTimeout(300);
-    await page.locator("button:has-text('Triggers')").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Delete')").first().click();
     await page.waitForTimeout(300);

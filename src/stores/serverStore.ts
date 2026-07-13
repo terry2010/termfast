@@ -7,6 +7,7 @@ import type { ServerConfig, ServerStatus } from "@/types";
 export interface ServerState extends ServerConfig {
   current_status: ServerStatus;
   current_ip: string | null;
+  client_ip: string | null;
   connected_since: string | null;
   reconnect_count: number;
   max_attempts: number;
@@ -23,7 +24,7 @@ interface ServerStore {
   loading: boolean;
 
   setServers: (servers: ServerState[]) => void;
-  updateServerStatus: (serverId: string, status: ServerStatus, ip?: string) => void;
+  updateServerStatus: (serverId: string, status: ServerStatus, ip?: string, clientIp?: string | null) => void;
   selectServer: (serverId: string | null) => void;
   setActiveTab: (tab: string) => void;
   getActiveTab: () => string;
@@ -41,7 +42,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
 
   setServers: (servers) => set({ servers }),
 
-  updateServerStatus: (serverId, status, ip) =>
+  updateServerStatus: (serverId, status, ip, clientIp) =>
     set((state) => ({
       servers: state.servers.map((s) =>
         s.id === serverId
@@ -49,6 +50,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
               ...s,
               current_status: status,
               current_ip: ip ?? s.current_ip,
+              client_ip: clientIp !== undefined ? clientIp : s.client_ip,
               connected_since:
                 status === "connected" ? new Date().toISOString() : null,
             }

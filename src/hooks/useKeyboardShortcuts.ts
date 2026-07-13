@@ -10,6 +10,7 @@
 // Cmd/Ctrl+Shift+T: pause/resume all triggers
 // Cmd/Ctrl+Shift+Space: toggle connection (with confirm)
 // Cmd/Ctrl+E: collapse/expand logs
+// Cmd/Ctrl+B: toggle sidebar
 // Cmd/Ctrl+Shift+R / F5: refresh status
 // Esc: close panel/cancel/close dialog
 
@@ -25,6 +26,7 @@ export interface KeyboardShortcutHandlers {
   onToggleTriggers: () => void;
   onToggleConnection: () => void;
   onToggleLogPanel: () => void;
+  onToggleSidebar: () => void;
   onRefresh: () => void;
   onEscape: () => void;
 }
@@ -99,6 +101,10 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
         case "e":
           e.preventDefault();
           handlers.onToggleLogPanel();
+          return;
+        case "b":
+          e.preventDefault();
+          handlers.onToggleSidebar();
           return;
       }
     };

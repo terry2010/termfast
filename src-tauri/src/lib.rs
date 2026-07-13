@@ -316,12 +316,14 @@ async fn ipc_update_server(
     name: Option<String>,
     socks5_port: Option<u16>,
     http_port: Option<u16>,
+    mixed_port: Option<u16>,
     ssh: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({ "server_id": server_id });
     if let Some(n) = name { params["name"] = serde_json::json!(n); }
     if let Some(p) = socks5_port { params["socks5_port"] = serde_json::json!(p); }
     if let Some(p) = http_port { params["http_port"] = serde_json::json!(p); }
+    if let Some(p) = mixed_port { params["mixed_port"] = serde_json::json!(p); }
     if let Some(s) = ssh { params["ssh"] = s; }
     forward_to_daemon(
         &state,

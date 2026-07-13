@@ -16,11 +16,11 @@ test.describe("FP-9.1: Add Server", () => {
   test("fill add-server form and submit calls ipc_add_server", async ({ page }) => {
     await waitForAppReady(page);
     // Click the "+ Add Server" button in the sidebar
-    await page.locator("button:has-text('Add Server')").first().click();
+    await page.locator("[aria-label='Add Server'], [aria-label='添加服务器']").first().click();
     // Dialog should appear
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
     // Fill the form — use dialog-scoped selectors (text inputs exclude number/password)
-    const dialog = page.locator(".fixed.inset-0.bg-black\\/50");
+    const dialog = page.locator(".fixed.inset-0");
     const textInputs = dialog.locator("input:not([type='number']):not([type='password'])");
     await textInputs.nth(0).fill("My New VPS"); // name
     await textInputs.nth(1).fill("9.8.7.6"); // host
@@ -28,7 +28,7 @@ test.describe("FP-9.1: Add Server", () => {
     // Submit
     await page.locator("button:has-text('Add')").last().click();
     // Dialog should close
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toHaveCount(0, { timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toHaveCount(0, { timeout: 3000 });
     // Verify ipc_add_server was called with correct host
     const addCalls = await getCallsFor(page, "ipc_add_server");
     expect(addCalls.length).toBe(1);
@@ -38,10 +38,10 @@ test.describe("FP-9.1: Add Server", () => {
 
   test("add button disabled when name or host is empty", async ({ page }) => {
     await waitForAppReady(page);
-    await page.locator("button:has-text('Add Server')").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
+    await page.locator("[aria-label='Add Server'], [aria-label='添加服务器']").first().click();
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
     // Add button should be disabled initially
-    const dialog = page.locator(".fixed.inset-0.bg-black\\/50");
+    const dialog = page.locator(".fixed.inset-0");
     const addBtn = dialog.locator("button:has-text('Add')").last();
     const textInputs = dialog.locator("input:not([type='number']):not([type='password'])");
     await expect(addBtn).toBeDisabled();
@@ -55,10 +55,10 @@ test.describe("FP-9.1: Add Server", () => {
 
   test("cancel button closes dialog without calling ipc_add_server", async ({ page }) => {
     await waitForAppReady(page);
-    await page.locator("button:has-text('Add Server')").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
+    await page.locator("[aria-label='Add Server'], [aria-label='添加服务器']").first().click();
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
     await page.locator("button:has-text('Cancel')").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toHaveCount(0, { timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toHaveCount(0, { timeout: 3000 });
     const addCalls = await getCallsFor(page, "ipc_add_server");
     expect(addCalls.length).toBe(0);
   });
@@ -72,7 +72,7 @@ test.describe("FP-9.1: Connect & Disconnect", () => {
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
     // Detail panel should show Connect button (not "Connect All" which is in sidebar)
-    const connectBtn = page.locator("h2:has-text('Tokyo VPS') + div button:has-text('Connect'), button.bg-blue-500:has-text('Connect')");
+    const connectBtn = page.locator("h1:has-text('Tokyo VPS') + div button:has-text('Connect'), button.bg-blue-500:has-text('Connect')");
     await expect(connectBtn).toBeVisible({ timeout: 3000 });
     await connectBtn.click();
     // Wait for IPC call — use toBeGreaterThanOrEqual since app may auto-reconnect
@@ -106,9 +106,9 @@ test.describe("FP-9.2: Server Status Display", () => {
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
     // Connection tab should show host:port
-    await expect(page.locator("text=1.2.3.4:22")).toBeVisible({ timeout: 3000 });
-    // Status label should be visible
-    await expect(page.locator("text=Disconnected")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator("text=root@1.2.3.4:22")).toBeVisible({ timeout: 3000 });
+    // Status should be visible in header
+    await expect(page.locator("text=Disconnected").first()).toBeVisible({ timeout: 3000 });
   });
 });
 
@@ -118,9 +118,6 @@ test.describe("FP-9.3: Trigger Tab", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    // Click Triggers tab
-    await page.locator("button:has-text('Triggers')").first().click();
-    await page.waitForTimeout(200);
     // Should show the "Add Trigger" button
     await expect(page.locator("button:has-text('Add Trigger')")).toBeVisible({ timeout: 3000 });
   });
@@ -136,8 +133,6 @@ test.describe("FP-9.4: Proxy Toggle", () => {
     await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
     // Switch to Proxy tab
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
     // Start Proxy button should be visible
     const startBtn = page.locator("button:has-text('Start Proxy')");
     await expect(startBtn).toBeVisible({ timeout: 3000 });
@@ -151,10 +146,9 @@ test.describe("FP-9.4: Proxy Toggle", () => {
   test("proxy tab shows SOCKS5 and HTTP port numbers", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    await page.locator("button:has-text('Proxy')").first().click();
-    await page.waitForTimeout(200);
-    // Should show port text in the proxy tab (SOCKS5 :1080  HTTP :8080)
-    await expect(page.locator("text=/SOCKS5 :1080/")).toBeVisible({ timeout: 3000 });
+    // Should show SOCKS5 port input with value 1080
+    const socksInput = page.locator("input[type='number']").first();
+    await expect(socksInput).toHaveValue("1080", { timeout: 3000 });
   });
 });
 
@@ -164,8 +158,8 @@ test.describe("FP-9.5: Settings", () => {
     await waitForAppReady(page);
     // Click Settings button in title bar
     await page.locator("button:has-text('Settings')").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
-    // Verify section headings are present
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
+    // All sections are on a single scrollable page
     await expect(page.locator("h3:has-text('General')")).toBeVisible({ timeout: 3000 });
     await expect(page.locator("h3:has-text('Logs')")).toBeVisible();
     await expect(page.locator("h3:has-text('Notifications')")).toBeVisible();
@@ -175,9 +169,9 @@ test.describe("FP-9.5: Settings", () => {
   test("changing theme calls ipc_update_general_config", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("button:has-text('Settings')").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
     // Find the theme select (second select in General section)
-    const dialog = page.locator(".fixed.inset-0.bg-black\\/50");
+    const dialog = page.locator(".fixed.inset-0");
     const themeSelect = dialog.locator("select").nth(1);
     await themeSelect.selectOption("dark");
     await expect.poll(async () => (await getCallsFor(page, "ipc_update_general_config")).length).toBeGreaterThanOrEqual(1);
@@ -189,10 +183,10 @@ test.describe("FP-9.5: Settings", () => {
   test("close button closes settings dialog", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("button:has-text('Settings')").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
     // Click the ✕ close button inside the dialog
     await page.locator("[aria-label='Close']").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toHaveCount(0, { timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toHaveCount(0, { timeout: 3000 });
   });
 });
 
@@ -216,7 +210,7 @@ test.describe("FP-9.7: Template Library", () => {
     await waitForAppReady(page);
     // Click "Template Library" button in sidebar
     await page.locator("button:has-text('Template Library')").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
     // Should show template names from mock config
     await expect(page.locator("text=Firewalld IP Update")).toBeVisible({ timeout: 5000 });
     await expect(page.locator("text=UFW IP Update")).toBeVisible({ timeout: 3000 });
@@ -225,7 +219,7 @@ test.describe("FP-9.7: Template Library", () => {
   test("clicking a template expands its commands", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("button:has-text('Template Library')").first().click();
-    await expect(page.locator(".fixed.inset-0.bg-black\\/50")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".fixed.inset-0")).toBeVisible({ timeout: 3000 });
     // Click on the Firewalld template
     await page.locator("text=Firewalld IP Update").first().click();
     await page.waitForTimeout(200);
@@ -241,13 +235,13 @@ test.describe("FP-9.8: Multi-Server", () => {
     // Click first server
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await expect(page.locator("h2:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator("h1:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
     // Click second server
     await page.locator("text=US West").first().click();
     await page.waitForTimeout(300);
-    await expect(page.locator("h2:has-text('US West')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator("h1:has-text('US West')")).toBeVisible({ timeout: 3000 });
     // First server header should no longer be the active detail
-    await expect(page.locator("h2:has-text('Tokyo VPS')")).toHaveCount(0);
+    await expect(page.locator("h1:has-text('Tokyo VPS')")).toHaveCount(0);
   });
 
   test("both servers show their respective port chips", async ({ page }) => {

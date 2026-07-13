@@ -63,13 +63,14 @@ export function useDaemonEvents() {
     };
 
     // server:status_changed
-    addListener<{ server_id: string; status: string; ip?: string }>(
+    addListener<{ server_id: string; status: string; ip?: string; client_ip?: string | null }>(
       "server:status_changed",
       (data) => {
         updateServerStatus(
           data.server_id,
           data.status as never,
-          data.ip
+          data.ip,
+          data.client_ip
         );
         // System notifications based on notification preferences
         const cfg = useConfigStore.getState().config;

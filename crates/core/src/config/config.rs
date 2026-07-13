@@ -274,7 +274,7 @@ fn default_ssh_port() -> u16 {
     22
 }
 fn default_auth_method() -> String {
-    "key".into()
+    "password".into()
 }
 fn default_connection_mode() -> String {
     "single".into()
