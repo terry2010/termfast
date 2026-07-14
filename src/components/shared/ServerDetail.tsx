@@ -63,6 +63,9 @@ export function ServerDetail() {
   // Ref to detect right-click on macOS "bottom-right corner" click mode
   // (where click fires before contextmenu with button=0, ctrlKey=false)
   const rightClickRef = useRef(false);
+  // Drag-to-reorder state for terminal tabs (overview tab is not draggable)
+  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
+  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
 
   const server = servers.find((s) => s.id === selectedId);
   const isConnected = server?.current_status === "connected";
@@ -350,6 +353,21 @@ export function ServerDetail() {
     setActiveTerminalTab(serverId, "overview");
   };
 
+  // Reorder terminal tabs by moving draggedTabId to the position of targetTabId.
+  // Overview tab is never part of the draggable set.
+  const handleReorderTabs = (draggedId: string, targetId: string) => {
+    if (draggedId === targetId) return;
+    const serverId = selectedId || "";
+    const currentTabs = terminalTabsByServer[serverId] || [];
+    const draggedIndex = currentTabs.findIndex((tt) => tt.id === draggedId);
+    const targetIndex = currentTabs.findIndex((tt) => tt.id === targetId);
+    if (draggedIndex === -1 || targetIndex === -1) return;
+    const next = [...currentTabs];
+    const [moved] = next.splice(draggedIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setTerminalTabsForServer(serverId, next);
+  };
+
   // Restore a tab's label to its default
   const restoreDefaultName = (tabId: string) => {
     const serverId = selectedId || "";
@@ -577,14 +595,51 @@ export function ServerDetail() {
     <div className={`flex-1 ${isTerminalActive ? "overflow-hidden flex flex-col" : "overflow-y-auto p-8"} bg-gray-50/50 dark:bg-gray-900/50`}>
       {/* Tab bar — overview + terminal tabs */}
       <div className={`flex gap-1 border-b border-gray-200 dark:border-gray-700 ${isTerminalActive ? "" : "mb-8"}`}>
-        {tabs.map((tab) => (
+        {tabs.map((tab) => {
+          const isOverview = tab.key === "overview";
+          const isDraggable = !isOverview;
+          return (
           <div
             key={tab.key}
+            draggable={isDraggable}
+            onDragStart={(e) => {
+              if (!isDraggable) return;
+              setDraggedTabId(tab.key);
+              e.dataTransfer.effectAllowed = "move";
+              // Required for Firefox to start a drag
+              e.dataTransfer.setData("text/plain", tab.key);
+            }}
+            onDragEnd={() => {
+              setDraggedTabId(null);
+              setDragOverTabId(null);
+            }}
+            onDragOver={(e) => {
+              if (!isDraggable || !draggedTabId || draggedTabId === tab.key) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              setDragOverTabId(tab.key);
+            }}
+            onDragLeave={() => {
+              if (dragOverTabId === tab.key) setDragOverTabId(null);
+            }}
+            onDrop={(e) => {
+              if (!isDraggable || !draggedTabId) return;
+              e.preventDefault();
+              if (draggedTabId !== tab.key) {
+                handleReorderTabs(draggedTabId, tab.key);
+              }
+              setDraggedTabId(null);
+              setDragOverTabId(null);
+            }}
             className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors cursor-pointer ${
               activeTab === tab.key
                 ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 border-b-2 border-blue-500"
                 : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-            } ${tab.disconnected && tab.key !== "overview" ? "opacity-50 italic" : ""}`}
+            } ${tab.disconnected && !isOverview ? "opacity-50 italic" : ""} ${
+              isDraggable ? "select-none" : ""
+            } ${dragOverTabId === tab.key && draggedTabId && draggedTabId !== tab.key ? "border-l-2 border-blue-400" : ""} ${
+              draggedTabId === tab.key ? "opacity-40" : ""
+            }`}
             onClick={() => {
               rightClickRef.current = false;
               setActiveTerminalTab(server.id, tab.key);
@@ -646,7 +701,8 @@ export function ServerDetail() {
               </button>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Disconnect confirmation — shown when disconnecting with active terminals */}
