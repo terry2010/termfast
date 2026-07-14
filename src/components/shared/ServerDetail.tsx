@@ -533,10 +533,14 @@ export function ServerDetail() {
 
   const statusColor = isConnected ? "text-green-500" : server.current_status === "auth_failed" || server.current_status === "offline" ? "text-red-500" : "text-gray-400";
 
+  // When a terminal tab is active, remove all padding so the terminal fills
+  // the panel edge-to-edge. When overview is active, keep the padded layout.
+  const isTerminalActive = activeTab !== "overview";
+
   return (
-    <div className="flex-1 overflow-y-auto p-8 bg-gray-50/50 dark:bg-gray-900/50">
+    <div className={`flex-1 ${isTerminalActive ? "overflow-hidden flex flex-col" : "overflow-y-auto p-8"} bg-gray-50/50 dark:bg-gray-900/50`}>
       {/* Tab bar — overview + terminal tabs */}
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700 mb-8">
+      <div className={`flex gap-1 border-b border-gray-200 dark:border-gray-700 ${isTerminalActive ? "" : "mb-8"}`}>
         {tabs.map((tab) => (
           <div
             key={tab.key}
@@ -849,7 +853,7 @@ export function ServerDetail() {
       {termTabs.map((tt) => (
         <div
           key={tt.id}
-          className="h-[calc(100vh-200px)] min-h-[400px]"
+          className={isTerminalActive ? "flex-1 min-h-0" : "h-[calc(100vh-200px)] min-h-[400px]"}
           style={
             activeTab === tt.id
               ? { position: "relative", visibility: "visible" }

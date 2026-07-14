@@ -164,8 +164,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
   return (
     <div
       ref={containerRef}
-      className="w-full h-full bg-[#1e1e2e] rounded-lg overflow-hidden"
-      style={{ minHeight: "400px" }}
+      className="w-full h-full bg-[#1e1e2e] overflow-hidden"
     />
   );
 }
