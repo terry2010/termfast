@@ -168,15 +168,46 @@ impl TerminalManager {
                         // echo and CR/LF translation, so input bytes are sent
                         // raw (xterm.js sends \r on Enter, which is correct).
                         tracing::info!("terminal write task input len={} data={:?} for session {}", data.len(), String::from_utf8_lossy(&data), sid);
-                        match tokio::time::timeout(std::time::Duration::from_secs(5), write_half.data_bytes(data)).await {
-                            Ok(Ok(())) => {
-                                tracing::info!("terminal input sent successfully for session {}", sid);
-                            }
-                            Ok(Err(e)) => {
-                                tracing::warn!("terminal input error: {} for session {}", e, sid);
-                            }
-                            Err(_) => {
-                                tracing::warn!("terminal input timed out (channel send blocked) for session {}", sid);
+                        // Retry loop: during large ZMODEM transfers the SSH send
+                        // window can temporarily fill up.  A short timeout would
+                        // silently drop bytes, corrupting the transfer.  Use a
+                        // generous per-attempt timeout and retry until the data
+                        // is sent or the channel is truly dead.
+                        let payload = data.clone();
+                        let mut attempts = 0u32;
+                        loop {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(120),
+                                write_half.data_bytes(payload.clone()),
+                            ).await {
+                                Ok(Ok(())) => {
+                                    if attempts > 0 {
+                                        tracing::info!(
+                                            "terminal input sent after {} retries for session {}",
+                                            attempts, sid,
+                                        );
+                                    }
+                                    break;
+                                }
+                                Ok(Err(e)) => {
+                                    tracing::warn!("terminal input error: {} for session {}", e, sid);
+                                    break;
+                                }
+                                Err(_) => {
+                                    attempts += 1;
+                                    tracing::warn!(
+                                        "terminal input timed out (attempt {}) for session {}, {} bytes remaining",
+                                        attempts, sid, payload.len(),
+                                    );
+                                    if attempts >= 3 {
+                                        tracing::error!(
+                                            "terminal input giving up after {} timeouts for session {}",
+                                            attempts, sid,
+                                        );
+                                        break;
+                                    }
+                                    // retry with the same data
+                                }
                             }
                         }
                     }

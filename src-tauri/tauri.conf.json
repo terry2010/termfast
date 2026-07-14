@@ -51,7 +51,7 @@
       "endpoints": [
         "https://terry2010.github.io/termfast/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4MkFCOEIzQTA0OTg0NDQKUldSRWhFbWdzN2dxR0VEdGdqckhWd0daWHFXTXlOcFJKVTFXeGQzZW9FMysvYm41VklBSnpkdmUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlGQ0UwOEU1ODg4ODE5NUYKUldSZkdZaUk1UWpPbjBCVXR5SVQ0d2EwZFJvRnMrNlArbGwyV01KelJkek1BY3o2SGxXU2ZrY0kK",
       "windows": {
         "installMode": "basicUi"
       }

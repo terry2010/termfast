@@ -44,6 +44,7 @@
     "dialog:allow-open",
     "fs:allow-write-file",
     "fs:allow-read-file",
+    "updater:default",
     {
       "identifier": "fs:scope",
       "allow": [
