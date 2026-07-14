@@ -224,7 +224,7 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
     <Modal
       title={isEdit ? t("server.edit") : t("server.add")}
       onClose={onCancel}
-      maxWidth="max-w-md"
+      maxWidth="max-w-xl"
       footer={
         <>
           <button
@@ -250,54 +250,60 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
         </>
       }
     >
-      <div className="space-y-3">
-        <Field label={t("server.name")}>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="input" />
-        </Field>
-        <div className="flex gap-2">
-          <Field label={t("server.host")} className="flex-1">
-            <input value={host} onChange={(e) => setHost(e.target.value)} className="input" />
-          </Field>
-          <Field label={t("server.port")} className="w-20">
-            <input value={port} onChange={(e) => setPort(e.target.value)} className="input" type="number" />
-          </Field>
-        </div>
-        <Field label={t("server.username")}>
-          <input value={username} onChange={(e) => setUsername(e.target.value)} className="input" />
-        </Field>
-        <Field label={t("onboarding.auth_method")}>
-          <select
-            value={authType}
-            onChange={(e) => setAuthType(e.target.value as "password" | "key")}
-            className="input"
-          >
-            <option value="password">{t("server.password")}</option>
-            <option value="key">{t("server.ssh_key")}</option>
-          </select>
-        </Field>
-        {authType === "password" && (
-          <Field label={t("server.password")}>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={isEdit ? t("server.password_keep") : ""}
-              className="input"
-            />
-          </Field>
-        )}
-        {authType === "key" && (
-          <Field label={t("server.key_path")}>
-            <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} className="input" />
-          </Field>
-        )}
-        <Field label={t("server.mixed_port")}>
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
+      <div className="space-y-5">
+        {/* Basic info */}
+        <SettingGroup title={t("server.basic_info")}>
+          <SettingRow label={t("server.name")}>
+            <input value={name} onChange={(e) => setName(e.target.value)} className="input w-full" />
+          </SettingRow>
+          <SettingRow label={t("server.host")}>
+            <input value={host} onChange={(e) => setHost(e.target.value)} className="input w-full" />
+          </SettingRow>
+          <SettingRow label={t("server.port")}>
+            <input value={port} onChange={(e) => setPort(e.target.value)} className="input w-24" type="number" />
+          </SettingRow>
+          <SettingRow label={t("server.username")}>
+            <input value={username} onChange={(e) => setUsername(e.target.value)} className="input w-full" />
+          </SettingRow>
+        </SettingGroup>
+
+        {/* Authentication */}
+        <SettingGroup title={t("server.authentication")}>
+          <SettingRow label={t("onboarding.auth_method")}>
+            <select
+              value={authType}
+              onChange={(e) => setAuthType(e.target.value as "password" | "key")}
+              className="input w-full"
+            >
+              <option value="password">{t("server.password")}</option>
+              <option value="key">{t("server.ssh_key")}</option>
+            </select>
+          </SettingRow>
+          {authType === "password" && (
+            <SettingRow label={t("server.password")}>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={isEdit ? t("server.password_keep") : ""}
+                className="input w-full"
+              />
+            </SettingRow>
+          )}
+          {authType === "key" && (
+            <SettingRow label={t("server.key_path")}>
+              <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} className="input w-full" />
+            </SettingRow>
+          )}
+        </SettingGroup>
+
+        {/* Proxy settings */}
+        <SettingGroup title={t("server.proxy_settings")}>
+          <SettingRow label={t("server.mixed_port")}>
+            <Toggle
               checked={mixedEnabled}
-              onChange={(e) => {
-                if (e.target.checked) {
+              onChange={(v) => {
+                if (v) {
                   const port = parseInt(socks5Port) || 1080;
                   setMixedPort(String(port));
                   setSocks5Port(String(port));
@@ -306,53 +312,53 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
                   setMixedPort("0");
                 }
               }}
-              className="rounded"
             />
-            <input
-              value={mixedPort}
-              onChange={(e) => {
-                const val = e.target.value;
-                setMixedPort(val);
-                const port = parseInt(val) || 0;
-                if (port > 0) {
-                  setSocks5Port(String(port));
-                  setHttpPort(String(port));
-                }
-              }}
-              className="input flex-1"
-              type="number"
-              disabled={!mixedEnabled}
-            />
-          </div>
-        </Field>
-        <div className="flex gap-2">
-          <Field label={t("server.socks5_port")} className="flex-1">
+          </SettingRow>
+          {mixedEnabled && (
+            <SettingRow label={t("server.mixed_port")}>
+              <input
+                value={mixedPort}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setMixedPort(val);
+                  const port = parseInt(val) || 0;
+                  if (port > 0) {
+                    setSocks5Port(String(port));
+                    setHttpPort(String(port));
+                  }
+                }}
+                className="input w-24"
+                type="number"
+              />
+            </SettingRow>
+          )}
+          <SettingRow label={t("server.socks5_port")}>
             <input
               value={socks5Port}
               onChange={(e) => setSocks5Port(e.target.value)}
-              className="input"
+              className="input w-24"
               type="number"
               disabled={mixedEnabled}
             />
-          </Field>
-          <Field label={t("server.http_port")} className="flex-1">
+          </SettingRow>
+          <SettingRow label={t("server.http_port")}>
             <input
               value={httpPort}
               onChange={(e) => setHttpPort(e.target.value)}
-              className="input"
+              className="input w-24"
               type="number"
               disabled={mixedEnabled}
             />
-          </Field>
-        </div>
+          </SettingRow>
+        </SettingGroup>
       </div>
       {error && (
-        <div className="mt-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">
+        <div className="mt-4 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">
           {error}
         </div>
       )}
       {testResult && (
-        <div className={`mt-3 text-sm p-3 rounded-lg border ${
+        <div className={`mt-4 text-sm p-3 rounded-lg border ${
           testResult.success
             ? "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800/50"
             : "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50"
@@ -364,13 +370,58 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
   );
 }
 
-function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
+// === SECTION 2 END ===
+
+// macOS System Settings-style group: title above white rounded container
+function SettingGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <label className={`block ${className}`}>
-      <span className="text-xs text-gray-500 block mb-1">{label}</span>
-      {children}
-    </label>
+    <section>
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">{title}</h3>
+      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
+        {children}
+      </div>
+    </section>
   );
 }
 
-// === SECTION 2 END ===
+// Horizontal label + control row (like SettingsPage SettingItem)
+function SettingRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-gray-100 dark:border-gray-700/60 last:border-0">
+      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">{label}</span>
+      <div className="flex-1 max-w-xs flex justify-end">{children}</div>
+    </div>
+  );
+}
+
+// macOS-style toggle switch
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${
+        checked ? "bg-blue-500" : "bg-gray-200 dark:bg-gray-600"
+      }`}
+    >
+      <span
+        className="inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200"
+        style={{ transform: checked ? "translateX(22px)" : "translateX(2px)" }}
+      />
+    </button>
+  );
+}
