@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
+import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
 import { Modal } from "@/components/ui/Modal";
 import { useServerStore } from "@/stores/serverStore";
 
@@ -66,6 +66,8 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
   const mixedEnabled = parseInt(mixedPort) > 0;
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // ESC to close
   useEffect(() => {
@@ -169,6 +171,55 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
 
 // === SECTION 1 END ===
 
+  const handleTestConnection = async () => {
+    // Validate required fields before testing
+    if (!host) {
+      setError(t("server.host") + " " + t("common.required"));
+      return;
+    }
+    if (!username) {
+      setError(t("server.username") + " " + t("common.required"));
+      return;
+    }
+    if (authType === "password" && !password && !isEdit) {
+      setError(t("server.password") + " " + t("common.required"));
+      return;
+    }
+    if (authType === "key" && !keyPath) {
+      setError(t("server.key_path") + " " + t("common.required"));
+      return;
+    }
+    // For edit mode with password auth, if no new password entered, we can't test
+    // (the existing credential is stored encrypted and not accessible here)
+    if (authType === "password" && isEdit && !password) {
+      setError(t("server.password_required_for_test"));
+      return;
+    }
+
+    setError(null);
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await ipcInvoke<{ success: boolean; message: string }>(
+        "ipc_test_connection",
+        {
+          host,
+          port: parseInt(port) || 22,
+          username,
+          auth_method: authType,
+          password: authType === "password" ? password : null,
+          key_path: authType === "key" ? keyPath : null,
+        }
+      );
+      setTestResult(result);
+    } catch (e) {
+      const msg = formatIpcError(e);
+      setTestResult({ success: false, message: msg });
+    } finally {
+      setTesting(false);
+    }
+  };
+
   return (
     <Modal
       title={isEdit ? t("server.edit") : t("server.add")}
@@ -176,8 +227,18 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
       maxWidth="max-w-md"
       footer={
         <>
-          <button className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onClick={onCancel}>
+          <button
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            onClick={onCancel}
+          >
             {t("common.cancel")}
+          </button>
+          <button
+            className="px-4 py-2 text-sm rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+            onClick={handleTestConnection}
+            disabled={testing || adding}
+          >
+            {testing ? t("common.testing") : t("onboarding.test_connection")}
           </button>
           <button
             className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
@@ -288,6 +349,15 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
       {error && (
         <div className="mt-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">
           {error}
+        </div>
+      )}
+      {testResult && (
+        <div className={`mt-3 text-sm p-3 rounded-lg border ${
+          testResult.success
+            ? "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800/50"
+            : "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50"
+        }`}>
+          {testResult.success ? "✓ " : "✕ "}{testResult.message}
         </div>
       )}
     </Modal>

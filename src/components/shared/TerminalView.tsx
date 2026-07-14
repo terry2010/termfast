@@ -307,6 +307,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     total: number;
     percent: number;
   } | null>(null);
+  const zmodemCancelRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -381,6 +382,11 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       s._cache = [];
     };
 
+    const clearZmodemProgress = () => {
+      setZmodemProgress(null);
+      zmodemCancelRef.current = () => {};
+    };
+
     // sz: remote is SENDING files to us (session.type === "receive").
     // Stream each file chunk to a temp file as it arrives (so progress is
     // written to disk in real time) and then copy the temp file to the user
@@ -434,6 +440,21 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
           percent: 0,
         });
 
+        // Cancel support for this download.
+        let cancelled = false;
+        let cancelReject: (e: Error) => void;
+        const cancelPromise = new Promise<never>((_, reject) => {
+          cancelReject = reject;
+          zmodemCancelRef.current = () => {
+            if (cancelled) return;
+            cancelled = true;
+            console.log("[ZMODEM] cancel download clicked");
+            clearZmodemProgress();
+            cleanupSession(session, true);
+            reject(new Error("ZMODEM cancelled by user"));
+          };
+        });
+
         // accept() must be called synchronously to set up the ZDATA handler.
         // Pass an on_input callback so payloads are written to disk as they
         // arrive, instead of being spooled in memory until the end.
@@ -445,7 +466,9 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
 
             const totalSize = details.size;
             if (totalSize && totalSize > 0) {
-              const percent = Math.floor((receivedBytes / totalSize) * 100);
+              // Cap at 99% while data is still streaming; the final 1% is shown
+              // only after the file is fully written to the chosen destination.
+              const percent = Math.min(99, Math.floor((receivedBytes / totalSize) * 100));
               if (percent > lastProgressPercent) {
                 lastProgressPercent = percent;
                 setZmodemProgress({
@@ -481,37 +504,53 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
 
         // Show the save dialog in parallel. The transfer is already writing
         // chunks to the temp file.
-        const path = await saveDialog({ defaultPath: details.name });
-        if (!path) {
-          console.log("[ZMODEM] save dialog cancelled, skipping file");
-          try { await (fileHandle as any)?.close(); } catch (_) {}
-          try { await remove(tempName, { baseDir: BaseDirectory.Temp }); } catch (_) {}
-          setZmodemProgress(null);
-          xfer.skip();
-          return;
-        }
-
+        let completed = false;
         try {
-          await acceptPromise;
+          const path = await Promise.race([
+            saveDialog({ defaultPath: details.name }),
+            cancelPromise,
+          ]);
+          if (!path) {
+            console.log("[ZMODEM] save dialog cancelled, skipping file");
+            xfer.skip();
+            return;
+          }
+
+          await Promise.race([acceptPromise, cancelPromise]);
           await writeQueueDrain();
           await (fileHandle as any)?.close();
           fileHandle = null;
 
           await copyFile(tempName, path, { fromPathBaseDir: BaseDirectory.Temp });
+          completed = true;
           console.log("[ZMODEM] file saved to:", path);
+
+          // Show 100% only after the file is actually written to the destination.
+          const totalSize = details.size || 0;
+          setZmodemProgress({
+            active: true,
+            isUpload: false,
+            filename: details.name,
+            received: totalSize,
+            total: totalSize,
+            percent: 100,
+          });
+          setTimeout(() => clearZmodemProgress(), 1200);
         } catch (e: unknown) {
-          console.error("[ZMODEM] accept failed:", e);
+          if (cancelled) {
+            console.log("[ZMODEM] download cancelled by user");
+          } else {
+            console.error("[ZMODEM] accept failed:", e);
+            try { xfer.skip(); } catch (_) {}
+          }
+        } finally {
           try { await (fileHandle as any)?.close(); } catch (_) {}
           try { await remove(tempName, { baseDir: BaseDirectory.Temp }); } catch (_) {}
-          setZmodemProgress(null);
-          xfer.skip();
-        } finally {
-          try { await remove(tempName, { baseDir: BaseDirectory.Temp }); } catch (_) {}
-          setZmodemProgress(null);
+          if (!completed) clearZmodemProgress();
         }
       });
       session.on("session_end", () => {
-        cleanupSession(session);
+        cleanupSession(session, false);
       });
       session.start().catch((e: unknown) => {
         console.error("[ZMODEM] session start failed:", e);
@@ -520,7 +559,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     }
 
     // Centralised cleanup for both upload and download sessions.
-    const cleanupSession = (sess: ZmodemSession) => {
+    const cleanupSession = (sess: ZmodemSession, clearProgress = true) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sessAny = sess as any;
       sessAny._keepalive_stopped = true;
@@ -534,7 +573,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       zmodemSession = null;
       zmodemCooldownUntil = Date.now() + 10000;
       clearSentryState();
-      setZmodemProgress(null);
+      if (clearProgress) clearZmodemProgress();
     };
 
     // rz: remote is RECEIVING files from us (session.type === "send").
@@ -573,17 +612,80 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
               console.log("[ZMODEM] rz: receiver skipped file");
               continue;
             }
+
+            // The receiver may ask to resume from a non-zero offset (ZRPOS).
+            // get_offset() returns the requested start; we must start reading
+            // from there and sync the session's file offset so ZDATA/ZEOF
+            // headers use the same offset.
+            const startOffset = (xfer as any).get_offset() as number;
+            console.log(`[ZMODEM] rz: startOffset=${startOffset}, file.size=${file.size}`);
+            (session as any)._file_offset = startOffset;
+
             const chunkSize = 8192;
-            let sent = 0;
-            for (let offset = 0; offset < file.size; offset += chunkSize) {
-              const slice = file.slice(offset, Math.min(offset + chunkSize, file.size));
-              const buf = await slice.arrayBuffer();
-              xfer.send(new Uint8Array(buf));
-              sent += buf.byteLength;
+            let lastUploadPercent = -1;
+            const total = Math.max(0, file.size - startOffset);
+            setZmodemProgress({
+              active: true,
+              isUpload: true,
+              filename: file.name,
+              received: 0,
+              total,
+              percent: 0,
+            });
+
+            // Cancel support for this upload.
+            let uploadCancelled = false;
+            zmodemCancelRef.current = () => {
+              if (uploadCancelled) return;
+              uploadCancelled = true;
+              console.log("[ZMODEM] cancel upload clicked");
+              try { (session as any).abort(); } catch (_) {}
+              clearZmodemProgress();
+            };
+
+            if (total <= 0) {
+              // Remote already has the whole file (or more). Just close it.
+              console.log("[ZMODEM] rz: remote already has file, ending immediately");
+            } else {
+              for (let offset = startOffset; offset < file.size; offset += chunkSize) {
+                const slice = file.slice(offset, Math.min(offset + chunkSize, file.size));
+                const buf = await slice.arrayBuffer();
+                xfer.send(new Uint8Array(buf));
+
+                const currentOffset = (xfer as any).get_offset() as number;
+                const received = currentOffset - startOffset;
+                // Cap at 99% while data is still streaming; the final 1% is
+                // shown only after the peer has acknowledged the end of file.
+                const percent = Math.min(99, Math.floor((received / total) * 100));
+                if (percent > lastUploadPercent) {
+                  lastUploadPercent = percent;
+                  setZmodemProgress({
+                    active: true,
+                    isUpload: true,
+                    filename: file.name,
+                    received,
+                    total,
+                    percent,
+                  });
+                  if (percent % 5 === 0) {
+                    console.log(`[ZMODEM] upload progress: ${percent}% (${received}/${total})`);
+                  }
+                }
+              }
             }
-            console.log(`[ZMODEM] rz: sent ${sent} bytes, ending file`);
+            console.log(`[ZMODEM] rz: sent ${(xfer as any).get_offset()} bytes, ending file`);
             await xfer.end(new Uint8Array(0));
             console.log("[ZMODEM] rz: file end confirmed");
+
+            // Show 100% after the receiver has acknowledged the end of file.
+            setZmodemProgress({
+              active: true,
+              isUpload: true,
+              filename: file.name,
+              received: total,
+              total,
+              percent: 100,
+            });
           }
           // All files sent — wind down the session.
           console.log("[ZMODEM] rz: closing session");
@@ -838,8 +940,17 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
               style={{ width: `${zmodemProgress.percent}%` }}
             />
           </div>
-          <div className="text-xs text-slate-400 mt-2 font-mono">
-            {formatBytes(zmodemProgress.received)} / {formatBytes(zmodemProgress.total)}
+          <div className="flex justify-between items-center text-xs text-slate-400 mt-2 font-mono">
+            <span>
+              {formatBytes(zmodemProgress.received)} / {formatBytes(zmodemProgress.total)}
+            </span>
+            <button
+              type="button"
+              onClick={() => zmodemCancelRef.current()}
+              className="ml-2 px-2 py-1 bg-red-600 hover:bg-red-500 text-white rounded text-xs"
+            >
+              取消
+            </button>
           </div>
         </div>
       )}

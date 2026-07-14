@@ -168,6 +168,7 @@ pub fn run() {
             // Onboarding helpers (FP-8.1)
             ipc_check_port_reachable,
             ipc_detect_firewall,
+            ipc_test_connection,
             // Network status (FP-6.9)
             ipc_get_network_status,
             // Export/Import (FP-1.6)
@@ -626,6 +627,60 @@ async fn ipc_generate_ssh_key(
 }
 
 // === Onboarding helpers (FP-8.1) ===
+
+#[tauri::command]
+async fn ipc_test_connection(
+    _state: tauri::State<'_, AppState>,
+    host: String,
+    port: u16,
+    username: String,
+    auth_method: String,
+    password: Option<String>,
+    key_path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use vps_guard_core::ssh::client::{SshClientConfig, SshClientHandle};
+    use vps_guard_core::ssh::auth::AuthMethod;
+
+    let config = SshClientConfig {
+        host: host.clone(),
+        port,
+        user: username.clone(),
+        heartbeat_interval: 15,
+        max_attempts: 1,
+        initial_backoff_secs: 1,
+        max_backoff_secs: 5,
+        skip_hostkey_verify: true,
+        hostkey_mismatch_callback: None,
+    };
+
+    let client = SshClientHandle::new(config);
+
+    let auth = if auth_method == "key" {
+        let kp = key_path.unwrap_or_default();
+        if kp.is_empty() {
+            return Err("key_path is required for key auth".to_string());
+        }
+        AuthMethod::Key { key_path: kp, passphrase: None }
+    } else {
+        let pw = password.unwrap_or_default();
+        if pw.is_empty() {
+            return Err("password is required for password auth".to_string());
+        }
+        AuthMethod::Password { password: pw }
+    };
+
+    match client.connect(&auth).await {
+        Ok(()) => {
+            // Disconnect cleanly
+            let _ = client.disconnect().await;
+            Ok(serde_json::json!({ "success": true, "message": "Connection successful" }))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            Ok(serde_json::json!({ "success": false, "message": msg }))
+        }
+    }
+}
 
 #[tauri::command]
 async fn ipc_check_port_reachable(

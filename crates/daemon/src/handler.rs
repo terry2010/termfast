@@ -135,6 +135,7 @@ async fn handle_list_servers(state: &DaemonState) -> HandlerResult {
                 "enabled": cfg.proxy.enabled,
                 "socks5_port": cfg.proxy.socks5_port,
                 "http_port": cfg.proxy.http_port,
+                "mixed_port": cfg.proxy.mixed_port,
                 "max_channels": cfg.proxy.max_channels,
                 "channel_idle_timeout": cfg.proxy.channel_idle_timeout,
             },
@@ -1116,8 +1117,16 @@ async fn handle_set_system_proxy(state: &DaemonState, params: &serde_json::Value
 
     maybe_broadcast_cli_focus(state, params, server_id, Some("proxy")).await;
     let server = state.server_manager.get_server(server_id).await?;
-    let socks5_port = server.config.proxy.socks5_port;
-    let http_port = server.config.proxy.http_port;
+    let socks5_port = if server.config.proxy.mixed_port > 0 {
+        server.config.proxy.mixed_port
+    } else {
+        server.config.proxy.socks5_port
+    };
+    let http_port = if server.config.proxy.mixed_port > 0 {
+        server.config.proxy.mixed_port
+    } else {
+        server.config.proxy.http_port
+    };
 
     // Actually set the system proxy via platform adapter (FP-6.6)
     let proxy_config = vps_guard_core::platform::SystemProxyConfig {

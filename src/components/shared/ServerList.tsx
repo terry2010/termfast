@@ -53,7 +53,6 @@ export function ServerList({
   const selectedId = useServerStore((s) => s.selected_server_id);
   const selectServer = useServerStore((s) => s.selectServer);
   const [showAddDialog, setShowAddDialog] = useState(false);
-  const [copiedPort, setCopiedPort] = useState<string | null>(null);
   const [loading, setLoading] = useState(servers.length === 0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -90,31 +89,6 @@ export function ServerList({
     await loadServers();
   };
 
-  const handleToggleProxy = useCallback(
-    async (serverId: string, currentEnabled: boolean) => {
-      try {
-        await ipcInvoke("ipc_toggle_proxy", {
-          serverId,
-          enabled: !currentEnabled,
-        });
-      } catch (e) {
-        const msg = formatIpcError(e);
-        toast.error(t("server.proxy_toggle_failed"), { description: msg });
-      }
-    },
-    [t]
-  );
-
-  const handleCopyPort = useCallback(async (port: number, serverId: string) => {
-    try {
-      await navigator.clipboard.writeText(String(port));
-      setCopiedPort(`${serverId}:${port}`);
-      setTimeout(() => setCopiedPort(null), 1500);
-    } catch (e) {
-      console.error("copy port failed:", e);
-    }
-  }, []);
-
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, server: ServerState) => {
       const isConnected = server.current_status === "connected";
@@ -122,6 +96,73 @@ export function ServerList({
       const socks5Port = server.proxy?.socks5_port || 1080;
       const httpPort = server.proxy?.http_port || 8080;
       const mixedPort = server.proxy?.mixed_port || 0;
+
+      // Open a terminal: auto-connect if needed, then open terminal session and
+      // select the server so ServerDetail shows the new terminal tab.
+      const openTerminal = async () => {
+        const store = useServerStore.getState();
+        const serverId = server.id;
+        const currentServer = store.servers.find((s) => s.id === serverId);
+        if (!currentServer) return;
+        const alreadyConnected = currentServer.current_status === "connected";
+
+        // Select the server first so the detail panel is visible
+        store.selectServer(serverId);
+
+        // If not connected, connect first
+        if (!alreadyConnected) {
+          store.updateServerStatus(serverId, "connecting");
+          try {
+            await ipcInvoke("ipc_connect_server", { serverId });
+            store.updateServerStatus(serverId, "connected", currentServer.last_known_ip || undefined);
+          } catch (err: any) {
+            const errMsg = formatIpcError(err);
+            store.updateServerStatus(serverId, "offline");
+            useLogStore.getState().addEntry({
+              id: `ctx-conn-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              timestamp: new Date().toISOString(),
+              server_id: serverId,
+              level: "error",
+              category: "Connection",
+              message: `Connection failed: ${errMsg}`,
+              execution_id: null,
+              command: null,
+              exit_code: null,
+              stdout: null,
+              stderr: null,
+            });
+            toast.error(t("server.connect_failed"), { description: errMsg });
+            if (err instanceof IpcErrorImpl && err.code === "CredentialNotFound") {
+              window.dispatchEvent(
+                new CustomEvent("edit-server", { detail: { serverId } })
+              );
+            }
+            return;
+          }
+        }
+
+        // Open terminal session
+        try {
+          const result = await ipcInvoke<{ session_id: string; initial_output: string }>(
+            "ipc_terminal_open",
+            { server_id: serverId, cols: 80, rows: 24 }
+          );
+          const sessionId = result.session_id;
+          const initialOutput = result.initial_output || "";
+          const tabId = `term:${sessionId}`;
+          const currentTabs = store.terminal_tabs_by_server[serverId] || [];
+          const hasTabs = currentTabs.length > 0;
+          const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+          store.addTerminalTab(serverId, { id: tabId, sessionId, label: defaultLabel, defaultLabel, initialOutput, disconnected: false });
+          store.setActiveTerminalTab(serverId, tabId);
+          // If this is the first terminal tab, the button label changes from
+          // "connect_terminal" to "login_server" — no extra action needed.
+          void hasTabs;
+        } catch (err) {
+          const msg = formatIpcError(err);
+          toast.error(t("server.terminal_open_failed"), { description: msg });
+        }
+      };
 
       const items: ContextMenuEntry[] = [
         {
@@ -158,6 +199,11 @@ export function ServerList({
             }
           },
           disabled: server.current_status === "connecting" || server.current_status === "reconnecting",
+        },
+        {
+          label: t("server.login_server"),
+          icon: "⌨",
+          onClick: () => { openTerminal(); },
         },
         {
           label: proxyEnabled ? t("server.stop_proxy") : t("server.start_proxy"),
@@ -400,13 +446,6 @@ export function ServerList({
               selected={server.id === selectedId}
               collapsed={!showFullContent}
               onSelect={() => selectServer(server.id)}
-              onToggleProxy={() =>
-                handleToggleProxy(server.id, server.proxy_running)
-              }
-              onCopyPort={() =>
-                handleCopyPort(server.proxy?.socks5_port || 1080, server.id)
-              }
-              copiedPort={copiedPort === `${server.id}:${server.proxy?.socks5_port || 1080}`}
               onContextMenu={(e) => handleContextMenu(e, server)}
               draggable
               isDragged={draggedId === server.id}
@@ -480,9 +519,6 @@ function ServerListItem({
   selected,
   collapsed = false,
   onSelect,
-  onToggleProxy,
-  onCopyPort,
-  copiedPort,
   onContextMenu,
   draggable,
   onDragStart,
@@ -498,9 +534,6 @@ function ServerListItem({
   selected: boolean;
   collapsed?: boolean;
   onSelect: () => void;
-  onToggleProxy: () => void;
-  onCopyPort: () => void;
-  copiedPort: boolean;
   onContextMenu: (e: React.MouseEvent) => void;
   draggable?: boolean;
   onDragStart?: (e: React.DragEvent) => void;
@@ -513,7 +546,6 @@ function ServerListItem({
   dragOverPos?: "before" | "after";
 }) {
   const { t } = useTranslation();
-  const socks5Port = server.proxy?.socks5_port || 1080;
 
   return (
     <div
@@ -561,54 +593,12 @@ function ServerListItem({
             </div>
           </div>
 
-          {/* Firewall not configured badge (§9.4) */}
-          {!server.suppress_firewall_badge && server.current_status === "connected" && (
-            <span
-              className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-100 dark:bg-yellow-900/50 text-yellow-700 dark:text-yellow-400 font-medium"
-              title={t("server.firewallNotConfigured")}
-            >
-              FW
+          {/* Proxy port badge — only shown when proxy is running */}
+          {server.proxy_running && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 flex-shrink-0">
+              :{server.proxy.mixed_port > 0 ? server.proxy.mixed_port : server.proxy.socks5_port}
             </span>
           )}
-
-          {/* Port copy chip (U8) */}
-          <button
-            className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono transition-colors ${
-              copiedPort
-                ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400"
-                : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-blue-100 dark:hover:bg-blue-900 hover:text-blue-600 dark:hover:text-blue-400"
-            }`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onCopyPort();
-            }}
-            title={copiedPort ? t("common.copied") : t("server.copyPort")}
-            aria-label={`${t("server.copyPort")} ${socks5Port}`}
-          >
-            {copiedPort ? "✓" : `:${socks5Port}`}
-          </button>
-
-          {/* Inline proxy toggle (U6) */}
-          <button
-            className={`w-8 h-4 rounded-full transition-colors relative flex-shrink-0 ${
-              server.proxy_running
-                ? "bg-blue-500"
-                : "bg-gray-200 dark:bg-gray-600"
-            }`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleProxy();
-            }}
-            title={server.proxy_running ? t("proxy.on") : t("proxy.off")}
-            aria-label={t("proxy.toggle")}
-            aria-pressed={server.proxy_running}
-          >
-            <span
-              className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${
-                server.proxy_running ? "translate-x-4" : "translate-x-0.5"
-              }`}
-            />
-          </button>
         </>
       )}
     </div>

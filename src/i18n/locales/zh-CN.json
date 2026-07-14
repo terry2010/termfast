@@ -30,7 +30,8 @@
     "expand": "展开",
     "clear": "清除",
     "no_data": "暂无数据",
-    "testing": "测试中..."
+    "testing": "测试中...",
+    "required": "为必填项"
   },
   "menu": {
     "servers": "服务器",
@@ -105,6 +106,7 @@
     "copy_mixed": "复制混合代理地址 ({{port}})",
     "edit": "编辑服务器",
     "password_keep": "留空则不修改",
+    "password_required_for_test": "测试连接需要输入密码",
     "test_proxy": "测试代理",
     "test_proxy_url_placeholder": "默认 https://api.ipify.org（可自定义）",
     "test_proxy_btn": "测试",

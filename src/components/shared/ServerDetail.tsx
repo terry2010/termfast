@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useServerStore, type TerminalTab } from "@/stores/serverStore";
 import { useLogStore } from "@/stores/logStore";
+import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
 import { TriggerList } from "@/components/shared/TriggerList";
 import { TerminalView } from "@/components/shared/TerminalView";
@@ -44,7 +45,10 @@ export function ServerDetail() {
   const activeTerminalTabByServer = useServerStore((s) => s.active_terminal_tab_by_server);
   const termTabs = terminalTabsByServer[selectedId || ""] || [];
   const activeTab: Tab = (activeTerminalTabByServer[selectedId || ""] as Tab) || "overview";
-  const [connecting, setConnecting] = useState(false);
+  // System proxy state is derived from the global config — this server is the
+  // system proxy if config.general.system_proxy_server_id === selectedId.
+  const config = useConfigStore((s) => s.config);
+  const systemProxyEnabled = config?.general?.system_proxy_server_id === selectedId;
   const [testProxyUrl, setTestProxyUrl] = useState("");
   const [testProxyResult, setTestProxyResult] = useState<{
     success: boolean;
@@ -54,7 +58,6 @@ export function ServerDetail() {
   } | null>(null);
   const [testingProxy, setTestingProxy] = useState(false);
   const testProxyAbort = useRef<AbortController | null>(null);
-  const [systemProxyEnabled, setSystemProxyEnabled] = useState(false);
   // Tab rename state: which tab id is being renamed, and the current edit text
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
@@ -67,8 +70,22 @@ export function ServerDetail() {
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
 
+  // Reset transient UI state when switching to a different server
+  // (the component is reused across servers, so local state persists otherwise)
+  useEffect(() => {
+    setTestProxyResult(null);
+    setTestingProxy(false);
+    setShowDisconnectConfirm(false);
+    setRenamingTabId(null);
+    setDraggedTabId(null);
+    setDragOverTabId(null);
+  }, [selectedId]);
+
   const server = servers.find((s) => s.id === selectedId);
   const isConnected = server?.current_status === "connected";
+  // "connecting" is derived from the server's current status in the store,
+  // so it survives switching to another server and back.
+  const connecting = server?.current_status === "connecting" || server?.current_status === "reconnecting";
 
   // Listen for terminal:closed events to mark tabs as disconnected.
   // Iterate all servers' tabs because the closed session may belong to a
@@ -91,7 +108,6 @@ export function ServerDetail() {
     const serverId = server.id;
     // If not connected, auto-connect first
     if (!isConnected) {
-      setConnecting(true);
       updateServerStatus(serverId, "connecting");
       try {
         await ipcInvoke("ipc_connect_server", { serverId });
@@ -119,8 +135,6 @@ export function ServerDetail() {
           );
         }
         return;
-      } finally {
-        setConnecting(false);
       }
     }
     // Now connected — open terminal session
@@ -152,7 +166,6 @@ export function ServerDetail() {
 
     // If not connected, connect first
     if (!alreadyConnected) {
-      setConnecting(true);
       store.updateServerStatus(serverId, "connecting");
       try {
         await ipcInvoke("ipc_connect_server", { serverId });
@@ -180,8 +193,6 @@ export function ServerDetail() {
           );
         }
         return;
-      } finally {
-        setConnecting(false);
       }
     }
 
@@ -227,7 +238,6 @@ export function ServerDetail() {
 
   const handleConnect = async () => {
     if (!server.id) return;
-    setConnecting(true);
     updateServerStatus(server.id, "connecting");
     try {
       await ipcInvoke("ipc_connect_server", { serverId: server.id });
@@ -254,8 +264,6 @@ export function ServerDetail() {
           new CustomEvent("edit-server", { detail: { serverId: server.id } })
         );
       }
-    } finally {
-      setConnecting(false);
     }
   };
 
@@ -433,7 +441,6 @@ export function ServerDetail() {
 
     // If starting proxy and not connected, auto-connect first
     if (newEnabled && !isConnected) {
-      setConnecting(true);
       updateServerStatus(server.id, "connecting");
       try {
         await ipcInvoke("ipc_connect_server", { serverId: server.id });
@@ -461,8 +468,6 @@ export function ServerDetail() {
           );
         }
         return;
-      } finally {
-        setConnecting(false);
       }
     }
 
@@ -472,6 +477,18 @@ export function ServerDetail() {
         enabled: newEnabled,
       });
       setProxyStatus(server.id, newEnabled);
+
+      // When stopping proxy and no terminal tabs are open, also disconnect
+      // the SSH connection to avoid leaving an idle connection to the server.
+      if (!newEnabled && termTabs.length === 0 && isConnected) {
+        try {
+          await ipcInvoke("ipc_disconnect_server", { serverId: server.id });
+          updateServerStatus(server.id, "disconnected");
+        } catch (e) {
+          // Disconnect failure is non-fatal — proxy was already stopped
+          console.error("disconnect after proxy stop failed:", e);
+        }
+      }
     } catch (e) {
       const errMsg = formatIpcError(e);
       useLogStore.getState().addEntry({
@@ -516,18 +533,25 @@ export function ServerDetail() {
     if (!server.id) return;
     try {
       await ipcInvoke("ipc_set_system_proxy", { serverId: server.id });
-      setSystemProxyEnabled(true);
+      useConfigStore.getState().updateGeneral({ system_proxy_server_id: server.id });
       toast.success(t("server.set_system_proxy"));
     } catch (e) {
       const msg = formatIpcError(e);
-      toast.error(t("server.set_system_proxy_failed"), { description: msg });
+      if (e instanceof IpcErrorImpl && e.code === "NeedsPrivilege") {
+        toast.error(t("server.set_system_proxy_failed"), {
+          description: msg,
+          duration: 20000,
+        });
+      } else {
+        toast.error(t("server.set_system_proxy_failed"), { description: msg });
+      }
     }
   };
 
   const handleClearSystemProxy = async () => {
     try {
       await ipcInvoke("ipc_clear_system_proxy", {});
-      setSystemProxyEnabled(false);
+      useConfigStore.getState().updateGeneral({ system_proxy_server_id: null });
       toast.success(t("server.clear_system_proxy"));
     } catch (e) {
       const msg = formatIpcError(e);

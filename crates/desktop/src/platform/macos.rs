@@ -38,6 +38,33 @@ pub fn check_sudoers_valid() -> bool {
     }
 }
 
+/// Try to install the sudoers file by prompting for admin password via
+/// macOS's native osascript dialog. This avoids requiring the user to
+/// manually run a terminal command.
+fn install_sudoers() -> Result<()> {
+    let content = sudoers_content();
+    // Use osascript with administrator privileges to write the sudoers file.
+    // This pops up the standard macOS admin password dialog.
+    let script = format!(
+        "do shell script \"echo '{}' > {} && chmod 440 {} && visudo -cf {}\" with administrator privileges",
+        content.replace('\'', "'\\''").replace('\n', "\\n"),
+        SUDOERS_PATH,
+        SUDOERS_PATH,
+        SUDOERS_PATH
+    );
+    let output = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("failed to install sudoers: {}", stderr);
+    }
+    Ok(())
+}
+
 /// Get the network service name (e.g., "Wi-Fi", "Ethernet")
 pub fn get_network_service() -> Result<String> {
     let output = std::process::Command::new("networksetup")
@@ -58,6 +85,30 @@ pub fn get_network_service() -> Result<String> {
 #[async_trait::async_trait]
 impl PlatformAdapter for MacOSAdapter {
     async fn set_system_proxy(&self, config: &SystemProxyConfig) -> Result<SetProxyResult> {
+        // Check sudoers first — if not configured, try to install it via
+        // osascript admin prompt (GUI-friendly, no terminal needed).
+        if !check_sudoers_valid() {
+            match install_sudoers() {
+                Ok(()) => {
+                    // Sudoers installed successfully, continue
+                }
+                Err(e) => {
+                    return Ok(SetProxyResult {
+                        needs_privilege: true,
+                        success: false,
+                        message: format!(
+                            "Failed to install sudoers automatically: {}\n\
+                             Please run in terminal:\n  \
+                             echo '{}' | sudo tee {}",
+                            e,
+                            sudoers_content().replace('\n', "\\n"),
+                            SUDOERS_PATH
+                        ),
+                    });
+                }
+            }
+        }
+
         let service = match get_network_service() {
             Ok(s) => s,
             Err(e) => {
@@ -69,8 +120,7 @@ impl PlatformAdapter for MacOSAdapter {
             }
         };
 
-        // Try without sudo first (will likely fail)
-        // Then try with sudo if sudoers is set up
+        // sudoers is configured — sudo will run without password prompt
         let socks_port = config.socks5_port.to_string();
         let http_port = config.http_port.to_string();
 
@@ -85,6 +135,7 @@ impl PlatformAdapter for MacOSAdapter {
         for (_, args) in &commands {
             let output = std::process::Command::new("sudo")
                 .args(args)
+                .stdin(std::process::Stdio::null())
                 .output();
             match output {
                 Ok(o) if o.status.success() => {}
@@ -96,17 +147,38 @@ impl PlatformAdapter for MacOSAdapter {
         }
 
         Ok(SetProxyResult {
-            needs_privilege: !check_sudoers_valid(),
+            needs_privilege: !all_success,
             success: all_success,
             message: if all_success {
                 format!("system proxy set via {}", service)
             } else {
-                "failed to set system proxy (may need privilege escalation)".into()
+                "failed to set system proxy (sudoers may be misconfigured)".into()
             },
         })
     }
 
     async fn clear_system_proxy(&self) -> Result<SetProxyResult> {
+        // Check sudoers first — same auto-install logic as set_system_proxy
+        if !check_sudoers_valid() {
+            match install_sudoers() {
+                Ok(()) => {}
+                Err(e) => {
+                    return Ok(SetProxyResult {
+                        needs_privilege: true,
+                        success: false,
+                        message: format!(
+                            "Failed to install sudoers automatically: {}\n\
+                             Please run in terminal:\n  \
+                             echo '{}' | sudo tee {}",
+                            e,
+                            sudoers_content().replace('\n', "\\n"),
+                            SUDOERS_PATH
+                        ),
+                    });
+                }
+            }
+        }
+
         let service = match get_network_service() {
             Ok(s) => s,
             Err(e) => {
@@ -125,6 +197,7 @@ impl PlatformAdapter for MacOSAdapter {
         ] {
             let output = std::process::Command::new("sudo")
                 .args(args)
+                .stdin(std::process::Stdio::null())
                 .output();
             match output {
                 Ok(o) if o.status.success() => {}
@@ -136,7 +209,7 @@ impl PlatformAdapter for MacOSAdapter {
         }
 
         Ok(SetProxyResult {
-            needs_privilege: !check_sudoers_valid(),
+            needs_privilege: !all_success,
             success: all_success,
             message: if all_success {
                 "system proxy cleared".into()

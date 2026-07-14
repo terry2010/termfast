@@ -30,7 +30,8 @@
     "expand": "Expand",
     "clear": "Clear",
     "no_data": "No data",
-    "testing": "Testing..."
+    "testing": "Testing...",
+    "required": "is required"
   },
   "menu": {
     "servers": "Servers",
@@ -103,6 +104,7 @@
     "copy_mixed": "Copy Mixed Proxy Address ({{port}})",
     "edit": "Edit Server",
     "password_keep": "Leave empty to keep current",
+    "password_required_for_test": "Password is required to test connection",
     "test_proxy": "Test Proxy",
     "test_proxy_url_placeholder": "Default https://api.ipify.org (customizable)",
     "test_proxy_btn": "Test",
