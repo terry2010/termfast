@@ -23,19 +23,32 @@ interface TriggerEditorProps {
 
 // === SECTION 1 END ===
 
-export function TriggerEditor({ serverId, trigger, onClose, onSaved }: TriggerEditorProps) {
+export function TriggerEditor({
+  serverId,
+  trigger,
+  onClose,
+  onSaved,
+}: TriggerEditorProps) {
   const { t } = useTranslation();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [name, setName] = useState(trigger?.name || "");
   const [eventType, setEventType] = useState<TriggerType>(
-    (trigger as any)?.trigger_type || "ManualFire"
+    (trigger as any)?.trigger_type || "ManualFire",
   );
   const [timeoutSecs, setTimeoutSecs] = useState(trigger?.timeout_secs || 30);
-  const [cooldownSecs, setCooldownSecs] = useState(trigger?.cooldown_secs || 60);
-  const [continueOnError, setContinueOnError] = useState(trigger?.continue_on_error || false);
-  const [notifyOnSuccess, setNotifyOnSuccess] = useState(trigger?.notify_on_success || false);
-  const [notifyOnFailure, setNotifyOnFailure] = useState<boolean>(trigger?.notify_on_failure ?? true);
+  const [cooldownSecs, setCooldownSecs] = useState(
+    trigger?.cooldown_secs || 60,
+  );
+  const [continueOnError, setContinueOnError] = useState(
+    trigger?.continue_on_error || false,
+  );
+  const [notifyOnSuccess, setNotifyOnSuccess] = useState(
+    trigger?.notify_on_success || false,
+  );
+  const [notifyOnFailure, setNotifyOnFailure] = useState<boolean>(
+    trigger?.notify_on_failure ?? true,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
@@ -180,130 +193,132 @@ export function TriggerEditor({ serverId, trigger, onClose, onSaved }: TriggerEd
 
   return (
     <>
-    <Modal
-      title={isEditing ? t("trigger.edit") : t("trigger.add")}
-      onClose={onClose}
-      maxWidth="max-w-3xl"
-      footer={
-        <>
-          <button
-            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            onClick={onClose}
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
-            onClick={handleSave}
-            disabled={saving}
-          >
-            {saving ? t("common.saving") : t("common.save")}
-          </button>
-        </>
-      }
-    >
-      <div className="space-y-5">
-        {/* Basic info */}
-        <SettingGroup title={t("trigger.basic_info")}>
-          <SettingRow label={t("trigger.name")}>
-            <input
-              type="text"
-              data-testid="trigger-name-input"
-              className="input w-full"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t("trigger.name_placeholder")}
-            />
-          </SettingRow>
-          <SettingRow label={t("trigger.event_type")}>
-            <select
-              className="input w-full"
-              value={eventType}
-              onChange={(e) => setEventType(e.target.value as TriggerType)}
-            >
-              {eventTypes.map((et) => (
-                <option key={et} value={et}>
-                  {t(`trigger.event_types.${et}`)}
-                </option>
-              ))}
-            </select>
-          </SettingRow>
-          <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/60 last:border-0">
+      <Modal
+        title={isEditing ? t("trigger.edit") : t("trigger.add")}
+        onClose={onClose}
+        maxWidth="max-w-3xl"
+        footer={
+          <>
             <button
-              type="button"
-              className="w-full px-3 py-2 text-sm rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium"
-              onClick={() => setShowTemplateSelector(true)}
+              className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
+              onClick={onClose}
             >
-              {t("trigger.choose_template")}
+              {t("common.cancel")}
             </button>
-          </div>
-        </SettingGroup>
+            <button
+              className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+              onClick={handleSave}
+              disabled={saving}
+            >
+              {saving ? t("common.saving") : t("common.save")}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-5">
+          {/* Basic info */}
+          <SettingGroup title={t("trigger.basic_info")}>
+            <SettingRow label={t("trigger.name")}>
+              <input
+                type="text"
+                data-testid="trigger-name-input"
+                className="input w-full"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={t("trigger.name_placeholder")}
+              />
+            </SettingRow>
+            <SettingRow label={t("trigger.event_type")}>
+              <select
+                className="input w-full"
+                value={eventType}
+                onChange={(e) => setEventType(e.target.value as TriggerType)}
+              >
+                {eventTypes.map((et) => (
+                  <option key={et} value={et}>
+                    {t(`trigger.event_types.${et}`)}
+                  </option>
+                ))}
+              </select>
+            </SettingRow>
+            <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] last:border-0">
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-sm rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] transition-colors font-medium"
+                onClick={() => setShowTemplateSelector(true)}
+              >
+                {t("trigger.choose_template")}
+              </button>
+            </div>
+          </SettingGroup>
 
-        {/* Command editor */}
-        <SettingGroup title={t("trigger.commands")}>
-          <div className="p-4">
-            <div
-              ref={editorRef}
-              className="border border-gray-200 dark:border-gray-600 rounded-lg overflow-hidden"
-              style={{ minHeight: "240px" }}
-            />
-          </div>
-        </SettingGroup>
+          {/* Command editor */}
+          <SettingGroup title={t("trigger.commands")}>
+            <div className="p-4">
+              <div
+                ref={editorRef}
+                className="border border-gray-200/80 dark:border-white/[0.12] rounded-lg overflow-hidden"
+                style={{ minHeight: "240px" }}
+              />
+            </div>
+          </SettingGroup>
 
-        {/* Execution settings */}
-        <SettingGroup title={t("trigger.execution_settings")}>
-          <SettingRow label={t("trigger.timeout")}>
-            <input
-              type="number"
-              className="input w-24"
-              value={timeoutSecs}
-              onChange={(e) => setTimeoutSecs(parseInt(e.target.value) || 30)}
-              min={1}
-              max={600}
-            />
-          </SettingRow>
-          <SettingRow label={t("trigger.cooldown")}>
-            <input
-              type="number"
-              className="input w-24"
-              value={cooldownSecs}
-              onChange={(e) => setCooldownSecs(parseInt(e.target.value) || 60)}
-              min={0}
-              max={3600}
-            />
-          </SettingRow>
-        </SettingGroup>
+          {/* Execution settings */}
+          <SettingGroup title={t("trigger.execution_settings")}>
+            <SettingRow label={t("trigger.timeout")}>
+              <input
+                type="number"
+                className="input w-24"
+                value={timeoutSecs}
+                onChange={(e) => setTimeoutSecs(parseInt(e.target.value) || 30)}
+                min={1}
+                max={600}
+              />
+            </SettingRow>
+            <SettingRow label={t("trigger.cooldown")}>
+              <input
+                type="number"
+                className="input w-24"
+                value={cooldownSecs}
+                onChange={(e) =>
+                  setCooldownSecs(parseInt(e.target.value) || 60)
+                }
+                min={0}
+                max={3600}
+              />
+            </SettingRow>
+          </SettingGroup>
 
-        {/* Notification settings */}
-        <SettingGroup title={t("trigger.notifications")}>
-          <SettingRow label={t("trigger.continue_on_error")}>
-            <Toggle checked={continueOnError} onChange={setContinueOnError} />
-          </SettingRow>
-          <SettingRow label={t("trigger.notify_on_success")}>
-            <Toggle checked={notifyOnSuccess} onChange={setNotifyOnSuccess} />
-          </SettingRow>
-          <SettingRow label={t("trigger.notify_on_failure")}>
-            <Toggle checked={notifyOnFailure} onChange={setNotifyOnFailure} />
-          </SettingRow>
-        </SettingGroup>
+          {/* Notification settings */}
+          <SettingGroup title={t("trigger.notifications")}>
+            <SettingRow label={t("trigger.continue_on_error")}>
+              <Toggle checked={continueOnError} onChange={setContinueOnError} />
+            </SettingRow>
+            <SettingRow label={t("trigger.notify_on_success")}>
+              <Toggle checked={notifyOnSuccess} onChange={setNotifyOnSuccess} />
+            </SettingRow>
+            <SettingRow label={t("trigger.notify_on_failure")}>
+              <Toggle checked={notifyOnFailure} onChange={setNotifyOnFailure} />
+            </SettingRow>
+          </SettingGroup>
 
-        {/* Error */}
-        {error && (
-          <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">
-            {error}
-          </div>
-        )}
-      </div>
-    </Modal>
+          {/* Error */}
+          {error && (
+            <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">
+              {error}
+            </div>
+          )}
+        </div>
+      </Modal>
 
-    {/* Template selector overlay */}
-    {showTemplateSelector && (
-      <TemplateSelector
-        templates={templates}
-        onSelect={applyTemplate}
-        onClose={() => setShowTemplateSelector(false)}
-      />
-    )}
+      {/* Template selector overlay */}
+      {showTemplateSelector && (
+        <TemplateSelector
+          templates={templates}
+          onSelect={applyTemplate}
+          onClose={() => setShowTemplateSelector(false)}
+        />
+      )}
     </>
   );
 }
@@ -339,7 +354,7 @@ function TemplateSelector({
       footer={
         <>
           <button
-            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
             onClick={onClose}
           >
             {t("common.cancel")}
@@ -358,7 +373,9 @@ function TemplateSelector({
         {/* Template list */}
         <div className="flex-1 space-y-4 overflow-y-auto max-h-[50vh] pr-1">
           {templates.length === 0 && (
-            <div className="text-center text-gray-400 py-8">{t("trigger.no_templates")}</div>
+            <div className="text-center text-gray-400 py-8">
+              {t("trigger.no_templates")}
+            </div>
           )}
           {builtIn.length > 0 && (
             <TemplateSelectorGroup
@@ -381,19 +398,27 @@ function TemplateSelector({
         </div>
 
         {/* Preview panel */}
-        <div className="w-64 flex-shrink-0 bg-gray-50 dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 p-4 overflow-y-auto max-h-[50vh]">
+        <div className="w-64 flex-shrink-0 bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] p-4 overflow-y-auto max-h-[50vh]">
           {preview ? (
             <div className="space-y-3">
               <div>
-                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{preview.name}</div>
-                <div className="text-xs text-gray-500 mt-0.5">{t(`trigger.event_types.${preview.type}`)}</div>
+                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {preview.name}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {t(`trigger.event_types.${preview.type}`)}
+                </div>
               </div>
               {preview.description && (
-                <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">{preview.description}</p>
+                <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+                  {preview.description}
+                </p>
               )}
               <div>
-                <div className="text-xs text-gray-500 mb-1">{t("trigger.commands")}</div>
-                <pre className="text-xs font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded-lg overflow-x-auto">
+                <div className="text-xs text-gray-500 mb-1">
+                  {t("trigger.commands")}
+                </div>
+                <pre className="text-xs font-mono bg-gray-100 dark:bg-[#1E1E1E] p-2 rounded-lg overflow-x-auto">
                   {preview.commands.join("\n")}
                 </pre>
               </div>
@@ -425,7 +450,9 @@ function TemplateSelectorGroup({
   const { t } = useTranslation();
   return (
     <div>
-      <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">{title}</h4>
+      <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+        {title}
+      </h4>
       <div className="space-y-1.5">
         {templates.map((tpl) => (
           <button
@@ -437,12 +464,14 @@ function TemplateSelectorGroup({
             className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors ${
               selectedId === tpl.id
                 ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800"
-                : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border border-transparent"
+                : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#1E1E1E] border border-transparent"
             }`}
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium truncate">{tpl.name}</span>
-              <span className="text-[10px] text-gray-400 flex-shrink-0">{t(`trigger.event_types.${tpl.type}`)}</span>
+              <span className="text-[10px] text-gray-400 flex-shrink-0">
+                {t(`trigger.event_types.${tpl.type}`)}
+              </span>
             </div>
           </button>
         ))}
@@ -463,8 +492,10 @@ function SettingGroup({
 }) {
   return (
     <section>
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">{title}</h3>
-      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">
+        {title}
+      </h3>
+      <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
         {children}
       </div>
     </section>
@@ -480,15 +511,23 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-gray-100 dark:border-gray-700/60 last:border-0">
-      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">{label}</span>
+    <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] last:border-0">
+      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">
+        {label}
+      </span>
       <div className="flex-1 max-w-xs flex justify-end">{children}</div>
     </div>
   );
 }
 
 // macOS-style toggle switch
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <button
       type="button"

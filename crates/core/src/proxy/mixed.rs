@@ -27,18 +27,16 @@ impl MixedProxyServer {
     /// Start the mixed proxy server
     pub async fn start(&self) -> Result<()> {
         let addr = format!("127.0.0.1:{}", self.port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AddrInUse {
-                    Error::Ipc(IpcError::new(
-                        ErrorCode::ProxyPortInUse,
-                        format!("Mixed proxy port {} is in use", self.port),
-                    ))
-                } else {
-                    Error::Io(e)
-                }
-            })?;
+        let listener = TcpListener::bind(&addr).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                Error::Ipc(IpcError::new(
+                    ErrorCode::ProxyPortInUse,
+                    format!("Mixed proxy port {} is in use", self.port),
+                ))
+            } else {
+                Error::Io(e)
+            }
+        })?;
 
         tracing::info!("Mixed proxy listening on {}", addr);
 

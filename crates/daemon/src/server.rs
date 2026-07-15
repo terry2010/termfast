@@ -80,17 +80,21 @@ impl DaemonState {
             event_forwarder: event_forwarder.clone(),
             terminal_manager: Arc::new(crate::terminal::TerminalManager::new(event_forwarder)),
             runtime_state: Arc::new(
-                termfast_core::config::RuntimeStateManager::with_default_path()
-                    .unwrap_or_else(|e| {
+                termfast_core::config::RuntimeStateManager::with_default_path().unwrap_or_else(
+                    |e| {
                         tracing::warn!("failed to init runtime_state: {}, using temp", e);
                         termfast_core::config::RuntimeStateManager::new("runtime_state.json")
-                    }),
+                    },
+                ),
             ),
         }
     }
 
     /// Set a custom runtime state manager (for testing)
-    pub fn with_runtime_state(mut self, rs: Arc<termfast_core::config::RuntimeStateManager>) -> Self {
+    pub fn with_runtime_state(
+        mut self,
+        rs: Arc<termfast_core::config::RuntimeStateManager>,
+    ) -> Self {
         self.runtime_state = rs;
         self
     }
@@ -155,10 +159,7 @@ impl DaemonServer {
     }
 
     /// Start the daemon server with a custom socket path (for testing)
-    pub async fn start_with_path(
-        state: DaemonState,
-        socket_path: PathBuf,
-    ) -> anyhow::Result<Self> {
+    pub async fn start_with_path(state: DaemonState, socket_path: PathBuf) -> anyhow::Result<Self> {
         // Clean up any existing socket file
         if socket_path.exists() {
             std::fs::remove_file(&socket_path)?;
@@ -197,7 +198,10 @@ impl DaemonServer {
             let custom_vars = config.general.custom_variables.clone();
             drop(mgr);
             for server in state.server_manager.list_servers().await {
-                server.trigger_engine.set_custom_variables(custom_vars.clone()).await;
+                server
+                    .trigger_engine
+                    .set_custom_variables(custom_vars.clone())
+                    .await;
             }
         }
 
@@ -209,10 +213,7 @@ impl DaemonServer {
 
             // Set socket file permissions to 600
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                &socket_path,
-                std::fs::Permissions::from_mode(0o600),
-            )?;
+            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
 
             tracing::info!("daemon listening on {}", socket_path.display());
 
@@ -329,7 +330,10 @@ impl DaemonServer {
                 break;
             }
             if tokio::time::Instant::now() >= drain_deadline {
-                tracing::warn!("[4/7] drain timeout, {} channels still active", total_active);
+                tracing::warn!(
+                    "[4/7] drain timeout, {} channels still active",
+                    total_active
+                );
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -355,7 +359,10 @@ impl DaemonServer {
             let config = mgr.get().await;
             for server in &config.servers {
                 // Delete credentials for each server
-                let _ = self.state.credential_store.delete_all_for_server(&server.id);
+                let _ = self
+                    .state
+                    .credential_store
+                    .delete_all_for_server(&server.id);
             }
         }
 

@@ -24,7 +24,11 @@ interface AddServerDialogProps {
   } | null;
 }
 
-export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialogProps) {
+export function AddServerDialog({
+  onAdd,
+  onCancel,
+  editServer,
+}: AddServerDialogProps) {
   const { t } = useTranslation();
   const isEdit = !!editServer;
   const existingServers = useServerStore((s) => s.servers);
@@ -52,22 +56,31 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
   const [host, setHost] = useState(editServer?.host || "");
   const [port, setPort] = useState(String(editServer?.port || 22));
   const [username, setUsername] = useState(editServer?.username || "root");
-  const [authType, setAuthType] = useState<"password" | "key">(editServer?.authType || "password");
+  const [authType, setAuthType] = useState<"password" | "key">(
+    editServer?.authType || "password",
+  );
   const [password, setPassword] = useState("");
   const [keyPath, setKeyPath] = useState(editServer?.keyPath || "");
-  const [socks5Port, setSocks5Port] = useState(String(editServer?.socks5Port || nextSocks5));
-  const [httpPort, setHttpPort] = useState(String(editServer?.httpPort || nextHttp));
+  const [socks5Port, setSocks5Port] = useState(
+    String(editServer?.socks5Port || nextSocks5),
+  );
+  const [httpPort, setHttpPort] = useState(
+    String(editServer?.httpPort || nextHttp),
+  );
   // Default to mixed port enabled for new servers (mixed port = socks5 port,
   // which also serves HTTP on the same port). For edit mode, preserve the
   // existing value (0 = disabled).
   const [mixedPort, setMixedPort] = useState(
-    String(editServer ? (editServer.mixedPort ?? 0) : nextSocks5)
+    String(editServer ? (editServer.mixedPort ?? 0) : nextSocks5),
   );
   const mixedEnabled = parseInt(mixedPort) > 0;
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   // ESC to close
   useEffect(() => {
@@ -114,45 +127,48 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
       } else {
         // Add new server
         const serverId = `srv_${Date.now()}`;
-        const result = await ipcInvoke<{ server_id: string }>("ipc_add_server", {
-          config: {
-            id: serverId,
-            name,
-            ssh: {
-              host,
-              port: parseInt(port) || 22,
-              user: username,
-              auth_method: authType,
-              key_path: keyPath || "",
-              key_auto_generated: false,
-              connection_mode: "single",
-              skip_hostkey_verify: false,
+        const result = await ipcInvoke<{ server_id: string }>(
+          "ipc_add_server",
+          {
+            config: {
+              id: serverId,
+              name,
+              ssh: {
+                host,
+                port: parseInt(port) || 22,
+                user: username,
+                auth_method: authType,
+                key_path: keyPath || "",
+                key_auto_generated: false,
+                connection_mode: "single",
+                skip_hostkey_verify: false,
+              },
+              proxy: {
+                enabled: false,
+                socks5_port: parseInt(socks5Port) || 1080,
+                http_port: parseInt(httpPort) || 8080,
+                mixed_port: parseInt(mixedPort) || 0,
+                max_channels: 64,
+                channel_idle_timeout: 300,
+              },
+              reconnect: {
+                auto_reconnect: true,
+                heartbeat_interval: 10,
+                max_attempts: 999,
+                reconnect_timeout_secs: 86400,
+                initial_backoff_secs: 1,
+                max_backoff_secs: 60,
+              },
+              ip_check: {
+                enabled: true,
+                interval_secs: 300,
+              },
+              last_known_ip: null,
+              triggers: [],
+              suppress_firewall_badge: false,
             },
-            proxy: {
-              enabled: false,
-              socks5_port: parseInt(socks5Port) || 1080,
-              http_port: parseInt(httpPort) || 8080,
-              mixed_port: parseInt(mixedPort) || 0,
-              max_channels: 64,
-              channel_idle_timeout: 300,
-            },
-            reconnect: {
-              auto_reconnect: true,
-              heartbeat_interval: 10,
-              max_attempts: 999,
-              reconnect_timeout_secs: 86400,
-              initial_backoff_secs: 1,
-              max_backoff_secs: 60,
-            },
-            ip_check: {
-              enabled: true,
-              interval_secs: 300,
-            },
-            last_known_ip: null,
-            triggers: [],
-            suppress_firewall_badge: false,
           },
-        });
+        );
         // Save password to credential store if auth method is password
         const finalId = result?.server_id || serverId;
         if (authType === "password" && password) {
@@ -171,7 +187,7 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
     }
   };
 
-// === SECTION 1 END ===
+  // === SECTION 1 END ===
 
   const handleTestConnection = async () => {
     // Validate required fields before testing
@@ -211,7 +227,7 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
           auth_method: authType,
           password: authType === "password" ? password : null,
           key_path: authType === "key" ? keyPath : null,
-        }
+        },
       );
       setTestResult(result);
     } catch (e) {
@@ -230,13 +246,13 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
       footer={
         <>
           <button
-            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
             onClick={onCancel}
           >
             {t("common.cancel")}
           </button>
           <button
-            className="px-4 py-2 text-sm rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+            className="px-4 py-2 text-sm rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
             onClick={handleTestConnection}
             disabled={testing || adding}
           >
@@ -247,7 +263,11 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
             onClick={handleSubmit}
             disabled={!name || !host || adding}
           >
-            {adding ? t("common.saving") : isEdit ? t("common.save") : t("common.add")}
+            {adding
+              ? t("common.saving")
+              : isEdit
+                ? t("common.save")
+                : t("common.add")}
           </button>
         </>
       }
@@ -256,16 +276,33 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
         {/* Basic info */}
         <SettingGroup title={t("server.basic_info")}>
           <SettingRow label={t("server.name")}>
-            <input value={name} onChange={(e) => setName(e.target.value)} className="input w-full" />
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="input w-full"
+            />
           </SettingRow>
           <SettingRow label={t("server.host")}>
-            <input value={host} onChange={(e) => setHost(e.target.value)} className="input w-full" />
+            <input
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              className="input w-full"
+            />
           </SettingRow>
           <SettingRow label={t("server.port")}>
-            <input value={port} onChange={(e) => setPort(e.target.value)} className="input w-24" type="number" />
+            <input
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              className="input w-24"
+              type="number"
+            />
           </SettingRow>
           <SettingRow label={t("server.username")}>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} className="input w-full" />
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="input w-full"
+            />
           </SettingRow>
         </SettingGroup>
 
@@ -274,7 +311,9 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
           <SettingRow label={t("onboarding.auth_method")}>
             <select
               value={authType}
-              onChange={(e) => setAuthType(e.target.value as "password" | "key")}
+              onChange={(e) =>
+                setAuthType(e.target.value as "password" | "key")
+              }
               className="input w-full"
             >
               <option value="password">{t("server.password")}</option>
@@ -294,7 +333,11 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
           )}
           {authType === "key" && (
             <SettingRow label={t("server.key_path")}>
-              <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} className="input w-full" />
+              <input
+                value={keyPath}
+                onChange={(e) => setKeyPath(e.target.value)}
+                className="input w-full"
+              />
             </SettingRow>
           )}
         </SettingGroup>
@@ -360,12 +403,15 @@ export function AddServerDialog({ onAdd, onCancel, editServer }: AddServerDialog
         </div>
       )}
       {testResult && (
-        <div className={`mt-4 text-sm p-3 rounded-lg border ${
-          testResult.success
-            ? "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800/50"
-            : "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50"
-        }`}>
-          {testResult.success ? "✓ " : "✕ "}{testResult.message}
+        <div
+          className={`mt-4 text-sm p-3 rounded-lg border ${
+            testResult.success
+              ? "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800/50"
+              : "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50"
+          }`}
+        >
+          {testResult.success ? "✓ " : "✕"}
+          {testResult.message}
         </div>
       )}
     </Modal>
@@ -384,8 +430,10 @@ function SettingGroup({
 }) {
   return (
     <section>
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">{title}</h3>
-      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">
+        {title}
+      </h3>
+      <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
         {children}
       </div>
     </section>
@@ -401,15 +449,23 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-gray-100 dark:border-gray-700/60 last:border-0">
-      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">{label}</span>
+    <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] last:border-0">
+      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">
+        {label}
+      </span>
       <div className="flex-1 max-w-xs flex justify-end">{children}</div>
     </div>
   );
 }
 
 // macOS-style toggle switch
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <button
       type="button"

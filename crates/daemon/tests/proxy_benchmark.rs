@@ -5,9 +5,9 @@
 //! Uses real data transfer through TCP echo to measure actual throughput.
 
 use std::time::{Duration, Instant};
+use termfast_test_utils::MockSshServer;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use termfast_test_utils::MockSshServer;
 
 // === SECTION 1 END ===
 
@@ -41,10 +41,7 @@ async fn measure_latency(host: &str, port: u16, iterations: usize) -> (u64, u64,
     let mut times = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let start = Instant::now();
-        match tokio::time::timeout(
-            Duration::from_secs(2),
-            TcpStream::connect((host, port)),
-        ).await {
+        match tokio::time::timeout(Duration::from_secs(2), TcpStream::connect((host, port))).await {
             Ok(Ok(_)) => {
                 times.push(start.elapsed().as_micros() as u64);
             }
@@ -56,7 +53,11 @@ async fn measure_latency(host: &str, port: u16, iterations: usize) -> (u64, u64,
     }
     let min = *times.iter().min().unwrap_or(&0);
     let max = *times.iter().max().unwrap_or(&0);
-    let avg = if times.is_empty() { 0 } else { times.iter().sum::<u64>() / times.len() as u64 };
+    let avg = if times.is_empty() {
+        0
+    } else {
+        times.iter().sum::<u64>() / times.len() as u64
+    };
     (min, max, avg)
 }
 
@@ -71,7 +72,9 @@ async fn measure_throughput(host: &str, port: u16, data_size: usize) -> Option<f
     let mut total = 0;
     while total < data_size {
         let n = stream.read(&mut received[total..]).await.ok()?;
-        if n == 0 { return None; }
+        if n == 0 {
+            return None;
+        }
         total += n;
     }
     let elapsed = start.elapsed();
@@ -107,7 +110,8 @@ fn get_memory_usage() -> u64 {
             unsafe {
                 let mut info: libc::mach_task_basic_info_data_t = std::mem::zeroed();
                 let mut count = (std::mem::size_of::<libc::mach_task_basic_info_data_t>()
-                    / std::mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+                    / std::mem::size_of::<libc::natural_t>())
+                    as libc::mach_msg_type_number_t;
                 let result = libc::task_info(
                     mach2::traps::mach_task_self(),
                     libc::MACH_TASK_BASIC_INFO,
@@ -129,12 +133,18 @@ fn get_memory_usage() -> u64 {
 #[tokio::test]
 async fn test_benchmark_tcp_latency() {
     let server = MockSshServer::new("127.0.0.1:4231", "user", "pass");
-    tokio::spawn(async move { let _ = server.start().await; });
+    tokio::spawn(async move {
+        let _ = server.start().await;
+    });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let (min, max, avg) = measure_latency("127.0.0.1", 4231, 20).await;
     eprintln!("TCP latency: min={}μs max={}μs avg={}μs", min, max, avg);
-    assert!(avg < 100_000, "latency should be under 100ms, got {}μs", avg);
+    assert!(
+        avg < 100_000,
+        "latency should be under 100ms, got {}μs",
+        avg
+    );
     assert!(min > 0, "min latency should be non-zero");
 }
 
@@ -142,7 +152,9 @@ async fn test_benchmark_tcp_latency() {
 #[tokio::test]
 async fn test_benchmark_concurrent_connections() {
     let server = MockSshServer::new("127.0.0.1:4232", "user", "pass");
-    tokio::spawn(async move { let _ = server.start().await; });
+    tokio::spawn(async move {
+        let _ = server.start().await;
+    });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let concurrency = 50;
@@ -154,7 +166,8 @@ async fn test_benchmark_concurrent_connections() {
             let result = tokio::time::timeout(
                 Duration::from_secs(5),
                 TcpStream::connect(("127.0.0.1", 4232)),
-            ).await;
+            )
+            .await;
             (i, result.is_ok())
         }));
     }
@@ -162,12 +175,20 @@ async fn test_benchmark_concurrent_connections() {
     let mut success = 0;
     for h in handles {
         if let Ok((_, ok)) = h.await {
-            if ok { success += 1; }
+            if ok {
+                success += 1;
+            }
         }
     }
     let elapsed = start.elapsed();
-    eprintln!("Concurrent connections: {}/{} succeeded in {:?}", success, concurrency, elapsed);
-    assert!(success >= concurrency * 8 / 10, "at least 80% should succeed");
+    eprintln!(
+        "Concurrent connections: {}/{} succeeded in {:?}",
+        success, concurrency, elapsed
+    );
+    assert!(
+        success >= concurrency * 8 / 10,
+        "at least 80% should succeed"
+    );
 }
 
 // === SECTION 3 END ===
@@ -182,12 +203,19 @@ async fn test_benchmark_throughput_echo() {
     // Measure throughput with 1MB of data
     let data_size = 1024 * 1024; // 1 MB
     let throughput = measure_throughput("127.0.0.1", 4240, data_size).await;
-    assert!(throughput.is_some(), "throughput measurement should succeed");
+    assert!(
+        throughput.is_some(),
+        "throughput measurement should succeed"
+    );
 
     let mbps = throughput.unwrap();
     eprintln!("Throughput: {:.2} MB/s (1MB round-trip)", mbps);
     // Local echo should achieve at least 10 MB/s
-    assert!(mbps > 10.0, "throughput should be > 10 MB/s, got {:.2} MB/s", mbps);
+    assert!(
+        mbps > 10.0,
+        "throughput should be > 10 MB/s, got {:.2} MB/s",
+        mbps
+    );
 
     echo_handle.abort();
 }
@@ -196,7 +224,9 @@ async fn test_benchmark_throughput_echo() {
 #[tokio::test]
 async fn test_benchmark_sustained_connections() {
     let server = MockSshServer::new("127.0.0.1:4234", "user", "pass");
-    tokio::spawn(async move { let _ = server.start().await; });
+    tokio::spawn(async move {
+        let _ = server.start().await;
+    });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let count = 100;
@@ -205,12 +235,16 @@ async fn test_benchmark_sustained_connections() {
         let stream = tokio::time::timeout(
             Duration::from_secs(2),
             TcpStream::connect(("127.0.0.1", 4234)),
-        ).await;
+        )
+        .await;
         assert!(stream.is_ok(), "connection {} should succeed", i);
     }
     let elapsed = start.elapsed();
     let rate = count as f64 / elapsed.as_secs_f64();
-    eprintln!("{} sequential connections in {:?} ({:.0} conn/s)", count, elapsed, rate);
+    eprintln!(
+        "{} sequential connections in {:?} ({:.0} conn/s)",
+        count, elapsed, rate
+    );
     assert!(elapsed.as_secs() < 10, "should complete in under 10s");
 }
 
@@ -248,7 +282,11 @@ async fn test_benchmark_memory_usage() {
         let delta = mem_after.saturating_sub(mem_before);
         eprintln!("Memory delta: {} KB", delta / 1024);
         // Memory increase should be reasonable (less than 50MB for 20 connections)
-        assert!(delta < 50 * 1024 * 1024, "memory delta should be < 50MB, got {} KB", delta / 1024);
+        assert!(
+            delta < 50 * 1024 * 1024,
+            "memory delta should be < 50MB, got {} KB",
+            delta / 1024
+        );
     }
 
     echo_handle.abort();
@@ -285,8 +323,16 @@ async fn test_benchmark_concurrent_throughput() {
         "Concurrent throughput: {} connections, {:.2} MB/s aggregate, in {:?}",
         success_count, total_mbps, elapsed
     );
-    assert!(success_count == concurrency, "all {} connections should succeed", concurrency);
-    assert!(total_mbps > 20.0, "aggregate throughput should be > 20 MB/s, got {:.2}", total_mbps);
+    assert!(
+        success_count == concurrency,
+        "all {} connections should succeed",
+        concurrency
+    );
+    assert!(
+        total_mbps > 20.0,
+        "aggregate throughput should be > 20 MB/s, got {:.2}",
+        total_mbps
+    );
 
     echo_handle.abort();
 }

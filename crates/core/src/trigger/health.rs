@@ -3,10 +3,10 @@
 //! Process/port alive checking with periodic scheduling.
 //! Fires OnProcessDead / OnPortClosed events when checks fail.
 
+use crate::config::TriggerType;
 use crate::error::Result;
 use crate::ssh::client::SshClientHandle;
 use crate::trigger::engine::{TriggerEngine, TriggerEvent};
-use crate::config::TriggerType;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
@@ -45,7 +45,11 @@ impl HealthChecker {
         Ok(HealthCheckResult {
             alive,
             detail: if alive {
-                format!("process {} is running (pid: {})", process_name, result.stdout.trim())
+                format!(
+                    "process {} is running (pid: {})",
+                    process_name,
+                    result.stdout.trim()
+                )
             } else {
                 format!("process {} is not running", process_name)
             },
@@ -53,10 +57,7 @@ impl HealthChecker {
     }
 
     /// Check if a port is open on the remote server
-    pub async fn check_port(
-        ssh: &SshClientHandle,
-        port: u16,
-    ) -> Result<HealthCheckResult> {
+    pub async fn check_port(ssh: &SshClientHandle, port: u16) -> Result<HealthCheckResult> {
         let command = format!("ss -tln | grep ':{} ' | grep -v grep", port);
         let result = ssh.exec(&command, 10).await?;
         let alive = result.is_success() && !result.stdout.trim().is_empty();
@@ -94,12 +95,8 @@ impl HealthChecker {
 
                 // Perform the check
                 let result = match &config.check_type {
-                    HealthCheckType::Process(name) => {
-                        Self::check_process(&ssh, name).await
-                    }
-                    HealthCheckType::Port(port) => {
-                        Self::check_port(&ssh, *port).await
-                    }
+                    HealthCheckType::Process(name) => Self::check_process(&ssh, name).await,
+                    HealthCheckType::Port(port) => Self::check_port(&ssh, *port).await,
                 };
 
                 match result {
@@ -112,7 +109,8 @@ impl HealthChecker {
                             };
                             tracing::warn!(
                                 "health check failed for {}: {}",
-                                server_id, check.detail
+                                server_id,
+                                check.detail
                             );
                             let event = TriggerEvent {
                                 trigger_type,
@@ -144,7 +142,10 @@ mod tests {
 
     #[test]
     fn test_health_check_type_equality() {
-        assert_eq!(HealthCheckType::Process("nginx".into()), HealthCheckType::Process("nginx".into()));
+        assert_eq!(
+            HealthCheckType::Process("nginx".into()),
+            HealthCheckType::Process("nginx".into())
+        );
         assert_eq!(HealthCheckType::Port(80), HealthCheckType::Port(80));
         assert_ne!(HealthCheckType::Port(80), HealthCheckType::Port(443));
     }

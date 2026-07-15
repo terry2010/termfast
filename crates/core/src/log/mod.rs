@@ -182,10 +182,7 @@ impl LogBuffer {
     /// Get all entries grouped by execution_id (FP-6.7)
     /// Returns a map of execution_id -> entries, sorted by timestamp.
     /// Entries without execution_id are excluded.
-    pub async fn get_by_execution_id(
-        &self,
-        execution_id: &str,
-    ) -> Vec<LogEntry> {
+    pub async fn get_by_execution_id(&self, execution_id: &str) -> Vec<LogEntry> {
         let entries = self.entries.lock().await;
         entries
             .iter()
@@ -368,10 +365,20 @@ mod tests {
     async fn test_add_and_get_entries() {
         let buffer = LogBuffer::new(100);
         buffer
-            .add(log_entry(Some("srv_1"), LogLevel::Info, LogKind::Connection, "connected"))
+            .add(log_entry(
+                Some("srv_1"),
+                LogLevel::Info,
+                LogKind::Connection,
+                "connected",
+            ))
             .await;
         buffer
-            .add(log_entry(Some("srv_2"), LogLevel::Error, LogKind::Error, "failed"))
+            .add(log_entry(
+                Some("srv_2"),
+                LogLevel::Error,
+                LogKind::Error,
+                "failed",
+            ))
             .await;
 
         let all = buffer.get_entries(None, None, None).await;
@@ -389,7 +396,12 @@ mod tests {
         let buffer = LogBuffer::new(3);
         for i in 0..5 {
             buffer
-                .add(log_entry(None, LogLevel::Info, LogKind::System, format!("entry {}", i)))
+                .add(log_entry(
+                    None,
+                    LogLevel::Info,
+                    LogKind::System,
+                    format!("entry {}", i),
+                ))
                 .await;
         }
         let entries = buffer.get_entries(None, None, None).await;
@@ -423,13 +435,28 @@ mod tests {
     async fn test_regex_search() {
         let buffer = LogBuffer::new(100);
         buffer
-            .add(log_entry(None, LogLevel::Info, LogKind::System, "connection established to 1.2.3.4"))
+            .add(log_entry(
+                None,
+                LogLevel::Info,
+                LogKind::System,
+                "connection established to 1.2.3.4",
+            ))
             .await;
         buffer
-            .add(log_entry(None, LogLevel::Info, LogKind::System, "proxy started on port 1080"))
+            .add(log_entry(
+                None,
+                LogLevel::Info,
+                LogKind::System,
+                "proxy started on port 1080",
+            ))
             .await;
         buffer
-            .add(log_entry(None, LogLevel::Error, LogKind::Error, "connection refused"))
+            .add(log_entry(
+                None,
+                LogLevel::Error,
+                LogKind::Error,
+                "connection refused",
+            ))
             .await;
 
         // Search for IP addresses
@@ -473,7 +500,12 @@ mod tests {
             ))
             .await;
         buffer
-            .add(log_entry(None, LogLevel::Info, LogKind::System, "unrelated log"))
+            .add(log_entry(
+                None,
+                LogLevel::Info,
+                LogKind::System,
+                "unrelated log",
+            ))
             .await;
 
         // Get entries for exec_001
@@ -497,7 +529,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let logger = FileLogger::new(&tmp, 1024, 3).unwrap();
 
-        let entry = log_entry(Some("srv_1"), LogLevel::Info, LogKind::System, "test message");
+        let entry = log_entry(
+            Some("srv_1"),
+            LogLevel::Info,
+            LogKind::System,
+            "test message",
+        );
         logger.write(&entry).unwrap();
 
         let content = std::fs::read_to_string(logger.current_path()).unwrap();
@@ -508,14 +545,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_logger_rotation() {
-        let tmp = std::env::temp_dir().join(format!("termfast-test-log-rot-{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("termfast-test-log-rot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         // Very small max size to trigger rotation
         let logger = FileLogger::new(&tmp, 100, 3).unwrap();
 
         // Write enough entries to trigger rotation
         for i in 0..20 {
-            let entry = log_entry(None, LogLevel::Info, LogKind::System, format!("log entry {}", i));
+            let entry = log_entry(
+                None,
+                LogLevel::Info,
+                LogKind::System,
+                format!("log entry {}", i),
+            );
             logger.write(&entry).unwrap();
         }
 

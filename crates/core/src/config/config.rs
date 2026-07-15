@@ -563,7 +563,10 @@ mod tests {
     #[test]
     fn test_config_default_has_builtin_templates() {
         let config = Config::default();
-        assert!(config.trigger_templates.len() >= 5, "should have 5 built-in templates");
+        assert!(
+            config.trigger_templates.len() >= 5,
+            "should have 5 built-in templates"
+        );
         assert!(config.trigger_templates.iter().all(|t| t.built_in));
     }
 
@@ -574,10 +577,7 @@ mod tests {
         let de: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(de.version, config.version);
         assert_eq!(de.servers.len(), config.servers.len());
-        assert_eq!(
-            de.trigger_templates.len(),
-            config.trigger_templates.len()
-        );
+        assert_eq!(de.trigger_templates.len(), config.trigger_templates.len());
     }
 
     #[test]

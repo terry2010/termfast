@@ -24,7 +24,10 @@ interface ContextMenuState {
 
 let globalSetMenu: ((state: ContextMenuState | null) => void) | null = null;
 
-export function showContextMenu(e: React.MouseEvent, items: ContextMenuEntry[]) {
+export function showContextMenu(
+  e: React.MouseEvent,
+  items: ContextMenuEntry[],
+) {
   e.preventDefault();
   e.stopPropagation();
   if (globalSetMenu) {
@@ -38,7 +41,9 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     globalSetMenu = setMenu;
-    return () => { globalSetMenu = null; };
+    return () => {
+      globalSetMenu = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -73,12 +78,17 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
       {children}
       <div
         ref={ref}
-        className="fixed z-[100] min-w-[180px] py-1 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700"
+        className="fixed z-[100] min-w-[180px] py-1 bg-white dark:bg-[#1E1E1E] rounded-lg shadow-lg border border-gray-200/80 dark:border-white/[0.06]"
         style={{ left: x, top: y }}
       >
         {menu.items.map((item, i) => {
           if ("separator" in item) {
-            return <div key={i} className="h-px my-1 bg-gray-200 dark:bg-gray-700" />;
+            return (
+              <div
+                key={i}
+                className="h-px my-1 bg-gray-100 dark:bg-white/[0.06]"
+              />
+            );
           }
           return (
             <button
@@ -87,8 +97,8 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
                 item.disabled
                   ? "text-gray-400 cursor-not-allowed"
                   : item.danger
-                  ? "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
-                  : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                    ? "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
+                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E]"
               }`}
               disabled={item.disabled}
               onClick={() => {
@@ -98,7 +108,9 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
                 }
               }}
             >
-              {item.icon && <span className="w-4 text-center">{item.icon}</span>}
+              {item.icon && (
+                <span className="w-4 text-center">{item.icon}</span>
+              )}
               <span>{item.label}</span>
             </button>
           );

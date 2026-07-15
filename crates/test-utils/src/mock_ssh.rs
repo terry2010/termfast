@@ -66,11 +66,7 @@ struct MockServerHandler {
 impl russh::server::Handler for MockServerHandler {
     type Error = anyhow::Error;
 
-    async fn auth_password(
-        &mut self,
-        username: &str,
-        password: &str,
-    ) -> Result<Auth, Self::Error> {
+    async fn auth_password(&mut self, username: &str, password: &str) -> Result<Auth, Self::Error> {
         if username == self.username && password == self.password {
             Ok(Auth::Accept)
         } else {

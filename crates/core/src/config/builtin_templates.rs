@@ -171,7 +171,11 @@ mod tests {
     #[test]
     fn test_five_builtin_templates() {
         let templates = all_builtin_templates();
-        assert_eq!(templates.len(), 5, "should have exactly 5 built-in templates");
+        assert_eq!(
+            templates.len(),
+            5,
+            "should have exactly 5 built-in templates"
+        );
         assert!(templates.iter().all(|t| t.built_in));
     }
 

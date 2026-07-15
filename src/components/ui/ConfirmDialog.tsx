@@ -36,7 +36,8 @@ export function ConfirmDialog({
   const [dontAskAgain, setDontAskAgain] = useState(false);
   const [typedName, setTypedName] = useState("");
 
-  const canConfirm = level !== "high" || (confirmName && typedName === confirmName);
+  const canConfirm =
+    level !== "high" || (confirmName && typedName === confirmName);
 
   return (
     <Modal
@@ -46,7 +47,7 @@ export function ConfirmDialog({
       footer={
         <>
           <button
-            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
             onClick={onCancel}
           >
             {t("common.cancel")}
@@ -60,17 +61,22 @@ export function ConfirmDialog({
             disabled={!canConfirm}
             onClick={onConfirm}
           >
-            {confirmLabel || (level === "high" ? t("common.delete") : t("common.ok"))}
+            {confirmLabel ||
+              (level === "high" ? t("common.delete") : t("common.ok"))}
           </button>
         </>
       }
     >
       <div className="flex items-start gap-3 mb-4">
         {level === "high" && (
-          <div className="text-red-500 text-2xl flex-shrink-0" aria-hidden>⚠</div>
+          <div className="text-red-500 text-2xl flex-shrink-0" aria-hidden>
+            ⚠
+          </div>
         )}
         <div className="flex-1">
-          <p className={`text-sm ${level === "high" ? "text-red-600 dark:text-red-400" : "text-gray-600 dark:text-gray-400"}`}>
+          <p
+            className={`text-sm ${level === "high" ? "text-red-600 dark:text-red-400" : "text-gray-600 dark:text-gray-400"}`}
+          >
             {message}
           </p>
         </div>

@@ -7,6 +7,16 @@ members = [
     "crates/cli",
     "crates/test-utils",
     "crates/desktop",
+    "crates/android-ffi",
+    "src-tauri",
+]
+default-members = [
+    "crates/core",
+    "crates/credential",
+    "crates/daemon",
+    "crates/cli",
+    "crates/test-utils",
+    "crates/desktop",
     "src-tauri",
 ]
 exclude = ["spikes/russh-stress"]
@@ -60,6 +70,7 @@ termfast-core = { path = "crates/core" }
 termfast-credential = { path = "crates/credential" }
 termfast-daemon = { path = "crates/daemon" }
 termfast-desktop = { path = "crates/desktop" }
+termfast-android-ffi = { path = "crates/android-ffi" }
 termfast-test-utils = { path = "crates/test-utils" }
 
 # Test dependencies

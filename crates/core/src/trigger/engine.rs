@@ -139,7 +139,10 @@ impl TriggerEngine {
 
     /// Resume triggers for a specific server
     pub async fn resume_server(&self, server_id: &str) {
-        self.paused.lock().await.insert(server_id.to_string(), false);
+        self.paused
+            .lock()
+            .await
+            .insert(server_id.to_string(), false);
     }
 
     /// Check if a trigger is in cooldown
@@ -188,7 +191,8 @@ impl TriggerEngine {
             .filter(|t| t.enabled)
             .filter(|t| {
                 // Use instance's trigger_type if set; otherwise look up template
-                let ttype = if t.trigger_type != TriggerType::ManualFire || t.template_id.is_empty() {
+                let ttype = if t.trigger_type != TriggerType::ManualFire || t.template_id.is_empty()
+                {
                     t.trigger_type.clone()
                 } else {
                     // Look up template to get trigger type
@@ -225,8 +229,15 @@ impl TriggerEngine {
         let mut results = Vec::new();
         for trigger in matching_triggers {
             // Check cooldown (skip for OnConnect/OnReconnect — user-initiated events)
-            let skip_cooldown = matches!(event.trigger_type, TriggerType::OnConnect | TriggerType::OnReconnect);
-            if !skip_cooldown && self.is_in_cooldown(&event.server_id, &trigger.id, trigger.cooldown_secs).await {
+            let skip_cooldown = matches!(
+                event.trigger_type,
+                TriggerType::OnConnect | TriggerType::OnReconnect
+            );
+            if !skip_cooldown
+                && self
+                    .is_in_cooldown(&event.server_id, &trigger.id, trigger.cooldown_secs)
+                    .await
+            {
                 tracing::info!(
                     "trigger {} for server {} is in cooldown, skipping",
                     trigger.id,
@@ -274,8 +285,7 @@ impl TriggerEngine {
             .ok_or_else(|| {
                 crate::error::Error::Other(format!(
                     "trigger {} not found for server {}",
-                    trigger_id,
-                    server_id
+                    trigger_id, server_id
                 ))
             })?;
 
@@ -326,7 +336,10 @@ impl TriggerEngine {
         vars.insert("ServerName".to_string(), event.server_name.clone());
         if let Some(ref ip) = event.new_ip {
             vars.insert("NewIP".to_string(), ip.clone());
-            vars.insert("IPFamily".to_string(), crate::ssh::exec::ip_family(ip).to_string());
+            vars.insert(
+                "IPFamily".to_string(),
+                crate::ssh::exec::ip_family(ip).to_string(),
+            );
         }
         if let Some(ref ip) = event.old_ip {
             vars.insert("OldIP".to_string(), ip.clone());
@@ -340,7 +353,8 @@ impl TriggerEngine {
         // but CAN be overridden by trigger-specific parameters above.
         let custom_vars = self.custom_variables.lock().await;
         for cv in custom_vars.iter() {
-            vars.entry(cv.name.clone()).or_insert_with(|| cv.value.clone());
+            vars.entry(cv.name.clone())
+                .or_insert_with(|| cv.value.clone());
         }
         drop(custom_vars);
 

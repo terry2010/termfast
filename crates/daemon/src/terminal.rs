@@ -9,10 +9,10 @@ use russh::client;
 use russh::ChannelMsg;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, oneshot};
+use termfast_core::ssh::pty;
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-use termfast_core::ssh::pty;
 
 /// Commands sent to a terminal session's write task
 enum TerminalCmd {
@@ -76,12 +76,18 @@ impl TerminalManager {
         // before the frontend has registered its event listener.
         let mut initial_output_bytes = first_output.clone();
         if !initial_output_bytes.is_empty() {
-            tracing::info!("terminal initial data from open: {} bytes for session {}", initial_output_bytes.len(), sid);
+            tracing::info!(
+                "terminal initial data from open: {} bytes for session {}",
+                initial_output_bytes.len(),
+                sid
+            );
         }
         let collect_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(800);
         loop {
             let now = tokio::time::Instant::now();
-            if now >= collect_deadline { break; }
+            if now >= collect_deadline {
+                break;
+            }
             let remaining = collect_deadline - now;
             match tokio::time::timeout(remaining, read_half.wait()).await {
                 Ok(Some(ChannelMsg::Data { ref data })) => {
@@ -106,9 +112,15 @@ impl TerminalManager {
             }
         }
         // Encode initial output as base64 so binary data (e.g. ZMODEM) is preserved
-        let initial_output = base64::engine::general_purpose::STANDARD.encode(&initial_output_bytes);
+        let initial_output =
+            base64::engine::general_purpose::STANDARD.encode(&initial_output_bytes);
         if !initial_output_bytes.is_empty() {
-            tracing::info!("terminal collected initial output: {} bytes (base64 len={}) for session {}", initial_output_bytes.len(), initial_output.len(), sid);
+            tracing::info!(
+                "terminal collected initial output: {} bytes (base64 len={}) for session {}",
+                initial_output_bytes.len(),
+                initial_output.len(),
+                sid
+            );
         }
 
         let read_sid = sid.clone();
@@ -127,13 +139,23 @@ impl TerminalManager {
                 () => {{
                     if !data_buf.is_empty() {
                         let output = base64::engine::general_purpose::STANDARD.encode(&data_buf);
-                        tracing::trace!("terminal data len={} (base64={}) for session {}", data_buf.len(), output.len(), read_sid);
+                        tracing::trace!(
+                            "terminal data len={} (base64={}) for session {}",
+                            data_buf.len(),
+                            output.len(),
+                            read_sid
+                        );
                         forward_terminal_output(&read_fwd, &read_sid, &output, false);
                         data_buf.clear();
                     }
                     if !stderr_buf.is_empty() {
                         let output = base64::engine::general_purpose::STANDARD.encode(&stderr_buf);
-                        tracing::trace!("terminal ext data len={} (base64={}) for session {}", stderr_buf.len(), output.len(), read_sid);
+                        tracing::trace!(
+                            "terminal ext data len={} (base64={}) for session {}",
+                            stderr_buf.len(),
+                            output.len(),
+                            read_sid
+                        );
                         forward_terminal_output(&read_fwd, &read_sid, &output, true);
                         stderr_buf.clear();
                     }
@@ -209,7 +231,12 @@ impl TerminalManager {
                         // raw (xterm.js sends \r on Enter, which is correct).
                         // Skip noisy logging for large ZMODEM payloads.
                         if data.len() <= 64 {
-                            tracing::info!("terminal write task input len={} data={:?} for session {}", data.len(), String::from_utf8_lossy(&data), sid);
+                            tracing::info!(
+                                "terminal write task input len={} data={:?} for session {}",
+                                data.len(),
+                                String::from_utf8_lossy(&data),
+                                sid
+                            );
                         }
                         // Retry loop: during large ZMODEM transfers the SSH send
                         // window can temporarily fill up.  A short timeout would
@@ -222,18 +249,25 @@ impl TerminalManager {
                             match tokio::time::timeout(
                                 std::time::Duration::from_secs(120),
                                 write_half.data_bytes(payload.clone()),
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(Ok(())) => {
                                     if attempts > 0 {
                                         tracing::info!(
                                             "terminal input sent after {} retries for session {}",
-                                            attempts, sid,
+                                            attempts,
+                                            sid,
                                         );
                                     }
                                     break;
                                 }
                                 Ok(Err(e)) => {
-                                    tracing::warn!("terminal input error: {} for session {}", e, sid);
+                                    tracing::warn!(
+                                        "terminal input error: {} for session {}",
+                                        e,
+                                        sid
+                                    );
                                     break;
                                 }
                                 Err(_) => {
@@ -280,7 +314,10 @@ impl TerminalManager {
             cmd_tx,
             tasks: vec![read_task, write_task],
         };
-        self.sessions.lock().await.insert(session_id.clone(), session);
+        self.sessions
+            .lock()
+            .await
+            .insert(session_id.clone(), session);
         Ok((session_id, initial_output))
     }
 
@@ -334,10 +371,7 @@ impl TerminalManager {
         // This provides backpressure: the IPC call won't resolve until SSH
         // has actually transmitted the data (or the 120s timeout fires).
         if let Some(rx) = ack_rx {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(130),
-                rx,
-            ).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(130), rx).await;
         }
 
         Ok(())
@@ -406,11 +440,12 @@ async fn try_open_pty_or_fallback(
     // --- Attempt 1: PTY + shell ---
     match pty::open_pty_shell(ssh_handle, cols, rows).await {
         Ok(mut channel) => {
-            tracing::info!("pty+shell opened (id={}), waiting for first msg...", channel.id());
-            let first_msg = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                channel.wait(),
-            ).await;
+            tracing::info!(
+                "pty+shell opened (id={}), waiting for first msg...",
+                channel.id()
+            );
+            let first_msg =
+                tokio::time::timeout(std::time::Duration::from_secs(5), channel.wait()).await;
             match first_msg {
                 Ok(Some(ChannelMsg::Success)) => {
                     tracing::info!("pty+shell ready (Success)");
@@ -445,10 +480,7 @@ async fn try_open_pty_or_fallback(
     let mut channel = pty::open_shell_via_exec(ssh_handle)
         .await
         .map_err(|e| format!("all terminal open methods failed: {}", e))?;
-    let first_msg = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        channel.wait(),
-    ).await;
+    let first_msg = tokio::time::timeout(std::time::Duration::from_secs(5), channel.wait()).await;
     match first_msg {
         Ok(Some(ChannelMsg::Data { data })) => {
             tracing::info!("exec fallback data len={}", data.len());
@@ -483,7 +515,10 @@ fn forward_terminal_output(
                 }),
             );
         } else {
-            tracing::warn!("terminal output: event forwarder is None, dropping {} bytes", data.len());
+            tracing::warn!(
+                "terminal output: event forwarder is None, dropping {} bytes",
+                data.len()
+            );
         }
     } else {
         tracing::warn!("terminal output: failed to lock event forwarder");

@@ -29,9 +29,11 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="fixed inset-0 flex items-center justify-center p-8 bg-white dark:bg-gray-900">
+        <div className="fixed inset-0 flex items-center justify-center p-8 bg-white dark:bg-[#1E1E1E]">
           <div className="max-w-md space-y-4">
-            <h1 className="text-xl font-bold text-red-600">{i18n.t("error.something_wrong")}</h1>
+            <h1 className="text-xl font-bold text-red-600">
+              {i18n.t("error.something_wrong")}
+            </h1>
             <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-all">
               {this.state.error?.message || i18n.t("common.unknown_error")}
             </pre>

@@ -36,7 +36,10 @@ pub enum TrayMenuItem {
     /// Action button
     Action { id: String, label: String },
     /// Submenu
-    Submenu { label: String, items: Vec<TrayMenuItem> },
+    Submenu {
+        label: String,
+        items: Vec<TrayMenuItem>,
+    },
 }
 
 /// Tray menu structure
@@ -55,12 +58,12 @@ pub fn calculate_icon_color(
         return TrayIconColor::Gray;
     }
 
-    let has_error = statuses.iter().any(|(_, s)| {
-        s == "auth_failed" || s == "error"
-    });
-    let has_reconnecting = statuses.iter().any(|(_, s)| {
-        s == "reconnecting" || s == "connecting"
-    });
+    let has_error = statuses
+        .iter()
+        .any(|(_, s)| s == "auth_failed" || s == "error");
+    let has_reconnecting = statuses
+        .iter()
+        .any(|(_, s)| s == "reconnecting" || s == "connecting");
     let has_connected = statuses.iter().any(|(_, s)| s == "connected");
     let all_disconnected = statuses.iter().all(|(_, s)| s == "disconnected");
 

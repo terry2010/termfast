@@ -1,0 +1,36 @@
+[package]
+name = "termfast-android-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "termfast_android_ffi"
+
+[dependencies]
+termfast-core = { workspace = true }
+termfast-credential = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }
+
+jni = "0.21"
+socket2 = "0.5"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"
+tun2proxy = "0.8.2"
+log = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true }

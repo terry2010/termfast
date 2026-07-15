@@ -33,7 +33,12 @@ pub fn migrate(config: &mut Value, from_version: u32) -> Result<()> {
         };
 
         if let Err(e) = result {
-            tracing::error!("migration v{}→v{} failed: {}, rolling back", current, current + 1, e);
+            tracing::error!(
+                "migration v{}→v{} failed: {}, rolling back",
+                current,
+                current + 1,
+                e
+            );
             *config = backup; // rollback
             return Err(Error::Ipc(IpcError::new(
                 ErrorCode::ConfigMigrationFailed,
@@ -107,9 +112,7 @@ pub fn backup_corrupt_config(config_path: &std::path::Path) -> Result<PathBuf> {
 
 /// Load config with migration support.
 /// Handles: missing file → default, corrupt JSON → backup + default, version mismatch → migrate.
-pub fn load_config_with_migration(
-    config_path: &std::path::Path,
-) -> Result<crate::config::Config> {
+pub fn load_config_with_migration(config_path: &std::path::Path) -> Result<crate::config::Config> {
     use crate::config::Config;
 
     // File doesn't exist → create default
@@ -166,7 +169,11 @@ pub fn load_config_with_migration(
 
     // Migrate if needed
     if file_version < CURRENT_VERSION {
-        tracing::info!("migrating config from v{} to v{}", file_version, CURRENT_VERSION);
+        tracing::info!(
+            "migrating config from v{} to v{}",
+            file_version,
+            CURRENT_VERSION
+        );
         migrate(&mut value, file_version)?;
     }
 

@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::proxy::{ChannelManager, HttpProxyServer, MixedProxyServer, Socks5Server};
 use crate::ssh::auth::AuthMethod;
 use crate::ssh::channel_opener::SshChannelOpener;
-use crate::ssh::client::{ConnectionState, SshClientHandle, SshClientConfig};
+use crate::ssh::client::{ConnectionState, SshClientConfig, SshClientHandle};
 use crate::ssh::exec;
 use crate::trigger::engine::{TriggerEngine, TriggerEvent};
 use crate::trigger::ipcheck::IpChangeDetector;
@@ -69,7 +69,15 @@ pub struct ServerInstance {
     /// Runtime state manager for IP persistence (FP-1.3b)
     runtime_state: Mutex<Option<Arc<crate::config::RuntimeStateManager>>>,
     /// Optional callback to broadcast trigger results to frontend
-    trigger_result_callback: Mutex<Option<Arc<dyn Fn(TriggerEvent, &[crate::trigger::engine::TriggerExecutionResult]) + Send + Sync>>>,
+    trigger_result_callback: Mutex<
+        Option<
+            Arc<
+                dyn Fn(TriggerEvent, &[crate::trigger::engine::TriggerExecutionResult])
+                    + Send
+                    + Sync,
+            >,
+        >,
+    >,
     /// Optional callback to broadcast status changes to frontend
     status_change_callback: Mutex<Option<Arc<dyn Fn(&ServerStatus) + Send + Sync>>>,
     /// Client IP detected after SSH connection (§5.2)
@@ -93,6 +101,7 @@ impl ServerInstance {
             max_backoff_secs: config.reconnect.max_backoff_secs,
             skip_hostkey_verify: config.ssh.skip_hostkey_verify,
             hostkey_mismatch_callback: None,
+            socket_protector: None,
         };
 
         Self {
@@ -160,7 +169,10 @@ impl ServerInstance {
     }
 
     /// Set the hostkey mismatch callback (§17.2: triple notification)
-    pub async fn set_hostkey_mismatch_callback(&self, cb: Arc<dyn Fn(String, String) + Send + Sync>) {
+    pub async fn set_hostkey_mismatch_callback(
+        &self,
+        cb: Arc<dyn Fn(String, String) + Send + Sync>,
+    ) {
         self.ssh_client.set_hostkey_mismatch_callback(cb).await;
     }
 
@@ -175,7 +187,12 @@ impl ServerInstance {
     }
 
     /// Set callback for trigger execution results (to broadcast to frontend)
-    pub async fn set_trigger_result_callback(&self, cb: Arc<dyn Fn(TriggerEvent, &[crate::trigger::engine::TriggerExecutionResult]) + Send + Sync>) {
+    pub async fn set_trigger_result_callback(
+        &self,
+        cb: Arc<
+            dyn Fn(TriggerEvent, &[crate::trigger::engine::TriggerExecutionResult]) + Send + Sync,
+        >,
+    ) {
         *self.trigger_result_callback.lock().await = Some(cb);
     }
 
@@ -209,7 +226,11 @@ impl ServerInstance {
                             *self.client_ip.lock().await = Some(ip);
                         }
                         Err(e) => {
-                            tracing::warn!("failed to detect client ip for {}: {}", self.config.name, e);
+                            tracing::warn!(
+                                "failed to detect client ip for {}: {}",
+                                self.config.name,
+                                e
+                            );
                         }
                     }
                 }
@@ -227,7 +248,8 @@ impl ServerInstance {
                 Ok(())
             }
             Err(e) => {
-                let status = if matches!(e, Error::Ipc(ref ipc) if ipc.code == crate::error::ErrorCode::AuthFailed) {
+                let status = if matches!(e, Error::Ipc(ref ipc) if ipc.code == crate::error::ErrorCode::AuthFailed)
+                {
                     ServerStatus::AuthFailed
                 } else {
                     ServerStatus::Error
@@ -283,9 +305,8 @@ impl ServerInstance {
         self.stop_connection_monitor().await;
 
         let instance = Arc::clone(self);
-        let check_interval = std::time::Duration::from_secs(
-            instance.config.reconnect.heartbeat_interval.max(5),
-        );
+        let check_interval =
+            std::time::Duration::from_secs(instance.config.reconnect.heartbeat_interval.max(5));
 
         let handle = tokio::spawn(async move {
             loop {
@@ -304,18 +325,27 @@ impl ServerInstance {
                 // Connection dropped — check if this was a user-initiated disconnect
                 let current_status = instance.status.lock().await.clone();
                 if current_status == ServerStatus::Disconnected {
-                    tracing::info!("connection monitor: {} was explicitly disconnected, stopping", instance.config.name);
+                    tracing::info!(
+                        "connection monitor: {} was explicitly disconnected, stopping",
+                        instance.config.name
+                    );
                     break;
                 }
 
                 // Connection dropped unexpectedly — start auto-reconnect
-                tracing::warn!("connection monitor: {} SSH connection lost, auto-reconnecting", instance.config.name);
+                tracing::warn!(
+                    "connection monitor: {} SSH connection lost, auto-reconnecting",
+                    instance.config.name
+                );
                 *instance.status.lock().await = ServerStatus::Reconnecting;
                 instance.broadcast_status(&ServerStatus::Reconnecting).await;
 
                 let auth = instance.last_auth.lock().await.clone();
                 if auth.is_none() {
-                    tracing::error!("connection monitor: no saved auth for {}, cannot reconnect", instance.config.name);
+                    tracing::error!(
+                        "connection monitor: no saved auth for {}, cannot reconnect",
+                        instance.config.name
+                    );
                     *instance.status.lock().await = ServerStatus::Error;
                     instance.broadcast_status(&ServerStatus::Error).await;
                     break;
@@ -355,14 +385,22 @@ impl ServerInstance {
                     attempt += 1;
                     tracing::info!(
                         "connection monitor: {} reconnect attempt {} after {}s (next in {}s)",
-                        instance.config.name, attempt, elapsed_secs, backoff
+                        instance.config.name,
+                        attempt,
+                        elapsed_secs,
+                        backoff
                     );
                     tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
                     elapsed_secs += backoff;
 
                     match instance.ssh_client.connect(&auth).await {
                         Ok(()) => {
-                            tracing::info!("connection monitor: {} reconnected on attempt {} after {}s", instance.config.name, attempt, elapsed_secs);
+                            tracing::info!(
+                                "connection monitor: {} reconnected on attempt {} after {}s",
+                                instance.config.name,
+                                attempt,
+                                elapsed_secs
+                            );
                             // Restore channel opener handle
                             if let Some(h) = instance.ssh_client.get_handle().await {
                                 instance.channel_opener.set_handle(h).await;
@@ -372,9 +410,16 @@ impl ServerInstance {
 
                             // Restart proxy if it was running before disconnect
                             if *instance.proxy_was_running.lock().await {
-                                tracing::info!("connection monitor: restarting proxy for {}", instance.config.name);
+                                tracing::info!(
+                                    "connection monitor: restarting proxy for {}",
+                                    instance.config.name
+                                );
                                 if let Err(e) = instance.start_proxy().await {
-                                    tracing::warn!("connection monitor: failed to restart proxy for {}: {}", instance.config.name, e);
+                                    tracing::warn!(
+                                        "connection monitor: failed to restart proxy for {}: {}",
+                                        instance.config.name,
+                                        e
+                                    );
                                 }
                             }
 
@@ -391,7 +436,9 @@ impl ServerInstance {
                         Err(e) => {
                             tracing::warn!(
                                 "connection monitor: {} reconnect attempt {} failed: {}",
-                                instance.config.name, attempt, e
+                                instance.config.name,
+                                attempt,
+                                e
                             );
                         }
                     }
@@ -443,19 +490,25 @@ impl ServerInstance {
                 match tmpl.trigger_type {
                     TriggerType::OnProcessDead => {
                         // Extract process name from parameters or template
-                        let process_name = trigger.parameters.get("ProcessName")
+                        let process_name = trigger
+                            .parameters
+                            .get("ProcessName")
                             .or_else(|| trigger.parameters.get("process"))
                             .cloned()
                             .unwrap_or_default();
                         if !process_name.is_empty() {
                             health_configs.push(crate::trigger::health::HealthCheckConfig {
-                                check_type: crate::trigger::health::HealthCheckType::Process(process_name),
+                                check_type: crate::trigger::health::HealthCheckType::Process(
+                                    process_name,
+                                ),
                                 interval_secs: 30,
                             });
                         }
                     }
                     TriggerType::OnPortClosed => {
-                        let port_str = trigger.parameters.get("ProtectedPort")
+                        let port_str = trigger
+                            .parameters
+                            .get("ProtectedPort")
                             .or_else(|| trigger.parameters.get("port"))
                             .cloned()
                             .unwrap_or_default();
@@ -492,7 +545,11 @@ impl ServerInstance {
             tasks.push(task);
         }
         if !tasks.is_empty() {
-            tracing::info!("started {} health check tasks for {}", tasks.len(), self.config.name);
+            tracing::info!(
+                "started {} health check tasks for {}",
+                tasks.len(),
+                self.config.name
+            );
         }
     }
 
@@ -526,7 +583,8 @@ impl ServerInstance {
             tasks.push(mixed_task);
             tracing::info!(
                 "proxy started for {} (Mixed:{})",
-                self.config.name, self.config.proxy.mixed_port
+                self.config.name,
+                self.config.proxy.mixed_port
             );
         } else {
             let socks5 = Socks5Server::new(self.config.proxy.socks5_port, channel_manager.clone());
@@ -548,7 +606,9 @@ impl ServerInstance {
             tasks.push(http_task);
             tracing::info!(
                 "proxy started for {} (SOCKS5:{}, HTTP:{})",
-                self.config.name, self.config.proxy.socks5_port, self.config.proxy.http_port
+                self.config.name,
+                self.config.proxy.socks5_port,
+                self.config.proxy.http_port
             );
         }
 
@@ -679,7 +739,12 @@ impl ServerInstance {
                         let old_ip = detector.last_ip().await;
                         let changed = old_ip.as_ref() != Some(&new_ip);
                         if changed {
-                            tracing::info!("IP changed for {}: {:?} -> {}", server_name, old_ip, new_ip);
+                            tracing::info!(
+                                "IP changed for {}: {:?} -> {}",
+                                server_name,
+                                old_ip,
+                                new_ip
+                            );
                             detector.set_last_ip(Some(new_ip.clone())).await;
                             // Persist to RuntimeStateManager (FP-1.3b)
                             if let Some(ref rs) = runtime_state {
@@ -720,16 +785,31 @@ impl ServerInstance {
         };
         let templates = self.trigger_templates.lock().await.clone();
         let triggers = self.triggers.lock().await.clone();
-        tracing::info!("fire_on_connect_triggers: {} triggers in instance", triggers.len());
+        tracing::info!(
+            "fire_on_connect_triggers: {} triggers in instance",
+            triggers.len()
+        );
         for t in &triggers {
-            tracing::info!("  trigger: {} type={:?} enabled={}", t.name, t.trigger_type, t.enabled);
+            tracing::info!(
+                "  trigger: {} type={:?} enabled={}",
+                t.name,
+                t.trigger_type,
+                t.enabled
+            );
         }
-        let results = self.trigger_engine
+        let results = self
+            .trigger_engine
             .fire_event(&self.ssh_client, &triggers, &templates, &event)
             .await;
         if let Ok(ref results) = results {
             for r in results {
-                tracing::info!("OnConnect trigger '{}' fired: success={}, {}/{}", r.trigger_name, r.success, r.executed_commands, r.total_commands);
+                tracing::info!(
+                    "OnConnect trigger '{}' fired: success={}, {}/{}",
+                    r.trigger_name,
+                    r.success,
+                    r.executed_commands,
+                    r.total_commands
+                );
             }
             let cb = self.trigger_result_callback.lock().await;
             if let Some(ref cb) = *cb {
@@ -748,12 +828,19 @@ impl ServerInstance {
         };
         let templates = self.trigger_templates.lock().await.clone();
         let triggers = self.triggers.lock().await.clone();
-        let results = self.trigger_engine
+        let results = self
+            .trigger_engine
             .fire_event(&self.ssh_client, &triggers, &templates, &event)
             .await;
         if let Ok(ref results) = results {
             for r in results {
-                tracing::info!("OnReconnect trigger '{}' fired: success={}, {}/{}", r.trigger_name, r.success, r.executed_commands, r.total_commands);
+                tracing::info!(
+                    "OnReconnect trigger '{}' fired: success={}, {}/{}",
+                    r.trigger_name,
+                    r.success,
+                    r.executed_commands,
+                    r.total_commands
+                );
             }
             let cb = self.trigger_result_callback.lock().await;
             if let Some(ref cb) = *cb {
@@ -763,7 +850,10 @@ impl ServerInstance {
     }
 
     /// Manually fire a specific trigger by ID
-    pub async fn manual_fire_trigger(&self, trigger_id: &str) -> Result<crate::trigger::engine::TriggerExecutionResult> {
+    pub async fn manual_fire_trigger(
+        &self,
+        trigger_id: &str,
+    ) -> Result<crate::trigger::engine::TriggerExecutionResult> {
         let triggers = self.triggers.lock().await.clone();
         self.trigger_engine
             .manual_fire(
@@ -807,7 +897,10 @@ mod tests {
                 channel_idle_timeout: 300,
             },
             reconnect: ReconnectConfig::default(),
-            ip_check: IpCheckConfig { enabled: false, interval_secs: 300 },
+            ip_check: IpCheckConfig {
+                enabled: false,
+                interval_secs: 300,
+            },
             last_known_ip: None,
             triggers: Vec::new(),
             suppress_firewall_badge: false,
@@ -824,9 +917,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_server_status_from_connection_state() {
-        assert_eq!(ServerStatus::from(ConnectionState::Connected), ServerStatus::Connected);
-        assert_eq!(ServerStatus::from(ConnectionState::Disconnected), ServerStatus::Disconnected);
-        assert_eq!(ServerStatus::from(ConnectionState::AuthFailed), ServerStatus::AuthFailed);
+        assert_eq!(
+            ServerStatus::from(ConnectionState::Connected),
+            ServerStatus::Connected
+        );
+        assert_eq!(
+            ServerStatus::from(ConnectionState::Disconnected),
+            ServerStatus::Disconnected
+        );
+        assert_eq!(
+            ServerStatus::from(ConnectionState::AuthFailed),
+            ServerStatus::AuthFailed
+        );
     }
 
     #[tokio::test]

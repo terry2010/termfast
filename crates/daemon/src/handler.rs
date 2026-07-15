@@ -6,9 +6,9 @@
 use crate::proto::{Action, IpcError, Request, Response};
 use crate::server::DaemonState;
 use std::sync::Arc;
+use termfast_core::config::TriggerType;
 use termfast_core::error::ErrorCode;
 use termfast_core::log::{LogEntry, LogKind, LogLevel};
-use termfast_core::config::TriggerType;
 
 /// Handle a single IPC request
 pub async fn handle_request(request: &Request, state: &DaemonState) -> Response {
@@ -53,7 +53,9 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::ExportServers => handle_export_servers(state).await,
         Action::ImportServers => handle_import_servers(state, &request.params).await,
         Action::ImportFull => handle_import_full(state, &request.params).await,
-        Action::CleanupAuthorizedKeys => handle_cleanup_authorized_keys(state, &request.params).await,
+        Action::CleanupAuthorizedKeys => {
+            handle_cleanup_authorized_keys(state, &request.params).await
+        }
         Action::ReorderServers => handle_reorder_servers(state, &request.params).await,
         // Proxy advanced
         Action::ToggleProxyAdvanced => handle_toggle_proxy_advanced(state, &request.params).await,
@@ -63,12 +65,16 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::AddTrigger => handle_add_trigger(state, &request.params).await,
         Action::RemoveTrigger => handle_remove_trigger(state, &request.params).await,
         Action::UpdateTrigger => handle_update_trigger(state, &request.params).await,
-        Action::SyncTriggerFromTemplate => handle_sync_trigger_from_template(state, &request.params).await,
+        Action::SyncTriggerFromTemplate => {
+            handle_sync_trigger_from_template(state, &request.params).await
+        }
         // Template CRUD
         Action::CreateTemplate => handle_create_template(state, &request.params).await,
         Action::UpdateTemplate => handle_update_template(state, &request.params).await,
         Action::DeleteTemplate => handle_delete_template(state, &request.params).await,
-        Action::SaveTriggerAsTemplate => handle_save_trigger_as_template(state, &request.params).await,
+        Action::SaveTriggerAsTemplate => {
+            handle_save_trigger_as_template(state, &request.params).await
+        }
         Action::ImportTemplates => handle_import_templates(state, &request.params).await,
         Action::ExportTemplates => handle_export_templates(state).await,
         // Credential advanced
@@ -103,7 +109,10 @@ async fn handle_list_servers(state: &DaemonState) -> HandlerResult {
     };
     let mut sorted_servers: Vec<_> = servers.into_iter().collect();
     sorted_servers.sort_by_key(|s| {
-        config_order.iter().position(|id| id == &s.id()).unwrap_or(usize::MAX)
+        config_order
+            .iter()
+            .position(|id| id == &s.id())
+            .unwrap_or(usize::MAX)
     });
 
     let mut server_list: Vec<serde_json::Value> = Vec::new();
@@ -179,7 +188,10 @@ async fn handle_list_servers(state: &DaemonState) -> HandlerResult {
 }
 
 /// Get server status
-async fn handle_get_server_status(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_get_server_status(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -197,25 +209,41 @@ async fn handle_get_server_status(state: &DaemonState, params: &serde_json::Valu
 
 /// Add a server
 async fn handle_add_server(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
-    let config: termfast_core::config::ServerConfig =
-        serde_json::from_value(params.clone()).map_err(|e| {
-            IpcError::new(ErrorCode::InvalidParams, format!("invalid server config: {}", e))
+    let config: termfast_core::config::ServerConfig = serde_json::from_value(params.clone())
+        .map_err(|e| {
+            IpcError::new(
+                ErrorCode::InvalidParams,
+                format!("invalid server config: {}", e),
+            )
         })?;
 
     // Check port conflicts
-    if state.server_manager.is_socks5_port_in_use(config.proxy.socks5_port, None).await {
+    if state
+        .server_manager
+        .is_socks5_port_in_use(config.proxy.socks5_port, None)
+        .await
+    {
         return Err(IpcError::new(
             ErrorCode::ProxyPortInUse,
             format!("SOCKS5 port {} is in use", config.proxy.socks5_port),
         ));
     }
-    if state.server_manager.is_http_port_in_use(config.proxy.http_port, None).await {
+    if state
+        .server_manager
+        .is_http_port_in_use(config.proxy.http_port, None)
+        .await
+    {
         return Err(IpcError::new(
             ErrorCode::ProxyPortInUse,
             format!("HTTP port {} is in use", config.proxy.http_port),
         ));
     }
-    if config.proxy.mixed_port > 0 && state.server_manager.is_mixed_port_in_use(config.proxy.mixed_port, None).await {
+    if config.proxy.mixed_port > 0
+        && state
+            .server_manager
+            .is_mixed_port_in_use(config.proxy.mixed_port, None)
+            .await
+    {
         return Err(IpcError::new(
             ErrorCode::ProxyPortInUse,
             format!("Mixed port {} is in use", config.proxy.mixed_port),
@@ -228,7 +256,9 @@ async fn handle_add_server(state: &DaemonState, params: &serde_json::Value) -> H
         let mgr = state.config_manager.lock().await;
         mgr.modify(|c| {
             c.servers.push(config_clone);
-        }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+        })
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
     }
 
     let id = state.server_manager.add_server(config).await?;
@@ -259,7 +289,9 @@ async fn handle_remove_server(state: &DaemonState, params: &serde_json::Value) -
         let mgr = state.config_manager.lock().await;
         mgr.modify(|c| {
             c.servers.retain(|s| s.id != server_id);
-        }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+        })
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
     }
 
     // Disconnect if connected
@@ -273,13 +305,20 @@ async fn handle_remove_server(state: &DaemonState, params: &serde_json::Value) -
     let _ = state.credential_store.delete_all_for_server(server_id);
 
     state
-        .broadcast("server:removed", serde_json::json!({ "server_id": server_id }))
+        .broadcast(
+            "server:removed",
+            serde_json::json!({ "server_id": server_id }),
+        )
         .await;
 
     log_and_broadcast(
-        state, None, LogLevel::Info, LogKind::System,
+        state,
+        None,
+        LogLevel::Info,
+        LogKind::System,
         format!("Server removed and credentials cleaned up"),
-    ).await;
+    )
+    .await;
 
     Ok(serde_json::json!({ "server_id": server_id }))
 }
@@ -309,10 +348,15 @@ async fn handle_reorder_servers(state: &DaemonState, params: &serde_json::Value)
             }
         }
         config.servers = new_servers;
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     state
-        .broadcast("server:reordered", serde_json::json!({ "server_ids": server_ids }))
+        .broadcast(
+            "server:reordered",
+            serde_json::json!({ "server_ids": server_ids }),
+        )
         .await;
 
     Ok(serde_json::json!({ "reordered": true }))
@@ -348,27 +392,32 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
         let forwarder = state.event_forwarder_handle();
         let sid_clone = server_id.to_string();
         let server_name = server.config.name.clone();
-        server.set_hostkey_mismatch_callback(Arc::new(move |expected, actual| {
-            // Triple notification (§17.2): log + broadcast event (frontend handles notification + tray)
-            tracing::error!(
-                "hostkey mismatch for {} ({}): expected {}, got {}",
-                sid_clone, server_name, expected, actual
-            );
-            // Forward event to GUI (Tauri emit) — sync call via event forwarder
-            if let Ok(fwd) = forwarder.lock() {
-                if let Some(ref f) = *fwd {
-                    f(
-                        "ssh:hostkey_mismatch",
-                        serde_json::json!({
-                            "server_id": sid_clone,
-                            "server_name": server_name,
-                            "expected": expected,
-                            "actual": actual,
-                        }),
-                    );
+        server
+            .set_hostkey_mismatch_callback(Arc::new(move |expected, actual| {
+                // Triple notification (§17.2): log + broadcast event (frontend handles notification + tray)
+                tracing::error!(
+                    "hostkey mismatch for {} ({}): expected {}, got {}",
+                    sid_clone,
+                    server_name,
+                    expected,
+                    actual
+                );
+                // Forward event to GUI (Tauri emit) — sync call via event forwarder
+                if let Ok(fwd) = forwarder.lock() {
+                    if let Some(ref f) = *fwd {
+                        f(
+                            "ssh:hostkey_mismatch",
+                            serde_json::json!({
+                                "server_id": sid_clone,
+                                "server_name": server_name,
+                                "expected": expected,
+                                "actual": actual,
+                            }),
+                        );
+                    }
                 }
-            }
-        })).await;
+            }))
+            .await;
     }
 
     // Set trigger result callback — broadcast trigger execution results to frontend
@@ -376,74 +425,101 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
         let log_buffer = state.log_buffer.clone();
         let forwarder = state.event_forwarder_handle();
         let sid = server_id.to_string();
-        server.set_trigger_result_callback(Arc::new(move |event, results: &[termfast_core::trigger::engine::TriggerExecutionResult]| {
-            for r in results {
-                let level = if r.success { LogLevel::Info } else { LogLevel::Error };
-                let kind_str = match event.trigger_type {
-                    TriggerType::OnConnect => "OnConnect",
-                    TriggerType::OnReconnect => "OnReconnect",
-                    TriggerType::OnIpChange => "OnIpChange",
-                    TriggerType::OnProcessDead => "OnProcessDead",
-                    TriggerType::OnPortClosed => "OnPortClosed",
-                    TriggerType::ManualFire => "ManualFire",
-                };
-                let msg = format!("[{}] Trigger '{}' {} ({}/{})", kind_str, r.trigger_name,
-                    if r.success { "succeeded" } else { "failed" },
-                    r.executed_commands, r.total_commands);
-                let level_str = match level { LogLevel::Info => "info", LogLevel::Error => "error", _ => "info" };
-                let entry = LogEntry {
-                    timestamp: chrono::Utc::now(),
-                    server_id: Some(sid.clone()),
-                    level,
-                    kind: LogKind::Trigger,
-                    message: msg.clone(),
-                    data: None,
-                    execution_id: None,
-                };
-                let buffer = log_buffer.clone();
-                let fwd = forwarder.clone();
-                let entry_clone = entry.clone();
-                let sid_clone = sid.clone();
-                let msg_clone = msg.clone();
-                let trigger_id = r.trigger_id.clone();
-                let trigger_name = r.trigger_name.clone();
-                let success = r.success;
-                let executed_commands = r.executed_commands;
-                let total_commands = r.total_commands;
-                let cmd_results: Vec<serde_json::Value> = r.results.iter().map(|c| {
-                    serde_json::json!({
-                        "command": c.command,
-                        "exit_code": c.exit_code,
-                        "stdout": c.stdout,
-                        "stderr": c.stderr,
-                    })
-                }).collect();
-                tokio::spawn(async move {
-                    buffer.add(entry_clone).await;
-                    if let Ok(f) = fwd.lock() {
-                        if let Some(ref fwd) = *f {
-                            fwd("log:entry", serde_json::json!({
-                                "server_id": sid_clone.clone(),
-                                "level": level_str,
-                                "kind": "Trigger",
-                                "message": msg_clone,
-                                "timestamp": entry.timestamp,
-                            }));
-                            // Also broadcast trigger:completed so GUI can show execution result
-                            fwd("trigger:completed", serde_json::json!({
-                                "server_id": sid_clone,
-                                "trigger_id": trigger_id,
-                                "trigger_name": trigger_name,
-                                "success": success,
-                                "executed_commands": executed_commands,
-                                "total_commands": total_commands,
-                                "results": cmd_results,
-                            }));
-                        }
+        server
+            .set_trigger_result_callback(Arc::new(
+                move |event, results: &[termfast_core::trigger::engine::TriggerExecutionResult]| {
+                    for r in results {
+                        let level = if r.success {
+                            LogLevel::Info
+                        } else {
+                            LogLevel::Error
+                        };
+                        let kind_str = match event.trigger_type {
+                            TriggerType::OnConnect => "OnConnect",
+                            TriggerType::OnReconnect => "OnReconnect",
+                            TriggerType::OnIpChange => "OnIpChange",
+                            TriggerType::OnProcessDead => "OnProcessDead",
+                            TriggerType::OnPortClosed => "OnPortClosed",
+                            TriggerType::ManualFire => "ManualFire",
+                        };
+                        let msg = format!(
+                            "[{}] Trigger '{}' {} ({}/{})",
+                            kind_str,
+                            r.trigger_name,
+                            if r.success { "succeeded" } else { "failed" },
+                            r.executed_commands,
+                            r.total_commands
+                        );
+                        let level_str = match level {
+                            LogLevel::Info => "info",
+                            LogLevel::Error => "error",
+                            _ => "info",
+                        };
+                        let entry = LogEntry {
+                            timestamp: chrono::Utc::now(),
+                            server_id: Some(sid.clone()),
+                            level,
+                            kind: LogKind::Trigger,
+                            message: msg.clone(),
+                            data: None,
+                            execution_id: None,
+                        };
+                        let buffer = log_buffer.clone();
+                        let fwd = forwarder.clone();
+                        let entry_clone = entry.clone();
+                        let sid_clone = sid.clone();
+                        let msg_clone = msg.clone();
+                        let trigger_id = r.trigger_id.clone();
+                        let trigger_name = r.trigger_name.clone();
+                        let success = r.success;
+                        let executed_commands = r.executed_commands;
+                        let total_commands = r.total_commands;
+                        let cmd_results: Vec<serde_json::Value> = r
+                            .results
+                            .iter()
+                            .map(|c| {
+                                serde_json::json!({
+                                    "command": c.command,
+                                    "exit_code": c.exit_code,
+                                    "stdout": c.stdout,
+                                    "stderr": c.stderr,
+                                })
+                            })
+                            .collect();
+                        tokio::spawn(async move {
+                            buffer.add(entry_clone).await;
+                            if let Ok(f) = fwd.lock() {
+                                if let Some(ref fwd) = *f {
+                                    fwd(
+                                        "log:entry",
+                                        serde_json::json!({
+                                            "server_id": sid_clone.clone(),
+                                            "level": level_str,
+                                            "kind": "Trigger",
+                                            "message": msg_clone,
+                                            "timestamp": entry.timestamp,
+                                        }),
+                                    );
+                                    // Also broadcast trigger:completed so GUI can show execution result
+                                    fwd(
+                                        "trigger:completed",
+                                        serde_json::json!({
+                                            "server_id": sid_clone,
+                                            "trigger_id": trigger_id,
+                                            "trigger_name": trigger_name,
+                                            "success": success,
+                                            "executed_commands": executed_commands,
+                                            "total_commands": total_commands,
+                                            "results": cmd_results,
+                                        }),
+                                    );
+                                }
+                            }
+                        });
                     }
-                });
-            }
-        })).await;
+                },
+            ))
+            .await;
     }
 
     // Set status change callback — broadcast status changes to frontend
@@ -452,29 +528,31 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
         let forwarder = state.event_forwarder_handle();
         let sid = server_id.to_string();
         let client_ip = server.client_ip().await;
-        server.set_status_change_callback(Arc::new(move |status| {
-            let status_str = match status {
-                termfast_core::server::instance::ServerStatus::Disconnected => "disconnected",
-                termfast_core::server::instance::ServerStatus::Connecting => "connecting",
-                termfast_core::server::instance::ServerStatus::Connected => "connected",
-                termfast_core::server::instance::ServerStatus::Reconnecting => "reconnecting",
-                termfast_core::server::instance::ServerStatus::AuthFailed => "auth_failed",
-                termfast_core::server::instance::ServerStatus::Error => "error",
-                termfast_core::server::instance::ServerStatus::Offline => "offline",
-            };
-            if let Ok(fwd) = forwarder.lock() {
-                if let Some(ref f) = *fwd {
-                    f(
-                        "server:status_changed",
-                        serde_json::json!({
-                            "server_id": sid,
-                            "status": status_str,
-                            "client_ip": client_ip,
-                        }),
-                    );
+        server
+            .set_status_change_callback(Arc::new(move |status| {
+                let status_str = match status {
+                    termfast_core::server::instance::ServerStatus::Disconnected => "disconnected",
+                    termfast_core::server::instance::ServerStatus::Connecting => "connecting",
+                    termfast_core::server::instance::ServerStatus::Connected => "connected",
+                    termfast_core::server::instance::ServerStatus::Reconnecting => "reconnecting",
+                    termfast_core::server::instance::ServerStatus::AuthFailed => "auth_failed",
+                    termfast_core::server::instance::ServerStatus::Error => "error",
+                    termfast_core::server::instance::ServerStatus::Offline => "offline",
+                };
+                if let Ok(fwd) = forwarder.lock() {
+                    if let Some(ref f) = *fwd {
+                        f(
+                            "server:status_changed",
+                            serde_json::json!({
+                                "server_id": sid,
+                                "status": status_str,
+                                "client_ip": client_ip,
+                            }),
+                        );
+                    }
                 }
-            }
-        })).await;
+            }))
+            .await;
     }
 
     // Sync triggers from config before connecting (ensure latest triggers are used)
@@ -487,7 +565,12 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
     }
 
     // Build auth method from config + credential store
-    let auth = build_auth_method(state, server_id, &server.config.ssh.auth_method, server.config.ssh.key_path.as_str())?;
+    let auth = build_auth_method(
+        state,
+        server_id,
+        &server.config.ssh.auth_method,
+        server.config.ssh.key_path.as_str(),
+    )?;
 
     match server.connect(&auth).await {
         Ok(()) => {
@@ -555,12 +638,18 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
                         .await;
                 }
             }
-            Ok(serde_json::json!({ "server_id": server_id, "status": "connected", "client_ip": client_ip }))
+            Ok(
+                serde_json::json!({ "server_id": server_id, "status": "connected", "client_ip": client_ip }),
+            )
         }
         Err(e) => {
             let err = IpcError::from(e);
             let error_detail = err.detail.clone();
-            let status = if err.code == ErrorCode::AuthFailed { "auth_failed" } else { "error" };
+            let status = if err.code == ErrorCode::AuthFailed {
+                "auth_failed"
+            } else {
+                "error"
+            };
             // Write log entry to buffer
             let log_entry = termfast_core::log::LogEntry {
                 timestamp: chrono::Utc::now(),
@@ -601,7 +690,10 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
 }
 
 /// Disconnect from a server
-async fn handle_disconnect_server(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_disconnect_server(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -617,9 +709,13 @@ async fn handle_disconnect_server(state: &DaemonState, params: &serde_json::Valu
     state.server_manager.release_connection().await;
 
     log_and_broadcast(
-        state, Some(server_id), LogLevel::Info, LogKind::Connection,
+        state,
+        Some(server_id),
+        LogLevel::Info,
+        LogKind::Connection,
         "Disconnected".to_string(),
-    ).await;
+    )
+    .await;
 
     state
         .broadcast(
@@ -639,7 +735,10 @@ async fn handle_get_config(state: &DaemonState) -> HandlerResult {
     let mgr = state.config_manager.lock().await;
     let config = mgr.get().await;
     let json = serde_json::to_value(config).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("config serialization error: {}", e))
+        IpcError::new(
+            ErrorCode::Internal,
+            format!("config serialization error: {}", e),
+        )
     })?;
     Ok(json)
 }
@@ -667,7 +766,10 @@ async fn handle_get_logs(state: &DaemonState, params: &serde_json::Value) -> Han
     let entries: Vec<_> = entries.into_iter().rev().take(limit).collect();
 
     let json = serde_json::to_value(&entries).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("log serialization error: {}", e))
+        IpcError::new(
+            ErrorCode::Internal,
+            format!("log serialization error: {}", e),
+        )
     })?;
     Ok(serde_json::json!({ "logs": json }))
 }
@@ -705,9 +807,14 @@ async fn handle_resume_all_triggers(state: &DaemonState) -> HandlerResult {
         }
     }
     // Broadcast that triggers resumed with pending events
-    state.broadcast("triggers:resumed", serde_json::json!({
-        "pending_events": all_pending.len(),
-    })).await;
+    state
+        .broadcast(
+            "triggers:resumed",
+            serde_json::json!({
+                "pending_events": all_pending.len(),
+            }),
+        )
+        .await;
     Ok(serde_json::json!({ "resumed": true, "pending_events": all_pending }))
 }
 
@@ -726,14 +833,21 @@ fn build_auth_method(
 ) -> Result<termfast_core::ssh::auth::AuthMethod, IpcError> {
     match auth_type {
         "password" => {
-            let key = termfast_credential::make_key(server_id, termfast_credential::cred_type::PASSWORD);
+            let key =
+                termfast_credential::make_key(server_id, termfast_credential::cred_type::PASSWORD);
             let password = state.credential_store.load(&key).map_err(|e| {
-                IpcError::new(ErrorCode::CredentialNotFound, format!("password not found: {}", e))
+                IpcError::new(
+                    ErrorCode::CredentialNotFound,
+                    format!("password not found: {}", e),
+                )
             })?;
             Ok(termfast_core::ssh::auth::AuthMethod::Password { password })
         }
         "key" => {
-            let passphrase_key = termfast_credential::make_key(server_id, termfast_credential::cred_type::KEY_PASSPHRASE);
+            let passphrase_key = termfast_credential::make_key(
+                server_id,
+                termfast_credential::cred_type::KEY_PASSPHRASE,
+            );
             let passphrase = state.credential_store.load(&passphrase_key).ok();
             Ok(termfast_core::ssh::auth::AuthMethod::Key {
                 key_path: key_path.to_string(),
@@ -759,7 +873,11 @@ async fn handle_update_server(state: &DaemonState, params: &serde_json::Value) -
     let new_mixed = params["mixed_port"].as_u64().map(|v| v as u16);
 
     if let Some(socks5) = new_socks5 {
-        if state.server_manager.is_socks5_port_in_use(socks5, Some(server_id)).await {
+        if state
+            .server_manager
+            .is_socks5_port_in_use(socks5, Some(server_id))
+            .await
+        {
             return Err(IpcError::new(
                 ErrorCode::ProxyPortInUse,
                 format!("SOCKS5 port {} is in use", socks5),
@@ -767,7 +885,11 @@ async fn handle_update_server(state: &DaemonState, params: &serde_json::Value) -
         }
     }
     if let Some(http) = new_http {
-        if state.server_manager.is_http_port_in_use(http, Some(server_id)).await {
+        if state
+            .server_manager
+            .is_http_port_in_use(http, Some(server_id))
+            .await
+        {
             return Err(IpcError::new(
                 ErrorCode::ProxyPortInUse,
                 format!("HTTP port {} is in use", http),
@@ -775,7 +897,12 @@ async fn handle_update_server(state: &DaemonState, params: &serde_json::Value) -
         }
     }
     if let Some(mixed) = new_mixed {
-        if mixed > 0 && state.server_manager.is_mixed_port_in_use(mixed, Some(server_id)).await {
+        if mixed > 0
+            && state
+                .server_manager
+                .is_mixed_port_in_use(mixed, Some(server_id))
+                .await
+        {
             return Err(IpcError::new(
                 ErrorCode::ProxyPortInUse,
                 format!("Mixed port {} is in use", mixed),
@@ -785,54 +912,62 @@ async fn handle_update_server(state: &DaemonState, params: &serde_json::Value) -
 
     // Update config in config manager and get the updated config
     let mgr = state.config_manager.lock().await;
-    let updated_config = mgr.modify(|config| {
-        if let Some(srv) = config.find_server_mut(server_id) {
-            if let Some(name) = params["name"].as_str() {
-                srv.name = name.to_string();
-            }
-            if let Some(socks5_port) = params["socks5_port"].as_u64() {
-                srv.proxy.socks5_port = socks5_port as u16;
-            }
-            if let Some(http_port) = params["http_port"].as_u64() {
-                srv.proxy.http_port = http_port as u16;
-            }
-            if let Some(mixed_port) = params["mixed_port"].as_u64() {
-                srv.proxy.mixed_port = mixed_port as u16;
-            }
-            // SSH config updates
-            if let Some(ssh) = params["ssh"].as_object() {
-                if let Some(host) = ssh.get("host").and_then(|v| v.as_str()) {
-                    srv.ssh.host = host.to_string();
+    let updated_config = mgr
+        .modify(|config| {
+            if let Some(srv) = config.find_server_mut(server_id) {
+                if let Some(name) = params["name"].as_str() {
+                    srv.name = name.to_string();
                 }
-                if let Some(port) = ssh.get("port").and_then(|v| v.as_u64()) {
-                    srv.ssh.port = port as u16;
+                if let Some(socks5_port) = params["socks5_port"].as_u64() {
+                    srv.proxy.socks5_port = socks5_port as u16;
                 }
-                if let Some(user) = ssh.get("user").and_then(|v| v.as_str()) {
-                    srv.ssh.user = user.to_string();
+                if let Some(http_port) = params["http_port"].as_u64() {
+                    srv.proxy.http_port = http_port as u16;
                 }
-                if let Some(auth_method) = ssh.get("auth_method").and_then(|v| v.as_str()) {
-                    srv.ssh.auth_method = auth_method.to_string();
+                if let Some(mixed_port) = params["mixed_port"].as_u64() {
+                    srv.proxy.mixed_port = mixed_port as u16;
                 }
-                if let Some(key_path) = ssh.get("key_path").and_then(|v| v.as_str()) {
-                    srv.ssh.key_path = key_path.to_string();
+                // SSH config updates
+                if let Some(ssh) = params["ssh"].as_object() {
+                    if let Some(host) = ssh.get("host").and_then(|v| v.as_str()) {
+                        srv.ssh.host = host.to_string();
+                    }
+                    if let Some(port) = ssh.get("port").and_then(|v| v.as_u64()) {
+                        srv.ssh.port = port as u16;
+                    }
+                    if let Some(user) = ssh.get("user").and_then(|v| v.as_str()) {
+                        srv.ssh.user = user.to_string();
+                    }
+                    if let Some(auth_method) = ssh.get("auth_method").and_then(|v| v.as_str()) {
+                        srv.ssh.auth_method = auth_method.to_string();
+                    }
+                    if let Some(key_path) = ssh.get("key_path").and_then(|v| v.as_str()) {
+                        srv.ssh.key_path = key_path.to_string();
+                    }
+                }
+                // Update auto_reconnect
+                if let Some(v) = params["auto_reconnect"].as_bool() {
+                    srv.reconnect.auto_reconnect = v;
+                }
+                // Update reconnect_timeout_secs (clamp: 0=unlimited, min 3, max 259200=3days)
+                if let Some(v) = params["reconnect_timeout_secs"].as_u64() {
+                    srv.reconnect.reconnect_timeout_secs =
+                        if v == 0 { 0 } else { v.clamp(3, 259200) };
                 }
             }
-            // Update auto_reconnect
-            if let Some(v) = params["auto_reconnect"].as_bool() {
-                srv.reconnect.auto_reconnect = v;
-            }
-            // Update reconnect_timeout_secs (clamp: 0=unlimited, min 3, max 259200=3days)
-            if let Some(v) = params["reconnect_timeout_secs"].as_u64() {
-                srv.reconnect.reconnect_timeout_secs = if v == 0 { 0 } else { v.clamp(3, 259200) };
-            }
-        }
-        config.find_server(server_id).cloned()
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+            config.find_server(server_id).cloned()
+        })
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
     drop(mgr);
 
     // Reload server instance with new config (disconnects if currently connected)
     if let Some(new_config) = updated_config {
-        if let Err(e) = state.server_manager.reload_server_config(server_id, new_config).await {
+        if let Err(e) = state
+            .server_manager
+            .reload_server_config(server_id, new_config)
+            .await
+        {
             tracing::warn!("failed to reload server instance: {}", e);
         }
     }
@@ -841,7 +976,10 @@ async fn handle_update_server(state: &DaemonState, params: &serde_json::Value) -
 }
 
 /// Update general config
-async fn handle_update_general_config(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_update_general_config(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let mgr = state.config_manager.lock().await;
     mgr.modify(|config| {
         if let Some(theme) = params["theme"].as_str() {
@@ -870,20 +1008,28 @@ async fn handle_update_general_config(state: &DaemonState, params: &serde_json::
         }
         // Update custom variables (full replace)
         if let Some(vars) = params["custom_variables"].as_array() {
-            config.general.custom_variables = vars.iter().filter_map(|v| {
-                let name = v.get("name")?.as_str()?.to_string();
-                let value = v.get("value")?.as_str()?.to_string();
-                Some(termfast_core::config::CustomVariable { name, value })
-            }).collect();
+            config.general.custom_variables = vars
+                .iter()
+                .filter_map(|v| {
+                    let name = v.get("name")?.as_str()?.to_string();
+                    let value = v.get("value")?.as_str()?.to_string();
+                    Some(termfast_core::config::CustomVariable { name, value })
+                })
+                .collect();
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     // Sync custom variables to all server trigger engines
     let config = mgr.get().await;
     drop(mgr);
     let custom_vars = config.general.custom_variables.clone();
     for server in state.server_manager.list_servers().await {
-        server.trigger_engine.set_custom_variables(custom_vars.clone()).await;
+        server
+            .trigger_engine
+            .set_custom_variables(custom_vars.clone())
+            .await;
     }
 
     Ok(serde_json::json!({ "updated": true }))
@@ -893,9 +1039,8 @@ async fn handle_update_general_config(state: &DaemonState, params: &serde_json::
 async fn handle_export_logs(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
     let server_id = params["server_id"].as_str();
     let entries = state.log_buffer.get_entries(server_id, None, None).await;
-    let json = serde_json::to_value(&entries).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("log export error: {}", e))
-    })?;
+    let json = serde_json::to_value(&entries)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("log export error: {}", e)))?;
     Ok(serde_json::json!({ "logs": json, "count": entries.len() }))
 }
 
@@ -930,15 +1075,26 @@ async fn handle_toggle_proxy(state: &DaemonState, params: &serde_json::Value) ->
         }
         server.start_proxy().await?;
         log_and_broadcast(
-            state, Some(server_id), LogLevel::Info, LogKind::Proxy,
-            format!("Proxy started (SOCKS5:{}, HTTP:{})", server.config.proxy.socks5_port, server.config.proxy.http_port),
-        ).await;
+            state,
+            Some(server_id),
+            LogLevel::Info,
+            LogKind::Proxy,
+            format!(
+                "Proxy started (SOCKS5:{}, HTTP:{})",
+                server.config.proxy.socks5_port, server.config.proxy.http_port
+            ),
+        )
+        .await;
     } else {
         server.stop_proxy().await?;
         log_and_broadcast(
-            state, Some(server_id), LogLevel::Info, LogKind::Proxy,
+            state,
+            Some(server_id),
+            LogLevel::Info,
+            LogKind::Proxy,
             "Proxy stopped".to_string(),
-        ).await;
+        )
+        .await;
     }
 
     state
@@ -982,9 +1138,7 @@ async fn handle_test_proxy(state: &DaemonState, params: &serde_json::Value) -> H
     }
 
     let socks5_port = server.config.proxy.socks5_port;
-    let test_url = params["url"]
-        .as_str()
-        .unwrap_or("https://api.ipify.org");
+    let test_url = params["url"].as_str().unwrap_or("https://api.ipify.org");
 
     tracing::info!("testing proxy via SOCKS5 :{} url={}", socks5_port, test_url);
 
@@ -993,7 +1147,8 @@ async fn handle_test_proxy(state: &DaemonState, params: &serde_json::Value) -> H
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         test_proxy_via_socks5(socks5_port, test_url),
-    ).await;
+    )
+    .await;
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let result = match result {
@@ -1003,13 +1158,20 @@ async fn handle_test_proxy(state: &DaemonState, params: &serde_json::Value) -> H
 
     match &result {
         Ok(exit_ip) => {
-            tracing::info!("proxy test success: exit_ip={} latency={}ms", exit_ip, latency_ms);
+            tracing::info!(
+                "proxy test success: exit_ip={} latency={}ms",
+                exit_ip,
+                latency_ms
+            );
             let log_entry = termfast_core::log::LogEntry {
                 timestamp: chrono::Utc::now(),
                 server_id: Some(server_id.to_string()),
                 level: termfast_core::log::LogLevel::Info,
                 kind: termfast_core::log::LogKind::Proxy,
-                message: format!("Proxy test success: exit_ip={} latency={}ms", exit_ip, latency_ms),
+                message: format!(
+                    "Proxy test success: exit_ip={} latency={}ms",
+                    exit_ip, latency_ms
+                ),
                 data: None,
                 execution_id: None,
             };
@@ -1077,25 +1239,36 @@ async fn test_proxy_via_socks5(socks5_port: u16, url: &str) -> std::result::Resu
 
     // Parse URL
     let is_https = url.starts_with("https://");
-    let url_stripped = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
+    let url_stripped = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
     let (host_port, path) = url_stripped.split_once('/').unwrap_or((url_stripped, ""));
     let (host, port) = match host_port.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse::<u16>().unwrap_or(if is_https { 443 } else { 80 })),
+        Some((h, p)) => (
+            h,
+            p.parse::<u16>().unwrap_or(if is_https { 443 } else { 80 }),
+        ),
         None => (host_port, if is_https { 443u16 } else { 80u16 }),
     };
 
     // Connect to SOCKS5 proxy
-    let mut stream = tokio::time::timeout(timeout_dur, TcpStream::connect(format!("127.0.0.1:{}", socks5_port)))
-        .await
-        .map_err(|_| "connect to SOCKS5 timed out".to_string())?
-        .map_err(|e| format!("connect to SOCKS5 failed: {}", e))?;
+    let mut stream = tokio::time::timeout(
+        timeout_dur,
+        TcpStream::connect(format!("127.0.0.1:{}", socks5_port)),
+    )
+    .await
+    .map_err(|_| "connect to SOCKS5 timed out".to_string())?
+    .map_err(|e| format!("connect to SOCKS5 failed: {}", e))?;
 
     // SOCKS5 handshake: no auth
-    tokio::time::timeout(timeout_dur, stream.write_all(&[0x05, 0x01, 0x00])).await
+    tokio::time::timeout(timeout_dur, stream.write_all(&[0x05, 0x01, 0x00]))
+        .await
         .map_err(|_| "socks5 greeting timed out".to_string())?
         .map_err(|e| format!("socks5 greeting failed: {}", e))?;
     let mut buf = [0u8; 2];
-    tokio::time::timeout(timeout_dur, stream.read_exact(&mut buf)).await
+    tokio::time::timeout(timeout_dur, stream.read_exact(&mut buf))
+        .await
         .map_err(|_| "socks5 greeting response timed out".to_string())?
         .map_err(|e| format!("socks5 greeting response: {}", e))?;
     if buf[0] != 0x05 || buf[1] != 0x00 {
@@ -1107,13 +1280,15 @@ async fn test_proxy_via_socks5(socks5_port: u16, url: &str) -> std::result::Resu
     req.push(host.len() as u8);
     req.extend_from_slice(host.as_bytes());
     req.extend_from_slice(&port.to_be_bytes());
-    tokio::time::timeout(timeout_dur, stream.write_all(&req)).await
+    tokio::time::timeout(timeout_dur, stream.write_all(&req))
+        .await
         .map_err(|_| "socks5 connect request timed out".to_string())?
         .map_err(|e| format!("socks5 connect request failed: {}", e))?;
 
     // Read response — variable length (ATYP + addr + port)
     let mut resp_header = [0u8; 4];
-    tokio::time::timeout(timeout_dur, stream.read_exact(&mut resp_header)).await
+    tokio::time::timeout(timeout_dur, stream.read_exact(&mut resp_header))
+        .await
         .map_err(|_| "socks5 connect response timed out".to_string())?
         .map_err(|e| format!("socks5 connect response: {}", e))?;
     if resp_header[1] != 0x00 {
@@ -1122,19 +1297,22 @@ async fn test_proxy_via_socks5(socks5_port: u16, url: &str) -> std::result::Resu
     // Skip address based on ATYP
     let atyp = resp_header[3];
     let addr_len = match atyp {
-        0x01 => 4,   // IPv4
-        0x03 => {    // Domain
+        0x01 => 4, // IPv4
+        0x03 => {
+            // Domain
             let mut len_buf = [0u8; 1];
-            tokio::time::timeout(timeout_dur, stream.read_exact(&mut len_buf)).await
+            tokio::time::timeout(timeout_dur, stream.read_exact(&mut len_buf))
+                .await
                 .map_err(|_| "socks5 addr len read timed out".to_string())?
                 .map_err(|e| format!("socks5 addr len read: {}", e))?;
             len_buf[0] as usize
         }
-        0x04 => 16,  // IPv6
+        0x04 => 16, // IPv6
         _ => return Err(format!("socks5 unknown ATYP: {}", atyp)),
     };
     let mut addr_buf = vec![0u8; addr_len + 2]; // addr + port
-    tokio::time::timeout(timeout_dur, stream.read_exact(&mut addr_buf)).await
+    tokio::time::timeout(timeout_dur, stream.read_exact(&mut addr_buf))
+        .await
         .map_err(|_| "socks5 addr read timed out".to_string())?
         .map_err(|e| format!("socks5 addr read: {}", e))?;
 
@@ -1149,20 +1327,25 @@ async fn test_proxy_via_socks5(socks5_port: u16, url: &str) -> std::result::Resu
         "GET /{} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: termfast/1.0\r\n\r\n",
         path, host_port
     );
-    tokio::time::timeout(timeout_dur, stream.write_all(http_req.as_bytes())).await
+    tokio::time::timeout(timeout_dur, stream.write_all(http_req.as_bytes()))
+        .await
         .map_err(|_| "http request timed out".to_string())?
         .map_err(|e| format!("http request failed: {}", e))?;
 
     // Read response
     let mut response = Vec::new();
-    tokio::time::timeout(timeout_dur, stream.read_to_end(&mut response)).await
+    tokio::time::timeout(timeout_dur, stream.read_to_end(&mut response))
+        .await
         .map_err(|_| "http response read timed out".to_string())?
         .map_err(|e| format!("http response read failed: {}", e))?;
 
     let response_body = String::from_utf8_lossy(&response).to_string();
 
     // Extract IP from response body
-    let body = response_body.split("\r\n\r\n").nth(1).unwrap_or(&response_body);
+    let body = response_body
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or(&response_body);
 
     // Try JSON: {"origin": "x.x.x.x"} (httpbin.org/ip)
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(body.trim()) {
@@ -1177,7 +1360,11 @@ async fn test_proxy_via_socks5(socks5_port: u16, url: &str) -> std::result::Resu
 
     // Try plain text IP (api.ipify.org)
     let trimmed = body.trim();
-    if trimmed.len() <= 45 && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':') {
+    if trimmed.len() <= 45
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':')
+    {
         return Ok(trimmed.to_string());
     }
 
@@ -1217,21 +1404,28 @@ async fn handle_set_system_proxy(state: &DaemonState, params: &serde_json::Value
         socks5_port,
         http_port,
     };
-    let result = state.proxy_adapter.set_system_proxy(&proxy_config).await
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("set system proxy error: {}", e)))?;
+    let result = state
+        .proxy_adapter
+        .set_system_proxy(&proxy_config)
+        .await
+        .map_err(|e| {
+            IpcError::new(
+                ErrorCode::Internal,
+                format!("set system proxy error: {}", e),
+            )
+        })?;
 
     if !result.success {
-        return Err(IpcError::new(
-            ErrorCode::NeedsPrivilege,
-            result.message,
-        ));
+        return Err(IpcError::new(ErrorCode::NeedsPrivilege, result.message));
     }
 
     // Update config to record which server is the system proxy
     let mgr = state.config_manager.lock().await;
     mgr.modify(|config| {
         config.general.system_proxy_server_id = Some(server_id.to_string());
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     state
         .broadcast(
@@ -1241,9 +1435,16 @@ async fn handle_set_system_proxy(state: &DaemonState, params: &serde_json::Value
         .await;
 
     log_and_broadcast(
-        state, Some(server_id), LogLevel::Info, LogKind::Proxy,
-        format!("System proxy set to SOCKS5:{}, HTTP:{}", socks5_port, http_port),
-    ).await;
+        state,
+        Some(server_id),
+        LogLevel::Info,
+        LogKind::Proxy,
+        format!(
+            "System proxy set to SOCKS5:{}, HTTP:{}",
+            socks5_port, http_port
+        ),
+    )
+    .await;
 
     Ok(serde_json::json!({
         "system_proxy_server_id": server_id,
@@ -1256,14 +1457,24 @@ async fn handle_set_system_proxy(state: &DaemonState, params: &serde_json::Value
 /// Clear system proxy — actually calls PlatformAdapter
 async fn handle_clear_system_proxy(state: &DaemonState) -> HandlerResult {
     // Actually clear the system proxy via platform adapter (FP-6.6)
-    let result = state.proxy_adapter.clear_system_proxy().await
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("clear system proxy error: {}", e)))?;
+    let result = state
+        .proxy_adapter
+        .clear_system_proxy()
+        .await
+        .map_err(|e| {
+            IpcError::new(
+                ErrorCode::Internal,
+                format!("clear system proxy error: {}", e),
+            )
+        })?;
 
     // Update config
     let mgr = state.config_manager.lock().await;
     mgr.modify(|config| {
         config.general.system_proxy_server_id = None;
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     state
         .broadcast(
@@ -1273,9 +1484,13 @@ async fn handle_clear_system_proxy(state: &DaemonState) -> HandlerResult {
         .await;
 
     log_and_broadcast(
-        state, None, LogLevel::Info, LogKind::Proxy,
+        state,
+        None,
+        LogLevel::Info,
+        LogKind::Proxy,
         "System proxy cleared".to_string(),
-    ).await;
+    )
+    .await;
 
     Ok(serde_json::json!({
         "cleared": true,
@@ -1294,7 +1509,10 @@ async fn handle_get_system_proxy(state: &DaemonState) -> HandlerResult {
 }
 
 /// Manually fire a trigger
-async fn handle_manual_fire_trigger(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_manual_fire_trigger(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -1306,11 +1524,17 @@ async fn handle_manual_fire_trigger(state: &DaemonState, params: &serde_json::Va
     let server = state.server_manager.get_server(server_id).await?;
 
     // Broadcast trigger:fired before execution
-    let trigger_name = server.config.triggers.iter()
+    let trigger_name = server
+        .config
+        .triggers
+        .iter()
         .find(|t| t.id == trigger_id)
         .map(|t| t.name.clone())
         .unwrap_or_else(|| trigger_id.to_string());
-    let total_commands = server.config.triggers.iter()
+    let total_commands = server
+        .config
+        .triggers
+        .iter()
         .find(|t| t.id == trigger_id)
         .map(|t| t.commands.len())
         .unwrap_or(0);
@@ -1343,21 +1567,54 @@ async fn handle_manual_fire_trigger(state: &DaemonState, params: &serde_json::Va
 
     // Log the trigger execution result
     let (level, msg) = if result.success {
-        (LogLevel::Info, format!("Trigger '{}' executed successfully ({}/{})", trigger_name, result.executed_commands, result.total_commands))
+        (
+            LogLevel::Info,
+            format!(
+                "Trigger '{}' executed successfully ({}/{})",
+                trigger_name, result.executed_commands, result.total_commands
+            ),
+        )
     } else {
-        (LogLevel::Error, format!("Trigger '{}' execution failed ({}/{})", trigger_name, result.executed_commands, result.total_commands))
+        (
+            LogLevel::Error,
+            format!(
+                "Trigger '{}' execution failed ({}/{})",
+                trigger_name, result.executed_commands, result.total_commands
+            ),
+        )
     };
     log_and_broadcast(state, Some(server_id), level, LogKind::Trigger, msg).await;
 
     // Broadcast each command's output as log entries
     for cmd_result in &result.results {
         let cmd_msg = format!("$ {}", cmd_result.command);
-        log_and_broadcast(state, Some(server_id), LogLevel::Info, LogKind::Trigger, cmd_msg).await;
+        log_and_broadcast(
+            state,
+            Some(server_id),
+            LogLevel::Info,
+            LogKind::Trigger,
+            cmd_msg,
+        )
+        .await;
         if !cmd_result.stdout.is_empty() {
-            log_and_broadcast(state, Some(server_id), LogLevel::Info, LogKind::Trigger, cmd_result.stdout.trim().to_string()).await;
+            log_and_broadcast(
+                state,
+                Some(server_id),
+                LogLevel::Info,
+                LogKind::Trigger,
+                cmd_result.stdout.trim().to_string(),
+            )
+            .await;
         }
         if !cmd_result.stderr.is_empty() {
-            log_and_broadcast(state, Some(server_id), LogLevel::Warn, LogKind::Trigger, cmd_result.stderr.trim().to_string()).await;
+            log_and_broadcast(
+                state,
+                Some(server_id),
+                LogLevel::Warn,
+                LogKind::Trigger,
+                cmd_result.stderr.trim().to_string(),
+            )
+            .await;
         }
     }
 
@@ -1378,7 +1635,10 @@ async fn handle_manual_fire_trigger(state: &DaemonState, params: &serde_json::Va
 }
 
 /// Pause triggers for a specific server
-async fn handle_pause_server_triggers(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_pause_server_triggers(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -1388,7 +1648,10 @@ async fn handle_pause_server_triggers(state: &DaemonState, params: &serde_json::
 }
 
 /// Resume triggers for a specific server
-async fn handle_resume_server_triggers(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_resume_server_triggers(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -1403,7 +1666,10 @@ async fn handle_list_templates(state: &DaemonState) -> HandlerResult {
     let config = mgr.get().await;
     let templates = &config.trigger_templates;
     let json = serde_json::to_value(templates).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("template serialization error: {}", e))
+        IpcError::new(
+            ErrorCode::Internal,
+            format!("template serialization error: {}", e),
+        )
     })?;
     Ok(serde_json::json!({ "templates": json }))
 }
@@ -1421,9 +1687,10 @@ async fn handle_save_credential(state: &DaemonState, params: &serde_json::Value)
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing value"))?;
 
     let key = termfast_credential::make_key(server_id, cred_type);
-    state.credential_store.save(&key, value).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("credential save error: {}", e))
-    })?;
+    state
+        .credential_store
+        .save(&key, value)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("credential save error: {}", e)))?;
     Ok(serde_json::json!({ "saved": true }))
 }
 
@@ -1442,7 +1709,10 @@ async fn handle_has_credential(state: &DaemonState, params: &serde_json::Value) 
 }
 
 /// Delete a credential
-async fn handle_delete_credential(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_delete_credential(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -1452,7 +1722,10 @@ async fn handle_delete_credential(state: &DaemonState, params: &serde_json::Valu
 
     let key = termfast_credential::make_key(server_id, cred_type);
     state.credential_store.delete(&key).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("credential delete error: {}", e))
+        IpcError::new(
+            ErrorCode::Internal,
+            format!("credential delete error: {}", e),
+        )
     })?;
     Ok(serde_json::json!({ "deleted": true }))
 }
@@ -1477,12 +1750,14 @@ async fn handle_export_full(state: &DaemonState, params: &serde_json::Value) -> 
         // This avoids unnecessary macOS keychain prompts for credentials that
         // are not used by this server.
         if server.ssh.auth_method == "password" {
-            let pwd_key = termfast_credential::make_key(sid, termfast_credential::cred_type::PASSWORD);
+            let pwd_key =
+                termfast_credential::make_key(sid, termfast_credential::cred_type::PASSWORD);
             if let Ok(pwd) = state.credential_store.load(&pwd_key) {
                 passwords.insert(sid.clone(), pwd);
             }
         } else if server.ssh.auth_method == "key" {
-            let pass_key = termfast_credential::make_key(sid, termfast_credential::cred_type::KEY_PASSPHRASE);
+            let pass_key =
+                termfast_credential::make_key(sid, termfast_credential::cred_type::KEY_PASSPHRASE);
             if let Ok(pass) = state.credential_store.load(&pass_key) {
                 key_passphrases.insert(sid.clone(), pass);
             }
@@ -1520,9 +1795,8 @@ async fn handle_export_full(state: &DaemonState, params: &serde_json::Value) -> 
 async fn handle_export_servers(state: &DaemonState) -> HandlerResult {
     let mgr = state.config_manager.lock().await;
     let config = mgr.get().await;
-    let json = serde_json::to_value(&config.servers).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("export error: {}", e))
-    })?;
+    let json = serde_json::to_value(&config.servers)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("export error: {}", e)))?;
     Ok(serde_json::json!({ "servers": json }))
 }
 
@@ -1543,7 +1817,9 @@ async fn handle_import_servers(state: &DaemonState, params: &serde_json::Value) 
                 imported += 1;
             }
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     Ok(serde_json::json!({ "imported": imported }))
 }
@@ -1574,15 +1850,21 @@ async fn handle_import_full(state: &DaemonState, params: &serde_json::Value) -> 
     let mgr = state.config_manager.lock().await;
     mgr.modify(|config| {
         *config = export_data.config.clone();
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     // Restore credentials
     for (server_id, pwd) in &export_data.passwords {
-        let key = termfast_credential::make_key(server_id, termfast_credential::cred_type::PASSWORD);
+        let key =
+            termfast_credential::make_key(server_id, termfast_credential::cred_type::PASSWORD);
         let _ = state.credential_store.save(&key, pwd);
     }
     for (server_id, pass) in &export_data.key_passphrases {
-        let key = termfast_credential::make_key(server_id, termfast_credential::cred_type::KEY_PASSPHRASE);
+        let key = termfast_credential::make_key(
+            server_id,
+            termfast_credential::cred_type::KEY_PASSPHRASE,
+        );
         let _ = state.credential_store.save(&key, pass);
     }
     // Restore key files
@@ -1598,20 +1880,28 @@ async fn handle_import_full(state: &DaemonState, params: &serde_json::Value) -> 
     }
 
     // Broadcast config changed
-    state.broadcast("config:changed", serde_json::json!({})).await;
+    state
+        .broadcast("config:changed", serde_json::json!({}))
+        .await;
 
     Ok(serde_json::json!({ "imported": true }))
 }
 
 /// Cleanup authorized_keys on a server (remove our key if present)
-async fn handle_cleanup_authorized_keys(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_cleanup_authorized_keys(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
 
     let server = state.server_manager.get_server(server_id).await?;
     // Execute cleanup command via SSH
-    let _handle = server.ssh_client.get_handle().await
+    let _handle = server
+        .ssh_client
+        .get_handle()
+        .await
         .ok_or_else(|| IpcError::new(ErrorCode::Internal, "no SSH connection"))?;
 
     // Remove our key from authorized_keys
@@ -1635,7 +1925,10 @@ async fn handle_cleanup_authorized_keys(state: &DaemonState, params: &serde_json
 }
 
 /// Toggle proxy with advanced options (SOCKS5/HTTP independent control)
-async fn handle_toggle_proxy_advanced(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_toggle_proxy_advanced(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -1649,16 +1942,22 @@ async fn handle_toggle_proxy_advanced(state: &DaemonState, params: &serde_json::
     mgr.modify(|config| {
         if let Some(srv) = config.find_server_mut(server_id) {
             if let Some(s) = socks5_enabled {
-                if s { srv.proxy.enabled = true; }
+                if s {
+                    srv.proxy.enabled = true;
+                }
             }
             if let Some(h) = http_enabled {
-                if h { srv.proxy.enabled = true; }
+                if h {
+                    srv.proxy.enabled = true;
+                }
             }
             if socks5_enabled == Some(false) && http_enabled == Some(false) {
                 srv.proxy.enabled = false;
             }
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
     drop(mgr);
 
     // Start/stop proxy based on new state
@@ -1697,9 +1996,10 @@ async fn handle_set_proxy_auth(state: &DaemonState, params: &serde_json::Value) 
 
     let cred_value = format!("{}:{}", username, password);
     let key = termfast_credential::make_key(server_id, "proxy_auth");
-    state.credential_store.save(&key, &cred_value).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("proxy auth save error: {}", e))
-    })?;
+    state
+        .credential_store
+        .save(&key, &cred_value)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("proxy auth save error: {}", e)))?;
 
     Ok(serde_json::json!({ "server_id": server_id, "set": true }))
 }
@@ -1712,7 +2012,10 @@ async fn handle_clear_proxy_auth(state: &DaemonState, params: &serde_json::Value
 
     let key = termfast_credential::make_key(server_id, "proxy_auth");
     state.credential_store.delete(&key).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("proxy auth delete error: {}", e))
+        IpcError::new(
+            ErrorCode::Internal,
+            format!("proxy auth delete error: {}", e),
+        )
     })?;
 
     Ok(serde_json::json!({ "server_id": server_id, "cleared": true }))
@@ -1754,7 +2057,9 @@ async fn handle_add_trigger(state: &DaemonState, params: &serde_json::Value) -> 
                 srv.triggers.push(trigger);
             }
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
     drop(mgr);
 
     // Update server instance's trigger templates and triggers
@@ -1762,7 +2067,9 @@ async fn handle_add_trigger(state: &DaemonState, params: &serde_json::Value) -> 
     {
         let mgr = state.config_manager.lock().await;
         let config = mgr.get().await;
-        server.set_trigger_templates(config.trigger_templates.clone()).await;
+        server
+            .set_trigger_templates(config.trigger_templates.clone())
+            .await;
         if let Some(srv) = config.find_server(server_id) {
             server.set_triggers(srv.triggers.clone()).await;
         }
@@ -1792,7 +2099,9 @@ async fn handle_remove_trigger(state: &DaemonState, params: &serde_json::Value) 
         if let Some(srv) = config.find_server_mut(server_id) {
             srv.triggers.retain(|t| t.id != trigger_id);
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
     drop(mgr);
 
     // Update server instance's triggers
@@ -1869,7 +2178,9 @@ async fn handle_update_trigger(state: &DaemonState, params: &serde_json::Value) 
                 }
             }
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
     drop(mgr);
 
     // Update server instance's triggers
@@ -1892,7 +2203,10 @@ async fn handle_update_trigger(state: &DaemonState, params: &serde_json::Value) 
 }
 
 /// Sync a trigger from its template (update commands to match template)
-async fn handle_sync_trigger_from_template(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_sync_trigger_from_template(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -1925,7 +2239,9 @@ async fn handle_sync_trigger_from_template(state: &DaemonState, params: &serde_j
                 }
             }
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     Ok(serde_json::json!({ "server_id": server_id, "trigger_id": trigger_id, "synced": true }))
 }
@@ -1941,7 +2257,9 @@ async fn handle_create_template(state: &DaemonState, params: &serde_json::Value)
     let mgr = state.config_manager.lock().await;
     mgr.modify(|config| {
         config.trigger_templates.push(template);
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     Ok(serde_json::json!({ "template_id": template_id, "created": true }))
 }
@@ -1977,7 +2295,9 @@ async fn handle_update_template(state: &DaemonState, params: &serde_json::Value)
                 tmpl.timeout_secs = timeout;
             }
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     Ok(serde_json::json!({ "template_id": template_id, "updated": true }))
 }
@@ -1991,16 +2311,21 @@ async fn handle_delete_template(state: &DaemonState, params: &serde_json::Value)
     let mgr = state.config_manager.lock().await;
     mgr.modify(|config| {
         // Only allow deleting non-built-in templates
-        config.trigger_templates.retain(|t| {
-            t.id != template_id || t.built_in
-        });
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+        config
+            .trigger_templates
+            .retain(|t| t.id != template_id || t.built_in);
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     Ok(serde_json::json!({ "template_id": template_id, "deleted": true }))
 }
 
 /// Save a trigger instance as a new template
-async fn handle_save_trigger_as_template(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_save_trigger_as_template(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -2042,7 +2367,9 @@ async fn handle_save_trigger_as_template(state: &DaemonState, params: &serde_jso
             };
             config.trigger_templates.push(template);
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     Ok(serde_json::json!({ "template_id": new_template_id, "saved": true }))
 }
@@ -2051,7 +2378,10 @@ async fn handle_save_trigger_as_template(state: &DaemonState, params: &serde_jso
 async fn handle_import_templates(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
     let templates: Vec<termfast_core::config::TriggerTemplate> =
         serde_json::from_value(params["templates"].clone()).map_err(|e| {
-            IpcError::new(ErrorCode::InvalidParams, format!("invalid templates: {}", e))
+            IpcError::new(
+                ErrorCode::InvalidParams,
+                format!("invalid templates: {}", e),
+            )
         })?;
 
     let mut imported = 0;
@@ -2063,7 +2393,9 @@ async fn handle_import_templates(state: &DaemonState, params: &serde_json::Value
                 imported += 1;
             }
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     Ok(serde_json::json!({ "imported": imported }))
 }
@@ -2072,27 +2404,30 @@ async fn handle_import_templates(state: &DaemonState, params: &serde_json::Value
 async fn handle_export_templates(state: &DaemonState) -> HandlerResult {
     let mgr = state.config_manager.lock().await;
     let config = mgr.get().await;
-    let json = serde_json::to_value(&config.trigger_templates).map_err(|e| {
-        IpcError::new(ErrorCode::Internal, format!("export error: {}", e))
-    })?;
+    let json = serde_json::to_value(&config.trigger_templates)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("export error: {}", e)))?;
     Ok(serde_json::json!({ "templates": json }))
 }
 
 /// Configure key-based authentication for a server
-async fn handle_configure_key_auth(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_configure_key_auth(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
 
-    let key_path = params["key_path"]
-        .as_str()
-        .unwrap_or("");
+    let key_path = params["key_path"].as_str().unwrap_or("");
     let passphrase = params["passphrase"].as_str();
 
     // Save passphrase to credential store if provided
     if let Some(pass) = passphrase {
         if !pass.is_empty() {
-            let key = termfast_credential::make_key(server_id, termfast_credential::cred_type::KEY_PASSPHRASE);
+            let key = termfast_credential::make_key(
+                server_id,
+                termfast_credential::cred_type::KEY_PASSPHRASE,
+            );
             state.credential_store.save(&key, pass).map_err(|e| {
                 IpcError::new(ErrorCode::Internal, format!("passphrase save error: {}", e))
             })?;
@@ -2106,13 +2441,18 @@ async fn handle_configure_key_auth(state: &DaemonState, params: &serde_json::Val
             srv.ssh.auth_method = "key".to_string();
             srv.ssh.key_path = key_path.to_string();
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
 
     Ok(serde_json::json!({ "server_id": server_id, "configured": true }))
 }
 
 /// Switch authentication method for a server (password ↔ key)
-async fn handle_switch_auth_method(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+async fn handle_switch_auth_method(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
     let server_id = params["server_id"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
@@ -2123,28 +2463,49 @@ async fn handle_switch_auth_method(state: &DaemonState, params: &serde_json::Val
     let mgr = state.config_manager.lock().await;
     let old_method = {
         let config = mgr.get().await;
-        config.find_server(server_id).map(|s| s.ssh.auth_method.clone()).unwrap_or_default()
+        config
+            .find_server(server_id)
+            .map(|s| s.ssh.auth_method.clone())
+            .unwrap_or_default()
     };
     mgr.modify(|config| {
         if let Some(srv) = config.find_server_mut(server_id) {
             srv.ssh.auth_method = auth_method.to_string();
         }
-    }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
     drop(mgr);
 
     // Clean up credentials that are no longer needed
     if old_method == "password" && auth_method == "key" {
         // Switching password → key: delete password from keychain
-        let pwd_key = termfast_credential::make_key(server_id, termfast_credential::cred_type::PASSWORD);
+        let pwd_key =
+            termfast_credential::make_key(server_id, termfast_credential::cred_type::PASSWORD);
         let _ = state.credential_store.delete(&pwd_key);
-        log_and_broadcast(state, Some(server_id), LogLevel::Info, LogKind::System,
-            "Switched to key auth, removed password from keychain".to_string()).await;
+        log_and_broadcast(
+            state,
+            Some(server_id),
+            LogLevel::Info,
+            LogKind::System,
+            "Switched to key auth, removed password from keychain".to_string(),
+        )
+        .await;
     } else if old_method == "key" && auth_method == "password" {
         // Switching key → password: delete key passphrase from keychain
-        let pass_key = termfast_credential::make_key(server_id, termfast_credential::cred_type::KEY_PASSPHRASE);
+        let pass_key = termfast_credential::make_key(
+            server_id,
+            termfast_credential::cred_type::KEY_PASSPHRASE,
+        );
         let _ = state.credential_store.delete(&pass_key);
-        log_and_broadcast(state, Some(server_id), LogLevel::Info, LogKind::System,
-            "Switched to password auth, removed key passphrase from keychain".to_string()).await;
+        log_and_broadcast(
+            state,
+            Some(server_id),
+            LogLevel::Info,
+            LogKind::System,
+            "Switched to password auth, removed key passphrase from keychain".to_string(),
+        )
+        .await;
     }
 
     Ok(serde_json::json!({ "server_id": server_id, "auth_method": auth_method }))
@@ -2160,8 +2521,10 @@ async fn handle_detect_firewall(state: &DaemonState, params: &serde_json::Value)
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
 
     let server = state.server_manager.get_server(server_id).await?;
-    let handle = server.ssh_client.get_handle().await
-        .ok_or_else(|| IpcError::new(ErrorCode::Internal, "no SSH connection — connect first"))?;
+    let handle =
+        server.ssh_client.get_handle().await.ok_or_else(|| {
+            IpcError::new(ErrorCode::Internal, "no SSH connection — connect first")
+        })?;
 
     use termfast_core::ssh::exec;
 
@@ -2170,7 +2533,12 @@ async fn handle_detect_firewall(state: &DaemonState, params: &serde_json::Value)
     let has_firewalld = result.stdout.trim() == "active";
 
     // Check ufw
-    let result = exec::exec(&handle, "which ufw 2>/dev/null && ufw status 2>/dev/null | head -1", 10).await?;
+    let result = exec::exec(
+        &handle,
+        "which ufw 2>/dev/null && ufw status 2>/dev/null | head -1",
+        10,
+    )
+    .await?;
     let has_ufw = result.stdout.contains("active");
 
     let firewall_type = if has_firewalld {
@@ -2182,15 +2550,22 @@ async fn handle_detect_firewall(state: &DaemonState, params: &serde_json::Value)
     };
 
     // Get list of open/listening ports
-    let result = exec::exec(&handle, "ss -tlnp 2>/dev/null | grep LISTEN | awk '{print $4}' | sed 's/.*://' | sort -un", 10).await?;
-    let ports: Vec<u16> = result.stdout
+    let result = exec::exec(
+        &handle,
+        "ss -tlnp 2>/dev/null | grep LISTEN | awk '{print $4}' | sed 's/.*://' | sort -un",
+        10,
+    )
+    .await?;
+    let ports: Vec<u16> = result
+        .stdout
         .lines()
         .filter_map(|line| line.trim().parse::<u16>().ok())
         .collect();
 
     // Get firewalld open services/ports if firewalld is active
     let firewalld_ports: Vec<String> = if has_firewalld {
-        let result = exec::exec(&handle, "firewall-cmd --list-ports 2>/dev/null", 10).await
+        let result = exec::exec(&handle, "firewall-cmd --list-ports 2>/dev/null", 10)
+            .await
             .map(|r| r.stdout)
             .unwrap_or_default();
         result.split_whitespace().map(|s| s.to_string()).collect()
@@ -2268,7 +2643,12 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
     let cols = params.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
     let rows = params.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u32;
 
-    tracing::info!("handle_terminal_open: server_id={}, cols={}, rows={}", server_id, cols, rows);
+    tracing::info!(
+        "handle_terminal_open: server_id={}, cols={}, rows={}",
+        server_id,
+        cols,
+        rows
+    );
 
     let server = state
         .server_manager
@@ -2283,9 +2663,11 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         ));
     }
 
-    let ssh_handle = server.ssh_client.get_handle().await.ok_or_else(|| {
-        IpcError::new(ErrorCode::SshDisconnected, "SSH handle not available")
-    })?;
+    let ssh_handle = server
+        .ssh_client
+        .get_handle()
+        .await
+        .ok_or_else(|| IpcError::new(ErrorCode::SshDisconnected, "SSH handle not available"))?;
 
     tracing::info!("handle_terminal_open: got SSH handle, opening PTY...");
 
@@ -2295,7 +2677,11 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
 
-    tracing::info!("handle_terminal_open: PTY opened, session_id={}, initial_output={} bytes", session_id, initial_output.len());
+    tracing::info!(
+        "handle_terminal_open: PTY opened, session_id={}, initial_output={} bytes",
+        session_id,
+        initial_output.len()
+    );
 
     Ok(serde_json::json!({ "session_id": session_id, "initial_output": initial_output }))
 }
@@ -2311,7 +2697,12 @@ async fn handle_terminal_input(state: &DaemonState, params: &serde_json::Value) 
         .and_then(|v| v.as_str())
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing data"))?;
 
-    tracing::info!("handle_terminal_input: session_id={} data_len={} data={:?}", session_id, data.len(), data);
+    tracing::info!(
+        "handle_terminal_input: session_id={} data_len={} data={:?}",
+        session_id,
+        data.len(),
+        data
+    );
 
     state
         .terminal_manager
@@ -2431,7 +2822,10 @@ mod tests {
     #[tokio::test]
     async fn test_get_server_status_not_found() {
         let state = test_state();
-        let req = Request::new(Action::GetServerStatus, serde_json::json!({"server_id": "nonexistent"}));
+        let req = Request::new(
+            Action::GetServerStatus,
+            serde_json::json!({"server_id": "nonexistent"}),
+        );
         let resp = handle_request(&req, &state).await;
         assert!(matches!(resp, Response::Err { .. }));
     }
@@ -2453,7 +2847,11 @@ async fn maybe_broadcast_cli_focus(
     server_id: &str,
     tab: Option<&str>,
 ) {
-    if params.get("_cli").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if params
+        .get("_cli")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         let mut data = serde_json::json!({ "server_id": server_id });
         if let Some(t) = tab {
             data["tab"] = serde_json::json!(t);

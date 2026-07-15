@@ -2,6 +2,7 @@
 // §4.2 triggerStore: trigger templates + instances
 
 import { create } from "zustand";
+import { ipcInvoke } from "@/hooks/useIpc";
 import type { TriggerTemplate, TriggerInstance } from "@/types";
 
 interface TriggerStore {
@@ -12,9 +13,13 @@ interface TriggerStore {
   executing: Record<string, TriggerExecution>;
 
   setTemplates: (templates: TriggerTemplate[]) => void;
+  loadTemplates: () => Promise<void>;
   setServerTriggers: (serverId: string, triggers: TriggerInstance[]) => void;
   startExecution: (exec: TriggerExecution) => void;
-  updateExecution: (executionId: string, update: Partial<TriggerExecution>) => void;
+  updateExecution: (
+    executionId: string,
+    update: Partial<TriggerExecution>,
+  ) => void;
   finishExecution: (executionId: string) => void;
 }
 
@@ -44,6 +49,17 @@ export const useTriggerStore = create<TriggerStore>((set) => ({
   executing: {},
 
   setTemplates: (templates) => set({ templates }),
+
+  loadTemplates: async () => {
+    try {
+      const data = await ipcInvoke<{ templates: TriggerTemplate[] }>(
+        "ipc_list_templates",
+      );
+      set({ templates: data?.templates || [] });
+    } catch (e) {
+      console.error("load templates failed:", e);
+    }
+  },
 
   setServerTriggers: (serverId, triggers) =>
     set((state) => ({

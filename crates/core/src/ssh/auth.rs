@@ -39,12 +39,13 @@ pub async fn authenticate(
                 })?;
             Ok(result.success())
         }
-        AuthMethod::Key { key_path, passphrase } => {
+        AuthMethod::Key {
+            key_path,
+            passphrase,
+        } => {
             let key_pair = load_keypair(key_path, passphrase.as_deref())?;
-            let key_with_alg = keys::PrivateKeyWithHashAlg::new(
-                std::sync::Arc::new(key_pair),
-                None,
-            );
+            let key_with_alg =
+                keys::PrivateKeyWithHashAlg::new(std::sync::Arc::new(key_pair), None);
             let result = handle
                 .authenticate_publickey(user, key_with_alg)
                 .await
@@ -92,34 +93,32 @@ fn expand_tilde(path: &str) -> String {
 }
 
 /// Generate an Ed25519 keypair for a server (§8.2-8.5)
+/// Uses the default `~/.ssh` directory.
 /// Returns (private_key_path, public_key_string, passphrase)
 pub fn generate_keypair(server_id: &str) -> Result<(PathBuf, String, String)> {
-    let home = directories::BaseDirs::new().ok_or_else(|| {
-        Error::Config("cannot determine home directory".into())
-    })?;
-
+    let home = directories::BaseDirs::new()
+        .ok_or_else(|| Error::Config("cannot determine home directory".into()))?;
     let ssh_dir = home.home_dir().join(".ssh");
-    std::fs::create_dir_all(&ssh_dir).map_err(Error::Io)?;
+    generate_keypair_at(&ssh_dir, server_id)
+}
+
+/// Generate an Ed25519 keypair under a custom directory (e.g. Android app private dir).
+/// Returns (private_key_path, public_key_string, passphrase)
+pub fn generate_keypair_at(
+    ssh_dir: impl AsRef<std::path::Path>,
+    server_id: &str,
+) -> Result<(PathBuf, String, String)> {
+    let ssh_dir = ssh_dir.as_ref();
+    std::fs::create_dir_all(ssh_dir).map_err(Error::Io)?;
 
     let key_path = ssh_dir.join(format!("termfast_{}_key", server_id));
     let pub_key_path = ssh_dir.join(format!("termfast_{}_key.pub", server_id));
 
-    // Generate Ed25519 key using russh's re-exported ssh_key
-    use russh::keys::ssh_key;
-    let mut rng = ssh_key::rand_core::UnwrapErr(ssh_key::getrandom::SysRng);
-    let key_pair = ssh_key::PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519 {})
-        .map_err(|e| Error::Crypto(format!("key generation failed: {}", e)))?;
-
-    // Generate random passphrase (32 bytes base64)
-    let mut passphrase_bytes = [0u8; 32];
-    ssh_key::getrandom::fill(&mut passphrase_bytes)
-        .map_err(|e| Error::Crypto(format!("rng error: {}", e)))?;
-    let passphrase = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        passphrase_bytes,
-    );
+    let (key_pair, passphrase) = generate_keypair_bytes(server_id)?;
 
     // Write private key encrypted with passphrase
+    let mut rng =
+        russh::keys::ssh_key::rand_core::UnwrapErr(russh::keys::ssh_key::getrandom::SysRng);
     let encrypted_key = key_pair
         .encrypt(&mut rng, &passphrase)
         .map_err(|e| Error::Crypto(format!("key encryption failed: {}", e)))?;
@@ -150,6 +149,27 @@ pub fn generate_keypair(server_id: &str) -> Result<(PathBuf, String, String)> {
     }
 
     Ok((key_path, pub_key_str, passphrase))
+}
+
+/// Generate an Ed25519 keypair and return the key bytes + passphrase.
+/// The caller decides where to store the private/public key (e.g. Android Keystore).
+#[allow(dead_code)]
+pub fn generate_keypair_bytes(
+    _server_id: &str,
+) -> Result<(russh::keys::ssh_key::PrivateKey, String)> {
+    use russh::keys::ssh_key;
+    let mut rng = ssh_key::rand_core::UnwrapErr(ssh_key::getrandom::SysRng);
+    let key_pair = ssh_key::PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519 {})
+        .map_err(|e| Error::Crypto(format!("key generation failed: {}", e)))?;
+
+    // Generate random passphrase (32 bytes base64)
+    let mut passphrase_bytes = [0u8; 32];
+    ssh_key::getrandom::fill(&mut passphrase_bytes)
+        .map_err(|e| Error::Crypto(format!("rng error: {}", e)))?;
+    let passphrase =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, passphrase_bytes);
+
+    Ok((key_pair, passphrase))
 }
 
 /// Push a public key to the remote server's authorized_keys via SSH exec

@@ -28,18 +28,16 @@ impl HttpProxyServer {
     /// Start the HTTP proxy server
     pub async fn start(&self) -> Result<()> {
         let addr = format!("127.0.0.1:{}", self.port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AddrInUse {
-                    Error::Ipc(IpcError::new(
-                        ErrorCode::ProxyPortInUse,
-                        format!("HTTP proxy port {} is in use", self.port),
-                    ))
-                } else {
-                    Error::Io(e)
-                }
-            })?;
+        let listener = TcpListener::bind(&addr).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                Error::Ipc(IpcError::new(
+                    ErrorCode::ProxyPortInUse,
+                    format!("HTTP proxy port {} is in use", self.port),
+                ))
+            } else {
+                Error::Io(e)
+            }
+        })?;
 
         tracing::info!("HTTP proxy listening on {}", addr);
 
@@ -92,14 +90,23 @@ pub async fn handle_connection(
     if first_line.starts_with("CONNECT ") {
         // HTTPS CONNECT
         handle_connect(&mut socket, &mgr, &buf[..n], first_line).await
-    } else if first_line.starts_with("GET ") || first_line.starts_with("POST ") || first_line.starts_with("PUT ") || first_line.starts_with("DELETE ") || first_line.starts_with("HEAD ") || first_line.starts_with("PATCH ") {
+    } else if first_line.starts_with("GET ")
+        || first_line.starts_with("POST ")
+        || first_line.starts_with("PUT ")
+        || first_line.starts_with("DELETE ")
+        || first_line.starts_with("HEAD ")
+        || first_line.starts_with("PATCH ")
+    {
         // Plain HTTP request
         handle_http(&mut socket, &mgr, &buf[..n], first_line).await
     } else {
         // Bad request
         let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
         socket.write_all(response.as_bytes()).await?;
-        Err(Error::Other(format!("invalid HTTP request: {}", first_line)))
+        Err(Error::Other(format!(
+            "invalid HTTP request: {}",
+            first_line
+        )))
     }
 }
 
@@ -129,7 +136,12 @@ async fn handle_connect(
             m
         }
         Err(e) => {
-            tracing::warn!("HTTP CONNECT {}:{} failed to open channel: {}", host, port, e);
+            tracing::warn!(
+                "HTTP CONNECT {}:{} failed to open channel: {}",
+                host,
+                port,
+                e
+            );
             let response = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
             let _ = socket.write_all(response.as_bytes()).await;
             return Err(e);
@@ -150,14 +162,28 @@ async fn handle_connect(
     let chan_reader = chan_read.make_reader();
     let mut chan_writer = chan_write.make_writer();
 
-    let mut counting_cli_read = crate::proxy::manager::CountingReader { inner: cli_read, counter: bytes_in };
-    let mut counting_chan_reader = crate::proxy::manager::CountingReader { inner: chan_reader, counter: bytes_out };
+    let mut counting_cli_read = crate::proxy::manager::CountingReader {
+        inner: cli_read,
+        counter: bytes_in,
+    };
+    let mut counting_chan_reader = crate::proxy::manager::CountingReader {
+        inner: chan_reader,
+        counter: bytes_out,
+    };
 
     let client_to_channel = async {
-        tokio::time::timeout(idle_timeout, tokio::io::copy(&mut counting_cli_read, &mut chan_writer)).await
+        tokio::time::timeout(
+            idle_timeout,
+            tokio::io::copy(&mut counting_cli_read, &mut chan_writer),
+        )
+        .await
     };
     let channel_to_client = async {
-        tokio::time::timeout(idle_timeout, tokio::io::copy(&mut counting_chan_reader, &mut cli_write)).await
+        tokio::time::timeout(
+            idle_timeout,
+            tokio::io::copy(&mut counting_chan_reader, &mut cli_write),
+        )
+        .await
     };
 
     tokio::select! {
@@ -216,7 +242,9 @@ async fn handle_http(
     bytes_in.fetch_add(rewritten.len() as u64, Ordering::Relaxed);
 
     // Send rewritten request to remote
-    channel.data_bytes(rewritten.as_bytes().to_vec()).await
+    channel
+        .data_bytes(rewritten.as_bytes().to_vec())
+        .await
         .map_err(|e| Error::Ssh(format!("failed to send data: {}", e)))?;
 
     // Bidirectional forwarding
@@ -225,15 +253,29 @@ async fn handle_http(
     let chan_reader = chan_read.make_reader();
     let mut chan_writer = chan_write.make_writer();
 
-    let mut counting_cli_read = crate::proxy::manager::CountingReader { inner: cli_read, counter: bytes_in };
-    let mut counting_chan_reader = crate::proxy::manager::CountingReader { inner: chan_reader, counter: bytes_out };
+    let mut counting_cli_read = crate::proxy::manager::CountingReader {
+        inner: cli_read,
+        counter: bytes_in,
+    };
+    let mut counting_chan_reader = crate::proxy::manager::CountingReader {
+        inner: chan_reader,
+        counter: bytes_out,
+    };
 
     // Forward remaining client data (if any) and response
     let client_to_channel = async {
-        tokio::time::timeout(idle_timeout, tokio::io::copy(&mut counting_cli_read, &mut chan_writer)).await
+        tokio::time::timeout(
+            idle_timeout,
+            tokio::io::copy(&mut counting_cli_read, &mut chan_writer),
+        )
+        .await
     };
     let channel_to_client = async {
-        tokio::time::timeout(idle_timeout, tokio::io::copy(&mut counting_chan_reader, &mut cli_write)).await
+        tokio::time::timeout(
+            idle_timeout,
+            tokio::io::copy(&mut counting_chan_reader, &mut cli_write),
+        )
+        .await
     };
 
     tokio::select! {
@@ -344,7 +386,11 @@ mod tests {
         assert!(rewritten.starts_with("GET /path HTTP/1.1"));
         assert!(!rewritten.contains("http://example.com/path"));
         // Must end with \r\n\r\n (header terminator)
-        assert!(rewritten.ends_with("\r\n\r\n"), "rewritten must end with \\r\\n\\r\\n, got: {:?}", rewritten);
+        assert!(
+            rewritten.ends_with("\r\n\r\n"),
+            "rewritten must end with \\r\\n\\r\\n, got: {:?}",
+            rewritten
+        );
     }
 
     #[test]

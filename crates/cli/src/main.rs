@@ -67,10 +67,7 @@ enum Commands {
     /// Remove a server
     RemoveServer { server: String },
     /// Save password credential for a server
-    SetPassword {
-        server: String,
-        password: String,
-    },
+    SetPassword { server: String, password: String },
     /// Toggle proxy
     Proxy {
         server: String,
@@ -126,7 +123,10 @@ fn parse_on_off(s: &str) -> std::result::Result<bool, String> {
     match s.to_lowercase().as_str() {
         "on" | "true" | "1" => Ok(true),
         "off" | "false" | "0" => Ok(false),
-        _ => Err(format!("invalid value '{}', expected on/off or true/false", s)),
+        _ => Err(format!(
+            "invalid value '{}', expected on/off or true/false",
+            s
+        )),
     }
 }
 
@@ -232,7 +232,10 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
             let mut client = DaemonClient::connect().await?;
             let server_id = client.resolve_server_id(server.as_str()).await?;
             let resp = client
-                .send_request(Action::ConnectServer, serde_json::json!({"server_id": server_id}))
+                .send_request(
+                    Action::ConnectServer,
+                    serde_json::json!({"server_id": server_id}),
+                )
                 .await?;
             print_response(&resp, cli.json);
             Ok(())
@@ -241,12 +244,25 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
             let mut client = DaemonClient::connect().await?;
             let server_id = client.resolve_server_id(server.as_str()).await?;
             let resp = client
-                .send_request(Action::DisconnectServer, serde_json::json!({"server_id": server_id}))
+                .send_request(
+                    Action::DisconnectServer,
+                    serde_json::json!({"server_id": server_id}),
+                )
                 .await?;
             print_response(&resp, cli.json);
             Ok(())
         }
-        Commands::AddServer { name, host, port, user, auth, password, key_path, socks5_port, http_port } => {
+        Commands::AddServer {
+            name,
+            host,
+            port,
+            user,
+            auth,
+            password,
+            key_path,
+            socks5_port,
+            http_port,
+        } => {
             let mut client = DaemonClient::connect().await?;
             let server_id = format!("srv_{}", chrono::Utc::now().timestamp_millis());
             let config = serde_json::json!({
@@ -286,11 +302,16 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
             // Save password credential if provided
             if let Some(pwd) = password {
                 if !pwd.is_empty() {
-                    let _ = client.send_request(Action::SaveCredential, serde_json::json!({
-                        "server_id": server_id,
-                        "credential_type": "password",
-                        "value": pwd,
-                    })).await;
+                    let _ = client
+                        .send_request(
+                            Action::SaveCredential,
+                            serde_json::json!({
+                                "server_id": server_id,
+                                "credential_type": "password",
+                                "value": pwd,
+                            }),
+                        )
+                        .await;
                 }
             }
             print_response(&resp, cli.json);
@@ -300,7 +321,10 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
             let mut client = DaemonClient::connect().await?;
             let server_id = client.resolve_server_id(server.as_str()).await?;
             let resp = client
-                .send_request(Action::RemoveServer, serde_json::json!({"server_id": server_id}))
+                .send_request(
+                    Action::RemoveServer,
+                    serde_json::json!({"server_id": server_id}),
+                )
                 .await?;
             print_response(&resp, cli.json);
             Ok(())
@@ -309,11 +333,14 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
             let mut client = DaemonClient::connect().await?;
             let server_id = client.resolve_server_id(server.as_str()).await?;
             let resp = client
-                .send_request(Action::SaveCredential, serde_json::json!({
-                    "server_id": server_id,
-                    "credential_type": "password",
-                    "value": password,
-                }))
+                .send_request(
+                    Action::SaveCredential,
+                    serde_json::json!({
+                        "server_id": server_id,
+                        "credential_type": "password",
+                        "value": password,
+                    }),
+                )
                 .await?;
             print_response(&resp, cli.json);
             Ok(())
@@ -352,7 +379,12 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
             print_response(&resp, cli.json);
             Ok(())
         }
-        Commands::Logs { server, level, tail, follow } => {
+        Commands::Logs {
+            server,
+            level,
+            tail,
+            follow,
+        } => {
             let mut client = DaemonClient::connect().await?;
             let mut params = serde_json::json!({});
             if let Some(s) = server {
@@ -380,11 +412,20 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
             let resp = client.send_simple(Action::GetConfig).await?;
             if let Response::Ok { data, .. } = &resp {
                 if let Some(servers) = data["servers"].as_array() {
-                    if let Some(srv) = servers.iter().find(|s| s["id"].as_str() == Some(server_id.as_str())) {
+                    if let Some(srv) = servers
+                        .iter()
+                        .find(|s| s["id"].as_str() == Some(server_id.as_str()))
+                    {
                         let triggers = &srv["triggers"];
                         let status = srv["current_status"].as_str().unwrap_or("unknown");
                         if cli.json {
-                            print_response(&Response::Ok { id: String::new(), data: triggers.clone() }, true);
+                            print_response(
+                                &Response::Ok {
+                                    id: String::new(),
+                                    data: triggers.clone(),
+                                },
+                                true,
+                            );
                         } else {
                             println!("Server status: {}", status);
                             if let Some(arr) = triggers.as_array() {
@@ -396,8 +437,12 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
                                         let id = t["id"].as_str().unwrap_or("?");
                                         let ttype = t["trigger_type"].as_str().unwrap_or("?");
                                         let enabled = t["enabled"].as_bool().unwrap_or(false);
-                                        let cmds = t["commands"].as_array().map(|a| a.len()).unwrap_or(0);
-                                        println!("  {} [{}] type={} enabled={} commands={}", name, id, ttype, enabled, cmds);
+                                        let cmds =
+                                            t["commands"].as_array().map(|a| a.len()).unwrap_or(0);
+                                        println!(
+                                            "  {} [{}] type={} enabled={} commands={}",
+                                            name, id, ttype, enabled, cmds
+                                        );
                                     }
                                 }
                             }
@@ -435,7 +480,9 @@ async fn run_command(cli: &Cli) -> anyhow::Result<()> {
         } => {
             let mut client = DaemonClient::connect().await?;
             let server_id = client.resolve_server_id(server.as_str()).await?;
-            let trigger_id = client.resolve_trigger_id(&server_id, trigger.as_str()).await?;
+            let trigger_id = client
+                .resolve_trigger_id(&server_id, trigger.as_str())
+                .await?;
             let resp = client
                 .send_request(
                     Action::ManualFireTrigger,
@@ -475,7 +522,11 @@ fn print_response(resp: &termfast_daemon::Response, json: bool) {
                     serde_json::to_string(data).unwrap_or_default()
                 );
             } else {
-                println!("[{}] {}", event, serde_json::to_string_pretty(data).unwrap_or_default());
+                println!(
+                    "[{}] {}",
+                    event,
+                    serde_json::to_string_pretty(data).unwrap_or_default()
+                );
             }
         }
     }
@@ -510,7 +561,7 @@ fn print_data_human(data: &serde_json::Value) {
 
 /// Build a comfy-table from an array of JSON objects
 fn build_table(arr: &[serde_json::Value]) -> Option<comfy_table::Table> {
-    use comfy_table::{Table, ContentArrangement, presets::UTF8_FULL};
+    use comfy_table::{presets::UTF8_FULL, ContentArrangement, Table};
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -527,12 +578,7 @@ fn build_table(arr: &[serde_json::Value]) -> Option<comfy_table::Table> {
         if let Some(item_obj) = item.as_object() {
             let row: Vec<String> = headers
                 .iter()
-                .map(|h| {
-                    item_obj
-                        .get(h)
-                        .map(value_to_string)
-                        .unwrap_or_default()
-                })
+                .map(|h| item_obj.get(h).map(value_to_string).unwrap_or_default())
                 .collect();
             table.add_row(row);
         }

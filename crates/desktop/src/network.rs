@@ -114,12 +114,9 @@ impl NetworkMonitor {
 async fn check_connectivity() -> bool {
     use tokio::net::TcpStream;
     use tokio::time::Duration;
-    tokio::time::timeout(
-        Duration::from_secs(3),
-        TcpStream::connect("1.1.1.1:53"),
-    )
-    .await
-    .is_ok_and(|r| r.is_ok())
+    tokio::time::timeout(Duration::from_secs(3), TcpStream::connect("1.1.1.1:53"))
+        .await
+        .is_ok_and(|r| r.is_ok())
 }
 
 impl Default for NetworkMonitor {
@@ -142,7 +139,9 @@ mod tests {
     #[tokio::test]
     async fn test_go_offline_online() {
         let monitor = NetworkMonitor::new();
-        monitor.go_offline(vec!["srv_1".into(), "srv_2".into()]).await;
+        monitor
+            .go_offline(vec!["srv_1".into(), "srv_2".into()])
+            .await;
         assert!(monitor.is_offline().await);
 
         let reconnect = monitor.go_online().await;

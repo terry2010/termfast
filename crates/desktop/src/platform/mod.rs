@@ -2,10 +2,10 @@
 //!
 //! Platform-specific functionality: system proxy, window effects.
 
-pub mod macos;
-pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
+pub mod macos;
+pub mod windows;
 
 use anyhow::Result;
 

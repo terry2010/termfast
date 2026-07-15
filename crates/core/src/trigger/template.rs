@@ -34,10 +34,7 @@ fn render_variables(template: &str, vars: &HashMap<String, String>) -> String {
     while let Some(c) = chars.next() {
         if c == '{' && chars.peek() == Some(&'{') {
             chars.next(); // consume second {
-            let tag: String = chars
-                .by_ref()
-                .take_while(|&c| c != '}')
-                .collect();
+            let tag: String = chars.by_ref().take_while(|&c| c != '}').collect();
             // consume the closing }} (both braces)
             while chars.peek() == Some(&'}') {
                 chars.next();
@@ -173,7 +170,10 @@ mod tests {
         vars.insert("NewIP".into(), "1.2.3.4".into());
         vars.insert("ProtectedPort".into(), "3000".into());
 
-        let result = render_template("ufw allow from {{.NewIP}} to any port {{.ProtectedPort}}", &vars);
+        let result = render_template(
+            "ufw allow from {{.NewIP}} to any port {{.ProtectedPort}}",
+            &vars,
+        );
         // Values are now shell-escaped (wrapped in single quotes)
         assert_eq!(result, "ufw allow from '1.2.3.4' to any port '3000'");
     }

@@ -125,10 +125,39 @@ impl PlatformAdapter for MacOSAdapter {
         let http_port = config.http_port.to_string();
 
         let commands: Vec<(&str, Vec<&str>)> = vec![
-            ("sudo", vec!["networksetup", "-setsocksfirewallproxy", &service, "127.0.0.1", &socks_port]),
-            ("sudo", vec!["networksetup", "-setwebproxy", &service, "127.0.0.1", &http_port]),
-            ("sudo", vec!["networksetup", "-setsocksfirewallproxystate", &service, "on"]),
-            ("sudo", vec!["networksetup", "-setwebproxystate", &service, "on"]),
+            (
+                "sudo",
+                vec![
+                    "networksetup",
+                    "-setsocksfirewallproxy",
+                    &service,
+                    "127.0.0.1",
+                    &socks_port,
+                ],
+            ),
+            (
+                "sudo",
+                vec![
+                    "networksetup",
+                    "-setwebproxy",
+                    &service,
+                    "127.0.0.1",
+                    &http_port,
+                ],
+            ),
+            (
+                "sudo",
+                vec![
+                    "networksetup",
+                    "-setsocksfirewallproxystate",
+                    &service,
+                    "on",
+                ],
+            ),
+            (
+                "sudo",
+                vec!["networksetup", "-setwebproxystate", &service, "on"],
+            ),
         ];
 
         let mut all_success = true;
@@ -192,7 +221,12 @@ impl PlatformAdapter for MacOSAdapter {
 
         let mut all_success = true;
         for args in &[
-            vec!["networksetup", "-setsocksfirewallproxystate", &service, "off"],
+            vec![
+                "networksetup",
+                "-setsocksfirewallproxystate",
+                &service,
+                "off",
+            ],
             vec!["networksetup", "-setwebproxystate", &service, "off"],
         ] {
             let output = std::process::Command::new("sudo")

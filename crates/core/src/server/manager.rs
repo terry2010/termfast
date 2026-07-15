@@ -76,7 +76,11 @@ impl ServerManager {
     }
 
     /// Reload a server's config from the config manager (updates in-place)
-    pub async fn reload_server_config(&self, server_id: &str, new_config: ServerConfig) -> Result<()> {
+    pub async fn reload_server_config(
+        &self,
+        server_id: &str,
+        new_config: ServerConfig,
+    ) -> Result<()> {
         let mut servers = self.servers.lock().await;
         if let Some(old) = servers.get(server_id) {
             // Disconnect if currently connected

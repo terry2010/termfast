@@ -127,7 +127,13 @@ mod tests {
     #[test]
     fn test_level_for_each_category() {
         let prefs = NotificationPrefs::default();
-        assert_eq!(prefs.level_for(&NotificationCategory::Connection), &NotificationLevel::SystemAndTray);
-        assert_eq!(prefs.level_for(&NotificationCategory::Proxy), &NotificationLevel::LogOnly);
+        assert_eq!(
+            prefs.level_for(&NotificationCategory::Connection),
+            &NotificationLevel::SystemAndTray
+        );
+        assert_eq!(
+            prefs.level_for(&NotificationCategory::Proxy),
+            &NotificationLevel::LogOnly
+        );
     }
 }

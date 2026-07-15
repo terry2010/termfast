@@ -14,11 +14,7 @@ use tokio::sync::Mutex;
 #[async_trait::async_trait]
 pub trait ChannelOpener: Send + Sync {
     /// Open a direct-tcpip channel to the target host:port
-    async fn open_channel(
-        &self,
-        host: &str,
-        port: u16,
-    ) -> Result<Channel<client::Msg>>;
+    async fn open_channel(&self, host: &str, port: u16) -> Result<Channel<client::Msg>>;
 }
 
 /// SSH implementation of ChannelOpener
@@ -55,15 +51,11 @@ impl SshChannelOpener {
 
 #[async_trait::async_trait]
 impl ChannelOpener for SshChannelOpener {
-    async fn open_channel(
-        &self,
-        host: &str,
-        port: u16,
-    ) -> Result<Channel<client::Msg>> {
+    async fn open_channel(&self, host: &str, port: u16) -> Result<Channel<client::Msg>> {
         let guard = self.handle.lock().await;
-        let handle = guard.as_ref().ok_or_else(|| {
-            Error::Ssh("SSH connection not available".into())
-        })?;
+        let handle = guard
+            .as_ref()
+            .ok_or_else(|| Error::Ssh("SSH connection not available".into()))?;
         handle
             .channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0)
             .await

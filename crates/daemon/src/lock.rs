@@ -4,7 +4,7 @@
 //! Used by CLI/GUI to discover daemon socket path.
 //! File permissions 600. PID liveness check on startup.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -63,9 +63,7 @@ impl DaemonLock {
         #[cfg(unix)]
         {
             // Send signal 0 (no-op) to check if process exists
-            unsafe {
-                libc::kill(pid as i32, 0) == 0
-            }
+            unsafe { libc::kill(pid as i32, 0) == 0 }
         }
         #[cfg(not(unix))]
         {
@@ -73,11 +71,7 @@ impl DaemonLock {
             use std::ffi::c_void;
             #[link(name = "kernel32")]
             extern "system" {
-                fn OpenProcess(
-                    access: u32,
-                    inherit: i32,
-                    pid: u32,
-                ) -> *mut c_void;
+                fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
                 fn CloseHandle(h: *mut c_void) -> i32;
             }
             const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
@@ -111,7 +105,10 @@ impl DaemonLock {
 
         // Check if another daemon is already running
         if Self::is_daemon_running(&lock_path) {
-            bail!("daemon is already running (lock file: {})", lock_path.display());
+            bail!(
+                "daemon is already running (lock file: {})",
+                lock_path.display()
+            );
         }
 
         // Create the lock
@@ -156,7 +153,11 @@ pub fn default_socket_path() -> Result<String> {
     {
         let proj_dir = directories::ProjectDirs::from("", "", "termfast")
             .ok_or_else(|| anyhow::anyhow!("cannot determine data directory"))?;
-        Ok(proj_dir.data_dir().join("daemon.sock").to_string_lossy().into())
+        Ok(proj_dir
+            .data_dir()
+            .join("daemon.sock")
+            .to_string_lossy()
+            .into())
     }
     #[cfg(not(unix))]
     {

@@ -3,9 +3,13 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+import {
+  isPermissionGranted,
+  requestPermission,
+} from "@tauri-apps/plugin-notification";
 import { useServerStore } from "@/stores/serverStore";
 import { useConfigStore } from "@/stores/configStore";
+import { useTriggerStore } from "@/stores/triggerStore";
 import i18n, { resolveLanguage } from "@/i18n/config";
 import { useDaemonEvents } from "@/hooks/useDaemonEvents";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -35,6 +39,7 @@ export default function App() {
   const setServers = useServerStore((s) => s.setServers);
   const config = useConfigStore((s) => s.config);
   const setConfig = useConfigStore((s) => s.setConfig);
+  const loadTemplates = useTriggerStore((s) => s.loadTemplates);
 
   // Load config and server list from daemon on mount
   useEffect(() => {
@@ -49,11 +54,17 @@ export default function App() {
           granted = perm === "granted";
         }
         if (granted) {
-          const { sendNotification } = await import("@tauri-apps/plugin-notification");
-          sendNotification({ title: "TermFast", body: "Notifications enabled" });
+          const { sendNotification } =
+            await import("@tauri-apps/plugin-notification");
+          sendNotification({
+            title: "TermFast",
+            body: "Notifications enabled",
+          });
           console.log("[App] test notification sent");
         }
-      } catch (e) { console.error("[App] notification init failed:", e); }
+      } catch (e) {
+        console.error("[App] notification init failed:", e);
+      }
     })();
 
     ipcInvoke<any>("ipc_get_config")
@@ -75,12 +86,18 @@ export default function App() {
       })
       .catch((e) => console.error("load servers failed:", e));
 
+    // Pre-load trigger templates so the selector in TriggerEditor has data
+    // before the TemplateLibrary modal is ever opened.
+    loadTemplates().catch((e) => console.error("load templates failed:", e));
+
     // Silent auto-check for updates 5s after startup (FP-10.2)
     const cancelAutoCheck = scheduleAutoUpdateCheck(5000, (result) => {
       const version = result.info.version;
       toast(
         <div className="flex flex-col gap-1">
-          <div className="text-sm font-medium">{t("settings.about.available", { version })}</div>
+          <div className="text-sm font-medium">
+            {t("settings.about.available", { version })}
+          </div>
           {result.info.body && (
             <div className="text-xs text-gray-500 dark:text-gray-400 max-h-24 overflow-y-auto whitespace-pre-line">
               {result.info.body}
@@ -96,7 +113,10 @@ export default function App() {
               try {
                 const { installUpdate } = await import("@/hooks/useUpdater");
                 await installUpdate(result.update, (percent) => {
-                  toast.loading(`${t("settings.about.installing")} ${percent}%`, { id: progressId });
+                  toast.loading(
+                    `${t("settings.about.installing")} ${percent}%`,
+                    { id: progressId },
+                  );
                 });
                 toast.dismiss(progressId);
                 toast.success(t("settings.about.installed"));
@@ -107,7 +127,7 @@ export default function App() {
               }
             },
           },
-        }
+        },
       );
     });
 
@@ -157,7 +177,8 @@ export default function App() {
           host: server.ssh?.host || "",
           port: server.ssh?.port || 22,
           username: server.ssh?.user || "root",
-          authType: (server.ssh?.auth_method as "password" | "key") || "password",
+          authType:
+            (server.ssh?.auth_method as "password" | "key") || "password",
           keyPath: server.ssh?.key_path || "",
           socks5Port: server.proxy?.socks5_port || 1080,
           httpPort: server.proxy?.http_port || 8080,
@@ -225,33 +246,48 @@ export default function App() {
       logPanel?.scrollIntoView({ behavior: "smooth" });
     },
     onFocusLogSearch: () => {
-      const searchInput = document.querySelector("[data-log-search]") as HTMLInputElement | null;
+      const searchInput = document.querySelector(
+        "[data-log-search]",
+      ) as HTMLInputElement | null;
       searchInput?.focus();
     },
     onToggleProxy: () => {
-      const selected = servers.find((s) => s.id === useServerStore.getState().selected_server_id);
+      const selected = servers.find(
+        (s) => s.id === useServerStore.getState().selected_server_id,
+      );
       if (selected) {
-        ipcInvoke("ipc_toggle_proxy", { serverId: selected.id, enabled: !selected.proxy_running }).catch(() => {});
+        ipcInvoke("ipc_toggle_proxy", {
+          serverId: selected.id,
+          enabled: !selected.proxy_running,
+        }).catch(() => {});
       }
     },
     onToggleTriggers: () => {
       ipcInvoke("ipc_pause_all_triggers", {}).catch(() => {});
     },
     onToggleConnection: () => {
-      const selected = servers.find((s) => s.id === useServerStore.getState().selected_server_id);
+      const selected = servers.find(
+        (s) => s.id === useServerStore.getState().selected_server_id,
+      );
       if (!selected) return;
       if (selected.current_status === "connected") {
-        ipcInvoke("ipc_disconnect_server", { serverId: selected.id }).catch(() => {});
+        ipcInvoke("ipc_disconnect_server", { serverId: selected.id }).catch(
+          () => {},
+        );
       } else {
-        ipcInvoke("ipc_connect_server", { serverId: selected.id }).catch(() => {});
+        ipcInvoke("ipc_connect_server", { serverId: selected.id }).catch(
+          () => {},
+        );
       }
     },
     onToggleLogPanel: () => setLogPanelExpanded((v) => !v),
     onToggleSidebar: () => setSidebarCollapsed((v) => !v),
     onRefresh: () => {
-      ipcInvoke("ipc_list_servers").then((data: any) => {
-        if (data?.servers) useServerStore.setState({ servers: data.servers });
-      }).catch(() => {});
+      ipcInvoke("ipc_list_servers")
+        .then((data: any) => {
+          if (data?.servers) useServerStore.setState({ servers: data.servers });
+        })
+        .catch(() => {});
     },
     onEscape: () => {
       setShowSettings(false);
@@ -267,7 +303,9 @@ export default function App() {
   const handleConfirmDelete = useCallback(async () => {
     if (!confirmDelete) return;
     try {
-      await ipcInvoke("ipc_remove_server", { serverId: confirmDelete.serverId });
+      await ipcInvoke("ipc_remove_server", {
+        serverId: confirmDelete.serverId,
+      });
     } catch (e) {
       console.error("delete server failed:", e);
     }
@@ -276,76 +314,79 @@ export default function App() {
 
   return (
     <ContextMenuProvider>
-    <div className="flex flex-col h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100">
-      <TitleBar />
-      <PendingEventsBanner />
-      <div className="flex flex-1 overflow-hidden">
-        <ServerList
-          onAddServer={() => setShowAddServer(true)}
-          onOpenSettings={() => setShowSettings(true)}
-          onOpenTemplates={() => setShowTemplates(true)}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
-        />
-        <ServerDetail />
+      <div className="flex flex-col h-screen bg-white dark:bg-[#121212] text-gray-900 dark:text-gray-100">
+        <TitleBar />
+        <PendingEventsBanner />
+        <div className="flex flex-1 overflow-hidden">
+          <ServerList
+            onAddServer={() => setShowAddServer(true)}
+            onOpenSettings={() => setShowSettings(true)}
+            onOpenTemplates={() => setShowTemplates(true)}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+          />
+          <div className="flex-1 overflow-hidden bg-white dark:bg-[#1E1E1E]">
+            <ServerDetail />
+          </div>
+        </div>
+        <LogPanel onExpand={() => setShowLogViewer(true)} />
+
+        {/* Modals */}
+        {showOnboarding && (
+          <Onboarding onComplete={() => setShowOnboarding(false)} />
+        )}
+        {showSettings && (
+          <SettingsPage onClose={() => setShowSettings(false)} />
+        )}
+        {showTemplates && (
+          <TemplateLibrary onClose={() => setShowTemplates(false)} />
+        )}
+        {showAddServer && (
+          <AddServerDialog
+            onAdd={() => setShowAddServer(false)}
+            onCancel={() => setShowAddServer(false)}
+          />
+        )}
+        {editServer && (
+          <AddServerDialog
+            editServer={editServer}
+            onAdd={() => {
+              setEditServer(null);
+              // Reload server list
+              console.log("[edit] onAdd callback, reloading servers");
+              ipcInvoke<{ servers: any[] }>("ipc_list_servers")
+                .then((data) => {
+                  if (data?.servers)
+                    useServerStore.setState({ servers: data.servers });
+                })
+                .catch(() => {});
+            }}
+            onCancel={() => setEditServer(null)}
+          />
+        )}
+        {showLogViewer && <LogViewer onClose={() => setShowLogViewer(false)} />}
+        <UndoToast />
+
+        {/* Confirm dialog for server deletion (C3 fix) */}
+        {confirmDelete && (
+          <ConfirmDialog
+            level="high"
+            title={t("server.delete_title")}
+            message={t("server.delete_message", {
+              name: confirmDelete.serverName,
+            })}
+            confirmName={confirmDelete.serverName}
+            actions={[
+              t("server.delete_action_disconnect"),
+              t("server.delete_action_triggers"),
+              t("server.delete_action_config"),
+            ]}
+            onConfirm={handleConfirmDelete}
+            onCancel={() => setConfirmDelete(null)}
+          />
+        )}
       </div>
-      <LogPanel onExpand={() => setShowLogViewer(true)} />
-
-      {/* Modals */}
-      {showOnboarding && (
-        <Onboarding onComplete={() => setShowOnboarding(false)} />
-      )}
-      {showSettings && (
-        <SettingsPage onClose={() => setShowSettings(false)} />
-      )}
-      {showTemplates && (
-        <TemplateLibrary onClose={() => setShowTemplates(false)} />
-      )}
-      {showAddServer && (
-        <AddServerDialog
-          onAdd={() => setShowAddServer(false)}
-          onCancel={() => setShowAddServer(false)}
-        />
-      )}
-      {editServer && (
-        <AddServerDialog
-          editServer={editServer}
-          onAdd={() => {
-            setEditServer(null);
-            // Reload server list
-            console.log("[edit] onAdd callback, reloading servers");
-            ipcInvoke<{ servers: any[] }>("ipc_list_servers")
-              .then((data) => {
-                if (data?.servers) useServerStore.setState({ servers: data.servers });
-              })
-              .catch(() => {});
-          }}
-          onCancel={() => setEditServer(null)}
-        />
-      )}
-      {showLogViewer && (
-        <LogViewer onClose={() => setShowLogViewer(false)} />
-      )}
-      <UndoToast />
-
-      {/* Confirm dialog for server deletion (C3 fix) */}
-      {confirmDelete && (
-        <ConfirmDialog
-          level="high"
-          title={t("server.delete_title")}
-          message={t("server.delete_message", { name: confirmDelete.serverName })}
-          confirmName={confirmDelete.serverName}
-          actions={[
-            t("server.delete_action_disconnect"),
-            t("server.delete_action_triggers"),
-            t("server.delete_action_config"),
-          ]}
-          onConfirm={handleConfirmDelete}
-          onCancel={() => setConfirmDelete(null)}
-        />
-      )}
-    </div>
-    <Toaster position="top-right" richColors closeButton />
+      <Toaster position="top-right" richColors closeButton />
     </ContextMenuProvider>
   );
 }

@@ -73,14 +73,18 @@ impl ConfigManager {
     {
         let mut config = self.config.write().await;
         let result = f(&mut config);
-        self.storage.save(&config).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        self.storage
+            .save(&config)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(result)
     }
 
     /// Save current config to file
     pub async fn save(&self) -> anyhow::Result<()> {
         let config = self.config.read().await.clone();
-        self.storage.save(&config).map_err(|e| anyhow::anyhow!(e.to_string()))
+        self.storage
+            .save(&config)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
     /// Get a reference to the config (read lock)
@@ -112,10 +116,12 @@ mod tests {
     #[tokio::test]
     async fn test_config_manager_modify() {
         let mgr = ConfigManager::new(Config::default());
-        let result = mgr.modify(|c| {
-            c.general.language = "en".to_string();
-            42
-        }).await;
+        let result = mgr
+            .modify(|c| {
+                c.general.language = "en".to_string();
+                42
+            })
+            .await;
         if let Ok(val) = result {
             assert_eq!(val, 42);
             assert_eq!(mgr.get().await.general.language, "en");

@@ -46,17 +46,17 @@ pub async fn open_pty_shell(
     use russh::Pty;
     let terminal_modes: Vec<(Pty, u32)> = vec![
         // Input modes — prevent PTY from eating or modifying binary data
-        (Pty::ISTRIP, 0),  // Don't strip 8th bit — preserve binary data
-        (Pty::IXON, 0),    // Disable XON/XOFF output flow control (would eat 0x13)
-        (Pty::IXOFF, 0),   // Disable XON/XOFF input flow control (would eat 0x11)
-        (Pty::ICRNL, 0),   // Don't translate CR to NL on input
-        (Pty::INLCR, 0),   // Don't translate NL to CR on input
-        (Pty::IGNCR, 0),   // Don't discard CR on input
+        (Pty::ISTRIP, 0), // Don't strip 8th bit — preserve binary data
+        (Pty::IXON, 0),   // Disable XON/XOFF output flow control (would eat 0x13)
+        (Pty::IXOFF, 0),  // Disable XON/XOFF input flow control (would eat 0x11)
+        (Pty::ICRNL, 0),  // Don't translate CR to NL on input
+        (Pty::INLCR, 0),  // Don't translate NL to CR on input
+        (Pty::IGNCR, 0),  // Don't discard CR on input
         // Control modes
-        (Pty::CS8, 1),     // 8-bit characters (needed for binary + UTF-8)
+        (Pty::CS8, 1), // 8-bit characters (needed for binary + UTF-8)
         // Local modes — keep ECHO and ICANON for interactive shell
-        (Pty::ECHO, 1),    // Keep echo on for interactive use
-        (Pty::ICANON, 1),  // Keep canonical mode for line editing
+        (Pty::ECHO, 1),   // Keep echo on for interactive use
+        (Pty::ICANON, 1), // Keep canonical mode for line editing
     ];
 
     tracing::info!("requesting PTY: cols={}, rows={}", cols, rows);
@@ -71,7 +71,10 @@ pub async fn open_pty_shell(
         .await
         .map_err(|e| Error::Ssh(format!("failed to request shell: {}", e)))?;
 
-    tracing::info!("shell requested with PTY, channel ready (id={})", channel.id());
+    tracing::info!(
+        "shell requested with PTY, channel ready (id={})",
+        channel.id()
+    );
     Ok(channel)
 }
 
@@ -96,11 +99,7 @@ pub async fn open_shell_via_exec(
 }
 
 /// Send a window-change request to resize the PTY.
-pub async fn resize_pty(
-    channel: &Channel<client::Msg>,
-    cols: u32,
-    rows: u32,
-) -> Result<()> {
+pub async fn resize_pty(channel: &Channel<client::Msg>, cols: u32, rows: u32) -> Result<()> {
     channel
         .window_change(cols, rows, 0, 0)
         .await

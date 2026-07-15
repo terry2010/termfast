@@ -19,11 +19,13 @@ pub struct AppState {
 pub fn run() {
     // Initialize tracing to stderr (visible in `npm start` terminal)
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env()
-            .add_directive("termfast_app=info".parse().unwrap())
-            .add_directive("termfast_daemon=info".parse().unwrap())
-            .add_directive("termfast_core=info".parse().unwrap())
-            .add_directive("keychain=debug".parse().unwrap()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("termfast_app=info".parse().unwrap())
+                .add_directive("termfast_daemon=info".parse().unwrap())
+                .add_directive("termfast_core=info".parse().unwrap())
+                .add_directive("keychain=debug".parse().unwrap()),
+        )
         .with_writer(std::io::stderr)
         .init();
 
@@ -159,6 +161,7 @@ pub fn run() {
             ipc_list_triggers,
             ipc_add_trigger,
             ipc_update_trigger,
+            ipc_remove_trigger,
             ipc_add_trigger_from_template,
             // System proxy (FP-6.6)
             ipc_set_system_proxy,
@@ -226,7 +229,12 @@ async fn forward_to_daemon(
 
 #[tauri::command]
 async fn ipc_get_config(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::GetConfig, serde_json::json!({})).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::GetConfig,
+        serde_json::json!({}),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -243,21 +251,49 @@ async fn ipc_update_general_config(
     custom_variables: Option<Vec<serde_json::Value>>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({});
-    if let Some(v) = theme { params["theme"] = serde_json::json!(v); }
-    if let Some(v) = language { params["language"] = serde_json::json!(v); }
-    if let Some(v) = auto_start { params["auto_start"] = serde_json::json!(v); }
-    if let Some(v) = minimize_to_tray { params["minimize_to_tray"] = serde_json::json!(v); }
-    if let Some(v) = log_level { params["log_level"] = serde_json::json!(v); }
-    if let Some(v) = log_to_file { params["log_to_file"] = serde_json::json!(v); }
-    if let Some(v) = log_max_days { params["log_max_days"] = serde_json::json!(v); }
-    if let Some(v) = log_max_size_mb { params["log_max_size_mb"] = serde_json::json!(v); }
-    if let Some(v) = custom_variables { params["custom_variables"] = serde_json::json!(v); }
-    forward_to_daemon(&state, termfast_daemon::proto::Action::UpdateGeneralConfig, params).await
+    if let Some(v) = theme {
+        params["theme"] = serde_json::json!(v);
+    }
+    if let Some(v) = language {
+        params["language"] = serde_json::json!(v);
+    }
+    if let Some(v) = auto_start {
+        params["auto_start"] = serde_json::json!(v);
+    }
+    if let Some(v) = minimize_to_tray {
+        params["minimize_to_tray"] = serde_json::json!(v);
+    }
+    if let Some(v) = log_level {
+        params["log_level"] = serde_json::json!(v);
+    }
+    if let Some(v) = log_to_file {
+        params["log_to_file"] = serde_json::json!(v);
+    }
+    if let Some(v) = log_max_days {
+        params["log_max_days"] = serde_json::json!(v);
+    }
+    if let Some(v) = log_max_size_mb {
+        params["log_max_size_mb"] = serde_json::json!(v);
+    }
+    if let Some(v) = custom_variables {
+        params["custom_variables"] = serde_json::json!(v);
+    }
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::UpdateGeneralConfig,
+        params,
+    )
+    .await
 }
 
 #[tauri::command]
 async fn ipc_list_servers(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::ListServers, serde_json::json!({})).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::ListServers,
+        serde_json::json!({}),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -269,7 +305,8 @@ async fn ipc_connect_server(
         &state,
         termfast_daemon::proto::Action::ConnectServer,
         serde_json::json!({ "server_id": server_id }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -281,7 +318,8 @@ async fn ipc_disconnect_server(
         &state,
         termfast_daemon::proto::Action::DisconnectServer,
         serde_json::json!({ "server_id": server_id }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -289,12 +327,12 @@ async fn ipc_add_server(
     state: tauri::State<'_, AppState>,
     config: serde_json::Value,
 ) -> Result<String, String> {
-    let result = forward_to_daemon(
-        &state,
-        termfast_daemon::proto::Action::AddServer,
-        config,
-    ).await?;
-    result["server_id"].as_str().map(|s| s.to_string()).ok_or_else(|| "missing server_id in response".to_string())
+    let result =
+        forward_to_daemon(&state, termfast_daemon::proto::Action::AddServer, config).await?;
+    result["server_id"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "missing server_id in response".to_string())
 }
 
 #[tauri::command]
@@ -306,7 +344,8 @@ async fn ipc_remove_server(
         &state,
         termfast_daemon::proto::Action::RemoveServer,
         serde_json::json!({ "server_id": server_id }),
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -319,7 +358,8 @@ async fn ipc_reorder_servers(
         &state,
         termfast_daemon::proto::Action::ReorderServers,
         serde_json::json!({ "server_ids": server_ids }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -335,18 +375,28 @@ async fn ipc_update_server(
     reconnect_timeout_secs: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({ "server_id": server_id });
-    if let Some(n) = name { params["name"] = serde_json::json!(n); }
-    if let Some(p) = socks5_port { params["socks5_port"] = serde_json::json!(p); }
-    if let Some(p) = http_port { params["http_port"] = serde_json::json!(p); }
-    if let Some(p) = mixed_port { params["mixed_port"] = serde_json::json!(p); }
-    if let Some(s) = ssh { params["ssh"] = s; }
-    if let Some(v) = auto_reconnect { params["auto_reconnect"] = serde_json::json!(v); }
-    if let Some(v) = reconnect_timeout_secs { params["reconnect_timeout_secs"] = serde_json::json!(v); }
-    forward_to_daemon(
-        &state,
-        termfast_daemon::proto::Action::UpdateServer,
-        params,
-    ).await
+    if let Some(n) = name {
+        params["name"] = serde_json::json!(n);
+    }
+    if let Some(p) = socks5_port {
+        params["socks5_port"] = serde_json::json!(p);
+    }
+    if let Some(p) = http_port {
+        params["http_port"] = serde_json::json!(p);
+    }
+    if let Some(p) = mixed_port {
+        params["mixed_port"] = serde_json::json!(p);
+    }
+    if let Some(s) = ssh {
+        params["ssh"] = s;
+    }
+    if let Some(v) = auto_reconnect {
+        params["auto_reconnect"] = serde_json::json!(v);
+    }
+    if let Some(v) = reconnect_timeout_secs {
+        params["reconnect_timeout_secs"] = serde_json::json!(v);
+    }
+    forward_to_daemon(&state, termfast_daemon::proto::Action::UpdateServer, params).await
 }
 
 #[tauri::command]
@@ -359,7 +409,8 @@ async fn ipc_toggle_proxy(
         &state,
         termfast_daemon::proto::Action::ToggleProxy,
         serde_json::json!({ "server_id": server_id, "enabled": enabled }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -371,7 +422,8 @@ async fn ipc_get_proxy_status(
         &state,
         termfast_daemon::proto::Action::GetProxyStatus,
         serde_json::json!({ "server_id": server_id }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -384,24 +436,40 @@ async fn ipc_get_logs(
         &state,
         termfast_daemon::proto::Action::GetLogs,
         serde_json::json!({ "server_id": server_id, "limit": limit }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
 async fn ipc_clear_logs(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::ClearLogs, serde_json::json!({})).await?;
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::ClearLogs,
+        serde_json::json!({}),
+    )
+    .await?;
     Ok(())
 }
 
 #[tauri::command]
 async fn ipc_pause_all_triggers(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::PauseAllTriggers, serde_json::json!({})).await?;
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::PauseAllTriggers,
+        serde_json::json!({}),
+    )
+    .await?;
     Ok(())
 }
 
 #[tauri::command]
 async fn ipc_resume_all_triggers(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::ResumeAllTriggers, serde_json::json!({})).await?;
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::ResumeAllTriggers,
+        serde_json::json!({}),
+    )
+    .await?;
     Ok(())
 }
 
@@ -415,12 +483,20 @@ async fn ipc_manual_fire_trigger(
         &state,
         termfast_daemon::proto::Action::ManualFireTrigger,
         serde_json::json!({ "server_id": server_id, "trigger_id": trigger_id }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
-async fn ipc_list_templates(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::ListTemplates, serde_json::json!({})).await
+async fn ipc_list_templates(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::ListTemplates,
+        serde_json::json!({}),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -428,7 +504,12 @@ async fn ipc_create_template(
     state: tauri::State<'_, AppState>,
     template: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::CreateTemplate, template).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CreateTemplate,
+        template,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -437,7 +518,12 @@ async fn ipc_update_template(
     template_id: String,
     template: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::UpdateTemplate, serde_json::json!({ "template_id": template_id, "template": template })).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::UpdateTemplate,
+        serde_json::json!({ "template_id": template_id, "template": template }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -445,12 +531,24 @@ async fn ipc_delete_template(
     state: tauri::State<'_, AppState>,
     template_id: String,
 ) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::DeleteTemplate, serde_json::json!({ "template_id": template_id })).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::DeleteTemplate,
+        serde_json::json!({ "template_id": template_id }),
+    )
+    .await
 }
 
 #[tauri::command]
-async fn ipc_export_templates(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::ExportTemplates, serde_json::json!({})).await
+async fn ipc_export_templates(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::ExportTemplates,
+        serde_json::json!({}),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -458,7 +556,12 @@ async fn ipc_import_templates(
     state: tauri::State<'_, AppState>,
     templates: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::ImportTemplates, serde_json::json!({ "templates": templates })).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::ImportTemplates,
+        serde_json::json!({ "templates": templates }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -477,13 +580,25 @@ async fn ipc_save_credential(
 }
 
 #[tauri::command]
-async fn ipc_get_daemon_status(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::GetDaemonStatus, serde_json::json!({})).await
+async fn ipc_get_daemon_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::GetDaemonStatus,
+        serde_json::json!({}),
+    )
+    .await
 }
 
 #[tauri::command]
 async fn ipc_shutdown(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    forward_to_daemon(&state, termfast_daemon::proto::Action::Shutdown, serde_json::json!({})).await?;
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::Shutdown,
+        serde_json::json!({}),
+    )
+    .await?;
     Ok(())
 }
 
@@ -497,9 +612,17 @@ async fn ipc_list_triggers(
     server_id: String,
 ) -> Result<serde_json::Value, String> {
     // Read triggers from server config via handler
-    let config = forward_to_daemon(&state, termfast_daemon::proto::Action::GetConfig, serde_json::json!({})).await?;
+    let config = forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::GetConfig,
+        serde_json::json!({}),
+    )
+    .await?;
     let servers = config["servers"].as_array().ok_or("invalid config")?;
-    let server = servers.iter().find(|s| s["id"] == server_id).ok_or("server not found")?;
+    let server = servers
+        .iter()
+        .find(|s| s["id"] == server_id)
+        .ok_or("server not found")?;
     Ok(server["triggers"].clone())
 }
 
@@ -513,7 +636,8 @@ async fn ipc_add_trigger(
         &state,
         termfast_daemon::proto::Action::AddTrigger,
         serde_json::json!({ "server_id": server_id, "trigger": trigger }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -525,7 +649,21 @@ async fn ipc_update_trigger(
         &state,
         termfast_daemon::proto::Action::UpdateTrigger,
         params,
-    ).await
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_remove_trigger(
+    state: tauri::State<'_, AppState>,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::RemoveTrigger,
+        params,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -535,9 +673,18 @@ async fn ipc_add_trigger_from_template(
     template_id: String,
 ) -> Result<serde_json::Value, String> {
     // Find template, create trigger instance, add to server config
-    let config = forward_to_daemon(&state, termfast_daemon::proto::Action::GetConfig, serde_json::json!({})).await?;
-    let templates = config["trigger_templates"].as_array().ok_or("invalid config")?;
-    let template = templates.iter().find(|t| t["id"] == template_id)
+    let config = forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::GetConfig,
+        serde_json::json!({}),
+    )
+    .await?;
+    let templates = config["trigger_templates"]
+        .as_array()
+        .ok_or("invalid config")?;
+    let template = templates
+        .iter()
+        .find(|t| t["id"] == template_id)
         .ok_or_else(|| format!("template {} not found", template_id))?;
     let trigger = serde_json::json!({
         "id": format!("trig_{}", chrono::Utc::now().timestamp_millis()),
@@ -558,7 +705,8 @@ async fn ipc_add_trigger_from_template(
         &state,
         termfast_daemon::proto::Action::AddTrigger,
         serde_json::json!({ "server_id": server_id, "trigger": trigger }),
-    ).await
+    )
+    .await
 }
 
 // === System proxy IPC (FP-6.6) ===
@@ -572,7 +720,8 @@ async fn ipc_set_system_proxy(
         &state,
         termfast_daemon::proto::Action::SetSystemProxy,
         serde_json::json!({ "server_id": server_id }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -583,7 +732,8 @@ async fn ipc_clear_system_proxy(
         &state,
         termfast_daemon::proto::Action::ClearSystemProxy,
         serde_json::json!({}),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -593,12 +743,10 @@ async fn ipc_test_proxy(
     url: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({ "server_id": server_id });
-    if let Some(u) = url { params["url"] = serde_json::json!(u); }
-    forward_to_daemon(
-        &state,
-        termfast_daemon::proto::Action::TestProxy,
-        params,
-    ).await
+    if let Some(u) = url {
+        params["url"] = serde_json::json!(u);
+    }
+    forward_to_daemon(&state, termfast_daemon::proto::Action::TestProxy, params).await
 }
 
 // === Auth IPC (FP-6.1) ===
@@ -613,7 +761,8 @@ async fn ipc_switch_auth_method(
         &state,
         termfast_daemon::proto::Action::SwitchAuthMethod,
         serde_json::json!({ "server_id": server_id, "auth_method": auth_method }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -624,12 +773,17 @@ async fn ipc_generate_ssh_key(
 ) -> Result<serde_json::Value, String> {
     use termfast_core::ssh::auth;
     let safe_id = comment.replace(['@', '.', ':', '/'], "_");
-    let (key_path, _pub_key, passphrase) = auth::generate_keypair(&safe_id)
-        .map_err(|e| e.to_string())?;
-    let cred_key = termfast_credential::make_key(&safe_id, termfast_credential::cred_type::KEY_PASSPHRASE);
+    let (key_path, _pub_key, passphrase) =
+        auth::generate_keypair(&safe_id).map_err(|e| e.to_string())?;
+    let cred_key =
+        termfast_credential::make_key(&safe_id, termfast_credential::cred_type::KEY_PASSPHRASE);
     let guard = state.daemon.lock().await;
     if let Some(ref daemon) = *guard {
-        let _ = daemon.server.state().credential_store.save(&cred_key, &passphrase);
+        let _ = daemon
+            .server
+            .state()
+            .credential_store
+            .save(&cred_key, &passphrase);
     }
     Ok(serde_json::json!({ "key_path": key_path.to_string_lossy() }))
 }
@@ -646,8 +800,8 @@ async fn ipc_test_connection(
     password: Option<String>,
     key_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    use termfast_core::ssh::client::{SshClientConfig, SshClientHandle};
     use termfast_core::ssh::auth::AuthMethod;
+    use termfast_core::ssh::client::{SshClientConfig, SshClientHandle};
 
     let config = SshClientConfig {
         host: host.clone(),
@@ -659,6 +813,7 @@ async fn ipc_test_connection(
         max_backoff_secs: 5,
         skip_hostkey_verify: true,
         hostkey_mismatch_callback: None,
+        socket_protector: None,
     };
 
     let client = SshClientHandle::new(config);
@@ -668,7 +823,10 @@ async fn ipc_test_connection(
         if kp.is_empty() {
             return Err("key_path is required for key auth".to_string());
         }
-        AuthMethod::Key { key_path: kp, passphrase: None }
+        AuthMethod::Key {
+            key_path: kp,
+            passphrase: None,
+        }
     } else {
         let pw = password.unwrap_or_default();
         if pw.is_empty() {
@@ -702,10 +860,15 @@ async fn ipc_check_port_reachable(
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         TcpStream::connect((host.as_str(), port)),
-    ).await;
+    )
+    .await;
     match result {
-        Ok(Ok(_stream)) => Ok(serde_json::json!({ "reachable": true, "latency_ms": start.elapsed().as_millis() })),
-        _ => Ok(serde_json::json!({ "reachable": false, "latency_ms": start.elapsed().as_millis() })),
+        Ok(Ok(_stream)) => {
+            Ok(serde_json::json!({ "reachable": true, "latency_ms": start.elapsed().as_millis() }))
+        }
+        _ => {
+            Ok(serde_json::json!({ "reachable": false, "latency_ms": start.elapsed().as_millis() }))
+        }
     }
 }
 
@@ -719,21 +882,22 @@ async fn ipc_detect_firewall(
         &state,
         termfast_daemon::proto::Action::DetectFirewall,
         serde_json::json!({ "server_id": server_id }),
-    ).await
+    )
+    .await
 }
 
 // === Network status IPC (FP-6.9) ===
 
 #[tauri::command]
-async fn ipc_get_network_status(
-    _app: tauri::AppHandle,
-) -> Result<serde_json::Value, String> {
+async fn ipc_get_network_status(_app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use tauri_plugin_network::network::utils::get_non_empty_interfaces;
     let interface_count = get_non_empty_interfaces().map(|v| v.len()).unwrap_or(0);
     let can_reach_internet = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         tokio::net::TcpStream::connect(("1.1.1.1", 53)),
-    ).await.is_ok();
+    )
+    .await
+    .is_ok();
     Ok(serde_json::json!({ "online": can_reach_internet, "interface_count": interface_count }))
 }
 
@@ -765,7 +929,8 @@ async fn ipc_export_full(
         &state,
         termfast_daemon::proto::Action::ExportFull,
         serde_json::json!({ "master_password": master_password }),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -778,16 +943,14 @@ async fn ipc_import_full(
         &state,
         termfast_daemon::proto::Action::ImportFull,
         serde_json::json!({ "master_password": master_password, "blob": blob }),
-    ).await
+    )
+    .await
 }
 
 // === Autostart IPC (FP-6.5 / M1 fix) ===
 
 #[tauri::command]
-async fn ipc_set_autostart(
-    app_handle: tauri::AppHandle,
-    enabled: bool,
-) -> Result<bool, String> {
+async fn ipc_set_autostart(app_handle: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     let manager = app_handle.autolaunch();
     if enabled {
@@ -799,9 +962,7 @@ async fn ipc_set_autostart(
 }
 
 #[tauri::command]
-async fn ipc_get_autostart(
-    app_handle: tauri::AppHandle,
-) -> Result<bool, String> {
+async fn ipc_get_autostart(app_handle: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     let manager = app_handle.autolaunch();
     manager.is_enabled().map_err(|e| e.to_string())
@@ -811,26 +972,36 @@ async fn ipc_get_autostart(
 
 /// Setup system tray with menu and icon
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     // Build menu items
     let show_item = MenuItem::with_id(app, "show_window", "Show Main Window", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let connect_all = MenuItem::with_id(app, "connect_all", "Connect All", true, None::<&str>)?;
-    let disconnect_all = MenuItem::with_id(app, "disconnect_all", "Disconnect All", true, None::<&str>)?;
+    let disconnect_all =
+        MenuItem::with_id(app, "disconnect_all", "Disconnect All", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let pause_triggers = MenuItem::with_id(app, "pause_triggers", "Pause All Triggers", true, None::<&str>)?;
+    let pause_triggers = MenuItem::with_id(
+        app,
+        "pause_triggers",
+        "Pause All Triggers",
+        true,
+        None::<&str>,
+    )?;
 
-    let menu = Menu::with_items(app, &[
-        &connect_all,
-        &disconnect_all,
-        &separator,
-        &pause_triggers,
-        &separator,
-        &show_item,
-        &quit_item,
-    ])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &connect_all,
+            &disconnect_all,
+            &separator,
+            &pause_triggers,
+            &separator,
+            &show_item,
+            &quit_item,
+        ],
+    )?;
 
     // Create tray icon with a simple colored icon
     let icon = create_tray_icon(termfast_desktop::tray::TrayIconColor::Gray);
@@ -885,7 +1056,12 @@ async fn ipc_terminal_input(
         "session_id": session_id,
         "data": data,
     });
-    forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalInput, params).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::TerminalInput,
+        params,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -896,7 +1072,12 @@ async fn ipc_terminal_close(
     let params = serde_json::json!({
         "session_id": session_id,
     });
-    forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalClose, params).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::TerminalClose,
+        params,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -911,7 +1092,12 @@ async fn ipc_terminal_resize(
         "cols": cols,
         "rows": rows,
     });
-    forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalResize, params).await
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::TerminalResize,
+        params,
+    )
+    .await
 }
 
 /// Create a tray icon image based on color

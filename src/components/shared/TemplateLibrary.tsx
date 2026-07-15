@@ -19,21 +19,19 @@ const SYSTEM_VARIABLES = [
 export function TemplateLibrary({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const templates = useTriggerStore((s) => s.templates);
-  const setTemplates = useTriggerStore((s) => s.setTemplates);
+  const loadTemplates = useTriggerStore((s) => s.loadTemplates);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<TriggerTemplate | null>(null);
   const [creating, setCreating] = useState(false);
   const [showVariables, setShowVariables] = useState(false);
 
   const reload = () => {
-    ipcInvoke<{ templates: TriggerTemplate[] }>("ipc_list_templates")
-      .then((data) => {
-        if (data?.templates) setTemplates(data.templates);
-      })
-      .catch((e) => console.error("load templates failed:", e));
+    loadTemplates().catch((e) => console.error("load templates failed:", e));
   };
 
-  useEffect(() => { reload(); }, []);
+  useEffect(() => {
+    reload();
+  }, []);
 
   // ESC to close
   useEffect(() => {
@@ -48,7 +46,9 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
   const user = templates.filter((t) => !t.built_in);
 
   const handleExport = () => {
-    ipcInvoke("ipc_export_templates").catch((e) => console.error("export templates failed:", e));
+    ipcInvoke("ipc_export_templates").catch((e) =>
+      console.error("export templates failed:", e),
+    );
   };
 
   const handleImport = () => {
@@ -62,8 +62,12 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
       reader.onload = () => {
         try {
           const data = JSON.parse(reader.result as string);
-          ipcInvoke("ipc_import_templates", { templates: data }).then(() => reload()).catch((e) => console.error("import failed:", e));
-        } catch { /* ignore parse error */ }
+          ipcInvoke("ipc_import_templates", { templates: data })
+            .then(() => reload())
+            .catch((e) => console.error("import failed:", e));
+        } catch {
+          /* ignore parse error */
+        }
       };
       reader.readAsText(file);
     };
@@ -72,80 +76,87 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-    <Modal
-      title={t("menu.templates")}
-      onClose={onClose}
-      maxWidth="max-w-3xl"
-      zIndex="z-40"
-      footer={
-        <div className="flex gap-2">
-          <button
-            className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium"
-            onClick={() => setCreating(true)}
-          >
-            {t("common.add")}
-          </button>
-          <button
-            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            onClick={() => setShowVariables(true)}
-          >
-            {t("template.variables")}
-          </button>
-          <button
-            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            onClick={handleImport}
-          >
-            {t("common.import")}
-          </button>
-          <button
-            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            onClick={handleExport}
-          >
-            {t("logs.export")}
-          </button>
-        </div>
-      }
-    >
-      <div className="space-y-5">
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/80 bg-gray-50/50 dark:bg-gray-800/50">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              {t("template.built_in")}
-            </h3>
+      <Modal
+        title={t("menu.templates")}
+        onClose={onClose}
+        maxWidth="max-w-3xl"
+        zIndex="z-40"
+        footer={
+          <div className="flex gap-2">
+            <button
+              className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium"
+              onClick={() => setCreating(true)}
+            >
+              {t("common.add")}
+            </button>
+            <button
+              className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
+              onClick={() => setShowVariables(true)}
+            >
+              {t("template.variables")}
+            </button>
+            <button
+              className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
+              onClick={handleImport}
+            >
+              {t("common.import")}
+            </button>
+            <button
+              className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
+              onClick={handleExport}
+            >
+              {t("logs.export")}
+            </button>
           </div>
-          <div className="p-2">
-            <TemplateGroup
-              templates={builtIn}
-              expandedId={expandedId}
-              onToggle={setExpandedId}
-              onEdit={(tpl) => setEditing(tpl)}
-            />
+        }
+      >
+        <div className="space-y-5">
+          <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] bg-[#FBFBFB] dark:bg-[#1E1E1E]/50">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                {t("template.built_in")}
+              </h3>
+            </div>
+            <div className="p-2">
+              <TemplateGroup
+                templates={builtIn}
+                expandedId={expandedId}
+                onToggle={setExpandedId}
+                onEdit={(tpl) => setEditing(tpl)}
+              />
+            </div>
           </div>
-        </div>
 
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/80 bg-gray-50/50 dark:bg-gray-800/50">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              {t("template.user")}
-            </h3>
-          </div>
-          <div className="p-2">
-            <TemplateGroup
-              templates={user}
-              expandedId={expandedId}
-              onToggle={setExpandedId}
-              onEdit={(tpl) => setEditing(tpl)}
-              onDelete={reload}
-            />
+          <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] bg-[#FBFBFB] dark:bg-[#1E1E1E]/50">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                {t("template.user")}
+              </h3>
+            </div>
+            <div className="p-2">
+              <TemplateGroup
+                templates={user}
+                expandedId={expandedId}
+                onToggle={setExpandedId}
+                onEdit={(tpl) => setEditing(tpl)}
+                onDelete={reload}
+              />
+            </div>
           </div>
         </div>
-      </div>
-    </Modal>
+      </Modal>
       {(editing || creating) && (
         <TemplateEditor
           template={editing}
-          onClose={() => { setEditing(null); setCreating(false); }}
-          onSaved={() => { setEditing(null); setCreating(false); reload(); }}
+          onClose={() => {
+            setEditing(null);
+            setCreating(false);
+          }}
+          onSaved={() => {
+            setEditing(null);
+            setCreating(false);
+            reload();
+          }}
         />
       )}
       {showVariables && (
@@ -181,16 +192,18 @@ function TemplateGroup({
       {templates.map((tpl) => (
         <div
           key={tpl.id}
-          className="rounded-lg border border-gray-100 dark:border-gray-700/60 overflow-hidden transition-colors"
+          className="rounded-lg border border-gray-100 dark:border-white/[0.06] overflow-hidden transition-colors"
         >
-          <div className="flex items-center justify-between px-3 py-2.5 hover:bg-gray-50/50 dark:hover:bg-gray-700/20">
+          <div className="flex items-center justify-between px-3 py-2.5 hover:bg-[#FBFBFB] dark:hover:bg-[#2C2C2E]/20">
             <button
               className="flex-1 flex items-center justify-between text-left"
               onClick={() => onToggle(expandedId === tpl.id ? null : tpl.id)}
             >
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{tpl.name}</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0">
+                <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                  {tpl.name}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-[#2C2C2E] text-gray-500 dark:text-gray-400 flex-shrink-0">
                   {t(`trigger.event_types.${tpl.type}`)}
                 </span>
               </div>
@@ -201,12 +214,16 @@ function TemplateGroup({
                 strokeWidth="2"
                 viewBox="0 0 24 24"
               >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19 9l-7 7-7-7"
+                />
               </svg>
             </button>
             <div className="flex items-center gap-1 flex-shrink-0 ml-2">
               <button
-                className="text-xs px-2 py-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                className="text-xs px-2 py-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
                 onClick={() => onEdit(tpl)}
               >
                 {t("common.edit")}
@@ -218,7 +235,9 @@ function TemplateGroup({
                     if (confirm(t("template.confirm_delete"))) {
                       ipcInvoke("ipc_delete_template", { templateId: tpl.id })
                         .then(() => onDelete())
-                        .catch((e) => console.error("delete template failed:", e));
+                        .catch((e) =>
+                          console.error("delete template failed:", e),
+                        );
                     }
                   }}
                 >
@@ -228,9 +247,11 @@ function TemplateGroup({
             </div>
           </div>
           {expandedId === tpl.id && (
-            <div className="px-3 py-3 border-t border-gray-100 dark:border-gray-700/60 bg-gray-50/30 dark:bg-gray-800/30">
-              <p className="text-xs text-gray-600 dark:text-gray-400 mb-2 leading-relaxed">{tpl.description}</p>
-              <pre className="text-xs font-mono bg-gray-100 dark:bg-gray-900 p-2 rounded-lg overflow-x-auto">
+            <div className="px-3 py-3 border-t border-gray-100 dark:border-white/[0.06] bg-white dark:bg-[#1E1E1E]">
+              <p className="text-xs text-gray-600 dark:text-gray-400 mb-2 leading-relaxed">
+                {tpl.description}
+              </p>
+              <pre className="text-xs font-mono bg-gray-100 dark:bg-[#1E1E1E] p-2 rounded-lg overflow-x-auto">
                 {tpl.commands.join("\n")}
               </pre>
             </div>
@@ -241,7 +262,15 @@ function TemplateGroup({
   );
 }
 
-function TemplateEditor({ template, onClose, onSaved }: { template: TriggerTemplate | null; onClose: () => void; onSaved: () => void }) {
+function TemplateEditor({
+  template,
+  onClose,
+  onSaved,
+}: {
+  template: TriggerTemplate | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const { t } = useTranslation();
   const [name, setName] = useState(template?.name || "");
   const [type, setType] = useState<string>(template?.type || "OnConnect");
@@ -252,7 +281,10 @@ function TemplateEditor({ template, onClose, onSaved }: { template: TriggerTempl
     const cmdList = commands.split("\n").filter((c) => c.trim());
     const tpl = { name, type, description, commands: cmdList, built_in: false };
     if (template) {
-      ipcInvoke("ipc_update_template", { templateId: template.id, template: tpl })
+      ipcInvoke("ipc_update_template", {
+        templateId: template.id,
+        template: tpl,
+      })
         .then(() => onSaved())
         .catch((e) => console.error("update template failed:", e));
     } else {
@@ -278,18 +310,36 @@ function TemplateEditor({ template, onClose, onSaved }: { template: TriggerTempl
       maxWidth="max-w-xl"
       footer={
         <>
-          <button className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onClick={onClose}>{t("common.cancel")}</button>
-          <button className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium" onClick={handleSave}>{t("common.save")}</button>
+          <button
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
+            onClick={onClose}
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium"
+            onClick={handleSave}
+          >
+            {t("common.save")}
+          </button>
         </>
       }
     >
       <div className="space-y-5">
         <SettingGroup title={t("template.basic_info")}>
           <SettingRow label={t("template.name")}>
-            <input className="input w-full" value={name} onChange={(e) => setName(e.target.value)} />
+            <input
+              className="input w-full"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
           </SettingRow>
           <SettingRow label={t("template.type")}>
-            <select className="input w-full" value={type} onChange={(e) => setType(e.target.value)}>
+            <select
+              className="input w-full"
+              value={type}
+              onChange={(e) => setType(e.target.value)}
+            >
               {eventTypes.map((et) => (
                 <option key={et} value={et}>
                   {t(`trigger.event_types.${et}`)}
@@ -298,13 +348,21 @@ function TemplateEditor({ template, onClose, onSaved }: { template: TriggerTempl
             </select>
           </SettingRow>
           <SettingRow label={t("template.description")}>
-            <input className="input w-full" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <input
+              className="input w-full"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
           </SettingRow>
         </SettingGroup>
 
         <SettingGroup title={t("template.commands")}>
           <div className="p-4">
-            <textarea className="input font-mono h-40 w-full" value={commands} onChange={(e) => setCommands(e.target.value)} />
+            <textarea
+              className="input font-mono h-40 w-full"
+              value={commands}
+              onChange={(e) => setCommands(e.target.value)}
+            />
           </div>
         </SettingGroup>
       </div>
@@ -322,8 +380,10 @@ function SettingGroup({
 }) {
   return (
     <section>
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">{title}</h3>
-      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">
+        {title}
+      </h3>
+      <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
         {children}
       </div>
     </section>
@@ -339,8 +399,10 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-gray-100 dark:border-gray-700/60 last:border-0">
-      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">{label}</span>
+    <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] last:border-0">
+      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">
+        {label}
+      </span>
       <div className="flex-1 max-w-xs flex justify-end">{children}</div>
     </div>
   );
@@ -350,7 +412,9 @@ function SettingRow({
 function VariablesModal({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const config = useConfigStore((s) => s.config);
-  const [customVars, setCustomVars] = useState<CustomVariable[]>(config?.general?.custom_variables || []);
+  const [customVars, setCustomVars] = useState<CustomVariable[]>(
+    config?.general?.custom_variables || [],
+  );
   const [newName, setNewName] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
@@ -360,8 +424,8 @@ function VariablesModal({ onClose }: { onClose: () => void }) {
 
   const saveToBackend = (vars: CustomVariable[]) => {
     setCustomVars(vars);
-    ipcInvoke("ipc_update_general_config", { custom_variables: vars }).catch((e) =>
-      console.error("save custom variables failed:", e)
+    ipcInvoke("ipc_update_general_config", { custom_variables: vars }).catch(
+      (e) => console.error("save custom variables failed:", e),
     );
   };
 
@@ -401,29 +465,38 @@ function VariablesModal({ onClose }: { onClose: () => void }) {
       maxWidth="max-w-2xl"
       zIndex="z-50"
       footer={
-        <button className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onClick={onClose}>
+        <button
+          className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
+          onClick={onClose}
+        >
           {t("common.close")}
         </button>
       }
     >
       <div className="space-y-5">
         {/* Add new custom variable */}
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 p-4">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">{t("template.add_custom_variable")}</h3>
+        <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] p-4">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+            {t("template.add_custom_variable")}
+          </h3>
           <div className="flex gap-2">
             <input
               className="input flex-1"
               placeholder={t("template.variable_name_placeholder")}
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAdd();
+              }}
             />
             <input
               className="input flex-1"
               placeholder={t("template.variable_value_placeholder")}
               value={newDesc}
               onChange={(e) => setNewDesc(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAdd();
+              }}
             />
             <button
               className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium flex-shrink-0"
@@ -436,18 +509,25 @@ function VariablesModal({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* System variables */}
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/80 bg-gray-50/50 dark:bg-gray-800/50">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t("template.system_variables")}</h3>
+        <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] bg-[#FBFBFB] dark:bg-[#1E1E1E]/50">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {t("template.system_variables")}
+            </h3>
           </div>
           <div className="divide-y divide-gray-100 dark:divide-gray-700/60">
             {SYSTEM_VARIABLES.map((v) => (
-              <div key={v.name} className="flex items-center justify-between px-4 py-3">
+              <div
+                key={v.name}
+                className="flex items-center justify-between px-4 py-3"
+              >
                 <div className="min-w-0">
                   <code className="text-sm font-mono text-blue-600 dark:text-blue-400">{`{{.${v.name}}}`}</code>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{v.desc}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    {v.desc}
+                  </p>
                 </div>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0">
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-[#2C2C2E] text-gray-500 dark:text-gray-400 flex-shrink-0">
                   {t("template.system")}
                 </span>
               </div>
@@ -456,9 +536,11 @@ function VariablesModal({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Custom variables */}
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/80 bg-gray-50/50 dark:bg-gray-800/50">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t("template.custom_variables")}</h3>
+        <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] bg-[#FBFBFB] dark:bg-[#1E1E1E]/50">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {t("template.custom_variables")}
+            </h3>
           </div>
           {customVars.length === 0 ? (
             <div className="text-center py-6 text-sm text-gray-400">
@@ -467,7 +549,10 @@ function VariablesModal({ onClose }: { onClose: () => void }) {
           ) : (
             <div className="divide-y divide-gray-100 dark:divide-gray-700/60">
               {customVars.map((v, idx) => (
-                <div key={v.name} className="flex items-center justify-between px-4 py-3">
+                <div
+                  key={v.name}
+                  className="flex items-center justify-between px-4 py-3"
+                >
                   <div className="min-w-0 flex-1">
                     <code className="text-sm font-mono text-green-600 dark:text-green-400">{`{{.${v.name}}}`}</code>
                     {editingIdx === idx ? (
@@ -477,7 +562,10 @@ function VariablesModal({ onClose }: { onClose: () => void }) {
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
                           autoFocus
-                          onKeyDown={(e) => { if (e.key === "Enter") handleSaveEdit(); if (e.key === "Escape") setEditingIdx(null); }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleSaveEdit();
+                            if (e.key === "Escape") setEditingIdx(null);
+                          }}
                         />
                         <button
                           className="text-xs px-2 py-1 rounded-md bg-blue-500 text-white hover:bg-blue-600 transition-colors"
@@ -486,20 +574,22 @@ function VariablesModal({ onClose }: { onClose: () => void }) {
                           {t("common.save")}
                         </button>
                         <button
-                          className="text-xs px-2 py-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                          className="text-xs px-2 py-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
                           onClick={() => setEditingIdx(null)}
                         >
                           {t("common.cancel")}
                         </button>
                       </div>
                     ) : (
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 break-all">{v.value || <span className="italic">（空）</span>}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 break-all">
+                        {v.value || <span className="italic">（空）</span>}
+                      </p>
                     )}
                   </div>
                   {editingIdx !== idx && (
                     <div className="flex items-center gap-1 flex-shrink-0 ml-2">
                       <button
-                        className="text-xs px-2 py-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                        className="text-xs px-2 py-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
                         onClick={() => handleStartEdit(idx)}
                       >
                         {t("common.edit")}

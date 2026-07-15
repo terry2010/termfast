@@ -150,8 +150,8 @@ impl PlatformAdapter for WindowsAdapter {
             if enabled == 0 {
                 return Ok(None);
             }
-            let proxy_server = get_registry_string(INTERNET_SETTINGS_KEY, "ProxyServer")
-                .unwrap_or_default();
+            let proxy_server =
+                get_registry_string(INTERNET_SETTINGS_KEY, "ProxyServer").unwrap_or_default();
             // Parse "socks=127.0.0.1:1080;http=127.0.0.1:8080"
             let mut socks5_port = 0u16;
             let mut http_port = 0u16;
@@ -185,8 +185,7 @@ impl PlatformAdapter for WindowsAdapter {
         #[cfg(windows)]
         {
             use window_vibrancy::apply_mica;
-            apply_mica(window, true)
-                .map_err(|e| anyhow::anyhow!("failed to apply mica: {}", e))?;
+            apply_mica(window, true).map_err(|e| anyhow::anyhow!("failed to apply mica: {}", e))?;
         }
         Ok(())
     }

@@ -2,14 +2,16 @@
 //!
 //! SSH protocol layer: client, auth, exec, channel_opener.
 
-pub mod client;
 pub mod auth;
-pub mod exec;
 pub mod channel_opener;
+pub mod client;
+pub mod exec;
+pub mod protector;
 pub mod pty;
 
-pub use client::{SshClientHandle, ConnectionState, SshClientConfig};
-pub use auth::{AuthMethod, generate_keypair, push_public_key};
-pub use exec::{exec, detect_client_ip, ExecResult};
+pub use auth::{generate_keypair, generate_keypair_at, push_public_key, AuthMethod};
 pub use channel_opener::{ChannelOpener, SshChannelOpener};
+pub use client::{ConnectionState, SshClientConfig, SshClientHandle};
+pub use exec::{detect_client_ip, exec, ExecResult};
+pub use protector::{NoOpSocketProtector, SocketProtector};
 pub use pty::{open_pty_shell, resize_pty};

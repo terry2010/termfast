@@ -63,7 +63,10 @@ impl RuntimeStateManager {
         let content = match std::fs::read_to_string(&self.path) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("failed to read runtime_state.json: {}, using empty state", e);
+                tracing::warn!(
+                    "failed to read runtime_state.json: {}, using empty state",
+                    e
+                );
                 return Ok(()); // Degrade to empty state (§11.5)
             }
         };

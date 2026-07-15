@@ -26,7 +26,11 @@ pub struct ChannelManager {
 }
 
 impl ChannelManager {
-    pub fn new(opener: Arc<dyn ChannelOpener>, max_channels: usize, idle_timeout_secs: u64) -> Self {
+    pub fn new(
+        opener: Arc<dyn ChannelOpener>,
+        max_channels: usize,
+        idle_timeout_secs: u64,
+    ) -> Self {
         Self {
             opener,
             semaphore: Arc::new(Semaphore::new(max_channels)),
@@ -40,9 +44,12 @@ impl ChannelManager {
 
     /// Open a channel to the target host:port
     pub async fn open(&self, host: &str, port: u16) -> Result<ManagedChannel> {
-        let permit = self.semaphore.clone().acquire_owned().await.map_err(|e| {
-            crate::error::Error::Other(format!("semaphore error: {}", e))
-        })?;
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| crate::error::Error::Other(format!("semaphore error: {}", e)))?;
 
         // Log warning when at 80% capacity
         if self.is_near_capacity() {
@@ -146,7 +153,8 @@ impl<R: AsyncRead + Unpin> AsyncRead for CountingReader<R> {
         if let std::task::Poll::Ready(Ok(())) = &result {
             let after = buf.filled().len();
             if after > before {
-                this.counter.fetch_add((after - before) as u64, Ordering::Relaxed);
+                this.counter
+                    .fetch_add((after - before) as u64, Ordering::Relaxed);
             }
         }
         result

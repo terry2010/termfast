@@ -51,8 +51,7 @@ impl FileConfigStorage {
     /// Ensure parent directory exists
     fn ensure_parent_dir(&self) -> Result<()> {
         if let Some(parent) = self.config_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(Error::Io)?;
+            std::fs::create_dir_all(parent).map_err(Error::Io)?;
         }
         Ok(())
     }
@@ -86,7 +85,8 @@ impl ConfigStorage for FileConfigStorage {
                         let _ = backup_corrupt_config(&self.config_path);
                         return Err(Error::Config(
                             "refusing to overwrite non-empty config with empty config — \
-                             possible corrupt-load fallback. Original config backed up.".into(),
+                             possible corrupt-load fallback. Original config backed up."
+                                .into(),
                         ));
                     }
                 }
@@ -156,8 +156,9 @@ impl ConfigStorage for InMemoryConfigStorage {
         let data = self.data.lock().unwrap();
         match data.as_ref() {
             Some(json) => {
-                let config: Config = serde_json::from_str(json)
-                    .map_err(|e| Error::Ipc(IpcError::new(ErrorCode::ConfigCorrupt, e.to_string())))?;
+                let config: Config = serde_json::from_str(json).map_err(|e| {
+                    Error::Ipc(IpcError::new(ErrorCode::ConfigCorrupt, e.to_string()))
+                })?;
                 Ok(config)
             }
             None => Err(Error::Ipc(IpcError::new(

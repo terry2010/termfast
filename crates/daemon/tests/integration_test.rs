@@ -2,9 +2,9 @@
 //!
 //! Tests the daemon socket server with a real client connection.
 
-use termfast_daemon::{Action, DaemonServer, DaemonState, Request, Response};
-use termfast_core::config::{Config, ConfigManager};
 use std::sync::Arc;
+use termfast_core::config::{Config, ConfigManager, InMemoryConfigStorage};
+use termfast_daemon::{Action, DaemonServer, DaemonState, Request, Response};
 
 #[cfg(unix)]
 mod tests {
@@ -17,19 +17,17 @@ mod tests {
         let socket_path = dir.path().join("test.sock");
         let rs_path = dir.path().join("runtime_state.json");
         let config = Config::default();
-        let mgr = ConfigManager::new(config);
-        let state = DaemonState::new(mgr)
-            .with_runtime_state(Arc::new(termfast_core::config::RuntimeStateManager::new(&rs_path)));
+        let mgr = ConfigManager::with_storage(config, Arc::new(InMemoryConfigStorage::new()));
+        let state = DaemonState::new(mgr).with_runtime_state(Arc::new(
+            termfast_core::config::RuntimeStateManager::new(&rs_path),
+        ));
         let server = DaemonServer::start_with_path(state, socket_path)
             .await
             .unwrap();
         (server, dir)
     }
 
-    async fn send_request(
-        stream: &mut tokio::net::UnixStream,
-        request: &Request,
-    ) -> Response {
+    async fn send_request(stream: &mut tokio::net::UnixStream, request: &Request) -> Response {
         let request_json = serde_json::to_vec(request).unwrap();
         let len = (request_json.len() as u32).to_be_bytes();
         stream.write_all(&len).await.unwrap();
@@ -198,6 +196,7 @@ mod tests {
             proxy: termfast_core::config::ProxyConfig {
                 enabled: false,
                 socks5_port: 1080,
+                mixed_port: 0,
                 http_port: 8080,
                 max_channels: 64,
                 channel_idle_timeout: 300,
@@ -364,7 +363,8 @@ mod tests {
         let event1_result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             client1.read_exact(&mut len_buf),
-        ).await;
+        )
+        .await;
         // Event may or may not arrive depending on broadcast timing,
         // but the request/response should work for both clients
         let _ = event1_result;
@@ -408,4 +408,3 @@ mod tests {
 
     // === SECTION 2 END ===
 }
-

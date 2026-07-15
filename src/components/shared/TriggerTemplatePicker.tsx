@@ -12,7 +12,12 @@ interface Template {
   type: string;
   description: string;
   built_in: boolean;
-  parameters_schema: { name: string; description: string; required: boolean; default?: string }[];
+  parameters_schema: {
+    name: string;
+    description: string;
+    required: boolean;
+    default?: string;
+  }[];
   commands: string[];
 }
 
@@ -77,7 +82,7 @@ export function TriggerTemplatePicker({
       footer={
         <>
           <button
-            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
             onClick={onClose}
           >
             {t("common.cancel")}
@@ -94,7 +99,9 @@ export function TriggerTemplatePicker({
     >
       <div className="space-y-2">
         {templates.length === 0 && (
-          <div className="text-center text-gray-400 py-8">{t("trigger.no_templates")}</div>
+          <div className="text-center text-gray-400 py-8">
+            {t("trigger.no_templates")}
+          </div>
         )}
         {templates.map((tmpl) => (
           <label
@@ -102,7 +109,7 @@ export function TriggerTemplatePicker({
             className={`block p-3 rounded-lg border cursor-pointer transition ${
               selectedId === tmpl.id
                 ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
-                : "border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                : "border-gray-200/80 dark:border-white/[0.06] hover:bg-[#FBFBFB] dark:hover:bg-[#1E1E1E]"
             }`}
           >
             <div className="flex items-start gap-2">
@@ -119,11 +126,17 @@ export function TriggerTemplatePicker({
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{tmpl.name}</span>
                   {tmpl.built_in && (
-                    <span className="px-1.5 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 rounded">{t("trigger.built_in")}</span>
+                    <span className="px-1.5 py-0.5 text-xs bg-gray-200 dark:bg-[#2C2C2E] rounded">
+                      {t("trigger.built_in")}
+                    </span>
                   )}
                 </div>
-                <div className="text-xs text-gray-500 mt-0.5">{tmpl.description}</div>
-                <div className="text-xs text-gray-400 mt-1">{t("trigger.commands_count", { count: tmpl.commands.length })}</div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {tmpl.description}
+                </div>
+                <div className="text-xs text-gray-400 mt-1">
+                  {t("trigger.commands_count", { count: tmpl.commands.length })}
+                </div>
               </div>
             </div>
           </label>
@@ -131,8 +144,10 @@ export function TriggerTemplatePicker({
       </div>
 
       {selected && selected.parameters_schema.length > 0 && (
-        <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700 space-y-2">
-          <div className="text-sm font-medium text-gray-600 dark:text-gray-300">{t("trigger.parameters")}</div>
+        <div className="mt-4 pt-4 border-t border-gray-200/80 dark:border-white/[0.06] space-y-2">
+          <div className="text-sm font-medium text-gray-600 dark:text-gray-300">
+            {t("trigger.parameters")}
+          </div>
           {selected.parameters_schema.map((p) => (
             <div key={p.name}>
               <label className="block text-xs text-gray-500 mb-0.5">
@@ -142,7 +157,9 @@ export function TriggerTemplatePicker({
                 type="text"
                 className="input"
                 value={params[p.name] || p.default || ""}
-                onChange={(e) => setParams({ ...params, [p.name]: e.target.value })}
+                onChange={(e) =>
+                  setParams({ ...params, [p.name]: e.target.value })
+                }
                 placeholder={p.description}
               />
             </div>

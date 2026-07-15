@@ -41,19 +41,20 @@ impl Default for KeychainCredentialStore {
 impl CredentialStore for KeychainCredentialStore {
     fn save(&self, key: &str, value: &str) -> Result<()> {
         // Update cache first
-        self.cache.lock().unwrap().insert(key.to_string(), value.to_string());
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
 
         // Try keychain first (it persists across restarts)
         match keyring::Entry::new(SERVICE_NAME, key) {
-            Ok(entry) => {
-                match entry.set_password(value) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => {
-                        tracing::warn!("keychain save failed: {}, trying fallback", e);
-                        self.enable_fallback();
-                    }
+            Ok(entry) => match entry.set_password(value) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    tracing::warn!("keychain save failed: {}, trying fallback", e);
+                    self.enable_fallback();
                 }
-            }
+            },
             Err(e) => {
                 tracing::warn!("keychain entry creation failed: {}, trying fallback", e);
                 self.enable_fallback();
@@ -66,7 +67,9 @@ impl CredentialStore for KeychainCredentialStore {
             return store.save(key, value);
         }
 
-        Err(anyhow::anyhow!("keychain unavailable and no fallback store"))
+        Err(anyhow::anyhow!(
+            "keychain unavailable and no fallback store"
+        ))
     }
 
     fn load(&self, key: &str) -> Result<String> {
@@ -83,7 +86,10 @@ impl CredentialStore for KeychainCredentialStore {
             Ok(entry) => match entry.get_password() {
                 Ok(v) => {
                     // Cache for future loads
-                    self.cache.lock().unwrap().insert(key.to_string(), v.clone());
+                    self.cache
+                        .lock()
+                        .unwrap()
+                        .insert(key.to_string(), v.clone());
                     return Ok(v);
                 }
                 Err(keyring::Error::NoEntry) => {} // not found, try fallback
@@ -102,7 +108,10 @@ impl CredentialStore for KeychainCredentialStore {
         let fb = self.fallback.lock().unwrap();
         if let Some(ref store) = *fb {
             let v = store.load(key)?;
-            self.cache.lock().unwrap().insert(key.to_string(), v.clone());
+            self.cache
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), v.clone());
             return Ok(v);
         }
 

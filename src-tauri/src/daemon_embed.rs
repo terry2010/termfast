@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use termfast_core::config::migration::load_config_with_migration;
 use termfast_core::config::{Config, ConfigManager, FileConfigStorage};
-use termfast_core::platform::{SystemProxyAdapter, SystemProxyConfig, SetProxyResult};
+use termfast_core::platform::{SetProxyResult, SystemProxyAdapter, SystemProxyConfig};
 use termfast_credential::KeychainCredentialStore;
 use termfast_daemon::{DaemonServer, DaemonState};
 
@@ -65,7 +65,10 @@ impl EmbeddedDaemon {
     }
 
     /// Start with a specific config and storage (ensures read/write path consistency)
-    pub async fn start_with_config_and_storage(config: Config, storage: FileConfigStorage) -> anyhow::Result<Self> {
+    pub async fn start_with_config_and_storage(
+        config: Config,
+        storage: FileConfigStorage,
+    ) -> anyhow::Result<Self> {
         // Load servers from config into server_manager before starting daemon
         let servers_from_config = config.servers.clone();
         let mgr = ConfigManager::with_storage(config, Arc::new(storage));
@@ -81,7 +84,10 @@ impl EmbeddedDaemon {
         }
 
         let server = DaemonServer::start(state).await?;
-        tracing::info!("embedded daemon started on {}", server.socket_path().display());
+        tracing::info!(
+            "embedded daemon started on {}",
+            server.socket_path().display()
+        );
 
         // Set runtime_state on all existing servers and load persisted IPs (FP-1.3b)
         {
@@ -114,16 +120,29 @@ impl EmbeddedDaemon {
                             }
                         }
                         // Broadcast offline event with connected server list
-                        state.broadcast("network:offline", serde_json::json!({
-                            "connected_servers": connected,
-                        })).await;
+                        state
+                            .broadcast(
+                                "network:offline",
+                                serde_json::json!({
+                                    "connected_servers": connected,
+                                }),
+                            )
+                            .await;
                     }
                     termfast_desktop::network::NetworkState::Online => {
-                        tracing::info!("network online — {} servers should reconnect", servers_to_reconnect.len());
+                        tracing::info!(
+                            "network online — {} servers should reconnect",
+                            servers_to_reconnect.len()
+                        );
                         // Broadcast online event — frontend/ServerInstance will handle reconnection
-                        state.broadcast("network:online", serde_json::json!({
-                            "servers_to_reconnect": servers_to_reconnect,
-                        })).await;
+                        state
+                            .broadcast(
+                                "network:online",
+                                serde_json::json!({
+                                    "servers_to_reconnect": servers_to_reconnect,
+                                }),
+                            )
+                            .await;
                     }
                 }
             });

@@ -69,18 +69,16 @@ impl Socks5Server {
     /// Start the SOCKS5 server
     pub async fn start(&self) -> Result<()> {
         let addr = format!("127.0.0.1:{}", self.port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AddrInUse {
-                    Error::Ipc(IpcError::new(
-                        ErrorCode::ProxyPortInUse,
-                        format!("SOCKS5 port {} is in use", self.port),
-                    ))
-                } else {
-                    Error::Io(e)
-                }
-            })?;
+        let listener = TcpListener::bind(&addr).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                Error::Ipc(IpcError::new(
+                    ErrorCode::ProxyPortInUse,
+                    format!("SOCKS5 port {} is in use", self.port),
+                ))
+            } else {
+                Error::Io(e)
+            }
+        })?;
 
         tracing::info!("SOCKS5 proxy listening on {}", addr);
 
@@ -153,7 +151,9 @@ pub async fn handle_connection(
         // Require username/password auth
         if !methods.contains(&0x02) {
             socket.write_all(&[0x05, 0xFF]).await?;
-            return Err(Error::Other("client doesn't support username/password auth".into()));
+            return Err(Error::Other(
+                "client doesn't support username/password auth".into(),
+            ));
         }
         socket.write_all(&[0x05, 0x02]).await?;
 
@@ -203,17 +203,37 @@ pub async fn handle_connection(
 
     // Handle command
     match command {
-        cmd::CONNECT => {
-            handle_connect(&mut socket, &mgr, &host, port).await
-        }
+        cmd::CONNECT => handle_connect(&mut socket, &mgr, &host, port).await,
         cmd::BIND | cmd::UDP_ASSOCIATE => {
             // Return command not supported
-            let reply = [0x05, reply::COMMAND_NOT_SUPPORTED, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+            let reply = [
+                0x05,
+                reply::COMMAND_NOT_SUPPORTED,
+                0x00,
+                0x01,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ];
             socket.write_all(&reply).await?;
             Err(Error::Other(format!("command {} not supported", command)))
         }
         _ => {
-            let reply = [0x05, reply::COMMAND_NOT_SUPPORTED, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+            let reply = [
+                0x05,
+                reply::COMMAND_NOT_SUPPORTED,
+                0x00,
+                0x01,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ];
             socket.write_all(&reply).await?;
             Err(Error::Other(format!("unknown command {}", command)))
         }
@@ -221,10 +241,7 @@ pub async fn handle_connection(
 }
 
 /// Parse the destination address from the SOCKS5 request
-async fn parse_address(
-    socket: &mut tokio::net::TcpStream,
-    addr_type: u8,
-) -> Result<(String, u16)> {
+async fn parse_address(socket: &mut tokio::net::TcpStream, addr_type: u8) -> Result<(String, u16)> {
     match addr_type {
         atyp::IPV4 => {
             let mut addr = [0u8; 4];
@@ -232,7 +249,10 @@ async fn parse_address(
             let mut port_buf = [0u8; 2];
             socket.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
-            Ok((format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]), port))
+            Ok((
+                format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]),
+                port,
+            ))
         }
         atyp::DOMAINNAME => {
             let mut len_buf = [0u8; 1];
@@ -255,9 +275,10 @@ async fn parse_address(
             let ip = std::net::Ipv6Addr::from(addr);
             Ok((ip.to_string(), port))
         }
-        _ => {
-            Err(Error::Other(format!("unsupported address type: {}", addr_type)))
-        }
+        _ => Err(Error::Other(format!(
+            "unsupported address type: {}",
+            addr_type
+        ))),
     }
 }
 
@@ -294,14 +315,28 @@ async fn handle_connect(
     let mut chan_writer = chan_write.make_writer();
 
     // client→channel = upload (bytes_in), channel→client = download (bytes_out)
-    let mut counting_cli_read = crate::proxy::manager::CountingReader { inner: cli_read, counter: bytes_in };
-    let mut counting_chan_reader = crate::proxy::manager::CountingReader { inner: chan_reader, counter: bytes_out };
+    let mut counting_cli_read = crate::proxy::manager::CountingReader {
+        inner: cli_read,
+        counter: bytes_in,
+    };
+    let mut counting_chan_reader = crate::proxy::manager::CountingReader {
+        inner: chan_reader,
+        counter: bytes_out,
+    };
 
     let client_to_channel = async {
-        tokio::time::timeout(idle_timeout, tokio::io::copy(&mut counting_cli_read, &mut chan_writer)).await
+        tokio::time::timeout(
+            idle_timeout,
+            tokio::io::copy(&mut counting_cli_read, &mut chan_writer),
+        )
+        .await
     };
     let channel_to_client = async {
-        tokio::time::timeout(idle_timeout, tokio::io::copy(&mut counting_chan_reader, &mut cli_write)).await
+        tokio::time::timeout(
+            idle_timeout,
+            tokio::io::copy(&mut counting_chan_reader, &mut cli_write),
+        )
+        .await
     };
 
     tokio::select! {
@@ -314,7 +349,11 @@ async fn handle_connect(
     }
 
     let prev = active_clients.fetch_sub(1, Ordering::Relaxed);
-    tracing::info!("SOCKS5 active_clients decremented: {} -> {}", prev, prev.saturating_sub(1));
+    tracing::info!(
+        "SOCKS5 active_clients decremented: {} -> {}",
+        prev,
+        prev.saturating_sub(1)
+    );
     Ok(())
 }
 

@@ -19,12 +19,16 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
   const [vpsPass, setVpsPass] = useState("");
   const [serverName, setServerName] = useState("");
   const [connecting, setConnecting] = useState(false);
-  const [connectResult, setConnectResult] = useState<"none" | "success" | "error">("none");
+  const [connectResult, setConnectResult] = useState<
+    "none" | "success" | "error"
+  >("none");
   const [authMethod, setAuthMethod] = useState<AuthMethod>("password");
   const [keyPath, setKeyPath] = useState("");
   const [generatingKey, setGeneratingKey] = useState(false);
   const [firewallChecking, setFirewallChecking] = useState(false);
-  const [firewallResult, setFirewallResult] = useState<"none" | "ok" | "blocked" | "warning">("none");
+  const [firewallResult, setFirewallResult] = useState<
+    "none" | "ok" | "blocked" | "warning"
+  >("none");
   const [protectedPort, setProtectedPort] = useState("");
   const [firewallWhitelist, setFirewallWhitelist] = useState(false);
   const [selectedTemplates, setSelectedTemplates] = useState<string[]>([]);
@@ -37,17 +41,22 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
   }
 
   const totalSteps = mode === "quick" ? 3 : 7;
-  const titles = mode === "quick"
-    ? [t("onboarding.vps_info"), t("onboarding.test_connection"), t("onboarding.firewall_whitelist")]
-    : [
-        t("onboarding.welcome"),
-        t("onboarding.vps_info"),
-        t("onboarding.auth_method"),
-        t("onboarding.test_connection"),
-        t("onboarding.proxy_config"),
-        t("onboarding.select_templates"),
-        t("onboarding.complete"),
-      ];
+  const titles =
+    mode === "quick"
+      ? [
+          t("onboarding.vps_info"),
+          t("onboarding.test_connection"),
+          t("onboarding.firewall_whitelist"),
+        ]
+      : [
+          t("onboarding.welcome"),
+          t("onboarding.vps_info"),
+          t("onboarding.auth_method"),
+          t("onboarding.test_connection"),
+          t("onboarding.proxy_config"),
+          t("onboarding.select_templates"),
+          t("onboarding.complete"),
+        ];
 
   const handleTestConnection = async () => {
     setConnecting(true);
@@ -68,8 +77,21 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
             connection_mode: "single",
             skip_hostkey_verify: true,
           },
-          proxy: { enabled: true, socks5_port: parseInt(proxySocksPort) || 1080, http_port: parseInt(proxyHttpPort) || 8080, max_channels: 100, channel_idle_timeout: 300 },
-          reconnect: { auto_reconnect: true, heartbeat_interval: 10, max_attempts: 999, reconnect_timeout_secs: 86400, initial_backoff_secs: 1, max_backoff_secs: 60 },
+          proxy: {
+            enabled: true,
+            socks5_port: parseInt(proxySocksPort) || 1080,
+            http_port: parseInt(proxyHttpPort) || 8080,
+            max_channels: 100,
+            channel_idle_timeout: 300,
+          },
+          reconnect: {
+            auto_reconnect: true,
+            heartbeat_interval: 10,
+            max_attempts: 999,
+            reconnect_timeout_secs: 86400,
+            initial_backoff_secs: 1,
+            max_backoff_secs: 60,
+          },
           ip_check: { enabled: true, interval_secs: 300 },
           last_known_ip: null,
           triggers: [],
@@ -102,10 +124,13 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
     setGeneratingKey(true);
     try {
       // Generate SSH key pair via daemon
-      const result = await ipcInvoke<{ key_path: string }>("ipc_generate_ssh_key", {
-        keyType: "ed25519",
-        comment: `${vpsUser}@${vpsHost}`,
-      });
+      const result = await ipcInvoke<{ key_path: string }>(
+        "ipc_generate_ssh_key",
+        {
+          keyType: "ed25519",
+          comment: `${vpsUser}@${vpsHost}`,
+        },
+      );
       setKeyPath(result.key_path);
       setAuthMethod("key");
     } catch (e) {
@@ -124,10 +149,13 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
         return;
       }
       // First check if the SSH port is reachable
-      const result = await ipcInvoke<{ reachable: boolean; latency_ms?: number }>(
-        "ipc_check_port_reachable",
-        { host: vpsHost, port: parseInt(vpsPort) || 22 }
-      );
+      const result = await ipcInvoke<{
+        reachable: boolean;
+        latency_ms?: number;
+      }>("ipc_check_port_reachable", {
+        host: vpsHost,
+        port: parseInt(vpsPort) || 22,
+      });
       if (!result.reachable) {
         setFirewallResult("blocked");
         return;
@@ -188,67 +216,103 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
   const renderStepContent = () => {
     if (mode === "quick") {
       if (step === 0) {
-        return <VpsInfoStep
-          host={vpsHost} setHost={setVpsHost}
-          port={vpsPort} setPort={setVpsPort}
-          user={vpsUser} setUser={setVpsUser}
-          pass={vpsPass} setPass={setVpsPass}
-          name={serverName} setName={setServerName}
-        />;
+        return (
+          <VpsInfoStep
+            host={vpsHost}
+            setHost={setVpsHost}
+            port={vpsPort}
+            setPort={setVpsPort}
+            user={vpsUser}
+            setUser={setVpsUser}
+            pass={vpsPass}
+            setPass={setVpsPass}
+            name={serverName}
+            setName={setServerName}
+          />
+        );
       }
       if (step === 1) {
-        return <TestConnectionStep
-          connecting={connecting}
-          result={connectResult}
-          onTest={handleTestConnection}
-        />;
+        return (
+          <TestConnectionStep
+            connecting={connecting}
+            result={connectResult}
+            onTest={handleTestConnection}
+          />
+        );
       }
       if (step === 2) {
-        return <FirewallCheckStep
-          checking={firewallChecking}
-          result={firewallResult}
-          onCheck={handleFirewallCheck}
-          host={vpsHost}
-          port={vpsPort}
-        />;
+        return (
+          <FirewallCheckStep
+            checking={firewallChecking}
+            result={firewallResult}
+            onCheck={handleFirewallCheck}
+            host={vpsHost}
+            port={vpsPort}
+          />
+        );
       }
     } else {
       // Advanced mode
       if (step === 0) return <WelcomeStep />;
-      if (step === 1) return <VpsInfoStep
-        host={vpsHost} setHost={setVpsHost}
-        port={vpsPort} setPort={setVpsPort}
-        user={vpsUser} setUser={setVpsUser}
-        pass={vpsPass} setPass={setVpsPass}
-        name={serverName} setName={setServerName}
-      />;
-      if (step === 2) return <AuthMethodStep
-        authMethod={authMethod} setAuthMethod={setAuthMethod}
-        keyPath={keyPath} setKeyPath={setKeyPath}
-        generatingKey={generatingKey}
-        onGenerateKey={handleGenerateKey}
-        pass={vpsPass} setPass={setVpsPass}
-      />;
-      if (step === 3) return <TestConnectionStep
-        connecting={connecting}
-        result={connectResult}
-        onTest={handleTestConnection}
-      />;
-      if (step === 4) return <ProxyConfigStep
-        socksPort={proxySocksPort} setSocksPort={setProxySocksPort}
-        httpPort={proxyHttpPort} setHttpPort={setProxyHttpPort}
-      />;
-      if (step === 5) return <TemplateSelectionStep
-        selected={selectedTemplates}
-        setSelected={setSelectedTemplates}
-      />;
+      if (step === 1)
+        return (
+          <VpsInfoStep
+            host={vpsHost}
+            setHost={setVpsHost}
+            port={vpsPort}
+            setPort={setVpsPort}
+            user={vpsUser}
+            setUser={setVpsUser}
+            pass={vpsPass}
+            setPass={setVpsPass}
+            name={serverName}
+            setName={setServerName}
+          />
+        );
+      if (step === 2)
+        return (
+          <AuthMethodStep
+            authMethod={authMethod}
+            setAuthMethod={setAuthMethod}
+            keyPath={keyPath}
+            setKeyPath={setKeyPath}
+            generatingKey={generatingKey}
+            onGenerateKey={handleGenerateKey}
+            pass={vpsPass}
+            setPass={setVpsPass}
+          />
+        );
+      if (step === 3)
+        return (
+          <TestConnectionStep
+            connecting={connecting}
+            result={connectResult}
+            onTest={handleTestConnection}
+          />
+        );
+      if (step === 4)
+        return (
+          <ProxyConfigStep
+            socksPort={proxySocksPort}
+            setSocksPort={setProxySocksPort}
+            httpPort={proxyHttpPort}
+            setHttpPort={setProxyHttpPort}
+          />
+        );
+      if (step === 5)
+        return (
+          <TemplateSelectionStep
+            selected={selectedTemplates}
+            setSelected={setSelectedTemplates}
+          />
+        );
       if (step === 6) return <CompleteStep onConfirm={handleComplete} />;
     }
     return null;
   };
 
   return (
-    <div className="fixed inset-0 bg-white dark:bg-gray-900 flex flex-col items-center justify-center p-8">
+    <div className="fixed inset-0 bg-white dark:bg-[#1E1E1E] flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-2xl">
         <h1 className="text-2xl font-bold mb-2">{t("onboarding.welcome")}</h1>
         <p className="text-sm text-gray-500 mb-6">
@@ -258,14 +322,16 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
         <div className="min-h-[200px]">{renderStepContent()}</div>
         <div className="flex justify-between mt-8">
           <button
-            className="px-4 py-2 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+            className="px-4 py-2 text-sm rounded hover:bg-gray-100 dark:hover:bg-[#1E1E1E]"
             onClick={() => (step > 0 ? setStep(step - 1) : setMode(null))}
           >
             {t("common.cancel")}
           </button>
           <button
             className="px-4 py-2 text-sm rounded bg-blue-500 text-white hover:bg-blue-600"
-            onClick={() => (step < totalSteps - 1 ? setStep(step + 1) : handleComplete())}
+            onClick={() =>
+              step < totalSteps - 1 ? setStep(step + 1) : handleComplete()
+            }
           >
             {step < totalSteps - 1 ? t("common.ok") : t("onboarding.complete")}
           </button>
@@ -278,32 +344,50 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
 // === SECTION 1 END ===
 
 function VpsInfoStep({
-  host, setHost, port, setPort, user, setUser, pass, setPass, name, setName,
+  host,
+  setHost,
+  port,
+  setPort,
+  user,
+  setUser,
+  pass,
+  setPass,
+  name,
+  setName,
 }: {
-  host: string; setHost: (v: string) => void;
-  port: string; setPort: (v: string) => void;
-  user: string; setUser: (v: string) => void;
-  pass: string; setPass: (v: string) => void;
-  name: string; setName: (v: string) => void;
+  host: string;
+  setHost: (v: string) => void;
+  port: string;
+  setPort: (v: string) => void;
+  user: string;
+  setUser: (v: string) => void;
+  pass: string;
+  setPass: (v: string) => void;
+  name: string;
+  setName: (v: string) => void;
 }) {
   const { t } = useTranslation();
   return (
     <div className="space-y-3">
       <div>
-        <label className="block text-sm text-gray-500 mb-1">{t("server.name")}</label>
+        <label className="block text-sm text-gray-500 mb-1">
+          {t("server.name")}
+        </label>
         <input
           type="text"
-          className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+          className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t("onboarding.name_placeholder")}
         />
       </div>
       <div>
-        <label className="block text-sm text-gray-500 mb-1">{t("server.host")}</label>
+        <label className="block text-sm text-gray-500 mb-1">
+          {t("server.host")}
+        </label>
         <input
           type="text"
-          className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+          className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
           value={host}
           onChange={(e) => setHost(e.target.value)}
           placeholder={t("onboarding.host_placeholder")}
@@ -311,29 +395,35 @@ function VpsInfoStep({
       </div>
       <div className="flex gap-3">
         <div className="flex-1">
-          <label className="block text-sm text-gray-500 mb-1">{t("onboarding.port")}</label>
+          <label className="block text-sm text-gray-500 mb-1">
+            {t("onboarding.port")}
+          </label>
           <input
             type="text"
-            className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+            className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
             value={port}
             onChange={(e) => setPort(e.target.value)}
           />
         </div>
         <div className="flex-1">
-          <label className="block text-sm text-gray-500 mb-1">{t("server.user")}</label>
+          <label className="block text-sm text-gray-500 mb-1">
+            {t("server.user")}
+          </label>
           <input
             type="text"
-            className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+            className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
             value={user}
             onChange={(e) => setUser(e.target.value)}
           />
         </div>
       </div>
       <div>
-        <label className="block text-sm text-gray-500 mb-1">{t("onboarding.password")}</label>
+        <label className="block text-sm text-gray-500 mb-1">
+          {t("onboarding.password")}
+        </label>
         <input
           type="password"
-          className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+          className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
           value={pass}
           onChange={(e) => setPass(e.target.value)}
         />
@@ -343,7 +433,9 @@ function VpsInfoStep({
 }
 
 function TestConnectionStep({
-  connecting, result, onTest,
+  connecting,
+  result,
+  onTest,
 }: {
   connecting: boolean;
   result: "none" | "success" | "error";
@@ -361,33 +453,55 @@ function TestConnectionStep({
         {connecting ? t("onboarding.testing") : t("onboarding.test_connection")}
       </button>
       {result === "success" && (
-        <div className="text-sm text-green-600">{t("onboarding.conn_success")}</div>
+        <div className="text-sm text-green-600">
+          {t("onboarding.conn_success")}
+        </div>
       )}
       {result === "error" && (
-        <div className="text-sm text-red-600">{t("onboarding.conn_failed")}</div>
+        <div className="text-sm text-red-600">
+          {t("onboarding.conn_failed")}
+        </div>
       )}
     </div>
   );
 }
 
-function ModeSelection({ t, onSelect, onSkip }: { t: (k: string) => string; onSelect: (m: Mode) => void; onSkip: () => void }) {
+function ModeSelection({
+  t,
+  onSelect,
+  onSkip,
+}: {
+  t: (k: string) => string;
+  onSelect: (m: Mode) => void;
+  onSkip: () => void;
+}) {
   return (
-    <div className="fixed inset-0 bg-white dark:bg-gray-900 flex flex-col items-center justify-center p-8">
+    <div className="fixed inset-0 bg-white dark:bg-[#1E1E1E] flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md space-y-4">
-        <h1 className="text-2xl font-bold text-center">{t("onboarding.welcome")}</h1>
+        <h1 className="text-2xl font-bold text-center">
+          {t("onboarding.welcome")}
+        </h1>
         <button
           className="w-full px-6 py-4 rounded-lg bg-blue-500 text-white hover:bg-blue-600"
           onClick={() => onSelect("quick")}
         >
-          <div className="text-lg font-medium">{t("onboarding.quick_mode")}</div>
-          <div className="text-sm opacity-80">{t("onboarding.quick_steps")}</div>
+          <div className="text-lg font-medium">
+            {t("onboarding.quick_mode")}
+          </div>
+          <div className="text-sm opacity-80">
+            {t("onboarding.quick_steps")}
+          </div>
         </button>
         <button
-          className="w-full px-6 py-4 rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
+          className="w-full px-6 py-4 rounded-lg border border-gray-300 dark:border-white/[0.06] hover:bg-gray-100 dark:hover:bg-[#1E1E1E]"
           onClick={() => onSelect("advanced")}
         >
-          <div className="text-lg font-medium">{t("onboarding.advanced_mode")}</div>
-          <div className="text-sm text-gray-500">{t("onboarding.advanced_steps")}</div>
+          <div className="text-lg font-medium">
+            {t("onboarding.advanced_mode")}
+          </div>
+          <div className="text-sm text-gray-500">
+            {t("onboarding.advanced_steps")}
+          </div>
         </button>
         <button
           className="w-full py-3 text-sm text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg border border-blue-200 dark:border-blue-800"
@@ -403,7 +517,11 @@ function ModeSelection({ t, onSelect, onSkip }: { t: (k: string) => string; onSe
 // === SECTION 2 END ===
 
 function FirewallCheckStep({
-  checking, result, onCheck, host, port,
+  checking,
+  result,
+  onCheck,
+  host,
+  port,
 }: {
   checking: boolean;
   result: "none" | "ok" | "blocked" | "warning";
@@ -418,7 +536,8 @@ function FirewallCheckStep({
         {t("onboarding.firewall_whitelist")}
       </p>
       <p className="text-xs text-gray-400">
-        {t("onboarding.host_label")}: {host || "—"}, {t("onboarding.port")}: {port || "—"}
+        {t("onboarding.host_label")}: {host || "—"}, {t("onboarding.port")}:{" "}
+        {port || "—"}
       </p>
       <button
         className="px-4 py-2 text-sm rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
@@ -433,9 +552,7 @@ function FirewallCheckStep({
         </div>
       )}
       {result === "blocked" && (
-        <div className="text-sm text-red-600">
-          {t("onboarding.fw_blocked")}
-        </div>
+        <div className="text-sm text-red-600">{t("onboarding.fw_blocked")}</div>
       )}
       {result === "warning" && (
         <div className="text-sm text-yellow-600">
@@ -447,10 +564,14 @@ function FirewallCheckStep({
 }
 
 function AuthMethodStep({
-  authMethod, setAuthMethod,
-  keyPath, setKeyPath,
-  generatingKey, onGenerateKey,
-  pass, setPass,
+  authMethod,
+  setAuthMethod,
+  keyPath,
+  setKeyPath,
+  generatingKey,
+  onGenerateKey,
+  pass,
+  setPass,
 }: {
   authMethod: AuthMethod;
   setAuthMethod: (m: AuthMethod) => void;
@@ -493,10 +614,12 @@ function AuthMethodStep({
 
       {authMethod === "password" && (
         <div>
-          <label className="block text-sm text-gray-500 mb-1">{t("onboarding.password")}</label>
+          <label className="block text-sm text-gray-500 mb-1">
+            {t("onboarding.password")}
+          </label>
           <input
             type="password"
-            className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+            className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
             value={pass}
             onChange={(e) => setPass(e.target.value)}
           />
@@ -506,10 +629,12 @@ function AuthMethodStep({
       {authMethod === "key" && (
         <div className="space-y-2">
           <div>
-            <label className="block text-sm text-gray-500 mb-1">{t("server.key_path")}</label>
+            <label className="block text-sm text-gray-500 mb-1">
+              {t("server.key_path")}
+            </label>
             <input
               type="text"
-              className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+              className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
               value={keyPath}
               onChange={(e) => setKeyPath(e.target.value)}
               placeholder={t("onboarding.key_path_placeholder")}
@@ -520,7 +645,9 @@ function AuthMethodStep({
             onClick={onGenerateKey}
             disabled={generatingKey}
           >
-            {generatingKey ? t("onboarding.generating") : t("onboarding.generate_key")}
+            {generatingKey
+              ? t("onboarding.generating")
+              : t("onboarding.generate_key")}
           </button>
         </div>
       )}
@@ -535,8 +662,10 @@ function AuthMethodStep({
 }
 
 function ProxyConfigStep({
-  socksPort, setSocksPort,
-  httpPort, setHttpPort,
+  socksPort,
+  setSocksPort,
+  httpPort,
+  setHttpPort,
 }: {
   socksPort: string;
   setSocksPort: (s: string) => void;
@@ -549,19 +678,23 @@ function ProxyConfigStep({
       <p className="text-sm text-gray-600">{t("onboarding.proxy_config")}</p>
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="block text-sm text-gray-500 mb-1">{t("onboarding.socks5_port")}</label>
+          <label className="block text-sm text-gray-500 mb-1">
+            {t("onboarding.socks5_port")}
+          </label>
           <input
             type="text"
-            className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+            className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
             value={socksPort}
             onChange={(e) => setSocksPort(e.target.value)}
           />
         </div>
         <div>
-          <label className="block text-sm text-gray-500 mb-1">{t("onboarding.http_port")}</label>
+          <label className="block text-sm text-gray-500 mb-1">
+            {t("onboarding.http_port")}
+          </label>
           <input
             type="text"
-            className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+            className="w-full px-3 py-2 rounded border border-gray-200/80 dark:border-white/[0.12] bg-transparent text-sm"
             value={httpPort}
             onChange={(e) => setHttpPort(e.target.value)}
           />
@@ -572,17 +705,34 @@ function ProxyConfigStep({
 }
 
 function TemplateSelectionStep({
-  selected, setSelected,
+  selected,
+  setSelected,
 }: {
   selected: string[];
   setSelected: (s: string[]) => void;
 }) {
   const { t } = useTranslation();
   const templates = [
-    { id: "tmpl_ip_notify", name: t("template.ip_notify_name"), desc: t("template.ip_notify_desc") },
-    { id: "tmpl_health_check", name: t("template.health_check_name"), desc: t("template.health_check_desc") },
-    { id: "tmpl_auto_reconnect", name: t("template.auto_reconnect_name"), desc: t("template.auto_reconnect_desc") },
-    { id: "tmpl_cleanup", name: t("template.cleanup_name"), desc: t("template.cleanup_desc") },
+    {
+      id: "tmpl_ip_notify",
+      name: t("template.ip_notify_name"),
+      desc: t("template.ip_notify_desc"),
+    },
+    {
+      id: "tmpl_health_check",
+      name: t("template.health_check_name"),
+      desc: t("template.health_check_desc"),
+    },
+    {
+      id: "tmpl_auto_reconnect",
+      name: t("template.auto_reconnect_name"),
+      desc: t("template.auto_reconnect_desc"),
+    },
+    {
+      id: "tmpl_cleanup",
+      name: t("template.cleanup_name"),
+      desc: t("template.cleanup_desc"),
+    },
   ];
 
   const toggle = (id: string) => {
@@ -595,11 +745,13 @@ function TemplateSelectionStep({
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-600">{t("onboarding.select_templates")}</p>
+      <p className="text-sm text-gray-600">
+        {t("onboarding.select_templates")}
+      </p>
       {templates.map((tmpl) => (
         <label
           key={tmpl.id}
-          className="flex items-start gap-3 p-3 rounded border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800"
+          className="flex items-start gap-3 p-3 rounded border border-gray-200/80 dark:border-white/[0.06] cursor-pointer hover:bg-[#FBFBFB] dark:hover:bg-[#1E1E1E]"
         >
           <input
             type="checkbox"
@@ -621,12 +773,11 @@ function WelcomeStep() {
   const { t } = useTranslation();
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-600">
-        {t("onboarding.welcome")}
-      </p>
+      <p className="text-sm text-gray-600">{t("onboarding.welcome")}</p>
       <p className="text-sm text-gray-500">
         This wizard will guide you through setting up your first VPS connection.
-        You can choose Quick mode (3 steps) or Advanced mode (7 steps) for more control.
+        You can choose Quick mode (3 steps) or Advanced mode (7 steps) for more
+        control.
       </p>
     </div>
   );
@@ -636,12 +787,8 @@ function CompleteStep({ onConfirm }: { onConfirm: () => void }) {
   const { t } = useTranslation();
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-600">
-        {t("onboarding.complete")}
-      </p>
-      <p className="text-sm text-green-600">
-        {t("onboarding.ready")}
-      </p>
+      <p className="text-sm text-gray-600">{t("onboarding.complete")}</p>
+      <p className="text-sm text-green-600">{t("onboarding.ready")}</p>
     </div>
   );
 }

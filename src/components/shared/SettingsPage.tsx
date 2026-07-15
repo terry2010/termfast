@@ -9,14 +9,21 @@ import type { SupportedLanguage } from "@/i18n/config";
 import i18n, { resolveLanguage } from "@/i18n/config";
 import { Modal } from "@/components/ui/Modal";
 import { toast } from "sonner";
-import { checkForUpdate, installUpdate, type UpdateResult } from "@/hooks/useUpdater";
+import {
+  checkForUpdate,
+  installUpdate,
+  type UpdateResult,
+} from "@/hooks/useUpdater";
 
-type TabId = "general" | "logs" | "proxy" | "trigger" | "notification" | "data" | "about";
+type TabId =
+  "general" | "logs" | "proxy" | "trigger" | "notification" | "data" | "about";
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabId>("general");
-  const sectionRefs = useRef<Record<TabId, HTMLDivElement | null>>({} as Record<TabId, HTMLDivElement | null>);
+  const sectionRefs = useRef<Record<TabId, HTMLDivElement | null>>(
+    {} as Record<TabId, HTMLDivElement | null>,
+  );
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const isScrollingRef = useRef(false);
 
@@ -59,13 +66,24 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     setActiveTab(id);
     const containerTop = container.getBoundingClientRect().top;
     const elTop = el.getBoundingClientRect().top - containerTop;
-    container.scrollTo({ top: container.scrollTop + elTop - 16, behavior: "smooth" });
+    container.scrollTo({
+      top: container.scrollTop + elTop - 16,
+      behavior: "smooth",
+    });
     // Release scroll lock after animation
-    setTimeout(() => { isScrollingRef.current = false; }, 500);
+    setTimeout(() => {
+      isScrollingRef.current = false;
+    }, 500);
   };
 
   return (
-    <Modal title={t("settings.title")} onClose={onClose} maxWidth="max-w-4xl" zIndex="z-40" bodyClassName="overflow-hidden p-0">
+    <Modal
+      title={t("settings.title")}
+      onClose={onClose}
+      maxWidth="max-w-4xl"
+      zIndex="z-40"
+      bodyClassName="overflow-hidden p-0"
+    >
       <div className="flex" style={{ height: "70vh" }}>
         {/* Sidebar */}
         <nav className="w-52 flex-shrink-0 space-y-0.5 p-4 overflow-y-auto">
@@ -76,7 +94,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               className={`w-full relative flex items-center px-3 py-2 rounded-lg text-sm transition-all text-left ${
                 activeTab === t2.id
                   ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-semibold"
-                  : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50"
+                  : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-[#1E1E1E]/50"
               }`}
             >
               {activeTab === t2.id && (
@@ -91,16 +109,58 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className="flex-1 min-w-0 bg-gray-100 dark:bg-gray-900 overflow-y-auto border-l border-gray-200 dark:border-gray-800"
+          className="flex-1 min-w-0 bg-gray-100 dark:bg-[#1E1E1E] overflow-y-auto border-l border-gray-200/80 dark:border-white/[0.06]"
         >
           <div className="p-6 space-y-8">
-            <div ref={(el) => { sectionRefs.current.general = el; }}><GeneralSection /></div>
-            <div ref={(el) => { sectionRefs.current.logs = el; }}><LogSection /></div>
-            <div ref={(el) => { sectionRefs.current.proxy = el; }}><ProxyDefaultsSection /></div>
-            <div ref={(el) => { sectionRefs.current.trigger = el; }}><TriggerDefaultsSection /></div>
-            <div ref={(el) => { sectionRefs.current.notification = el; }}><NotificationSection /></div>
-            <div ref={(el) => { sectionRefs.current.data = el; }}><DataManagementSection /></div>
-            <div ref={(el) => { sectionRefs.current.about = el; }}><AboutSection /></div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.general = el;
+              }}
+            >
+              <GeneralSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.logs = el;
+              }}
+            >
+              <LogSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.proxy = el;
+              }}
+            >
+              <ProxyDefaultsSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.trigger = el;
+              }}
+            >
+              <TriggerDefaultsSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.notification = el;
+              }}
+            >
+              <NotificationSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.data = el;
+              }}
+            >
+              <DataManagementSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.about = el;
+              }}
+            >
+              <AboutSection />
+            </div>
           </div>
         </div>
       </div>
@@ -122,9 +182,15 @@ function SettingGroup({
 }) {
   return (
     <section>
-      <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">{title}</h3>
-      {subtitle && <p className="text-sm text-gray-500 dark:text-gray-400 mb-3 px-1">{subtitle}</p>}
-      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
+      <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1.5 px-1">
+        {title}
+      </h3>
+      {subtitle && (
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3 px-1">
+          {subtitle}
+        </p>
+      )}
+      <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
         {children}
       </div>
     </section>
@@ -142,10 +208,16 @@ function SettingItem({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3.5 border-b border-gray-100 dark:border-gray-700/60 last:border-0">
+    <div className="flex items-center justify-between gap-4 px-4 py-3.5 border-b border-gray-100 dark:border-white/[0.06] last:border-0">
       <div className="min-w-0">
-        <div className="text-sm font-medium text-gray-800 dark:text-gray-200">{label}</div>
-        {hint && <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">{hint}</div>}
+        <div className="text-sm font-medium text-gray-800 dark:text-gray-200">
+          {label}
+        </div>
+        {hint && (
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
+            {hint}
+          </div>
+        )}
       </div>
       <div className="flex-shrink-0">{children}</div>
     </div>
@@ -153,7 +225,13 @@ function SettingItem({
 }
 
 // macOS-style toggle switch
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <button
       type="button"
@@ -182,7 +260,7 @@ function GeneralSection() {
   const updateAndSave = (patch: Record<string, unknown>) => {
     updateGeneral(patch as any);
     ipcInvoke("ipc_update_general_config", patch).catch((e) =>
-      console.error("save general config failed:", e)
+      console.error("save general config failed:", e),
     );
   };
 
@@ -220,7 +298,7 @@ function GeneralSection() {
           onChange={(v) => {
             updateAndSave({ auto_start: v });
             ipcInvoke("ipc_set_autostart", { enabled: v }).catch((err) =>
-              console.error("set autostart failed:", err)
+              console.error("set autostart failed:", err),
             );
           }}
         />
@@ -247,7 +325,7 @@ function LogSection() {
   const updateAndSave = (patch: Record<string, unknown>) => {
     updateGeneral(patch as any);
     ipcInvoke("ipc_update_general_config", patch).catch((e) =>
-      console.error("save log config failed:", e)
+      console.error("save log config failed:", e),
     );
   };
 
@@ -275,7 +353,9 @@ function LogSection() {
         <input
           type="number"
           value={config.general.log_max_days}
-          onChange={(e) => updateAndSave({ log_max_days: parseInt(e.target.value) || 30 })}
+          onChange={(e) =>
+            updateAndSave({ log_max_days: parseInt(e.target.value) || 30 })
+          }
           className="input w-24"
         />
       </SettingItem>
@@ -283,7 +363,9 @@ function LogSection() {
         <input
           type="number"
           value={config.general.log_max_size_mb}
-          onChange={(e) => updateAndSave({ log_max_size_mb: parseInt(e.target.value) || 10 })}
+          onChange={(e) =>
+            updateAndSave({ log_max_size_mb: parseInt(e.target.value) || 10 })
+          }
           className="input w-24"
         />
       </SettingItem>
@@ -324,7 +406,17 @@ function TriggerDefaultsSection() {
 function DataManagementSection() {
   const { t } = useTranslation();
   const Chevron = (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400">
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="text-gray-400"
+    >
       <polyline points="9 18 15 12 9 6" />
     </svg>
   );
@@ -358,19 +450,37 @@ function NotificationSection() {
   const updateAndSave = (patch: Record<string, unknown>) => {
     updateGeneral(patch as any);
     ipcInvoke("ipc_update_general_config", patch).catch((e) =>
-      console.error("save notification config failed:", e)
+      console.error("save notification config failed:", e),
     );
   };
 
   const items: { key: keyof typeof config.general; label: string }[] = [
-    { key: "notify_connect_success", label: t("settings.notification.connect_success") },
+    {
+      key: "notify_connect_success",
+      label: t("settings.notification.connect_success"),
+    },
     { key: "notify_disconnect", label: t("settings.notification.disconnect") },
-    { key: "notify_reconnect_success", label: t("settings.notification.reconnect_success") },
+    {
+      key: "notify_reconnect_success",
+      label: t("settings.notification.reconnect_success"),
+    },
     { key: "notify_auth_fail", label: t("settings.notification.auth_fail") },
-    { key: "notify_proxy_toggle", label: t("settings.notification.proxy_toggle") },
-    { key: "notify_proxy_port_conflict", label: t("settings.notification.proxy_port_conflict") },
-    { key: "notify_trigger_fail", label: t("settings.notification.trigger_fail") },
-    { key: "notify_trigger_success", label: t("settings.notification.trigger_success") },
+    {
+      key: "notify_proxy_toggle",
+      label: t("settings.notification.proxy_toggle"),
+    },
+    {
+      key: "notify_proxy_port_conflict",
+      label: t("settings.notification.proxy_port_conflict"),
+    },
+    {
+      key: "notify_trigger_fail",
+      label: t("settings.notification.trigger_fail"),
+    },
+    {
+      key: "notify_trigger_success",
+      label: t("settings.notification.trigger_success"),
+    },
     { key: "notify_ip_change", label: t("settings.notification.ip_change") },
   ];
 
@@ -420,15 +530,23 @@ function AboutSection() {
       <SettingItem
         label={
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-blue-500 text-white flex items-center justify-center text-base font-bold">V</div>
+            <div className="w-9 h-9 rounded-lg bg-blue-500 text-white flex items-center justify-center text-base font-bold">
+              V
+            </div>
             <div>
-              <div className="text-sm font-medium text-gray-900 dark:text-gray-100">TermFast</div>
-              <div className="text-xs text-gray-500 dark:text-gray-400">v{APP_VERSION}</div>
+              <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                TermFast
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                v{APP_VERSION}
+              </div>
             </div>
           </div>
         }
       >
-        <span className="text-xs text-gray-500 dark:text-gray-400">{t("common.built_in")}</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">
+          {t("common.built_in")}
+        </span>
       </SettingItem>
       <button
         className={`w-full text-left ${checking ? "opacity-50 cursor-not-allowed" : ""}`}
@@ -437,9 +555,21 @@ function AboutSection() {
       >
         <SettingItem label={t("settings.about.check_update")}>
           {checking ? (
-            <span className="text-xs text-gray-400">{t("settings.about.checking")}</span>
+            <span className="text-xs text-gray-400">
+              {t("settings.about.checking")}
+            </span>
           ) : (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="text-gray-400"
+            >
               <polyline points="9 18 15 12 9 6" />
             </svg>
           )}
@@ -449,13 +579,18 @@ function AboutSection() {
   );
 }
 
-function promptInstallUpdate(t: (key: string, options?: Record<string, string>) => string, result: UpdateResult) {
+function promptInstallUpdate(
+  t: (key: string, options?: Record<string, string>) => string,
+  result: UpdateResult,
+) {
   const version = result.info.version;
   let progressToastId: string | number | undefined;
 
   toast(
     <div className="flex flex-col gap-2">
-      <div className="text-sm font-medium">{t("settings.about.available", { version })}</div>
+      <div className="text-sm font-medium">
+        {t("settings.about.available", { version })}
+      </div>
       {result.info.body && (
         <div className="text-xs text-gray-500 dark:text-gray-400 max-h-24 overflow-y-auto whitespace-pre-line">
           {result.info.body}
@@ -471,7 +606,9 @@ function promptInstallUpdate(t: (key: string, options?: Record<string, string>) 
           try {
             await installUpdate(result.update, (percent) => {
               if (progressToastId) {
-                toast.loading(`${t("settings.about.installing")} ${percent}%`, { id: progressToastId });
+                toast.loading(`${t("settings.about.installing")} ${percent}%`, {
+                  id: progressToastId,
+                });
               }
             });
             toast.dismiss(progressToastId);
@@ -483,7 +620,7 @@ function promptInstallUpdate(t: (key: string, options?: Record<string, string>) 
           }
         },
       },
-    }
+    },
   );
 }
 

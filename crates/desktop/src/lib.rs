@@ -3,17 +3,21 @@
 //! Desktop-specific functionality: tray, autostart, platform adapter,
 //! notifications, offline detection, window effects.
 
-pub mod platform;
-pub mod notification;
-pub mod tray;
 pub mod autostart;
 pub mod network;
+pub mod notification;
+pub mod platform;
+pub mod tray;
 
-pub use platform::{PlatformAdapter, SystemProxyConfig, SetProxyResult, get_platform_adapter};
-pub use notification::{NotificationPrefs, NotificationCategory, NotificationLevel, NotificationEvent};
-pub use tray::{TrayMenu, TrayMenuItem, TrayIconColor, build_tray_menu, calculate_icon_color, calculate_badge};
 pub use autostart::{AutostartManager, StubAutostartManager};
 pub use network::{NetworkMonitor, NetworkState};
+pub use notification::{
+    NotificationCategory, NotificationEvent, NotificationLevel, NotificationPrefs,
+};
+pub use platform::{get_platform_adapter, PlatformAdapter, SetProxyResult, SystemProxyConfig};
+pub use tray::{
+    build_tray_menu, calculate_badge, calculate_icon_color, TrayIconColor, TrayMenu, TrayMenuItem,
+};
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

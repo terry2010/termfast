@@ -249,7 +249,10 @@ mod tests {
 
     #[test]
     fn test_response_event_serialization() {
-        let resp = Response::event("server:status_changed", serde_json::json!({"server_id": "srv_1"}));
+        let resp = Response::event(
+            "server:status_changed",
+            serde_json::json!({"server_id": "srv_1"}),
+        );
         let json = serde_json::to_string(&resp).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "Event");
@@ -259,28 +262,60 @@ mod tests {
     #[test]
     fn test_all_actions_round_trip() {
         let actions = vec![
-            Action::AddServer, Action::RemoveServer, Action::UpdateServer,
-            Action::ConnectServer, Action::DisconnectServer, Action::GetServerStatus,
-            Action::ListServers, Action::ExportServers, Action::ImportServers,
-            Action::ExportFull, Action::ImportFull, Action::CleanupAuthorizedKeys,
-            Action::ToggleProxy, Action::ToggleProxyAdvanced, Action::GetProxyStatus,
-            Action::TestProxy, Action::SetProxyAuth, Action::ClearProxyAuth,
-            Action::SetSystemProxy, Action::ClearSystemProxy, Action::GetSystemProxy,
-            Action::AddTrigger, Action::RemoveTrigger, Action::UpdateTrigger,
-            Action::SyncTriggerFromTemplate, Action::ManualFireTrigger,
-            Action::PauseAllTriggers, Action::ResumeAllTriggers,
-            Action::PauseServerTriggers, Action::ResumeServerTriggers,
-            Action::ListTemplates, Action::CreateTemplate, Action::UpdateTemplate,
-            Action::DeleteTemplate, Action::SaveTriggerAsTemplate,
-            Action::ImportTemplates, Action::ExportTemplates,
-            Action::SaveCredential, Action::HasCredential, Action::DeleteCredential,
-            Action::ConfigureKeyAuth, Action::SwitchAuthMethod,
-            Action::GetConfig, Action::UpdateGeneralConfig,
-            Action::GetLogs, Action::ClearLogs, Action::ExportLogs,
-            Action::Shutdown, Action::GetDaemonStatus,
+            Action::AddServer,
+            Action::RemoveServer,
+            Action::UpdateServer,
+            Action::ConnectServer,
+            Action::DisconnectServer,
+            Action::GetServerStatus,
+            Action::ListServers,
+            Action::ExportServers,
+            Action::ImportServers,
+            Action::ExportFull,
+            Action::ImportFull,
+            Action::CleanupAuthorizedKeys,
+            Action::ToggleProxy,
+            Action::ToggleProxyAdvanced,
+            Action::GetProxyStatus,
+            Action::TestProxy,
+            Action::SetProxyAuth,
+            Action::ClearProxyAuth,
+            Action::SetSystemProxy,
+            Action::ClearSystemProxy,
+            Action::GetSystemProxy,
+            Action::AddTrigger,
+            Action::RemoveTrigger,
+            Action::UpdateTrigger,
+            Action::SyncTriggerFromTemplate,
+            Action::ManualFireTrigger,
+            Action::PauseAllTriggers,
+            Action::ResumeAllTriggers,
+            Action::PauseServerTriggers,
+            Action::ResumeServerTriggers,
+            Action::ListTemplates,
+            Action::CreateTemplate,
+            Action::UpdateTemplate,
+            Action::DeleteTemplate,
+            Action::SaveTriggerAsTemplate,
+            Action::ImportTemplates,
+            Action::ExportTemplates,
+            Action::SaveCredential,
+            Action::HasCredential,
+            Action::DeleteCredential,
+            Action::ConfigureKeyAuth,
+            Action::SwitchAuthMethod,
+            Action::GetConfig,
+            Action::UpdateGeneralConfig,
+            Action::GetLogs,
+            Action::ClearLogs,
+            Action::ExportLogs,
+            Action::Shutdown,
+            Action::GetDaemonStatus,
             Action::DetectFirewall,
-            Action::TerminalOpen, Action::TerminalInput,
-            Action::TerminalClose, Action::TerminalResize,
+            Action::TerminalOpen,
+            Action::TerminalInput,
+            Action::TerminalClose,
+            Action::TerminalResize,
         ];
         for action in actions {
             let json = serde_json::to_string(&action).unwrap();
@@ -292,8 +327,14 @@ mod tests {
 
     #[test]
     fn test_event_type_as_str() {
-        assert_eq!(EventType::ServerStatusChanged.as_str(), "server:status_changed");
-        assert_eq!(EventType::ProxyStatusChanged.as_str(), "proxy:status_changed");
+        assert_eq!(
+            EventType::ServerStatusChanged.as_str(),
+            "server:status_changed"
+        );
+        assert_eq!(
+            EventType::ProxyStatusChanged.as_str(),
+            "proxy:status_changed"
+        );
         assert_eq!(EventType::TriggerFired.as_str(), "trigger:fired");
         assert_eq!(EventType::LogEntry.as_str(), "log:entry");
     }

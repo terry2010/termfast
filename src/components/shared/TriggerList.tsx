@@ -12,24 +12,32 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { TriggerInstance, TriggerType } from "@/types";
 
 const EVENT_TYPE_COLORS: Record<TriggerType, string> = {
-  OnConnect: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
+  OnConnect:
+    "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
   OnReconnect: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
-  OnIpChange: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
-  OnProcessDead: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
-  OnPortClosed: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
-  ManualFire: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
+  OnIpChange:
+    "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
+  OnProcessDead:
+    "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+  OnPortClosed:
+    "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
+  ManualFire: "bg-gray-100 text-gray-700 dark:bg-[#2C2C2E] dark:text-gray-300",
 };
 
 const EMPTY_TRIGGERS: TriggerInstance[] = [];
 
 export function TriggerList({ serverId }: { serverId: string }) {
   const { t } = useTranslation();
-  const triggers = useTriggerStore((s) => s.serverTriggers[serverId] || EMPTY_TRIGGERS);
+  const triggers = useTriggerStore(
+    (s) => s.serverTriggers[serverId] || EMPTY_TRIGGERS,
+  );
   const setServerTriggers = useTriggerStore((s) => s.setServerTriggers);
   const executing = useTriggerStore((s) => s.executing);
   const templates = useTriggerStore((s) => s.templates);
   const servers = useServerStore((s) => s.servers);
-  const [editingTrigger, setEditingTrigger] = useState<TriggerInstance | null | undefined>(undefined);
+  const [editingTrigger, setEditingTrigger] = useState<
+    TriggerInstance | null | undefined
+  >(undefined);
   const serverStatus = servers.find((s) => s.id === serverId)?.current_status;
 
   // Load triggers from server config — only update if server has triggers data
@@ -48,43 +56,47 @@ export function TriggerList({ serverId }: { serverId: string }) {
           setServerTriggers(serverId, triggers);
         }
       })
-      .catch((e) => console.error("[TriggerList] ipc_list_triggers failed:", e));
+      .catch((e) =>
+        console.error("[TriggerList] ipc_list_triggers failed:", e),
+      );
   }, [serverId, setServerTriggers]);
 
-  // editingTrigger: undefined = no editor, null = new trigger, TriggerInstance = editing
-  if (editingTrigger !== undefined) {
-    return (
-      <TriggerEditor
-        serverId={serverId}
-        trigger={editingTrigger}
-        onClose={() => setEditingTrigger(undefined)}
-        onSaved={() => {
-          // Reload triggers from daemon and update store
-          ipcInvoke<TriggerInstance[]>("ipc_list_triggers", { server_id: serverId })
-            .then((triggers) => {
-              console.log("ipc_list_triggers returned:", JSON.stringify(triggers));
-              if (Array.isArray(triggers)) {
-                setServerTriggers(serverId, triggers);
-              } else {
-                console.warn("ipc_list_triggers returned non-array:", typeof triggers, triggers);
-              }
-              // Also reload server list to sync config
-              ipcInvoke<{ servers: any[] }>("ipc_list_servers")
-                .then((data) => {
-                  if (data?.servers) {
-                    useServerStore.setState({ servers: data.servers });
-                  }
-                })
-                .catch(() => {});
-            })
-            .catch(() => {});
-        }}
-      />
-    );
-  }
+  const handleSaved = () => {
+    // Reload triggers from daemon and update store
+    ipcInvoke<TriggerInstance[]>("ipc_list_triggers", { server_id: serverId })
+      .then((triggers) => {
+        console.log("ipc_list_triggers returned:", JSON.stringify(triggers));
+        if (Array.isArray(triggers)) {
+          setServerTriggers(serverId, triggers);
+        } else {
+          console.warn(
+            "ipc_list_triggers returned non-array:",
+            typeof triggers,
+            triggers,
+          );
+        }
+        // Also reload server list to sync config
+        ipcInvoke<{ servers: any[] }>("ipc_list_servers")
+          .then((data) => {
+            if (data?.servers) {
+              useServerStore.setState({ servers: data.servers });
+            }
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+  };
 
   return (
     <div>
+      {editingTrigger !== undefined && (
+        <TriggerEditor
+          serverId={serverId}
+          trigger={editingTrigger}
+          onClose={() => setEditingTrigger(undefined)}
+          onSaved={handleSaved}
+        />
+      )}
       <div className="flex justify-between items-center mb-3">
         <span className="text-sm text-gray-500 dark:text-gray-400">
           {triggers.length > 0 ? t("trigger.title") : t("trigger.title")}
@@ -98,25 +110,47 @@ export function TriggerList({ serverId }: { serverId: string }) {
       </div>
       {triggers.length === 0 ? (
         <div className="py-8 text-center">
-          <div className="w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-700/50 flex items-center justify-center text-gray-400 mx-auto mb-3">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <div className="w-10 h-10 rounded-full bg-gray-100 dark:bg-[#2C2C2E]/50 flex items-center justify-center text-gray-400 mx-auto mb-3">
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <polyline points="13 17 18 12 13 7" />
               <polyline points="6 17 11 12 6 7" />
             </svg>
           </div>
-          <div className="text-sm text-gray-500 dark:text-gray-400 mb-2">{t("trigger.empty_title")}</div>
-          <div className="text-xs text-gray-400 dark:text-gray-500 max-w-md mx-auto leading-relaxed">{t("trigger.empty_description")}</div>
+          <div className="text-sm text-gray-500 dark:text-gray-400 mb-2">
+            {t("trigger.empty_title")}
+          </div>
+          <div className="text-xs text-gray-400 dark:text-gray-500 max-w-md mx-auto leading-relaxed">
+            {t("trigger.empty_description")}
+          </div>
         </div>
       ) : (
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <div className="bg-white dark:bg-[#1E1E1E] rounded-xl border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
           {triggers.map((trigger) => (
             <TriggerCard
               key={trigger.id}
               trigger={trigger}
-              executing={Object.values(executing).find((e) => e.trigger_id === trigger.id)}
+              executing={Object.values(executing).find(
+                (e) => e.trigger_id === trigger.id,
+              )}
               serverId={serverId}
-              triggerType={trigger.trigger_type || templates.find(tpl => tpl.id === trigger.template_id)?.type || "ManualFire"}
-              builtIn={templates.find(tpl => tpl.id === trigger.template_id)?.built_in || false}
+              triggerType={
+                trigger.trigger_type ||
+                templates.find((tpl) => tpl.id === trigger.template_id)?.type ||
+                "ManualFire"
+              }
+              builtIn={
+                templates.find((tpl) => tpl.id === trigger.template_id)
+                  ?.built_in || false
+              }
               onEdit={() => setEditingTrigger(trigger)}
               connected={serverStatus === "connected"}
             />
@@ -152,7 +186,12 @@ function TriggerCard({
 
   const handleDelete = async () => {
     try {
-      await ipcInvoke("ipc_remove_trigger", { server_id: serverId, trigger_id: trigger.id });
+      await ipcInvoke("ipc_remove_trigger", {
+        params: {
+          server_id: serverId,
+          trigger_id: trigger.id,
+        },
+      });
     } catch (e) {
       console.error("delete trigger failed:", e);
     }
@@ -191,22 +230,36 @@ function TriggerCard({
       console.error("fire trigger failed:", e);
       useTriggerStore.getState().updateExecution(execId, {
         success: false,
-        results: [{ command: "error", exit_code: -1, stdout: "", stderr: formatIpcError(e), success: false }],
+        results: [
+          {
+            command: "error",
+            exit_code: -1,
+            stdout: "",
+            stderr: formatIpcError(e),
+            success: false,
+          },
+        ],
       });
     }
   };
 
   return (
-    <div className="border-b border-gray-100 dark:border-gray-700/60 last:border-0 hover:bg-gray-50/50 dark:hover:bg-gray-700/20 transition-colors">
+    <div className="border-b border-gray-100 dark:border-white/[0.06] last:border-0 hover:bg-[#FBFBFB] dark:hover:bg-[#2C2C2E]/20 transition-colors">
       <div className="flex items-center justify-between gap-4 px-4 py-3.5">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap mb-1">
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${EVENT_TYPE_COLORS[triggerType]}`}>
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${EVENT_TYPE_COLORS[triggerType]}`}
+            >
               {t(`trigger.event_types.${triggerType}`)}
             </span>
-            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{trigger.name}</span>
+            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {trigger.name}
+            </span>
             {builtIn && (
-              <span className="text-[10px] text-gray-400">{t("trigger.built_in")}</span>
+              <span className="text-[10px] text-gray-400">
+                {t("trigger.built_in")}
+              </span>
             )}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">
@@ -223,7 +276,7 @@ function TriggerCard({
             ▶ {t("trigger.fire")}
           </button>
           <button
-            className="text-xs px-2.5 py-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors"
+            className="text-xs px-2.5 py-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-[#2C2C2E] text-gray-600 dark:text-gray-300 transition-colors"
             onClick={onEdit}
           >
             {t("common.edit")}
@@ -238,7 +291,7 @@ function TriggerCard({
       </div>
       {executing && (
         <div className="px-4 pb-3.5">
-          <div className="h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mb-2">
+          <div className="h-1 bg-gray-200 dark:bg-[#2C2C2E] rounded-full overflow-hidden mb-2">
             <div
               className={`h-full transition-all ${executing.success === false ? "bg-red-500" : "bg-blue-500"}`}
               style={{
@@ -247,7 +300,9 @@ function TriggerCard({
             />
           </div>
           <div className="text-xs text-gray-500 flex items-center justify-between mb-2">
-            <span>{executing.executed_commands}/{executing.total_commands}</span>
+            <span>
+              {executing.executed_commands}/{executing.total_commands}
+            </span>
             <div className="flex items-center gap-2">
               {executing.success === true && (
                 <span className="text-green-500">✓ {t("common.success")}</span>
@@ -265,17 +320,26 @@ function TriggerCard({
             </div>
           </div>
           {executing.results && executing.results.length > 0 && (
-            <div className="mt-2 space-y-1 max-h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 rounded-lg p-2 font-mono text-xs">
+            <div className="mt-2 space-y-1 max-h-40 overflow-y-auto bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-lg p-2 font-mono text-xs">
               {executing.results.map((r, i) => (
                 <div key={i}>
                   <div className="text-gray-600 dark:text-gray-400">
-                    <span className={r.success ? "text-green-500" : "text-red-500"}>$</span> {r.command}
+                    <span
+                      className={r.success ? "text-green-500" : "text-red-500"}
+                    >
+                      $
+                    </span>{" "}
+                    {r.command}
                   </div>
                   {r.stdout && (
-                    <pre className="whitespace-pre-wrap text-gray-700 dark:text-gray-300 mt-0.5">{r.stdout}</pre>
+                    <pre className="whitespace-pre-wrap text-gray-700 dark:text-gray-300 mt-0.5">
+                      {r.stdout}
+                    </pre>
                   )}
                   {r.stderr && (
-                    <pre className="whitespace-pre-wrap text-red-500 mt-0.5">{r.stderr}</pre>
+                    <pre className="whitespace-pre-wrap text-red-500 mt-0.5">
+                      {r.stderr}
+                    </pre>
                   )}
                 </div>
               ))}

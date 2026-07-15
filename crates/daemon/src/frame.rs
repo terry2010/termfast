@@ -2,7 +2,7 @@
 //!
 //! Format: [4-byte length (big-endian u32)][JSON payload]
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Maximum frame size (1 MB)
@@ -11,7 +11,11 @@ pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 /// Write a length-prefixed frame
 pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, data: &[u8]) -> Result<()> {
     if data.len() > MAX_FRAME_SIZE {
-        bail!("frame too large: {} bytes (max {})", data.len(), MAX_FRAME_SIZE);
+        bail!(
+            "frame too large: {} bytes (max {})",
+            data.len(),
+            MAX_FRAME_SIZE
+        );
     }
     let len = data.len() as u32;
     writer.write_all(&len.to_be_bytes()).await?;

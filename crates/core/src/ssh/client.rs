@@ -3,6 +3,7 @@
 //! Connection management with heartbeat and reconnection.
 //! Uses russh client for SSH protocol.
 
+use super::protector::SocketProtector;
 use crate::error::{Error, ErrorCode, IpcError, Result};
 use russh::client;
 use std::sync::Arc;
@@ -32,6 +33,8 @@ pub struct SshClientConfig {
     pub skip_hostkey_verify: bool,
     /// Callback invoked on hostkey mismatch (§17.2)
     pub hostkey_mismatch_callback: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
+    /// Optional hook to protect the socket before `connect()` (Android VpnService).
+    pub socket_protector: Option<Arc<dyn SocketProtector>>,
 }
 
 impl Default for SshClientConfig {
@@ -46,6 +49,7 @@ impl Default for SshClientConfig {
             max_backoff_secs: 30,
             skip_hostkey_verify: false,
             hostkey_mismatch_callback: None,
+            socket_protector: None,
         }
     }
 }
@@ -139,7 +143,10 @@ impl SshClientHandle {
     }
 
     /// Set the hostkey mismatch callback (§17.2)
-    pub async fn set_hostkey_mismatch_callback(&self, cb: Arc<dyn Fn(String, String) + Send + Sync>) {
+    pub async fn set_hostkey_mismatch_callback(
+        &self,
+        cb: Arc<dyn Fn(String, String) + Send + Sync>,
+    ) {
         self.config.lock().await.hostkey_mismatch_callback = Some(cb);
     }
 
@@ -166,6 +173,7 @@ impl SshClientHandle {
 
         let addr = format!("{}:{}", config.host, config.port);
         let user = config.user.clone();
+        let protector = config.socket_protector.clone();
         drop(config);
 
         // Open ONE TCP connection and peek at the first bytes to capture any
@@ -181,8 +189,10 @@ impl SshClientHandle {
         // the rejection persistent.
         let (pre_banner, stream) = match tokio::time::timeout(
             Duration::from_secs(10),
-            connect_and_peek(&addr),
-        ).await {
+            connect_and_peek(&addr, protector.as_deref()),
+        )
+        .await
+        {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => {
                 self.set_state_sync(ConnectionState::Disconnected);
@@ -238,10 +248,7 @@ impl SshClientHandle {
     }
 
     /// Connect with reconnection logic (exponential backoff)
-    pub async fn connect_with_reconnect(
-        &self,
-        auth: &super::auth::AuthMethod,
-    ) -> Result<()> {
+    pub async fn connect_with_reconnect(&self, auth: &super::auth::AuthMethod) -> Result<()> {
         let config = self.config.lock().await;
         let max_attempts = config.max_attempts;
         let initial_backoff = config.initial_backoff_secs;
@@ -346,9 +353,7 @@ impl SshClientHandle {
         handle
             .channel_open_direct_tcpip(host, port, "127.0.0.1", 0)
             .await
-            .map_err(|e| {
-                Error::Ssh(format!("failed to open direct-tcpip channel: {}", e))
-            })
+            .map_err(|e| Error::Ssh(format!("failed to open direct-tcpip channel: {}", e)))
     }
 
     /// Set the connection state (async)
@@ -401,11 +406,13 @@ mod tests {
     fn test_exponential_backoff_sequence() {
         let mut backoff = 1u64;
         let max = 30u64;
-        let sequence: Vec<u64> = (0..10).map(|_| {
-            let current = backoff;
-            backoff = (backoff * 2).min(max);
-            current
-        }).collect();
+        let sequence: Vec<u64> = (0..10)
+            .map(|_| {
+                let current = backoff;
+                backoff = (backoff * 2).min(max);
+                current
+            })
+            .collect();
 
         assert_eq!(sequence, vec![1, 2, 4, 8, 16, 30, 30, 30, 30, 30]);
     }
@@ -483,29 +490,38 @@ impl tokio::io::AsyncWrite for PrefixedStream {
 ///
 /// This makes exactly ONE TCP connection — unlike the old `read_server_banner`
 /// which made a second connection just to read the pre-banner.
+///
+/// `protector` is called after the socket is created but before `connect()` is
+/// issued. On Android this is used to call `VpnService.protect(fd)` so the SSH
+/// control traffic is not routed back into the TUN.
 async fn connect_and_peek(
     addr: &str,
+    protector: Option<&dyn SocketProtector>,
 ) -> std::io::Result<(String, PrefixedStream)> {
     use tokio::io::AsyncReadExt;
 
-    let mut stream = tokio::net::TcpStream::connect(addr).await?;
+    let mut stream = connect_socket(addr, protector).await?;
 
     // Read the first chunk (up to 2KB). The server may send:
     //   - Pre-banner lines + SSH version (e.g. "Not allowed\r\nSSH-2.0-...")
     //   - Just pre-banner lines then close (rejection)
     //   - Just SSH version (normal)
     let mut buf = vec![0u8; 2048];
-    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await
+    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
+        .await
         .unwrap_or(Ok(0))?;
     let data = &buf[..n];
 
     if data.is_empty() {
         // Server closed immediately — no pre-banner to extract
-        return Ok((String::new(), PrefixedStream {
-            prefix: Vec::new(),
-            prefix_pos: 0,
-            inner: stream,
-        }));
+        return Ok((
+            String::new(),
+            PrefixedStream {
+                prefix: Vec::new(),
+                prefix_pos: 0,
+                inner: stream,
+            },
+        ));
     }
 
     // Extract pre-banner lines (lines before the first "SSH-" line)
@@ -523,9 +539,87 @@ async fn connect_and_peek(
         pre_banner_lines.join(" | ")
     };
 
-    Ok((pre_banner, PrefixedStream {
-        prefix: data.to_vec(),
-        prefix_pos: 0,
-        inner: stream,
-    }))
+    Ok((
+        pre_banner,
+        PrefixedStream {
+            prefix: data.to_vec(),
+            prefix_pos: 0,
+            inner: stream,
+        },
+    ))
+}
+
+/// Create a TCP stream with an optional `SocketProtector` hook.
+/// On Unix (Linux/macOS/Android) we use `socket2` to create the socket so the
+/// protector can be called before `connect()`. On other platforms we fall back
+/// to the standard `tokio::net::TcpStream::connect`.
+async fn connect_socket(
+    addr: &str,
+    protector: Option<&dyn SocketProtector>,
+) -> std::io::Result<tokio::net::TcpStream> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::FromRawFd;
+        use std::os::fd::IntoRawFd;
+
+        // Resolve host:port to a concrete SocketAddr (required by socket2).
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
+        if addrs.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("no address found for {}", addr),
+            ));
+        }
+        let socket_addr = addrs[0];
+
+        let domain = match socket_addr {
+            std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
+            std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
+        };
+
+        let socket = socket2::Socket::new(domain, socket2::Type::STREAM, None)?;
+        socket.set_nonblocking(true)?;
+
+        // Android: call VpnService.protect(fd) before connect.
+        if let Some(p) = protector {
+            p.protect_socket(&socket)?;
+        }
+
+        // Non-blocking connect: on Unix this returns EINPROGRESS.
+        let std_stream = match socket.connect(&socket_addr.into()) {
+            Ok(()) => {
+                // Connect completed immediately; ownership transfers to TcpStream below.
+                let fd = socket.into_raw_fd();
+                unsafe { std::net::TcpStream::from_raw_fd(fd) }
+            }
+            Err(e) => {
+                if e.raw_os_error() == Some(libc::EINPROGRESS) {
+                    let fd = socket.into_raw_fd();
+                    unsafe { std::net::TcpStream::from_raw_fd(fd) }
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        let stream = tokio::net::TcpStream::from_std(std_stream)?;
+
+        // Wait for the non-blocking connect to complete (writable = connected or error).
+        tokio::time::timeout(Duration::from_secs(10), stream.writable())
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out")
+            })??;
+        if let Some(err) = stream.take_error()? {
+            return Err(err);
+        }
+
+        Ok(stream)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = protector; // no-op on Windows; VpnService is not available there
+        tokio::net::TcpStream::connect(addr).await
+    }
 }

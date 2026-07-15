@@ -13,7 +13,11 @@ interface UndoToastState {
 let toastState: UndoToastState | null = null;
 let listeners: ((toast: UndoToastState | null) => void)[] = [];
 
-export function showUndoToast(message: string, onUndo?: () => void, duration = 5000) {
+export function showUndoToast(
+  message: string,
+  onUndo?: () => void,
+  duration = 5000,
+) {
   toastState = { message, onUndo, duration };
   listeners.forEach((l) => l(toastState));
 }
@@ -57,7 +61,7 @@ export function UndoToast() {
 
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
-      <div className="flex items-center gap-3 px-4 py-3 bg-gray-900 dark:bg-gray-700 text-white rounded-lg shadow-lg">
+      <div className="flex items-center gap-3 px-4 py-3 bg-[#1E1E1E] dark:bg-[#2C2C2E] text-white rounded-lg shadow-lg border border-gray-700 dark:border-white/[0.06]">
         <span className="text-sm">{toast.message}</span>
         {toast.onUndo && (
           <button

@@ -20,14 +20,18 @@ impl DaemonClient {
 
         let socket_path = match socket_path {
             Some(path) => path,
-            None => bail!("daemon is not running. Start it with `termfast --daemon` or launch the GUI"),
+            None => {
+                bail!("daemon is not running. Start it with `termfast --daemon` or launch the GUI")
+            }
         };
 
         #[cfg(unix)]
         {
-            let stream = tokio::net::UnixStream::connect(&socket_path).await.map_err(|e| {
-                anyhow::anyhow!("failed to connect to daemon socket {}: {}", socket_path, e)
-            })?;
+            let stream = tokio::net::UnixStream::connect(&socket_path)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to connect to daemon socket {}: {}", socket_path, e)
+                })?;
             Ok(Self { stream })
         }
 
@@ -36,7 +40,11 @@ impl DaemonClient {
     }
 
     /// Send a request and wait for the response
-    pub async fn send_request(&mut self, action: Action, params: serde_json::Value) -> Result<Response> {
+    pub async fn send_request(
+        &mut self,
+        action: Action,
+        params: serde_json::Value,
+    ) -> Result<Response> {
         // Tag CLI requests so daemon can broadcast focus events to GUI
         let mut params = params;
         if let Some(obj) = params.as_object_mut() {
@@ -49,7 +57,6 @@ impl DaemonClient {
 
         #[cfg(unix)]
         {
-            
             let (mut read_half, mut write_half) = self.stream.split();
 
             // Send request
@@ -100,7 +107,11 @@ impl DaemonClient {
     }
 
     /// Resolve a trigger name or ID to a trigger_id for a given server
-    pub async fn resolve_trigger_id(&mut self, server_id: &str, name_or_id: &str) -> Result<String> {
+    pub async fn resolve_trigger_id(
+        &mut self,
+        server_id: &str,
+        name_or_id: &str,
+    ) -> Result<String> {
         let resp = self.send_simple(Action::GetConfig).await?;
         if let Response::Ok { data, .. } = resp {
             if let Some(servers) = data["servers"].as_array() {
@@ -137,11 +148,20 @@ impl DaemonClient {
                 // Read next frame (blocks until data available)
                 let data = match frame::read_frame(&mut read_half).await {
                     Ok(data) => data,
-                    Err(e) if e.to_string().contains("EOF") || e.to_string().contains("unexpected end") => break,
+                    Err(e)
+                        if e.to_string().contains("EOF")
+                            || e.to_string().contains("unexpected end") =>
+                    {
+                        break
+                    }
                     Err(e) => return Err(e),
                 };
 
-                if let Ok(Response::Event { ref event, ref data }) = serde_json::from_slice::<Response>(&data) {
+                if let Ok(Response::Event {
+                    ref event,
+                    ref data,
+                }) = serde_json::from_slice::<Response>(&data)
+                {
                     if json {
                         println!(
                             "{{\"event\":\"{}\",\"data\":{}}}",

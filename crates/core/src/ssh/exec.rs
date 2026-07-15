@@ -212,9 +212,7 @@ pub fn ip_family(ip: &str) -> &'static str {
 }
 
 /// Detect client IP using SshClientHandle (convenience method)
-pub async fn detect_client_ip_via_exec(
-    ssh: &super::client::SshClientHandle,
-) -> Result<String> {
+pub async fn detect_client_ip_via_exec(ssh: &super::client::SshClientHandle) -> Result<String> {
     // Try $SSH_CONNECTION first
     let result = ssh.exec("echo $SSH_CONNECTION", 10).await?;
     if let Some(ip) = parse_ssh_connection_ip(&result.stdout) {

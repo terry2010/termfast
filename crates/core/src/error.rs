@@ -165,7 +165,10 @@ mod tests {
 
     #[test]
     fn test_ipc_error_json_format() {
-        let err = IpcError::new(ErrorCode::PortConflict, "port 1080 already used by srv_uswest");
+        let err = IpcError::new(
+            ErrorCode::PortConflict,
+            "port 1080 already used by srv_uswest",
+        );
         let json = serde_json::to_string(&err).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["code"], "PortConflict");
