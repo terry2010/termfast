@@ -3,9 +3,18 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useTriggerStore } from "@/stores/triggerStore";
+import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke } from "@/hooks/useIpc";
-import type { TriggerTemplate } from "@/types";
+import type { TriggerTemplate, CustomVariable } from "@/types";
 import { Modal } from "@/components/ui/Modal";
+
+// System-defined variables (cannot be edited or deleted by users)
+const SYSTEM_VARIABLES = [
+  { name: "NewIP", desc: "本次连接的客户端 IP（自动注入）" },
+  { name: "OldIP", desc: "上次连接的客户端 IP（首次为空，自动注入）" },
+  { name: "IPFamily", desc: "IP 协议族 ipv4/ipv6（根据 NewIP 自动判断）" },
+  { name: "ServerName", desc: "服务器名称（自动注入）" },
+];
 
 export function TemplateLibrary({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -14,6 +23,7 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<TriggerTemplate | null>(null);
   const [creating, setCreating] = useState(false);
+  const [showVariables, setShowVariables] = useState(false);
 
   const reload = () => {
     ipcInvoke<{ templates: TriggerTemplate[] }>("ipc_list_templates")
@@ -77,6 +87,12 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
           </button>
           <button
             className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            onClick={() => setShowVariables(true)}
+          >
+            {t("template.variables")}
+          </button>
+          <button
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
             onClick={handleImport}
           >
             {t("common.import")}
@@ -131,6 +147,9 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
           onClose={() => { setEditing(null); setCreating(false); }}
           onSaved={() => { setEditing(null); setCreating(false); reload(); }}
         />
+      )}
+      {showVariables && (
+        <VariablesModal onClose={() => setShowVariables(false)} />
       )}
     </>
   );
@@ -324,5 +343,181 @@ function SettingRow({
       <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">{label}</span>
       <div className="flex-1 max-w-xs flex justify-end">{children}</div>
     </div>
+  );
+}
+
+// Variables modal — shows all available variables and lets users manage custom ones
+function VariablesModal({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const config = useConfigStore((s) => s.config);
+  const [customVars, setCustomVars] = useState<CustomVariable[]>(config?.general?.custom_variables || []);
+  const [newName, setNewName] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editValue, setEditValue] = useState("");
+
+  const systemNames = new Set(SYSTEM_VARIABLES.map((v) => v.name));
+
+  const saveToBackend = (vars: CustomVariable[]) => {
+    setCustomVars(vars);
+    ipcInvoke("ipc_update_general_config", { custom_variables: vars }).catch((e) =>
+      console.error("save custom variables failed:", e)
+    );
+  };
+
+  const handleAdd = () => {
+    const name = newName.trim();
+    if (!name) return;
+    // Don't allow names starting with lowercase system var names or duplicates
+    if (systemNames.has(name)) return;
+    if (customVars.some((v) => v.name === name)) return;
+    saveToBackend([...customVars, { name, value: newDesc.trim() }]);
+    setNewName("");
+    setNewDesc("");
+  };
+
+  const handleDelete = (idx: number) => {
+    saveToBackend(customVars.filter((_, i) => i !== idx));
+  };
+
+  const handleStartEdit = (idx: number) => {
+    setEditingIdx(idx);
+    setEditValue(customVars[idx].value);
+  };
+
+  const handleSaveEdit = () => {
+    if (editingIdx === null) return;
+    const updated = [...customVars];
+    updated[editingIdx] = { ...updated[editingIdx], value: editValue.trim() };
+    saveToBackend(updated);
+    setEditingIdx(null);
+    setEditValue("");
+  };
+
+  return (
+    <Modal
+      title={t("template.variables")}
+      onClose={onClose}
+      maxWidth="max-w-2xl"
+      zIndex="z-50"
+      footer={
+        <button className="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onClick={onClose}>
+          {t("common.close")}
+        </button>
+      }
+    >
+      <div className="space-y-5">
+        {/* Add new custom variable */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 p-4">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">{t("template.add_custom_variable")}</h3>
+          <div className="flex gap-2">
+            <input
+              className="input flex-1"
+              placeholder={t("template.variable_name_placeholder")}
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+            />
+            <input
+              className="input flex-1"
+              placeholder={t("template.variable_value_placeholder")}
+              value={newDesc}
+              onChange={(e) => setNewDesc(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+            />
+            <button
+              className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium flex-shrink-0"
+              onClick={handleAdd}
+              disabled={!newName.trim()}
+            >
+              {t("common.add")}
+            </button>
+          </div>
+        </div>
+
+        {/* System variables */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/80 bg-gray-50/50 dark:bg-gray-800/50">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t("template.system_variables")}</h3>
+          </div>
+          <div className="divide-y divide-gray-100 dark:divide-gray-700/60">
+            {SYSTEM_VARIABLES.map((v) => (
+              <div key={v.name} className="flex items-center justify-between px-4 py-3">
+                <div className="min-w-0">
+                  <code className="text-sm font-mono text-blue-600 dark:text-blue-400">{`{{.${v.name}}}`}</code>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{v.desc}</p>
+                </div>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0">
+                  {t("template.system")}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Custom variables */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200/80 dark:border-gray-700/80 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/80 bg-gray-50/50 dark:bg-gray-800/50">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t("template.custom_variables")}</h3>
+          </div>
+          {customVars.length === 0 ? (
+            <div className="text-center py-6 text-sm text-gray-400">
+              {t("template.no_custom_variables")}
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100 dark:divide-gray-700/60">
+              {customVars.map((v, idx) => (
+                <div key={v.name} className="flex items-center justify-between px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <code className="text-sm font-mono text-green-600 dark:text-green-400">{`{{.${v.name}}}`}</code>
+                    {editingIdx === idx ? (
+                      <div className="flex gap-2 mt-1">
+                        <input
+                          className="input flex-1 text-sm"
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          autoFocus
+                          onKeyDown={(e) => { if (e.key === "Enter") handleSaveEdit(); if (e.key === "Escape") setEditingIdx(null); }}
+                        />
+                        <button
+                          className="text-xs px-2 py-1 rounded-md bg-blue-500 text-white hover:bg-blue-600 transition-colors"
+                          onClick={handleSaveEdit}
+                        >
+                          {t("common.save")}
+                        </button>
+                        <button
+                          className="text-xs px-2 py-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                          onClick={() => setEditingIdx(null)}
+                        >
+                          {t("common.cancel")}
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 break-all">{v.value || <span className="italic">（空）</span>}</p>
+                    )}
+                  </div>
+                  {editingIdx !== idx && (
+                    <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                      <button
+                        className="text-xs px-2 py-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                        onClick={() => handleStartEdit(idx)}
+                      >
+                        {t("common.edit")}
+                      </button>
+                      <button
+                        className="text-xs px-2 py-1 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                        onClick={() => handleDelete(idx)}
+                      >
+                        {t("common.delete")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }

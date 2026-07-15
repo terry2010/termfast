@@ -103,15 +103,17 @@ export function ServerDetail() {
   }, []);
 
   // Open a new terminal session and add a tab for it.
+  // Flow: click → connecting → SSH connect + terminal open → tab created → connected
   const handleOpenTerminal = useCallback(async () => {
     if (!server?.id) return;
     const serverId = server.id;
-    // If not connected, auto-connect first
+
+    // If not connected, connect first (status stays "connecting" until terminal is ready)
     if (!isConnected) {
       updateServerStatus(serverId, "connecting");
       try {
         await ipcInvoke("ipc_connect_server", { serverId });
-        updateServerStatus(serverId, "connected", server.last_known_ip || undefined);
+        // Don't set "connected" yet — wait until terminal is ready
       } catch (e: any) {
         const errMsg = formatIpcError(e);
         updateServerStatus(serverId, "offline");
@@ -137,7 +139,7 @@ export function ServerDetail() {
         return;
       }
     }
-    // Now connected — open terminal session
+    // SSH connected — now open terminal session
     try {
       const result = await ipcInvoke<{ session_id: string; initial_output: string }>(
         "ipc_terminal_open",
@@ -148,12 +150,19 @@ export function ServerDetail() {
       const tabId: Tab = `term:${sessionId}`;
       const currentTabs = useServerStore.getState().terminal_tabs_by_server[serverId] || [];
       const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      // Terminal ready — create tab and switch to it first
       addTerminalTab(serverId, { id: tabId, sessionId, label: defaultLabel, defaultLabel, initialOutput, disconnected: false });
+      setActiveTerminalTab(serverId, tabId);
+      // Wait for the tab to render before changing button status
+      requestAnimationFrame(() => {
+        updateServerStatus(serverId, "connected", server.last_known_ip || undefined);
+      });
     } catch (e) {
       const msg = formatIpcError(e);
+      updateServerStatus(serverId, "offline");
       toast.error(t("server.terminal_open_failed"), { description: msg });
     }
-  }, [server?.id, server?.last_known_ip, isConnected, t, addTerminalTab]);
+  }, [server?.id, server?.last_known_ip, isConnected, t, addTerminalTab, setActiveTerminalTab, updateServerStatus]);
 
   // Open a terminal from the context menu. Uses the same logic as the login button.
   const openTerminalFromMenu = useCallback(async () => {
@@ -164,12 +173,12 @@ export function ServerDetail() {
     if (!currentServer) return;
     const alreadyConnected = currentServer.current_status === "connected";
 
-    // If not connected, connect first
+    // If not connected, connect first (status stays "connecting" until terminal is ready)
     if (!alreadyConnected) {
       store.updateServerStatus(serverId, "connecting");
       try {
         await ipcInvoke("ipc_connect_server", { serverId });
-        store.updateServerStatus(serverId, "connected", currentServer.last_known_ip || undefined);
+        // Don't set "connected" yet — wait until terminal is ready
       } catch (e: any) {
         const errMsg = formatIpcError(e);
         store.updateServerStatus(serverId, "offline");
@@ -196,7 +205,7 @@ export function ServerDetail() {
       }
     }
 
-    // Open terminal session
+    // SSH connected — now open terminal session
     try {
       const result = await ipcInvoke<{ session_id: string; initial_output: string }>(
         "ipc_terminal_open",
@@ -207,12 +216,35 @@ export function ServerDetail() {
       const tabId: Tab = `term:${sessionId}`;
       const currentTabs = store.terminal_tabs_by_server[serverId] || [];
       const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      // Terminal ready — create tab and switch to it first
       store.addTerminalTab(serverId, { id: tabId, sessionId, label: defaultLabel, defaultLabel, initialOutput, disconnected: false });
+      store.setActiveTerminalTab(serverId, tabId);
+      // Wait for the tab to render before changing button status
+      requestAnimationFrame(() => {
+        store.updateServerStatus(serverId, "connected", currentServer.last_known_ip || undefined);
+      });
     } catch (e) {
       const msg = formatIpcError(e);
+      store.updateServerStatus(serverId, "offline");
       toast.error(t("server.terminal_open_failed"), { description: msg });
     }
   }, [t]);
+
+  // After closing terminal tabs, check if the server has no remaining tabs
+  // and no running proxy. If so, disconnect the SSH connection to avoid
+  // leaving an idle connection to the server.
+  const maybeDisconnectIfIdle = useCallback(
+    (serverId: string, remainingTabCount: number) => {
+      if (remainingTabCount > 0) return;
+      const srv = useServerStore.getState().servers.find((s) => s.id === serverId);
+      if (!srv) return;
+      if (srv.proxy_running) return;
+      if (srv.current_status !== "connected") return;
+      ipcInvoke("ipc_disconnect_server", { serverId }).catch(() => {});
+      updateServerStatus(serverId, "disconnected");
+    },
+    [updateServerStatus]
+  );
 
   const handleCloseTerminal = useCallback(
     (tabId: string, e: React.MouseEvent) => {
@@ -221,11 +253,12 @@ export function ServerDetail() {
       const currentTabs = terminalTabsByServer[serverId] || [];
       const tab = currentTabs.find((tt) => tt.id === tabId);
       if (tab) {
-        ipcInvoke("ipc_terminal_close", { session_id: tab.sessionId }).catch(() => {});
+        if (tab.sessionId) ipcInvoke("ipc_terminal_close", { session_id: tab.sessionId }).catch(() => {});
       }
       removeTerminalTab(serverId, tabId);
+      maybeDisconnectIfIdle(serverId, currentTabs.length - 1);
     },
-    [selectedId, terminalTabsByServer, removeTerminalTab]
+    [selectedId, terminalTabsByServer, removeTerminalTab, maybeDisconnectIfIdle]
   );
 
   if (!server) {
@@ -283,7 +316,7 @@ export function ServerDetail() {
     try {
       // Close all terminal sessions for this server
       for (const tt of termTabs) {
-        ipcInvoke("ipc_terminal_close", { session_id: tt.sessionId }).catch(() => {});
+        if (tt.sessionId) ipcInvoke("ipc_terminal_close", { session_id: tt.sessionId }).catch(() => {});
       }
       clearTerminalTabs(server.id);
       await ipcInvoke("ipc_disconnect_server", { serverId: server.id });
@@ -318,9 +351,10 @@ export function ServerDetail() {
     const currentTabs = terminalTabsByServer[serverId] || [];
     const tab = currentTabs.find((tt) => tt.id === tabId);
     if (tab) {
-      ipcInvoke("ipc_terminal_close", { session_id: tab.sessionId }).catch(() => {});
+      if (tab.sessionId) ipcInvoke("ipc_terminal_close", { session_id: tab.sessionId }).catch(() => {});
     }
     removeTerminalTab(serverId, tabId);
+    maybeDisconnectIfIdle(serverId, currentTabs.length - 1);
   };
 
   // Close all disconnected tabs
@@ -329,10 +363,12 @@ export function ServerDetail() {
     const currentTabs = terminalTabsByServer[serverId] || [];
     for (const tt of currentTabs) {
       if (tt.disconnected) {
-        ipcInvoke("ipc_terminal_close", { session_id: tt.sessionId }).catch(() => {});
+        if (tt.sessionId) ipcInvoke("ipc_terminal_close", { session_id: tt.sessionId }).catch(() => {});
       }
     }
-    setTerminalTabsForServer(serverId, currentTabs.filter((tt) => !tt.disconnected));
+    const remaining = currentTabs.filter((tt) => !tt.disconnected);
+    setTerminalTabsForServer(serverId, remaining);
+    maybeDisconnectIfIdle(serverId, remaining.length);
   };
 
   // Close all tabs except the given one
@@ -341,13 +377,15 @@ export function ServerDetail() {
     const currentTabs = terminalTabsByServer[serverId] || [];
     for (const tt of currentTabs) {
       if (tt.id !== keepTabId) {
-        ipcInvoke("ipc_terminal_close", { session_id: tt.sessionId }).catch(() => {});
+        if (tt.sessionId) ipcInvoke("ipc_terminal_close", { session_id: tt.sessionId }).catch(() => {});
       }
     }
-    setTerminalTabsForServer(serverId, currentTabs.filter((tt) => tt.id === keepTabId));
+    const remaining = currentTabs.filter((tt) => tt.id === keepTabId);
+    setTerminalTabsForServer(serverId, remaining);
     if (activeTerminalTabByServer[serverId] !== keepTabId) {
       setActiveTerminalTab(serverId, "overview");
     }
+    // remaining.length is 1 (the kept tab), so no disconnect needed
   };
 
   // Close all terminal tabs
@@ -355,10 +393,11 @@ export function ServerDetail() {
     const serverId = selectedId || "";
     const currentTabs = terminalTabsByServer[serverId] || [];
     for (const tt of currentTabs) {
-      ipcInvoke("ipc_terminal_close", { session_id: tt.sessionId }).catch(() => {});
+      if (tt.sessionId) ipcInvoke("ipc_terminal_close", { session_id: tt.sessionId }).catch(() => {});
     }
     setTerminalTabsForServer(serverId, []);
     setActiveTerminalTab(serverId, "overview");
+    maybeDisconnectIfIdle(serverId, 0);
   };
 
   // Reorder terminal tabs by moving draggedTabId to the position of targetTabId.
@@ -788,6 +827,23 @@ export function ServerDetail() {
                 <div>
                   <div className="text-xs text-gray-500 mb-1.5">{t("server.auth_method")}</div>
                   <div className="text-sm text-gray-900 dark:text-gray-100">{server.ssh?.auth_method === "key" ? t("server.ssh_key") : t("server.password")}</div>
+                  <div className="flex items-center gap-2 mt-3">
+                    <span className="text-xs text-gray-500">{t("server.auto_reconnect")}</span>
+                    <Toggle
+                      checked={server.reconnect?.auto_reconnect ?? true}
+                      onChange={(v) => {
+                        ipcInvoke("ipc_update_server", { server_id: server.id, auto_reconnect: v }).catch(() => {});
+                        // Optimistic update
+                        useServerStore.setState((s) => ({
+                          servers: s.servers.map((srv) =>
+                            srv.id === server.id
+                              ? { ...srv, reconnect: { ...srv.reconnect, auto_reconnect: v } }
+                              : srv
+                          ),
+                        }));
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
               {server.auth_banner && (
@@ -994,5 +1050,24 @@ export function ServerDetail() {
         </div>
       ))}
     </div>
+  );
+}
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${
+        checked ? "bg-blue-500" : "bg-gray-200 dark:bg-gray-600"
+      }`}
+    >
+      <span
+        className="inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200"
+        style={{ transform: checked ? "translateX(22px)" : "translateX(2px)" }}
+      />
+    </button>
   );
 }

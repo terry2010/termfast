@@ -43,6 +43,7 @@ export interface ProxyConfig {
 
 /// Reconnection configuration (matches Rust ReconnectConfig)
 export interface ReconnectConfig {
+  auto_reconnect: boolean;
   heartbeat_interval: number;
   max_attempts: number;
   initial_backoff_secs: number;
@@ -170,6 +171,14 @@ export interface GeneralConfig {
   notify_trigger_fail: boolean;
   notify_trigger_success: boolean;
   notify_ip_change: boolean;
+  /// User-defined custom variables for trigger templates
+  custom_variables: CustomVariable[];
+}
+
+/// User-defined custom variable for trigger templates
+export interface CustomVariable {
+  name: string;
+  value: string;
 }
 
 /// Top-level config (matches Rust Config)

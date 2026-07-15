@@ -17,12 +17,13 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing to stderr for debugging
+    // Initialize tracing to stderr (visible in `npm start` terminal)
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env()
             .add_directive("termfast_app=info".parse().unwrap())
             .add_directive("termfast_daemon=info".parse().unwrap())
-            .add_directive("termfast_core=info".parse().unwrap()))
+            .add_directive("termfast_core=info".parse().unwrap())
+            .add_directive("keychain=debug".parse().unwrap()))
         .with_writer(std::io::stderr)
         .init();
 
@@ -239,6 +240,7 @@ async fn ipc_update_general_config(
     log_to_file: Option<bool>,
     log_max_days: Option<u32>,
     log_max_size_mb: Option<u32>,
+    custom_variables: Option<Vec<serde_json::Value>>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({});
     if let Some(v) = theme { params["theme"] = serde_json::json!(v); }
@@ -249,6 +251,7 @@ async fn ipc_update_general_config(
     if let Some(v) = log_to_file { params["log_to_file"] = serde_json::json!(v); }
     if let Some(v) = log_max_days { params["log_max_days"] = serde_json::json!(v); }
     if let Some(v) = log_max_size_mb { params["log_max_size_mb"] = serde_json::json!(v); }
+    if let Some(v) = custom_variables { params["custom_variables"] = serde_json::json!(v); }
     forward_to_daemon(&state, termfast_daemon::proto::Action::UpdateGeneralConfig, params).await
 }
 
@@ -328,6 +331,7 @@ async fn ipc_update_server(
     http_port: Option<u16>,
     mixed_port: Option<u16>,
     ssh: Option<serde_json::Value>,
+    auto_reconnect: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({ "server_id": server_id });
     if let Some(n) = name { params["name"] = serde_json::json!(n); }
@@ -335,6 +339,7 @@ async fn ipc_update_server(
     if let Some(p) = http_port { params["http_port"] = serde_json::json!(p); }
     if let Some(p) = mixed_port { params["mixed_port"] = serde_json::json!(p); }
     if let Some(s) = ssh { params["ssh"] = s; }
+    if let Some(v) = auto_reconnect { params["auto_reconnect"] = serde_json::json!(v); }
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::UpdateServer,

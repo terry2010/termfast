@@ -86,6 +86,7 @@
     "status_label": "Status",
     "ip_label": "IP",
     "auth_method": "Auth Method",
+    "auto_reconnect": "Auto Reconnect",
     "basic_info": "Basic Info",
     "authentication": "Authentication",
     "proxy_settings": "Proxy Settings",
@@ -208,7 +209,15 @@
     "auto_reconnect_name": "Auto Reconnect",
     "auto_reconnect_desc": "Reconnect on disconnect",
     "cleanup_name": "Cleanup on Disconnect",
-    "cleanup_desc": "Clean up resources"
+    "cleanup_desc": "Clean up resources",
+    "variables": "Variables",
+    "add_custom_variable": "Add Custom Variable",
+    "variable_name_placeholder": "Variable name (e.g. MyPort)",
+    "variable_value_placeholder": "Variable value (e.g. 8080)",
+    "system_variables": "System Variables",
+    "custom_variables": "Custom Variables",
+    "no_custom_variables": "No custom variables",
+    "system": "System"
   },
   "logs": {
     "title": "Logs",

@@ -60,6 +60,19 @@ impl FileConfigStorage {
 
 impl ConfigStorage for FileConfigStorage {
     fn load(&self) -> Result<Config> {
+        // If the main config file doesn't exist but a .tmp file does, it means
+        // a crash happened during atomic write (after write(tmp), before rename).
+        // Try to recover by renaming .tmp → config.json first.
+        if !self.config_path.exists() {
+            let tmp_path = self.config_path.with_extension("json.tmp");
+            if tmp_path.exists() {
+                tracing::warn!("config file missing but .tmp exists — attempting recovery");
+                if let Err(e) = std::fs::rename(&tmp_path, &self.config_path) {
+                    tracing::error!("failed to recover config from .tmp: {}", e);
+                }
+            }
+        }
+
         if !self.config_path.exists() {
             tracing::info!("config file not found, using default config");
             return Ok(Config::default());
@@ -89,6 +102,31 @@ impl ConfigStorage for FileConfigStorage {
 
     fn save(&self, config: &Config) -> Result<()> {
         self.ensure_parent_dir()?;
+
+        // Safety guard: if the new config has zero servers but the existing
+        // file on disk has servers, refuse to overwrite. This prevents a
+        // corrupt-load → empty-config → save cycle from wiping all user data
+        // after a crash. The user can still explicitly delete servers one by
+        // one (which goes through modify() with a non-empty starting config).
+        if config.servers.is_empty() && self.config_path.exists() {
+            if let Ok(existing) = std::fs::read_to_string(&self.config_path) {
+                if let Ok(old) = serde_json::from_str::<Config>(&existing) {
+                    if !old.servers.is_empty() {
+                        tracing::error!(
+                            "refusing to save empty config over non-empty config ({} servers on disk) \
+                             — likely a corrupt-load fallback. Save skipped to prevent data loss.",
+                            old.servers.len()
+                        );
+                        // Back up the on-disk config so the user can recover
+                        let _ = backup_corrupt_config(&self.config_path);
+                        return Err(Error::Config(
+                            "refusing to overwrite non-empty config with empty config — \
+                             possible corrupt-load fallback. Original config backed up.".into(),
+                        ));
+                    }
+                }
+            }
+        }
 
         let json = serde_json::to_string_pretty(config)?;
         let json = json + "\n"; // trailing newline

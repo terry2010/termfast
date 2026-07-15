@@ -88,6 +88,7 @@
     "status_label": "状态",
     "ip_label": "IP",
     "auth_method": "认证方式",
+    "auto_reconnect": "自动重连",
     "basic_info": "基础信息",
     "authentication": "认证",
     "proxy_settings": "代理设置",
@@ -210,7 +211,15 @@
     "auto_reconnect_name": "自动重连",
     "auto_reconnect_desc": "断开时自动重连",
     "cleanup_name": "断开时清理",
-    "cleanup_desc": "清理资源"
+    "cleanup_desc": "清理资源",
+    "variables": "变量",
+    "add_custom_variable": "添加自定义变量",
+    "variable_name_placeholder": "变量名（如 MyPort）",
+    "variable_value_placeholder": "变量值（如 8080）",
+    "system_variables": "系统变量",
+    "custom_variables": "自定义变量",
+    "no_custom_variables": "暂无自定义变量",
+    "system": "系统"
   },
   "logs": {
     "title": "日志",
@@ -324,6 +333,7 @@
     "step": "步骤 {{current}}/{{total}}",
     "vps_info": "VPS 信息",
     "auth_method": "认证方式",
+    "auto_reconnect": "自动重连",
     "test_connection": "测试连接",
     "proxy_config": "代理配置",
     "select_templates": "选择触发器模板",

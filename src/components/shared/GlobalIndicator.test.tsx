@@ -14,7 +14,7 @@ function mockServer(id: string, status: ServerState["current_status"]): ServerSt
     id, name: id,
     ssh: { host: "1.2.3.4", port: 22, user: "root", auth_method: "password", key_path: "", key_auto_generated: false, connection_mode: "single", skip_hostkey_verify: false },
     proxy: { enabled: false, socks5_port: 1080, http_port: 8080, mixed_port: 0, max_channels: 64, channel_idle_timeout: 300 },
-    reconnect: { heartbeat_interval: 15, max_attempts: 10, initial_backoff_secs: 1, max_backoff_secs: 300 },
+    reconnect: { auto_reconnect: true, heartbeat_interval: 15, max_attempts: 10, initial_backoff_secs: 1, max_backoff_secs: 300 },
     ip_check: { enabled: false, interval_secs: 300 },
     last_known_ip: null, triggers: [], suppress_firewall_badge: false,
     current_status: status, current_ip: null,

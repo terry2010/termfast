@@ -59,6 +59,10 @@ pub struct ServerInstance {
     ip_check_task: Mutex<Option<JoinHandle<()>>>,
     /// Health check tasks for OnProcessDead/OnPortClosed triggers (FP-4.4)
     health_check_tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// Connection monitor task — watches SSH connection and auto-reconnects
+    connection_monitor_task: Mutex<Option<JoinHandle<()>>>,
+    /// Whether proxy was running before disconnect (for auto-reconnect proxy restart)
+    proxy_was_running: Mutex<bool>,
     proxy_running: Mutex<bool>,
     /// Channel manager for proxy (set when proxy starts, cleared when stops)
     channel_manager: Mutex<Option<Arc<ChannelManager>>>,
@@ -68,6 +72,8 @@ pub struct ServerInstance {
     trigger_result_callback: Mutex<Option<Arc<dyn Fn(TriggerEvent, &[crate::trigger::engine::TriggerExecutionResult]) + Send + Sync>>>,
     /// Client IP detected after SSH connection (§5.2)
     client_ip: Mutex<Option<String>>,
+    /// Last auth method used (for auto-reconnect)
+    last_auth: Mutex<Option<AuthMethod>>,
 }
 
 // === SECTION 1 END ===
@@ -99,11 +105,14 @@ impl ServerInstance {
             proxy_tasks: Mutex::new(Vec::new()),
             ip_check_task: Mutex::new(None),
             health_check_tasks: Mutex::new(Vec::new()),
+            connection_monitor_task: Mutex::new(None),
+            proxy_was_running: Mutex::new(false),
             proxy_running: Mutex::new(false),
             channel_manager: Mutex::new(None),
             runtime_state: Mutex::new(None),
             trigger_result_callback: Mutex::new(None),
             client_ip: Mutex::new(None),
+            last_auth: Mutex::new(None),
         }
     }
 
@@ -189,12 +198,11 @@ impl ServerInstance {
                     }
                 }
                 *self.status.lock().await = ServerStatus::Connected;
+                // Save auth for auto-reconnect
+                *self.last_auth.lock().await = Some(auth.clone());
 
-                if self.config.proxy.enabled {
-                    if let Err(e) = self.start_proxy().await {
-                        tracing::warn!("failed to start proxy for {}: {}", self.config.name, e);
-                    }
-                }
+                // Proxy is NOT auto-started on connect — it's controlled independently
+                // by the user via the proxy toggle button.
                 if self.config.ip_check.enabled {
                     self.start_ip_detection().await;
                 }
@@ -236,6 +244,8 @@ impl ServerInstance {
 
     /// Disconnect from the server
     pub async fn disconnect(&self) -> Result<()> {
+        // Stop connection monitor first so it doesn't trigger auto-reconnect
+        self.stop_connection_monitor().await;
         let _ = self.stop_proxy().await;
         if let Some(task) = self.ip_check_task.lock().await.take() {
             task.abort();
@@ -249,6 +259,127 @@ impl ServerInstance {
         self.ssh_client.disconnect().await?;
         *self.status.lock().await = ServerStatus::Disconnected;
         Ok(())
+    }
+
+    /// Start a background task that monitors the SSH connection and auto-reconnects
+    /// if it drops and auto_reconnect is enabled in config.
+    pub async fn start_connection_monitor(self: &Arc<Self>) {
+        self.stop_connection_monitor().await;
+
+        let instance = Arc::clone(self);
+        let check_interval = std::time::Duration::from_secs(
+            instance.config.reconnect.heartbeat_interval.max(5),
+        );
+
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(check_interval).await;
+
+                // Check if auto_reconnect is enabled
+                if !instance.config.reconnect.auto_reconnect {
+                    continue;
+                }
+
+                // Check if still connected
+                if instance.ssh_client.is_connected().await {
+                    continue;
+                }
+
+                // Connection dropped — check if this was a user-initiated disconnect
+                let current_status = instance.status.lock().await.clone();
+                if current_status == ServerStatus::Disconnected {
+                    // User explicitly disconnected — stop monitoring
+                    tracing::info!("connection monitor: {} was explicitly disconnected, stopping", instance.config.name);
+                    break;
+                }
+
+                // Connection dropped unexpectedly — start auto-reconnect
+                tracing::warn!("connection monitor: {} SSH connection lost, auto-reconnecting", instance.config.name);
+                *instance.status.lock().await = ServerStatus::Reconnecting;
+
+                let auth = instance.last_auth.lock().await.clone();
+                if auth.is_none() {
+                    tracing::error!("connection monitor: no saved auth for {}, cannot reconnect", instance.config.name);
+                    *instance.status.lock().await = ServerStatus::Error;
+                    break;
+                }
+                let auth = auth.unwrap();
+
+                let max_attempts = instance.config.reconnect.max_attempts;
+                let mut backoff = instance.config.reconnect.initial_backoff_secs;
+                let max_backoff = instance.config.reconnect.max_backoff_secs;
+                let mut reconnected = false;
+
+                for attempt in 1..=max_attempts {
+                    tracing::info!(
+                        "connection monitor: {} reconnect attempt {}/{} after {}s",
+                        instance.config.name, attempt, max_attempts, backoff
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+
+                    match instance.ssh_client.connect(&auth).await {
+                        Ok(()) => {
+                            tracing::info!("connection monitor: {} reconnected on attempt {}", instance.config.name, attempt);
+                            // Restore channel opener handle
+                            if let Some(h) = instance.ssh_client.get_handle().await {
+                                instance.channel_opener.set_handle(h).await;
+                            }
+                            *instance.status.lock().await = ServerStatus::Connected;
+
+                            // Restart proxy if it was running before disconnect
+                            if *instance.proxy_was_running.lock().await {
+                                tracing::info!("connection monitor: restarting proxy for {}", instance.config.name);
+                                if let Err(e) = instance.start_proxy().await {
+                                    tracing::warn!("connection monitor: failed to restart proxy for {}: {}", instance.config.name, e);
+                                }
+                            }
+
+                            // Restart IP detection and health checks
+                            if instance.config.ip_check.enabled {
+                                instance.start_ip_detection().await;
+                            }
+                            instance.start_health_checks().await;
+                            instance.fire_on_reconnect_triggers().await;
+
+                            reconnected = true;
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "connection monitor: {} reconnect attempt {} failed: {}",
+                                instance.config.name, attempt, e
+                            );
+                            backoff = (backoff * 2).min(max_backoff);
+                        }
+                    }
+                }
+
+                if !reconnected {
+                    tracing::error!(
+                        "connection monitor: {} failed to reconnect after {} attempts",
+                        instance.config.name, max_attempts
+                    );
+                    *instance.status.lock().await = ServerStatus::Error;
+                    break;
+                }
+
+                // Continue monitoring after successful reconnect
+            }
+        });
+
+        *self.connection_monitor_task.lock().await = Some(handle);
+    }
+
+    /// Stop the connection monitor task
+    async fn stop_connection_monitor(&self) {
+        if let Some(task) = self.connection_monitor_task.lock().await.take() {
+            task.abort();
+        }
+    }
+
+    /// Track proxy running state for auto-reconnect (called from start_proxy/stop_proxy)
+    async fn track_proxy_state(&self, running: bool) {
+        *self.proxy_was_running.lock().await = running;
     }
 
     /// Start health checks for OnProcessDead/OnPortClosed triggers (FP-4.4)
@@ -379,6 +510,7 @@ impl ServerInstance {
 
         *self.proxy_tasks.lock().await = tasks;
         *running = true;
+        self.track_proxy_state(true).await;
         Ok(())
     }
 
@@ -395,6 +527,7 @@ impl ServerInstance {
         // Clear channel manager reference
         *self.channel_manager.lock().await = None;
         *running = false;
+        self.track_proxy_state(false).await;
         tracing::info!("proxy stopped for {}", self.config.name);
         Ok(())
     }

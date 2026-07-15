@@ -76,6 +76,17 @@ pub fn load_config_with_migration(
 
     // File doesn't exist → create default
     if !config_path.exists() {
+        // Check for .tmp recovery (crash during atomic write)
+        let tmp_path = config_path.with_extension("json.tmp");
+        if tmp_path.exists() {
+            tracing::warn!("config file missing but .tmp exists — attempting recovery");
+            if let Err(e) = std::fs::rename(&tmp_path, config_path) {
+                tracing::error!("failed to recover config from .tmp: {}", e);
+            }
+        }
+    }
+
+    if !config_path.exists() {
         tracing::info!("config file not found, creating default");
         return Ok(Config::default());
     }

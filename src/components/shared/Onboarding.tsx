@@ -69,7 +69,7 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
             skip_hostkey_verify: true,
           },
           proxy: { enabled: true, socks5_port: parseInt(proxySocksPort) || 1080, http_port: parseInt(proxyHttpPort) || 8080, max_channels: 100, channel_idle_timeout: 300 },
-          reconnect: { heartbeat_interval: 30, max_attempts: 5, initial_backoff_secs: 1, max_backoff_secs: 30 },
+          reconnect: { auto_reconnect: true, heartbeat_interval: 30, max_attempts: 5, initial_backoff_secs: 1, max_backoff_secs: 30 },
           ip_check: { enabled: true, interval_secs: 300 },
           last_known_ip: null,
           triggers: [],

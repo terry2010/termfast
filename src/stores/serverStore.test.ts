@@ -26,6 +26,7 @@ function mockServer(id: string, name: string, status: ServerState["current_statu
       channel_idle_timeout: 300,
     },
     reconnect: {
+      auto_reconnect: true,
       heartbeat_interval: 15,
       max_attempts: 10,
       initial_backoff_secs: 1,

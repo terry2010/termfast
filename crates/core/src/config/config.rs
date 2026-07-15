@@ -98,6 +98,16 @@ pub struct GeneralConfig {
     pub default_continue_on_error: bool,
     #[serde(default = "default_ip_check_interval")]
     pub default_ip_check_interval_secs: u64,
+    /// User-defined custom variables for trigger templates (key → value)
+    #[serde(default)]
+    pub custom_variables: Vec<CustomVariable>,
+}
+
+/// User-defined custom variable for trigger templates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomVariable {
+    pub name: String,
+    pub value: String,
 }
 
 fn default_false() -> bool {
@@ -169,6 +179,7 @@ impl Default for GeneralConfig {
             default_trigger_timeout_secs: default_timeout_secs(),
             default_continue_on_error: false,
             default_ip_check_interval_secs: default_ip_check_interval(),
+            custom_variables: Vec::new(),
         }
     }
 }
@@ -310,6 +321,10 @@ fn default_channel_idle_timeout() -> u64 {
 /// Reconnection configuration (§7.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconnectConfig {
+    /// Whether to automatically reconnect after SSH connection drops.
+    /// When true, the server monitors the connection and reconnects on disconnect.
+    #[serde(default = "default_auto_reconnect")]
+    pub auto_reconnect: bool,
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval: u64,
     #[serde(default = "default_max_attempts")]
@@ -320,6 +335,9 @@ pub struct ReconnectConfig {
     pub max_backoff_secs: u64,
 }
 
+fn default_auto_reconnect() -> bool {
+    true
+}
 fn default_heartbeat_interval() -> u64 {
     15
 }
@@ -336,6 +354,7 @@ fn default_max_backoff() -> u64 {
 impl Default for ReconnectConfig {
     fn default() -> Self {
         Self {
+            auto_reconnect: default_auto_reconnect(),
             heartbeat_interval: default_heartbeat_interval(),
             max_attempts: default_max_attempts(),
             initial_backoff_secs: default_initial_backoff(),

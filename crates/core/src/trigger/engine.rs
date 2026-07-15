@@ -71,6 +71,8 @@ pub struct TriggerEngine {
     running_count: Mutex<u32>,
     /// Pending events accumulated while paused (§10.3)
     pending_events: Mutex<Vec<PendingEvent>>,
+    /// User-defined custom variables (injected into every trigger execution)
+    custom_variables: Mutex<Vec<crate::config::CustomVariable>>,
 }
 
 impl TriggerEngine {
@@ -82,7 +84,13 @@ impl TriggerEngine {
             cooldowns: Mutex::new(HashMap::new()),
             running_count: Mutex::new(0),
             pending_events: Mutex::new(Vec::new()),
+            custom_variables: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Update custom variables (called when config changes)
+    pub async fn set_custom_variables(&self, vars: Vec<crate::config::CustomVariable>) {
+        *self.custom_variables.lock().await = vars;
     }
 
     /// Check if any trigger is currently running
@@ -323,10 +331,18 @@ impl TriggerEngine {
         if let Some(ref ip) = event.old_ip {
             vars.insert("OldIP".to_string(), ip.clone());
         }
-        // Add user parameters
+        // Add user parameters (from trigger instance, e.g. ProtectedPort)
         for (k, v) in &trigger.parameters {
             vars.insert(k.clone(), v.clone());
         }
+        // Add user-defined custom variables (from global config)
+        // These are injected last so they don't override system variables,
+        // but CAN be overridden by trigger-specific parameters above.
+        let custom_vars = self.custom_variables.lock().await;
+        for cv in custom_vars.iter() {
+            vars.entry(cv.name.clone()).or_insert_with(|| cv.value.clone());
+        }
+        drop(custom_vars);
 
         let total = trigger.commands.len();
         let mut command_results = Vec::new();

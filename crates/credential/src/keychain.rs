@@ -72,8 +72,11 @@ impl CredentialStore for KeychainCredentialStore {
     fn load(&self, key: &str) -> Result<String> {
         // Check cache first — avoids repeated keychain prompts
         if let Some(v) = self.cache.lock().unwrap().get(key) {
+            tracing::debug!(target: "keychain", "load cached credential: {}", key);
             return Ok(v.clone());
         }
+
+        tracing::info!(target: "keychain", "accessing keychain for: {}", key);
 
         // Try keychain first (it persists across restarts)
         match keyring::Entry::new(SERVICE_NAME, key) {
@@ -152,7 +155,9 @@ impl CredentialStore for KeychainCredentialStore {
     }
 
     fn has(&self, key: &str) -> bool {
-        self.load(key).is_ok()
+        // Only check the in-memory cache. Do NOT hit the OS keychain here:
+        // macOS would prompt the user for keychain access just to check existence.
+        self.cache.lock().unwrap().contains_key(key)
     }
 }
 

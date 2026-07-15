@@ -190,6 +190,17 @@ impl DaemonServer {
 
         let state = Arc::new(state);
 
+        // Sync custom variables to all server trigger engines at startup
+        {
+            let mgr = state.config_manager.lock().await;
+            let config = mgr.get().await;
+            let custom_vars = config.general.custom_variables.clone();
+            drop(mgr);
+            for server in state.server_manager.list_servers().await {
+                server.trigger_engine.set_custom_variables(custom_vars.clone()).await;
+            }
+        }
+
         // Start listening
         #[cfg(unix)]
         {

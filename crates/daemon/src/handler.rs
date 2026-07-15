@@ -140,6 +140,7 @@ async fn handle_list_servers(state: &DaemonState) -> HandlerResult {
                 "channel_idle_timeout": cfg.proxy.channel_idle_timeout,
             },
             "reconnect": {
+                "auto_reconnect": cfg.reconnect.auto_reconnect,
                 "heartbeat_interval": cfg.reconnect.heartbeat_interval,
                 "max_attempts": cfg.reconnect.max_attempts,
                 "initial_backoff_secs": cfg.reconnect.initial_backoff_secs,
@@ -458,6 +459,8 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
 
     match server.connect(&auth).await {
         Ok(()) => {
+            // Start connection monitor for auto-reconnect
+            server.start_connection_monitor().await;
             let log_entry = termfast_core::log::LogEntry {
                 timestamp: chrono::Utc::now(),
                 level: termfast_core::log::LogLevel::Info,
@@ -491,6 +494,19 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
                     }),
                 )
                 .await;
+            // If proxy was auto-started during connect(), broadcast its status
+            // so the frontend knows the proxy is running.
+            if server.is_proxy_running().await {
+                state
+                    .broadcast(
+                        "proxy:status_changed",
+                        serde_json::json!({
+                            "server_id": server_id,
+                            "proxy_enabled": true,
+                        }),
+                    )
+                    .await;
+            }
             // Forward SSH auth banner (RFC4252 §5.4) — the welcome message
             // sent by the server during authentication. SecureCRT shows this
             // on connect; we broadcast it so the frontend can display it.
@@ -769,6 +785,10 @@ async fn handle_update_server(state: &DaemonState, params: &serde_json::Value) -
                     srv.ssh.key_path = key_path.to_string();
                 }
             }
+            // Update auto_reconnect
+            if let Some(v) = params["auto_reconnect"].as_bool() {
+                srv.reconnect.auto_reconnect = v;
+            }
         }
         config.find_server(server_id).cloned()
     }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
@@ -812,7 +832,24 @@ async fn handle_update_general_config(state: &DaemonState, params: &serde_json::
         if let Some(v) = params["log_max_size_mb"].as_u64() {
             config.general.log_max_size_mb = v as u32;
         }
+        // Update custom variables (full replace)
+        if let Some(vars) = params["custom_variables"].as_array() {
+            config.general.custom_variables = vars.iter().filter_map(|v| {
+                let name = v.get("name")?.as_str()?.to_string();
+                let value = v.get("value")?.as_str()?.to_string();
+                Some(termfast_core::config::CustomVariable { name, value })
+            }).collect();
+        }
     }).await.map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+
+    // Sync custom variables to all server trigger engines
+    let config = mgr.get().await;
+    drop(mgr);
+    let custom_vars = config.general.custom_variables.clone();
+    for server in state.server_manager.list_servers().await {
+        server.trigger_engine.set_custom_variables(custom_vars.clone()).await;
+    }
+
     Ok(serde_json::json!({ "updated": true }))
 }
 
@@ -838,6 +875,16 @@ async fn handle_toggle_proxy(state: &DaemonState, params: &serde_json::Value) ->
     maybe_broadcast_cli_focus(state, params, server_id, Some("proxy")).await;
     let server = state.server_manager.get_server(server_id).await?;
     if enabled {
+        // If proxy is already running, just broadcast status (no-op)
+        if server.is_proxy_running().await {
+            state
+                .broadcast(
+                    "proxy:status_changed",
+                    serde_json::json!({ "server_id": server_id, "proxy_enabled": true }),
+                )
+                .await;
+            return Ok(serde_json::json!({ "server_id": server_id, "proxy_enabled": true }));
+        }
         // Check SSH connection is active before starting proxy
         if !server.channel_opener.is_available().await {
             return Err(IpcError::new(
@@ -1390,20 +1437,24 @@ async fn handle_export_full(state: &DaemonState, params: &serde_json::Value) -> 
 
     for server in &config.servers {
         let sid = &server.id;
-        // Try to load password
-        let pwd_key = termfast_credential::make_key(sid, termfast_credential::cred_type::PASSWORD);
-        if let Ok(pwd) = state.credential_store.load(&pwd_key) {
-            passwords.insert(sid.clone(), pwd);
-        }
-        // Try to load key passphrase
-        let pass_key = termfast_credential::make_key(sid, termfast_credential::cred_type::KEY_PASSPHRASE);
-        if let Ok(pass) = state.credential_store.load(&pass_key) {
-            key_passphrases.insert(sid.clone(), pass);
-        }
-        // Try to read key file content if key_path is set
-        if !server.ssh.key_path.is_empty() {
-            if let Ok(content) = std::fs::read_to_string(&server.ssh.key_path) {
-                key_files.insert(sid.clone(), content);
+        // Only load the credential type that matches the server's auth method.
+        // This avoids unnecessary macOS keychain prompts for credentials that
+        // are not used by this server.
+        if server.ssh.auth_method == "password" {
+            let pwd_key = termfast_credential::make_key(sid, termfast_credential::cred_type::PASSWORD);
+            if let Ok(pwd) = state.credential_store.load(&pwd_key) {
+                passwords.insert(sid.clone(), pwd);
+            }
+        } else if server.ssh.auth_method == "key" {
+            let pass_key = termfast_credential::make_key(sid, termfast_credential::cred_type::KEY_PASSPHRASE);
+            if let Ok(pass) = state.credential_store.load(&pass_key) {
+                key_passphrases.insert(sid.clone(), pass);
+            }
+            // Try to read key file content if key_path is set
+            if !server.ssh.key_path.is_empty() {
+                if let Ok(content) = std::fs::read_to_string(&server.ssh.key_path) {
+                    key_files.insert(sid.clone(), content);
+                }
             }
         }
     }

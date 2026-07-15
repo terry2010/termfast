@@ -99,6 +99,7 @@ export function ServerList({
 
       // Open a terminal: auto-connect if needed, then open terminal session and
       // select the server so ServerDetail shows the new terminal tab.
+      // Flow: click → connecting → SSH connect + terminal open → tab created → connected
       const openTerminal = async () => {
         const store = useServerStore.getState();
         const serverId = server.id;
@@ -109,12 +110,12 @@ export function ServerList({
         // Select the server first so the detail panel is visible
         store.selectServer(serverId);
 
-        // If not connected, connect first
+        // If not connected, connect first (status stays "connecting" until terminal is ready)
         if (!alreadyConnected) {
           store.updateServerStatus(serverId, "connecting");
           try {
             await ipcInvoke("ipc_connect_server", { serverId });
-            store.updateServerStatus(serverId, "connected", currentServer.last_known_ip || undefined);
+            // Don't set "connected" yet — wait until terminal is ready
           } catch (err: any) {
             const errMsg = formatIpcError(err);
             store.updateServerStatus(serverId, "offline");
@@ -141,7 +142,7 @@ export function ServerList({
           }
         }
 
-        // Open terminal session
+        // SSH connected — now open terminal session
         try {
           const result = await ipcInvoke<{ session_id: string; initial_output: string }>(
             "ipc_terminal_open",
@@ -151,55 +152,22 @@ export function ServerList({
           const initialOutput = result.initial_output || "";
           const tabId = `term:${sessionId}`;
           const currentTabs = store.terminal_tabs_by_server[serverId] || [];
-          const hasTabs = currentTabs.length > 0;
           const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+          // Terminal ready — create tab and switch to it first
           store.addTerminalTab(serverId, { id: tabId, sessionId, label: defaultLabel, defaultLabel, initialOutput, disconnected: false });
           store.setActiveTerminalTab(serverId, tabId);
-          // If this is the first terminal tab, the button label changes from
-          // "connect_terminal" to "login_server" — no extra action needed.
-          void hasTabs;
+          // Wait for the tab to render before changing button status
+          requestAnimationFrame(() => {
+            store.updateServerStatus(serverId, "connected", currentServer.last_known_ip || undefined);
+          });
         } catch (err) {
           const msg = formatIpcError(err);
+          store.updateServerStatus(serverId, "offline");
           toast.error(t("server.terminal_open_failed"), { description: msg });
         }
       };
 
       const items: ContextMenuEntry[] = [
-        {
-          label: isConnected ? t("server.disconnect") : t("server.connect"),
-          icon: isConnected ? "⏹" : "▶",
-          onClick: async () => {
-            try {
-              if (isConnected) {
-                await ipcInvoke("ipc_disconnect_server", { server_id: server.id });
-              } else {
-                await ipcInvoke("ipc_connect_server", { server_id: server.id });
-              }
-            } catch (e) {
-              const errMsg = formatIpcError(e);
-              useLogStore.getState().addEntry({
-                id: `ctx-conn-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                timestamp: new Date().toISOString(),
-                server_id: server.id,
-                level: "error",
-                category: "Connection",
-                message: `Connection failed: ${errMsg}`,
-                execution_id: null,
-                command: null,
-                exit_code: null,
-                stdout: null,
-                stderr: null,
-              });
-              // If credential is missing, open edit dialog so user can re-enter password
-              if (e instanceof IpcErrorImpl && e.code === "CredentialNotFound") {
-                window.dispatchEvent(
-                  new CustomEvent("edit-server", { detail: { serverId: server.id } })
-                );
-              }
-            }
-          },
-          disabled: server.current_status === "connecting" || server.current_status === "reconnecting",
-        },
         {
           label: t("server.login_server"),
           icon: "⌨",
