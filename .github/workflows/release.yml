@@ -191,6 +191,7 @@ jobs:
   # === Generate latest.json from the signed release assets and deploy to gh-pages ===
   update-manifest:
     needs: [build, build-android]
+    if: always() && !cancelled()
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -201,6 +202,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Wait for release to be available
+        run: sleep 30
 
       - name: Generate latest.json
         env:

@@ -185,7 +185,7 @@ impl PlatformAdapter for WindowsAdapter {
         #[cfg(windows)]
         {
             use window_vibrancy::apply_mica;
-            apply_mica(window, true).map_err(|e| anyhow::anyhow!("failed to apply mica: {}", e))?;
+            apply_mica(window, Some(true)).map_err(|e| anyhow::anyhow!("failed to apply mica: {}", e))?;
         }
         Ok(())
     }
