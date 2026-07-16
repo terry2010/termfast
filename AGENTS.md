@@ -121,6 +121,21 @@ edit(file_path="big_file.rs", old_string="// === SECTION 2 END ===",
 - `GITHUB_TOKEN`：Actions 自动提供，无需手动设置
 - `TAURI_SIGNING_PRIVATE_KEY`：GitHub Secret，私钥内容
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：当前无密码，可留空
+- `ANDROID_KEYSTORE_BASE64`：GitHub Secret，Android APK 签名密钥（base64 编码）
+  - 生成方式：`base64 -i android/app/keystores/release.keystore`
+  - CI 中解码后用于 release APK 签名
+
+### Android APK 发布
+
+`release.yml` 中的 `build-android` job 会在 ubuntu-latest 上：
+1. 解码 `ANDROID_KEYSTORE_BASE64` Secret 还原 keystore
+2. 安装 Android SDK 36 + NDK 27
+3. 编译 Rust `.so`（aarch64-linux-android，release 模式）
+4. 用 Gradle 构建 release APK（R8 混淆 + 签名）
+5. 上传 `TermFast-{version}-android-arm64.apk` 到 GitHub Release
+
+**首次配置**：在 GitHub 仓库 Settings → Secrets → Actions 中添加 `ANDROID_KEYSTORE_BASE64`，
+值为 `base64 -i android/app/keystores/release.keystore` 的输出。
 
 ### 客户端行为
 
@@ -169,4 +184,64 @@ cd src-tauri && cargo clippy --lib
 # 前端类型检查
 npx tsc --noEmit
 ```
- 
+
+### Android 构建（TermFast Android 版）
+
+**环境变量**（需在 shell 中设置或写入 `android/local.properties`）：
+
+```bash
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export ANDROID_HOME=/Users/terry/Library/Android/sdk
+export ANDROID_SDK_ROOT=$ANDROID_HOME
+```
+
+**Rust Native 庥编译（arm64-v8a）：**
+
+```bash
+# Debug 编译
+cargo build --target aarch64-linux-android -p termfast-android-ffi
+
+# Release 编译（用于 release APK）
+cargo build --release --target aarch64-linux-android -p termfast-android-ffi
+
+# 拷贝 .so 到 jniLibs 并 strip debug symbols
+cp target/aarch64-linux-android/release/libtermfast_android_ffi.so \
+   android/app/src/main/jniLibs/arm64-v8a/libtermfast_android_ffi.so
+/opt/homebrew/share/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-strip \
+   --strip-debug android/app/src/main/jniLibs/arm64-v8a/libtermfast_android_ffi.so
+```
+
+**Gradle 构建：**
+
+```bash
+cd android
+
+# Debug APK
+./gradlew :app:assembleDebug
+
+# Release APK（R8 混淆 + 资源压缩 + 签名）
+./gradlew :app:assembleRelease
+
+# Release AAB（用于 Google Play 上架）
+./gradlew :app:bundleRelease
+```
+
+**构建产物路径：**
+
+- Debug APK: `android/app/build/outputs/apk/debug/app-debug.apk`
+- Release APK: `android/app/build/outputs/apk/release/app-release.apk`
+- Release AAB: `android/app/build/outputs/bundle/release/app-release.aab`
+
+**Release 签名：**
+
+- Keystore: `android/app/keystores/release.keystore`
+- Alias: `termfast`，密码: `termfast`
+- 签名配置在 `android/app/build.gradle.kts` 的 `signingConfigs.release`
+- ProGuard keep 规则在 `android/app/proguard-rules.pro`
+
+**APK 签名验证：**
+
+```bash
+"$ANDROID_HOME/build-tools/36.0.0/apksigner" verify -v \
+  android/app/build/outputs/apk/release/app-release.apk
+```

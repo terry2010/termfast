@@ -77,9 +77,83 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+  # === Build signed Android APK ===
+  build-android:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secrets
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret is missing."
+            echo "Run: base64 -i android/app/keystores/release.keystore"
+            echo "Add the output as a GitHub Secret named ANDROID_KEYSTORE_BASE64"
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platforms;android-36
+            build-tools;36.0.0
+            ndk;27.0.12077973
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Decode keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/keystores/release.keystore
+          ls -la android/app/keystores/release.keystore
+
+      - name: Build Rust .so (release)
+        run: |
+          cargo build --release --target aarch64-linux-android -p termfast-android-ffi
+          cp target/aarch64-linux-android/release/libtermfast_android_ffi.so \
+             android/app/src/main/jniLibs/arm64-v8a/libtermfast_android_ffi.so
+          ${ANDROID_SDK_ROOT}/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
+             --strip-debug android/app/src/main/jniLibs/arm64-v8a/libtermfast_android_ffi.so || true
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Rename APK with version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp android/app/build/outputs/apk/release/app-release.apk \
+             android/TermFast-${VERSION}-android-arm64.apk
+
+      - name: Upload APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: "See the assets below to download this version."
+          draft: true
+          prerelease: false
+          files: android/TermFast-*-android-arm64.apk
+
   # === Generate latest.json from the signed release assets and deploy to gh-pages ===
   update-manifest:
-    needs: build
+    needs: [build, build-android]
     permissions:
       contents: write
     runs-on: ubuntu-latest
