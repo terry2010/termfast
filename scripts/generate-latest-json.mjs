@@ -56,9 +56,18 @@ async function downloadText(url) {
 }
 
 async function main() {
-  const releaseUrl = `https://api.github.com/repos/${owner}/${repoName}/releases/tags/${tag}`;
-  console.log(`Fetching release ${tag}...`);
-  const release = await githubApi(releaseUrl);
+  // Draft releases are not accessible via /releases/tags/{tag}, so list all releases
+  // and find the one matching our tag.
+  const listUrl = `https://api.github.com/repos/${owner}/${repoName}/releases?per_page=100`;
+  console.log(`Fetching releases list...`);
+  const releases = await githubApi(listUrl);
+  const release = releases.find((r) => r.tag_name === tag);
+  if (!release) {
+    console.error(`Release with tag ${tag} not found among ${releases.length} releases.`);
+    console.error("Available tags:", releases.map((r) => r.tag_name).join(", "));
+    process.exit(1);
+  }
+  console.log(`Found release: ${release.tag_name} (draft=${release.draft})`);
 
   /** @type {Record<string, { signature: string; url: string }>} */
   const platforms = {};

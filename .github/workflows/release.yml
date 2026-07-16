@@ -204,7 +204,7 @@ jobs:
           node-version: 20
 
       - name: Wait for release to be available
-        run: sleep 30
+        run: sleep 60
 
       - name: Generate latest.json
         env:
