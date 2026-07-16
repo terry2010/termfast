@@ -99,11 +99,12 @@ async function main() {
       return;
     }
     const sigAsset = release.assets.find((a) => a.name === `${assetName}.sig`);
-    if (!sigAsset) {
-      console.warn(`Signature asset not found for: ${assetName}`);
-      return;
+    let signature = "";
+    if (sigAsset) {
+      signature = (await downloadText(sigAsset.browser_download_url)).trim();
+    } else {
+      console.warn(`Signature asset not found for: ${assetName} (continuing without signature)`);
     }
-    const signature = (await downloadText(sigAsset.browser_download_url)).trim();
     platforms[platformKey] = {
       signature,
       url: assetUrl(assetName),
@@ -112,10 +113,13 @@ async function main() {
   }
 
   // macOS Apple Silicon — updater uses the .app.tar.gz bundle.
+  // Asset name may or may not include version, try both patterns.
   await addPlatform(`${productName}_${version}_aarch64.app.tar.gz`, "darwin-aarch64");
+  await addPlatform(`${productName}_aarch64.app.tar.gz`, "darwin-aarch64");
 
   // Windows x86_64 — NSIS installer used by installMode: basicUi.
   await addPlatform(`${productName}_${version}_x64-setup.exe`, "windows-x86_64");
+  await addPlatform(`${productName}_x64-setup.exe`, "windows-x86_64");
 
   if (Object.keys(platforms).length === 0) {
     console.error("No update platforms could be resolved from release assets.");
