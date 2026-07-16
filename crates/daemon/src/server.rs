@@ -544,7 +544,7 @@ async fn run_named_pipe_listener(pipe_name: String, state: Arc<DaemonState>) {
                     .create(&pipe_name)
                     .map_err(|e| anyhow::anyhow!("create pipe: {}", e))?;
                 server.connect().await.map_err(|e| anyhow::anyhow!("connect: {}", e))?;
-                Ok(server)
+                Ok::<_, anyhow::Error>(server)
             } => {
                 match accept_result {
                     Ok(stream) => {

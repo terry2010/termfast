@@ -145,17 +145,15 @@ jobs:
       - name: Build Rust .so (release)
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.3.13750724
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.3.13750724
         run: |
           NDK_TOOLCHAIN="${ANDROID_SDK_ROOT}/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          # Override local .cargo/config.toml paths for Linux CI
-          cat > .cargo/config.toml << EOF
-[target.aarch64-linux-android]
-linker = "${NDK_TOOLCHAIN}/aarch64-linux-android26-clang"
-[env]
-CC_aarch64_linux_android = "${NDK_TOOLCHAIN}/aarch64-linux-android26-clang"
-AR_aarch64_linux_android = "${NDK_TOOLCHAIN}/llvm-ar"
-ANDROID_NDK_HOME = "${ANDROID_NDK_HOME}"
-EOF
+          # Remove the macOS-specific .cargo/config.toml so it doesn't interfere
+          rm -f .cargo/config.toml
+          # Set environment variables for cc/ring crates
+          export CC_aarch64_linux_android="${NDK_TOOLCHAIN}/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="${NDK_TOOLCHAIN}/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${NDK_TOOLCHAIN}/aarch64-linux-android26-clang"
 
           cargo build --release --target aarch64-linux-android -p termfast-android-ffi
           cp target/aarch64-linux-android/release/libtermfast_android_ffi.so \
