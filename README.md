@@ -1,9 +1,9 @@
 # TermFast
 
+> [English](#english) | [中文](#中文)
+>
 > 开箱即用的 SSH 终端 + 代理 + 自动化工具，支持桌面和 Android
 > An all-in-one SSH terminal + proxy + automation tool for desktop and Android
->
-> [English](#english) | [中文](#中文)
 
 <p align="center">
   <img src="docs/screenshot.png" alt="TermFast 界面预览 / TermFast UI Preview" width="720">
