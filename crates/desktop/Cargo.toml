@@ -25,15 +25,6 @@ directories = { workspace = true }
 async-trait = { workspace = true }
 whoami = "2"
 
-# Windows-only dependencies
-[target.'cfg(windows)'.dependencies]
-winreg = "0.56"
-window-vibrancy = "0.7"
-
-# macOS-only dependencies
-[target.'cfg(target_os = "macos")'.dependencies]
-window-vibrancy = "0.7"
-
 # Tauri
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
@@ -45,6 +36,15 @@ tauri-plugin-fs = "2"
 tauri-plugin-os = "2"
 tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
+
+# Windows-only dependencies
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+window-vibrancy = "0.7"
+
+# macOS-only dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+window-vibrancy = "0.7"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
