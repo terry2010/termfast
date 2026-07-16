@@ -125,8 +125,16 @@ jobs:
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/keystores/release.keystore
+          mkdir -p android/app/keystores
+          # Remove any whitespace/newlines from the base64 string before decoding
+          CLEANED=$(echo "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]')
+          echo "$CLEANED" | base64 --decode > android/app/keystores/release.keystore
+          if [ ! -s android/app/keystores/release.keystore ]; then
+            echo "::error::Keystore file is empty after decode. Check ANDROID_KEYSTORE_BASE64 secret."
+            exit 1
+          fi
           ls -la android/app/keystores/release.keystore
+          file android/app/keystores/release.keystore
 
       - name: Build Rust .so (release)
         run: |
