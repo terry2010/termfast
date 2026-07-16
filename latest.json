@@ -1,0 +1,11 @@
+{
+  "version": "0.1.8",
+  "notes": "See the assets below to download this version.",
+  "pub_date": "2026-07-16T12:15:57.694Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "",
+      "url": "https://gh-proxy.com/https://github.com/terry2010/termfast/releases/download/v0.1.8/TermFast_aarch64.app.tar.gz"
+    }
+  }
+}
