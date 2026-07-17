@@ -352,19 +352,11 @@ impl DaemonServer {
         // Wait for SSH disconnect ACK (3s)
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        // Step 6: Clean up keychain temporary credentials (FP-5.4)
-        tracing::info!("[6/7] cleaning up keychain credentials");
-        {
-            let mgr = self.state.config_manager.lock().await;
-            let config = mgr.get().await;
-            for server in &config.servers {
-                // Delete credentials for each server
-                let _ = self
-                    .state
-                    .credential_store
-                    .delete_all_for_server(&server.id);
-            }
-        }
+        // Step 6: Skip keychain credential deletion on shutdown.
+        // On macOS, deleting keychain entries triggers a system password prompt
+        // (via `security delete-generic-password`), which is disruptive during
+        // quit. Credentials are safely kept in the keychain for next launch.
+        tracing::info!("[6/7] skipping keychain cleanup (kept for next launch)");
 
         // Step 7: Persist config and clean up
         tracing::info!("[7/7] persisting config and cleaning up");

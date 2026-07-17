@@ -12,6 +12,7 @@
 // Cmd/Ctrl+E: collapse/expand logs
 // Cmd/Ctrl+B: toggle sidebar
 // Cmd/Ctrl+Shift+R / F5: refresh status
+// Cmd/Ctrl+Q: quit app (macOS standard)
 // Esc: close panel/cancel/close dialog
 
 import { useEffect } from "react";
@@ -29,6 +30,7 @@ export interface KeyboardShortcutHandlers {
   onToggleSidebar: () => void;
   onRefresh: () => void;
   onEscape: () => void;
+  onQuit?: () => void;
 }
 
 export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
@@ -105,6 +107,10 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
         case "b":
           e.preventDefault();
           handlers.onToggleSidebar();
+          return;
+        case "q":
+          e.preventDefault();
+          handlers.onQuit?.();
           return;
       }
     };

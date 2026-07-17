@@ -43,44 +43,60 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .on_window_event(|window, event| {
-            // Graceful shutdown on window close (FP-5.4)
+            // macOS HIG: clicking the red close button only closes the window,
+            // the app stays alive in the menu bar / Dock. The user quits via
+            // Cmd+Q or the tray menu "Quit".  On non-macOS platforms the
+            // close button exits the app (unless minimize_to_tray is on).
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let app_handle = window.app_handle().clone();
                 api.prevent_close();
 
                 tauri::async_runtime::spawn(async move {
-                    // Check minimize_to_tray setting
-                    let minimize_to_tray = if let Some(state) = app_handle.try_state::<AppState>() {
-                        let guard = state.daemon.lock().await;
-                        if let Some(ref daemon) = *guard {
-                            let mgr = daemon.server.state().config_manager.lock().await;
-                            let config = mgr.get().await;
-                            config.general.minimize_to_tray
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-
-                    if minimize_to_tray {
-                        // Hide window instead of closing
+                    #[cfg(target_os = "macos")]
+                    {
+                        // macOS: always hide window, never exit on close
                         if let Some(win) = app_handle.get_webview_window("main") {
                             let _ = win.hide();
                         }
                         return;
                     }
 
-                    // Graceful shutdown
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        tracing::info!("window close: starting graceful shutdown");
-                        let guard = state.daemon.lock().await;
-                        if let Some(ref daemon) = *guard {
-                            daemon.server.shutdown().await;
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        // Non-macOS: check minimize_to_tray setting
+                        let minimize_to_tray = if let Some(state) =
+                            app_handle.try_state::<AppState>()
+                        {
+                            let guard = state.daemon.lock().await;
+                            if let Some(ref daemon) = *guard {
+                                let mgr = daemon.server.state().config_manager.lock().await;
+                                let config = mgr.get().await;
+                                config.general.minimize_to_tray
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        if minimize_to_tray {
+                            if let Some(win) = app_handle.get_webview_window("main") {
+                                let _ = win.hide();
+                            }
+                            return;
                         }
-                        tracing::info!("graceful shutdown complete, exiting");
+
+                        // Graceful shutdown
+                        if let Some(state) = app_handle.try_state::<AppState>() {
+                            tracing::info!("window close: starting graceful shutdown");
+                            let guard = state.daemon.lock().await;
+                            if let Some(ref daemon) = *guard {
+                                daemon.server.shutdown().await;
+                            }
+                            tracing::info!("graceful shutdown complete, exiting");
+                        }
+                        app_handle.exit(0);
                     }
-                    app_handle.exit(0);
                 });
             }
         })
@@ -188,6 +204,8 @@ pub fn run() {
             ipc_terminal_input,
             ipc_terminal_close,
             ipc_terminal_resize,
+            // Quit app from tray menu (forces exit even if minimize_to_tray is on)
+            ipc_quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -604,6 +622,25 @@ async fn ipc_shutdown(state: tauri::State<'_, AppState>) -> Result<(), String> {
 
 // === SECTION 3 END ===
 
+/// Quit the app gracefully (from tray menu "Quit").
+/// Performs daemon shutdown then exits, bypassing minimize_to_tray.
+#[tauri::command]
+async fn ipc_quit_app(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    tracing::info!("quit requested from tray menu");
+    // Graceful daemon shutdown
+    let guard = state.daemon.lock().await;
+    if let Some(ref daemon) = *guard {
+        daemon.server.shutdown().await;
+    }
+    drop(guard);
+    tracing::info!("graceful shutdown complete, exiting");
+    app_handle.exit(0);
+    Ok(())
+}
+
 // === Trigger management IPC (FP-6.1) ===
 
 #[tauri::command]
@@ -970,43 +1007,15 @@ async fn ipc_get_autostart(app_handle: tauri::AppHandle) -> Result<bool, String>
 
 // === Tray icon setup (FP-6.4, FP-6.5) ===
 
-/// Setup system tray with menu and icon
+/// Setup system tray icon (menu is built dynamically from the frontend)
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    // Build menu items
-    let show_item = MenuItem::with_id(app, "show_window", "Show Main Window", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let connect_all = MenuItem::with_id(app, "connect_all", "Connect All", true, None::<&str>)?;
-    let disconnect_all =
-        MenuItem::with_id(app, "disconnect_all", "Disconnect All", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let pause_triggers = MenuItem::with_id(
-        app,
-        "pause_triggers",
-        "Pause All Triggers",
-        true,
-        None::<&str>,
-    )?;
-
-    let menu = Menu::with_items(
-        app,
-        &[
-            &connect_all,
-            &disconnect_all,
-            &separator,
-            &pause_triggers,
-            &separator,
-            &show_item,
-            &quit_item,
-        ],
-    )?;
-
-    // Create tray icon with a simple colored icon
+    // Create tray icon — the menu is managed from the frontend via
+    // @tauri-apps/api/tray and @tauri-apps/api/menu so it can use i18n
+    // and dynamic server lists with submenus.
     let icon = create_tray_icon(termfast_desktop::tray::TrayIconColor::Gray);
-    let _tray = TrayIconBuilder::new()
-        .menu(&menu)
+    let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
         .tooltip("TermFast")
         .on_tray_icon_event(|tray, event| {

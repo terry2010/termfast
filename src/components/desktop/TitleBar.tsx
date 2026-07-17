@@ -153,19 +153,22 @@ function MacTitleBar(_: TitleBarProps) {
       className="flex items-center h-8 px-3 select-none"
       data-tauri-drag-region
     >
-      <div className="flex gap-2" data-tauri-drag-region>
+      <div className="flex items-center gap-2" data-tauri-drag-region>
         <button
-          className="w-3 h-3 rounded-full bg-red-500 hover:bg-red-400"
+          className="w-3 h-3 shrink-0 aspect-square rounded-full bg-red-500 hover:bg-red-400"
+          style={{ minWidth: "12px", maxWidth: "12px", minHeight: "12px", maxHeight: "12px" }}
           aria-label="close"
           onClick={handleClose}
         />
         <button
-          className="w-3 h-3 rounded-full bg-yellow-500 hover:bg-yellow-400"
+          className="w-3 h-3 shrink-0 aspect-square rounded-full bg-yellow-500 hover:bg-yellow-400"
+          style={{ minWidth: "12px", maxWidth: "12px", minHeight: "12px", maxHeight: "12px" }}
           aria-label="minimize"
           onClick={handleMinimize}
         />
         <button
-          className="w-3 h-3 rounded-full bg-green-500 hover:bg-green-400"
+          className="w-3 h-3 shrink-0 aspect-square rounded-full bg-green-500 hover:bg-green-400"
+          style={{ minWidth: "12px", maxWidth: "12px", minHeight: "12px", maxHeight: "12px" }}
           aria-label="maximize"
           onClick={handleToggleMaximize}
         />

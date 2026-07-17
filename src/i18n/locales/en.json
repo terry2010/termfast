@@ -36,12 +36,11 @@
   },
   "menu": {
     "servers": "Servers",
-    "connect_all": "Connect All",
-    "disconnect_all": "Disconnect All",
     "show_window": "Show Main Window",
     "quit": "Quit",
     "settings": "Settings",
-    "templates": "Templates"
+    "add_server": "Add Server",
+    "no_servers": "No servers added yet"
   },
   "server": {
     "status": {
