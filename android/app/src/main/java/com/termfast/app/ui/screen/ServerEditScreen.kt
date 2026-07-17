@@ -110,9 +110,15 @@ fun ServerEditScreen(navController: NavController, serverId: String?) {
                         triggers = existingTriggers,
                     )
                     if (serverId != null) {
-                        repo.removeServer(serverId)
+                        // Edit existing server: update config in-place without
+                        // removing the runtime instance, so an active VPN/proxy
+                        // connection is not disrupted. Credentials are updated
+                        // separately via saveCredential.
+                        repo.saveServer(config)
+                    } else {
+                        // New server: add to config and create runtime instance
+                        repo.addServer(config)
                     }
-                    repo.addServer(config)
                     if (authMethod == "password" && password.isNotEmpty()) {
                         repo.saveCredential(id, "password", password)
                     } else {

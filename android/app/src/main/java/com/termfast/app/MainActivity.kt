@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.termfast.app.data.ErrorMessages
 import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.SettingsRepository
@@ -121,6 +122,15 @@ class MainActivity : ComponentActivity() {
                             NotificationHelper.sendEventNotification(
                                 this, NotificationHelper.NOTIF_DISCONNECT,
                                 "TermFast 已断开", "SSH 连接已断开"
+                            )
+                        }
+                    }
+                    "auth_failed", "offline" -> {
+                        if (settings.notify_auth_fail && event.error_code != null) {
+                            val msg = ErrorMessages.format(event.error_code, event.error_detail)
+                            NotificationHelper.sendEventNotification(
+                                this, NotificationHelper.NOTIF_AUTH_FAIL,
+                                "TermFast 连接失败", msg
                             )
                         }
                     }

@@ -229,7 +229,10 @@ async fn forward_to_daemon(
             match resp {
                 termfast_daemon::proto::Response::Ok { data, .. } => return Ok(data),
                 termfast_daemon::proto::Response::Err { error, .. } => {
-                    return Err(format!("{:?}: {}", error.code, error.detail));
+                    // Serialize as JSON object {code, detail} so the frontend
+                    // can parse the ErrorCode and render a localized message.
+                    return Err(serde_json::to_string(&error)
+                        .unwrap_or_else(|_| format!("{:?}: {}", error.code, error.detail)));
                 }
                 termfast_daemon::proto::Response::Event { .. } => {
                     return Err("unexpected event response".to_string());

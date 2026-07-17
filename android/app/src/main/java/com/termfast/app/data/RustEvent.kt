@@ -17,6 +17,8 @@ sealed class RustEvent {
         val status: String,
         val exit_ip: String? = null,
         val latency_ms: Long? = null,
+        val error_code: String? = null,
+        val error_detail: String? = null,
     ) : RustEvent()
 
     @Serializable

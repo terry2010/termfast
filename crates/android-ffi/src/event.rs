@@ -16,6 +16,10 @@ pub enum RustEvent {
         status: String,
         exit_ip: Option<String>,
         latency_ms: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_detail: Option<String>,
     },
     #[serde(rename = "proxy:status_changed")]
     ProxyStatusChanged {

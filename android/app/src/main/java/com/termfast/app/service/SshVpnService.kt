@@ -19,7 +19,7 @@ import com.termfast.app.data.AppSettings
 
 class SshVpnService : VpnService() {
 
-    enum class VpnState { STOPPED, STARTING, RUNNING }
+    enum class VpnState { STOPPED, STARTING, RUNNING, FAILED }
 
     companion object {
         const val EXTRA_SERVER_ID = "server_id"
@@ -39,9 +39,31 @@ class SshVpnService : VpnService() {
         @Volatile
         private var previousActiveServerId: String = ""
 
+        @Volatile
+        var lastError: String? = null
+            private set
+
+        @Volatile
+        var failedServerId: String? = null
+            private set
+
         fun isRunning(context: Context): Boolean = state == VpnState.RUNNING
         fun isStarting(context: Context): Boolean = state == VpnState.STARTING
+        fun isFailed(context: Context): Boolean = state == VpnState.FAILED
+        fun isFailedFor(context: Context, serverId: String): Boolean =
+            state == VpnState.FAILED && failedServerId == serverId
         fun isActive(context: Context): Boolean = state != VpnState.STOPPED
+
+        fun setFailed(serverId: String, error: String) {
+            failedServerId = serverId
+            lastError = error
+            state = VpnState.FAILED
+        }
+
+        fun clearError() {
+            lastError = null
+            failedServerId = null
+        }
 
         fun start(context: Context, serverId: String, settings: AppSettings = AppSettings(), socks5Port: Int = 1080) {
             val intent = Intent(context, SshVpnService::class.java).apply {
@@ -121,6 +143,7 @@ class SshVpnService : VpnService() {
 
         // Mark as starting immediately so UI shows "连接中" during async startup
         state = VpnState.STARTING
+        clearError()
 
         createNotificationChannel()
         // Use ServiceCompat for backward compatibility with minSdk=26
@@ -196,25 +219,21 @@ class SshVpnService : VpnService() {
 
         if (!RustBridge.nativeConnectServer(serverId)) {
             Log.e(TAG, "SSH connection failed")
-            state = VpnState.STOPPED
-            updateNotification("SSH 连接失败")
-            if (killSwitch) {
-                establishEmptyTun(mtu, killSwitch)
-            } else {
-                stopSelf()
-            }
+            val detail = RustBridge.nativeGetLastError()
+            val msg = if (detail.isNotBlank()) detail else "SSH 连接失败"
+            setFailed(serverId, msg)
+            updateNotification(msg)
+            stopSelf()
             return
         }
 
         if (!RustBridge.nativeStartProxy(serverId, socks5Port, 0, 0)) {
             Log.e(TAG, "Proxy start failed")
-            state = VpnState.STOPPED
-            updateNotification("代理启动失败")
-            if (killSwitch) {
-                establishEmptyTun(mtu, killSwitch)
-            } else {
-                stopSelf()
-            }
+            val detail = RustBridge.nativeGetLastError()
+            val msg = if (detail.isNotBlank()) detail else "代理启动失败"
+            setFailed(serverId, msg)
+            updateNotification(msg)
+            stopSelf()
             return
         }
 
@@ -263,25 +282,19 @@ class SshVpnService : VpnService() {
             val ok = RustBridge.nativeStartVpn(serverId, fdInt, mtu, socks5Port, dns, ipv6)
             if (!ok) {
                 Log.e(TAG, "nativeStartVpn failed")
-                state = VpnState.STOPPED
-                if (killSwitch) {
-                    // kill-switch: keep empty TUN so traffic is blackholed
-                    updateNotification("VPN 失败，Kill switch 已阻止流量")
-                    return
-                }
+                setFailed(serverId, "VPN 启动失败")
+                updateNotification("VPN 启动失败")
                 stopSelf()
                 return
             }
             state = VpnState.RUNNING
+            clearError()
             updateNotification("VPN 运行中")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start VPN", e)
-            state = VpnState.STOPPED
-            if (killSwitch) {
-                updateNotification("VPN 异常，Kill switch 已阻止流量")
-            } else {
-                stopSelf()
-            }
+            setFailed(serverId, "VPN 启动异常: ${e.message}")
+            updateNotification("VPN 启动异常")
+            stopSelf()
         }
     }
 
@@ -332,7 +345,11 @@ class SshVpnService : VpnService() {
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy called")
-        state = VpnState.STOPPED
+        // Don't overwrite FAILED state — the UI needs it to show the error.
+        // Only reset to STOPPED if we were RUNNING or STARTING.
+        if (state == VpnState.RUNNING || state == VpnState.STARTING) {
+            state = VpnState.STOPPED
+        }
         Thread {
             RustBridge.nativeStopVpn(serverId)
             RustBridge.nativeClearProtectCallback()

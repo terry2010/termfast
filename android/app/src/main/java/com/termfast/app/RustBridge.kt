@@ -42,6 +42,7 @@ object RustBridge {
     // --- VPN ---
     external fun nativeStartVpn(id: String, tunFd: Int, mtu: Int, socks5Port: Int, dnsStrategy: String, ipv6Enabled: Boolean): Boolean
     external fun nativeStopVpn(id: String): Boolean
+    external fun nativeGetLastError(): String
 
     // --- Triggers ---
     external fun nativeListTriggers(serverId: String): String

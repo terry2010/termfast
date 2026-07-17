@@ -31,8 +31,22 @@ export async function ipcInvoke<T = unknown>(
     const result = await tauriInvoke<unknown>(action, toCamelCase(params || {}));
     return result as T;
   } catch (e) {
-    // Tauri errors come as strings or { code, detail } objects
+    // Tauri errors come as strings (JSON from Rust) or { code, detail } objects
     if (typeof e === "string") {
+      // Try to parse as JSON { code, detail } from the Rust backend
+      try {
+        const parsed = JSON.parse(e);
+        if (parsed && typeof parsed === "object" && "code" in parsed) {
+          throw new IpcErrorImpl(parsed as IpcError);
+        }
+      } catch (parseErr) {
+        // Not JSON — fall through to plain string error
+        if (parseErr instanceof SyntaxError) {
+          // Not JSON, use as plain detail
+        } else {
+          throw parseErr;
+        }
+      }
       throw new IpcErrorImpl({ code: "Internal", detail: e });
     }
     if (e && typeof e === "object" && "code" in e) {
@@ -56,11 +70,89 @@ export class IpcErrorImpl extends Error {
 }
 
 /**
+ * Parse the English `detail` field from an IpcError and return a
+ * user-friendly, localized explanation.  The backend sends language-agnostic
+ * ErrorCode + English detail; this function translates the common detail
+ * patterns so the user never sees raw English technical text.
+ */
+function localizeDetail(code: string, detail: string): string | undefined {
+  const d = detail.toLowerCase();
+
+  // --- SshConnectFailed ---
+  if (code === "SshConnectFailed") {
+    if (d.includes("timed out") || d.includes("timeout"))
+      return i18n.t("errors.detail.connect_timeout");
+    if (d.includes("connection refused"))
+      return i18n.t("errors.detail.connect_refused");
+    if (d.includes("unreachable") || d.includes("noroutetohost"))
+      return i18n.t("errors.detail.network_unreachable");
+    if (d.includes("dns") || d.includes("name or service not known"))
+      return i18n.t("errors.detail.dns_failed");
+    if (d.includes("reset") || d.includes("broken pipe"))
+      return i18n.t("errors.detail.connection_reset");
+    if (d.includes("banner") || d.includes("protocol"))
+      return i18n.t("errors.detail.protocol_error");
+    return i18n.t("errors.detail.connect_failed");
+  }
+
+  // --- AuthFailed ---
+  if (code === "AuthFailed") {
+    if (d.includes("rejected by server"))
+      return i18n.t("errors.detail.auth_rejected");
+    if (d.includes("key file not found"))
+      return i18n.t("errors.detail.key_not_found");
+    if (d.includes("failed to load key"))
+      return i18n.t("errors.detail.key_load_failed");
+    if (d.includes("password auth error"))
+      return i18n.t("errors.detail.auth_rejected");
+    if (d.includes("key auth error"))
+      return i18n.t("errors.detail.auth_rejected");
+    return i18n.t("errors.detail.auth_rejected");
+  }
+
+  // --- HostKeyMismatch ---
+  if (code === "HostKeyMismatch") {
+    return i18n.t("errors.detail.hostkey_mismatch");
+  }
+
+  // --- CredentialNotFound ---
+  if (code === "CredentialNotFound") {
+    if (d.includes("key file"))
+      return i18n.t("errors.detail.key_not_found");
+    return i18n.t("errors.detail.credential_not_found");
+  }
+
+  // --- PortConflict / ProxyPortInUse ---
+  if (code === "PortConflict" || code === "ProxyPortInUse") {
+    return i18n.t("errors.detail.port_in_use", { detail });
+  }
+
+  // --- NeedsPrivilege ---
+  if (code === "NeedsPrivilege") {
+    return i18n.t("errors.detail.needs_privilege");
+  }
+
+  // --- SshDisconnected ---
+  if (code === "SshDisconnected") {
+    if (d.includes("reset") || d.includes("broken pipe"))
+      return i18n.t("errors.detail.connection_reset");
+    if (d.includes("timeout") || d.includes("timed out"))
+      return i18n.t("errors.detail.connection_timeout");
+    return i18n.t("errors.detail.disconnected");
+  }
+
+  return undefined;
+}
+
+/**
  * Format an IPC error into a translated message using i18n.
  * Falls back to the raw error string if no code is available.
  */
 export function formatIpcError(e: unknown): string {
   if (e instanceof IpcErrorImpl) {
+    const localized = localizeDetail(e.code, e.detail);
+    if (localized) return localized;
+    // Fallback: use the generic errors.<code> template with raw detail
     const key = `errors.${e.code}`;
     const translated = i18n.t(key, { detail: e.detail });
     if (translated !== key) return translated;

@@ -399,7 +399,25 @@
     "DecryptionFailed": "解密失败：{{detail}}",
     "TriggerCommandFailed": "触发器命令执行失败：{{detail}}",
     "Internal": "内部错误：{{detail}}",
-    "InvalidParams": "参数错误：{{detail}}"
+    "InvalidParams": "参数错误：{{detail}}",
+    "detail": {
+      "connect_timeout": "连接超时，请检查服务器地址和端口是否正确，以及网络是否畅通",
+      "connect_refused": "服务器拒绝连接，可能是 SSH 服务未启动或端口号错误",
+      "network_unreachable": "网络不可达，请检查本地网络或 VPN 是否正常",
+      "dns_failed": "域名解析失败，请检查服务器地址是否正确",
+      "connection_reset": "连接被重置，可能是网络不稳定或服务器主动断开",
+      "connection_timeout": "连接超时，网络可能不稳定",
+      "protocol_error": "SSH 协议错误，服务器可能不是标准 SSH 服务",
+      "connect_failed": "无法连接到服务器，请检查地址和端口",
+      "auth_rejected": "用户名或密码错误，请重新输入",
+      "key_not_found": "密钥文件不存在，请检查密钥路径",
+      "key_load_failed": "密钥加载失败，可能是文件格式错误或密码短语不正确",
+      "hostkey_mismatch": "服务器主机密钥已变更，可能服务器重装了系统，请确认安全后重新连接",
+      "credential_not_found": "未找到保存的凭据，请重新输入密码",
+      "port_in_use": "端口 {{detail}} 已被其他程序占用，请更换端口",
+      "needs_privilege": "需要管理员权限才能修改系统代理设置",
+      "disconnected": "连接已断开"
+    }
   },
   "tab": {
     "rename": "重命名",

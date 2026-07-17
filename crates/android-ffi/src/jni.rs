@@ -26,6 +26,56 @@ pub struct FfiState {
 
 static STATE: OnceLock<Mutex<FfiState>> = OnceLock::new();
 
+/// Last connection error detail (set by nativeConnectServer on failure).
+static LAST_CONNECT_ERROR: OnceLock<Mutex<String>> = OnceLock::new();
+
+pub fn last_connect_error() -> &'static Mutex<String> {
+    LAST_CONNECT_ERROR.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Format an error code + detail into a user-friendly Chinese message.
+/// Mirrors the Kotlin ErrorMessages.format() logic.
+fn format_error_message(code: &str, detail: &str) -> String {
+    let d = detail.to_lowercase();
+    match code {
+        "SshConnectFailed" => {
+            if d.contains("timed out") || d.contains("timeout") {
+                "连接超时，请检查服务器地址和端口是否正确，以及网络是否畅通".to_string()
+            } else if d.contains("connection refused") {
+                "服务器拒绝连接，可能是 SSH 服务未启动或端口号错误".to_string()
+            } else if d.contains("unreachable") || d.contains("noroutetohost") {
+                "网络不可达，请检查本地网络或 VPN 是否正常".to_string()
+            } else if d.contains("dns") || d.contains("name or service not known") {
+                "域名解析失败，请检查服务器地址是否正确".to_string()
+            } else if d.contains("reset") || d.contains("broken pipe") {
+                "连接被重置，可能是网络不稳定或服务器主动断开".to_string()
+            } else {
+                format!("无法连接到服务器：{}", detail)
+            }
+        }
+        "AuthFailed" => {
+            if d.contains("key file not found") {
+                "密钥文件不存在，请检查密钥路径".to_string()
+            } else if d.contains("failed to load key") {
+                "密钥加载失败，可能是文件格式错误或密码短语不正确".to_string()
+            } else {
+                "用户名或密码错误，请重新输入".to_string()
+            }
+        }
+        "HostKeyMismatch" => {
+            "服务器主机密钥已变更，可能服务器重装了系统，请确认安全后重新连接".to_string()
+        }
+        "CredentialNotFound" => {
+            if d.contains("key file") {
+                "密钥文件不存在，请检查密钥路径".to_string()
+            } else {
+                "未找到保存的凭据，请重新输入密码".to_string()
+            }
+        }
+        _ => format!("连接失败：{}", detail),
+    }
+}
+
 pub fn state() -> &'static Mutex<FfiState> {
     STATE.get_or_init(|| {
         Mutex::new(FfiState {
@@ -246,16 +296,35 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoveServer(
     id: JString,
 ) -> jboolean {
     let id_str = jstring_to_string(&mut _env, &id);
-    let mut st = state().lock().unwrap();
+    // Remove and disconnect the runtime instance first, so SSH/proxy/VPN
+    // are properly torn down before we discard the Arc reference.
+    // Without this, the old SSH connection stays alive as an orphan and
+    // the proxy keeps listening on its port, causing the edited server
+    // to appear "still connected" even with wrong credentials.
+    let instance = {
+        let mut st = state().lock().unwrap();
+        st.servers.remove(&id_str)
+    };
+    if let Some(instance) = instance {
+        let rt = runtime();
+        let _ = rt.block_on(async {
+            // Stop tun2proxy (VPN tunnel) — this is a global operation,
+            // not per-instance.
+            let _ = crate::vpn::stop_tun2proxy().await;
+            // Stop the SOCKS5/HTTP proxy on this instance
+            let _ = instance.stop_proxy().await;
+            // Disconnect SSH
+            let _ = instance.disconnect().await;
+        });
+    }
     // Remove from config
+    let st = state().lock().unwrap();
     if let Some(ref cm) = st.config_manager {
         let rt = runtime();
         let _ = rt.block_on(cm.modify(|cfg| {
             cfg.servers.retain(|s| s.id != id_str);
         }));
     }
-    // Remove runtime instance
-    st.servers.remove(&id_str);
     bool_to_jbool(true)
 }
 
@@ -289,10 +358,16 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
         let st = state().lock().unwrap();
         let instance = match st.servers.get(&id_str).cloned() {
             Some(i) => i,
-            None => return bool_to_jbool(false),
+            None => {
+                tracing::error!("nativeConnectServer: server instance not found for id={}", id_str);
+                return bool_to_jbool(false);
+            }
         };
         (instance, st.data_dir.clone())
     };
+    tracing::info!("nativeConnectServer: host={} port={} user={} auth_method={}",
+        instance.config.ssh.host, instance.config.ssh.port,
+        instance.config.ssh.user, instance.config.ssh.auth_method);
 
     let store = crate::credential::android_credential_store();
     let auth = if instance.config.ssh.auth_method == "key" {
@@ -312,6 +387,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
         }
     } else {
         let password = store.load(&termfast_credential::make_key(&id_str, "password")).unwrap_or_default();
+        tracing::info!("nativeConnectServer: password loaded, len={}", password.len());
         AuthMethod::Password { password }
     };
 
@@ -325,7 +401,35 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
                 Ok(())
             }
             Err(e) => {
-                log_to_kotlin("error", &format!("SSH connect failed: {:?}", e));
+                let (status, code, detail) = match &e {
+                    termfast_core::error::Error::Ipc(ipc) => {
+                        let st = if ipc.code == termfast_core::error::ErrorCode::AuthFailed {
+                            "auth_failed"
+                        } else {
+                            "offline"
+                        };
+                        (st, format!("{:?}", ipc.code), ipc.detail.clone())
+                    }
+                    _ => ("offline", "Internal".to_string(), format!("{:?}", e)),
+                };
+                log_to_kotlin("error", &format!("SSH connect failed: {}", detail));
+                tracing::error!("nativeConnectServer: SSH connect failed: code={} detail={}", code, detail);
+                // Store the user-friendly error message so Kotlin can
+                // retrieve it via nativeGetLastError() after a failed
+                // nativeConnectServer call.
+                let user_msg = format_error_message(&code, &detail);
+                *last_connect_error().lock().unwrap() = user_msg;
+                // Emit status_changed event with error details so the UI
+                // can show a user-friendly localized message.
+                let event = crate::event::RustEvent::ServerStatusChanged {
+                    server_id: id_str.clone(),
+                    status: status.to_string(),
+                    exit_ip: None,
+                    latency_ms: None,
+                    error_code: Some(code),
+                    error_detail: Some(detail),
+                };
+                crate::jni::dispatch_event_to_kotlin(&event.to_json());
                 Err(e)
             }
         }
@@ -507,6 +611,19 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStopVpn(
     let rt = runtime();
     rt.block_on(crate::vpn::stop_tun2proxy());
     bool_to_jbool(true)
+}
+
+/// Returns the last connection error message (user-friendly Chinese),
+/// or empty string if no error. Consumed by Kotlin after a failed
+/// nativeConnectServer call.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetLastError<'a>(
+    mut env: JNIEnv<'a>,
+    _class: JClass<'a>,
+) -> JString<'a> {
+    let msg = last_connect_error().lock().unwrap().clone();
+    env.new_string(&msg).unwrap_or_else(|_| env.new_string("").unwrap())
 }
 
 // === Event subscription ===

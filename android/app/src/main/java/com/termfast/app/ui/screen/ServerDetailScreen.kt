@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -48,6 +49,9 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
     var exitIp by remember { mutableStateOf<String?>(null) }
     var proxyRunning by remember { mutableStateOf(false) }
     var vpnRunning by remember { mutableStateOf(false) }
+    var vpnStarting by remember { mutableStateOf(false) }
+    var vpnFailed by remember { mutableStateOf(false) }
+    var vpnError by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(0) }
     var serverConfig by remember { mutableStateOf<ServerConfig?>(null) }
 
@@ -56,7 +60,9 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
         val socks5Port = serverConfig?.proxy?.socks5_port ?: 1080
         SshVpnService.start(context, serverId, settings, socks5Port)
         SshVpnTileService.setLastServerId(context, serverId)
-        vpnRunning = true
+        vpnStarting = true
+        vpnFailed = false
+        vpnError = null
     }
 
     val vpnLauncher = rememberLauncherForActivityResult(
@@ -68,9 +74,10 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
     }
 
     fun toggleVpn() {
-        if (vpnRunning) {
+        if (vpnRunning || vpnStarting) {
             SshVpnService.stop(context)
             vpnRunning = false
+            vpnStarting = false
         } else {
             val prepare = VpnService.prepare(context)
             if (prepare != null) {
@@ -97,6 +104,23 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
         }
     }
 
+    // Poll VPN service state to catch async failures
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            val running = SshVpnService.isRunning(context)
+            val starting = SshVpnService.isStarting(context)
+            val failed = SshVpnService.isFailedFor(context, serverId)
+            val err = if (failed) SshVpnService.lastError else null
+            if (running != vpnRunning || starting != vpnStarting || failed != vpnFailed || err != vpnError) {
+                vpnRunning = running
+                vpnStarting = starting
+                vpnFailed = failed
+                vpnError = err
+            }
+        }
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, serverId) {
         val observer = LifecycleEventObserver { _, event ->
@@ -106,10 +130,16 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                         val s = repo.getServerStatus(serverId)
                         val pr = repo.isProxyRunning(serverId)
                         val vpn = SshVpnService.isRunning(context)
+                        val starting = SshVpnService.isStarting(context)
+                        val failed = SshVpnService.isFailedFor(context, serverId)
+                        val err = if (failed) SshVpnService.lastError else null
                         withContext(Dispatchers.Main) {
                             status = s.status
                             exitIp = s.exit_ip
                             vpnRunning = vpn
+                            vpnStarting = starting
+                            vpnFailed = failed
+                            vpnError = err
                             proxyRunning = pr
                         }
                     }
@@ -158,6 +188,9 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                     exitIp = exitIp,
                     proxyRunning = proxyRunning,
                     vpnRunning = vpnRunning,
+                    vpnStarting = vpnStarting,
+                    vpnFailed = vpnFailed,
+                    vpnError = vpnError,
                     onVpnToggle = { toggleVpn() },
                     onTerminal = { navController.navigate("terminal/$serverId") },
                 )
@@ -209,6 +242,9 @@ private fun OverviewTab(
     exitIp: String?,
     proxyRunning: Boolean,
     vpnRunning: Boolean,
+    vpnStarting: Boolean = false,
+    vpnFailed: Boolean = false,
+    vpnError: String? = null,
     onVpnToggle: () -> Unit,
     onTerminal: () -> Unit,
 ) {
@@ -219,31 +255,67 @@ private fun OverviewTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // Error banner — shown when VPN connection failed
+        if (vpnFailed && vpnError != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ),
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(Icons.Filled.Warning, contentDescription = "错误")
+                    Text(vpnError!!, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                }
+            }
+        }
         // VPN toggle — large primary button
         Button(
             onClick = onVpnToggle,
             modifier = Modifier.fillMaxWidth().height(52.dp),
             shape = RoundedCornerShape(14.dp),
-            colors = if (vpnRunning) {
-                ButtonDefaults.buttonColors(
+            enabled = !vpnStarting,
+            colors = when {
+                vpnRunning -> ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
                 )
-            } else {
-                ButtonDefaults.buttonColors(
+                vpnFailed -> ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                else -> ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                 )
             },
         ) {
-            Icon(
-                if (vpnRunning) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-            )
+            if (vpnStarting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                Icon(
+                    if (vpnRunning) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
             Spacer(Modifier.width(8.dp))
             Text(
-                if (vpnRunning) "停止 VPN" else "启动 VPN",
+                when {
+                    vpnStarting -> "连接中..."
+                    vpnRunning -> "停止 VPN"
+                    vpnFailed -> "重试连接"
+                    else -> "启动 VPN"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -279,7 +351,12 @@ private fun OverviewTab(
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                 StatusRow(label = "代理", value = if (proxyRunning) "运行中" else "已停止", positive = proxyRunning)
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                StatusRow(label = "VPN", value = if (vpnRunning) "运行中" else "已停止", positive = vpnRunning)
+                StatusRow(label = "VPN", value = when {
+                    vpnRunning -> "运行中"
+                    vpnStarting -> "连接中..."
+                    vpnFailed -> "连接失败"
+                    else -> "已停止"
+                }, positive = vpnRunning)
             }
         }
     }

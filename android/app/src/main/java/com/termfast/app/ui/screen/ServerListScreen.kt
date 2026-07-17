@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -61,6 +62,8 @@ fun ServerListScreen(navController: NavController) {
     var loading by remember { mutableStateOf(true) }
     var vpnRunning by remember { mutableStateOf(SshVpnService.isRunning(context)) }
     var vpnStarting by remember { mutableStateOf(SshVpnService.isStarting(context)) }
+    var vpnFailed by remember { mutableStateOf(SshVpnService.isFailed(context)) }
+    var vpnError by remember { mutableStateOf(SshVpnService.lastError) }
     var vpnServerId by remember { mutableStateOf(SshVpnService.activeServerId) }
     var pendingVpnServer by remember { mutableStateOf<ServerConfig?>(null) }
 
@@ -100,12 +103,16 @@ fun ServerListScreen(navController: NavController) {
                 val st = list.associate { it.id to repo.getServerStatus(it.id) }
                 val vpn = SshVpnService.isRunning(context)
                 val starting = SshVpnService.isStarting(context)
+                val failed = SshVpnService.isFailed(context)
+                val err = SshVpnService.lastError
                 val sid = SshVpnService.activeServerId
                 withContext(Dispatchers.Main) {
                     servers = list
                     statuses = st
                     vpnRunning = vpn
                     vpnStarting = starting
+                    vpnFailed = failed
+                    vpnError = err
                     vpnServerId = sid
                     loading = false
                 }
@@ -120,10 +127,14 @@ fun ServerListScreen(navController: NavController) {
             kotlinx.coroutines.delay(500)
             val running = SshVpnService.isRunning(context)
             val starting = SshVpnService.isStarting(context)
+            val failed = SshVpnService.isFailed(context)
+            val err = SshVpnService.lastError
             val sid = SshVpnService.activeServerId
-            if (running != vpnRunning || starting != vpnStarting || sid != vpnServerId) {
+            if (running != vpnRunning || starting != vpnStarting || failed != vpnFailed || err != vpnError || sid != vpnServerId) {
                 vpnRunning = running
                 vpnStarting = starting
+                vpnFailed = failed
+                vpnError = err
                 vpnServerId = sid
             }
         }
@@ -135,6 +146,8 @@ fun ServerListScreen(navController: NavController) {
             if (event == Lifecycle.Event.ON_RESUME) {
                 vpnRunning = SshVpnService.isRunning(context)
                 vpnStarting = SshVpnService.isStarting(context)
+                vpnFailed = SshVpnService.isFailed(context)
+                vpnError = SshVpnService.lastError
                 vpnServerId = SshVpnService.activeServerId
                 refresh()
             }
@@ -169,8 +182,9 @@ fun ServerListScreen(navController: NavController) {
         } else if (servers.isEmpty()) {
             EmptyServerState(modifier = Modifier.padding(padding))
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(padding),
+            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                LazyColumn(
+                modifier = Modifier.fillMaxSize().weight(1f),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -180,11 +194,15 @@ fun ServerListScreen(navController: NavController) {
                     val isThisVpn = vpnServerId == server.id
                     val cardVpnRunning = vpnRunning && isThisVpn
                     val cardVpnStarting = vpnStarting && isThisVpn
+                    val cardVpnFailed = vpnFailed && isThisVpn
+                    val cardVpnError = if (cardVpnFailed) vpnError else null
                     ServerCard(
                         server = server,
                         status = statuses[server.id],
                         vpnRunning = cardVpnRunning,
                         vpnStarting = cardVpnStarting,
+                        vpnFailed = cardVpnFailed,
+                        vpnError = cardVpnError,
                         testResult = testResult,
                         testing = testing,
                         onVpnToggle = {
@@ -195,12 +213,9 @@ fun ServerListScreen(navController: NavController) {
                                 vpnStarting = false
                                 vpnServerId = ""
                             } else {
-                                // Another VPN might be running on a different card.
-                                // Don't call stop() here — startVpnInternal will
-                                // tear down the previous server's state before
-                                // connecting the new one. Calling stop() first
-                                // creates a race condition between the stop thread
-                                // and the start thread.
+                                // Clear previous error and start new connection
+                                vpnFailed = false
+                                vpnError = null
                                 vpnStarting = true
                                 vpnServerId = server.id
                                 startVpn(server)
@@ -251,6 +266,7 @@ fun ServerListScreen(navController: NavController) {
                     )
                 }
             }
+            }
         }
     }
 }
@@ -294,6 +310,8 @@ private fun ServerCard(
     status: ServerStatus?,
     vpnRunning: Boolean,
     vpnStarting: Boolean,
+    vpnFailed: Boolean = false,
+    vpnError: String? = null,
     testResult: String?,
     testing: Boolean,
     onVpnToggle: () -> Unit,
@@ -424,6 +442,32 @@ private fun ServerCard(
                     vpnStarting = vpnStarting,
                     onToggle = onVpnToggle,
                 )
+            }
+
+            // Error banner — only on the card that failed
+            if (vpnFailed && vpnError != null) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = "错误",
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        vpnError!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
             }
 
             // Exit IP / test result

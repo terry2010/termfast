@@ -396,7 +396,25 @@
     "DecryptionFailed": "Decryption failed: {{detail}}",
     "TriggerCommandFailed": "Trigger command failed: {{detail}}",
     "Internal": "Internal error: {{detail}}",
-    "InvalidParams": "Invalid parameters: {{detail}}"
+    "InvalidParams": "Invalid parameters: {{detail}}",
+    "detail": {
+      "connect_timeout": "Connection timed out. Check the server address, port, and network connectivity",
+      "connect_refused": "Connection refused. The SSH service may not be running or the port is wrong",
+      "network_unreachable": "Network unreachable. Check your local network or VPN connection",
+      "dns_failed": "DNS resolution failed. Check the server address",
+      "connection_reset": "Connection reset. The network may be unstable or the server closed the connection",
+      "connection_timeout": "Connection timed out. The network may be unstable",
+      "protocol_error": "SSH protocol error. The server may not be a standard SSH service",
+      "connect_failed": "Could not connect to the server. Check the address and port",
+      "auth_rejected": "Wrong username or password. Please re-enter your credentials",
+      "key_not_found": "Key file not found. Check the key path",
+      "key_load_failed": "Failed to load key. The file format may be invalid or the passphrase is wrong",
+      "hostkey_mismatch": "Server host key has changed. The server may have been reinstalled. Verify it is safe before reconnecting",
+      "credential_not_found": "No saved credentials found. Please re-enter your password",
+      "port_in_use": "Port {{detail}} is already in use by another program",
+      "needs_privilege": "Administrator privilege is required to change system proxy settings",
+      "disconnected": "Connection has been closed"
+    }
   },
   "tab": {
     "rename": "Rename",
