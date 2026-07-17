@@ -36,12 +36,11 @@
   },
   "menu": {
     "servers": "服务器",
-    "connect_all": "全部连接",
-    "disconnect_all": "全部断开",
     "show_window": "显示主窗口",
     "quit": "退出",
     "settings": "设置",
-    "templates": "模板库"
+    "add_server": "添加服务器",
+    "no_servers": "尚未添加服务器"
   },
   "server": {
     "status": {

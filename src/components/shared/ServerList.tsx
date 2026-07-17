@@ -381,7 +381,7 @@ export function ServerList({
         <div
           className={`p-3 ${showFullContent ? "flex items-center gap-2" : "flex flex-col items-center gap-2"}`}
         >
-          {collapsed && (
+          {collapsed && !hoverExpanded && (
             <div
               className="w-full flex justify-center -mx-3 pt-3 pb-1"
               onMouseEnter={blockHoverExpand}

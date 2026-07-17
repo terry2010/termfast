@@ -29,10 +29,13 @@ import { UndoToast } from "@/components/shared/UndoToast";
 import { ConfirmDialog, type DangerLevel } from "@/components/ui/ConfirmDialog";
 import { ContextMenuProvider } from "@/components/ui/ContextMenu";
 import { Toaster, toast } from "sonner";
+import { useTrayMenu } from "@/hooks/useTrayMenu";
 
 export default function App() {
   // Listen for all daemon events (server status, proxy, triggers, logs)
   useDaemonEvents();
+  // Dynamically build the system tray menu (i18n + server list)
+  useTrayMenu();
   const { t } = useTranslation();
 
   const servers = useServerStore((s) => s.servers);
@@ -188,9 +191,16 @@ export default function App() {
     };
     window.addEventListener("delete-server", deleteHandler);
     window.addEventListener("edit-server", editHandler);
+    // Tray menu events
+    const trayAddServerHandler = () => setShowAddServer(true);
+    const trayOpenSettingsHandler = () => setShowSettings(true);
+    window.addEventListener("tray-add-server", trayAddServerHandler);
+    window.addEventListener("tray-open-settings", trayOpenSettingsHandler);
     return () => {
       window.removeEventListener("delete-server", deleteHandler);
       window.removeEventListener("edit-server", editHandler);
+      window.removeEventListener("tray-add-server", trayAddServerHandler);
+      window.removeEventListener("tray-open-settings", trayOpenSettingsHandler);
     };
   }, [servers]);
 
@@ -282,6 +292,9 @@ export default function App() {
     },
     onToggleLogPanel: () => setLogPanelExpanded((v) => !v),
     onToggleSidebar: () => setSidebarCollapsed((v) => !v),
+    onQuit: () => {
+      ipcInvoke("ipc_quit_app", {}).catch(() => {});
+    },
     onRefresh: () => {
       ipcInvoke("ipc_list_servers")
         .then((data: any) => {
