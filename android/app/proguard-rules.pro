@@ -37,3 +37,12 @@
 -keep class androidx.navigation.** { *; }
 -dontwarn androidx.lifecycle.**
 -dontwarn androidx.navigation.**
+
+# Tink / EncryptedSharedPreferences missing classes
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+-dontwarn com.google.api.client.http.**
+-dontwarn com.google.api.client.json.**
+-dontwarn org.joda.time.**
+-keep class com.google.crypto.tink.** { *; }
+-keep class androidx.security.crypto.** { *; }
