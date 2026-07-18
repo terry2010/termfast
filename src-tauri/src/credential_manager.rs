@@ -8,13 +8,18 @@
 //!   reset / export / import / lock.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tauri::State;
 use termfast_credential::EncryptedFileCredentialStore;
 
 /// Keychain entry name for the cached derived key.
 const KEYCHAIN_SERVICE: &str = "termfast";
 const KEYCHAIN_ENTRY: &str = "credential_master_key";
+
+/// In-memory cache of the keychain value to avoid repeated Touch ID prompts.
+/// On macOS, every keychain access triggers a Touch ID/password prompt.
+/// We cache the result so we only hit the keychain once per process.
+static CACHED_KEYCHAIN_KEY: OnceLock<Option<termfast_credential::DerivedKey>> = OnceLock::new();
 
 /// Tauri-managed state holding the encrypted credential store.
 pub struct CredentialState {
@@ -45,8 +50,20 @@ pub fn credential_file_path() -> PathBuf {
 }
 
 /// Try to read the cached derived key from the OS keychain.
+/// Uses an in-memory cache to avoid repeated Touch ID prompts on macOS.
 /// Returns `None` if no cached key exists or keychain is unavailable.
 fn load_cached_key() -> Option<termfast_credential::DerivedKey> {
+    // Return cached result if we've already queried the keychain this session.
+    if let Some(cached) = CACHED_KEYCHAIN_KEY.get() {
+        return cached.clone();
+    }
+    let result = load_cached_key_from_keychain();
+    let _ = CACHED_KEYCHAIN_KEY.set(result.clone());
+    result
+}
+
+/// Actually query the OS keychain (triggers Touch ID on macOS).
+fn load_cached_key_from_keychain() -> Option<termfast_credential::DerivedKey> {
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ENTRY).ok()?;
     let encoded: String = match entry.get_password() {
         Ok(s) => s,
@@ -65,7 +82,10 @@ fn load_cached_key() -> Option<termfast_credential::DerivedKey> {
 }
 
 /// Store the derived key in the OS keychain for future auto-unlock.
+/// Also updates the in-memory cache so subsequent reads don't hit the keychain.
 fn save_cached_key(key: &termfast_credential::DerivedKey) {
+    // Update in-memory cache first.
+    let _ = CACHED_KEYCHAIN_KEY.set(Some(key.clone()));
     let encoded = base64_encode(key.as_bytes());
     match keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ENTRY) {
         Ok(entry) => {
