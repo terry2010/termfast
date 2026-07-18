@@ -1,15 +1,15 @@
 {
-  "version": "0.2.2",
+  "version": "0.2.3",
   "notes": "See the assets below to download this version.",
-  "pub_date": "2026-07-17T16:23:41.377Z",
+  "pub_date": "2026-07-18T13:07:27.356Z",
   "platforms": {
     "darwin-aarch64": {
       "signature": "",
-      "url": "https://gh-proxy.com/https://github.com/terry2010/termfast/releases/download/v0.2.2/TermFast_aarch64.app.tar.gz"
+      "url": "https://gh-proxy.com/https://github.com/terry2010/termfast/releases/download/v0.2.3/TermFast_aarch64.app.tar.gz"
     },
     "windows-x86_64": {
       "signature": "",
-      "url": "https://gh-proxy.com/https://github.com/terry2010/termfast/releases/download/v0.2.2/TermFast_0.2.2_x64-setup.exe"
+      "url": "https://gh-proxy.com/https://github.com/terry2010/termfast/releases/download/v0.2.3/TermFast_0.2.3_x64-setup.exe"
     }
   }
 }
