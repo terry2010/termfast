@@ -6,12 +6,16 @@
 
 pub mod memory;
 pub mod file;
+pub mod encrypted;
+pub mod encrypted_adapter;
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod keychain;
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use keychain::KeychainCredentialStore;
+pub use encrypted::{DerivedKey, EncryptedCredentialStore};
+pub use encrypted_adapter::EncryptedFileCredentialStore;
 pub use file::FileCredentialStore;
 pub use memory::InMemoryCredentialStore;
 

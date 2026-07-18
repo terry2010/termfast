@@ -32,7 +32,18 @@
     "clear": "Clear",
     "no_data": "No data",
     "testing": "Testing...",
-    "required": "is required"
+    "required": "is required",
+    "processing": "Processing..."
+  },
+  "hostkey": {
+    "mismatch_title": "Host Key Changed",
+    "mismatch_warning": "The host key of server \"{{name}}\" has changed. This could mean the server was reinstalled, or it could indicate a man-in-the-middle attack.",
+    "expected": "Expected fingerprint",
+    "actual": "Actual fingerprint",
+    "mismatch_hint": "If you are sure the server is safe (e.g. reinstalled), you can accept the new key and reconnect. Otherwise, cancel and verify the server.",
+    "accept_new_key": "Accept New Key",
+    "accepted": "New key accepted, please reconnect",
+    "accept_failed": "Failed to accept key"
   },
   "menu": {
     "servers": "Servers",
@@ -439,5 +450,35 @@
     "title": "Error",
     "something_wrong": "Something went wrong",
     "retry": "Retry"
+  },
+  "credentials": {
+    "setup_title": "Set Master Password",
+    "setup_description": "The master password encrypts your SSH credentials. Keep it safe — losing it requires resetting all credentials.",
+    "setup_button": "Set Master Password",
+    "unlock_title": "Unlock Credentials",
+    "unlock_description": "Enter your master password to unlock encrypted SSH credentials.",
+    "unlock_button": "Unlock",
+    "migration_title": "Encrypt & Migrate",
+    "migration_description": "An unencrypted credential file was detected. Set a master password to encrypt and migrate it. Credentials will be protected with AES-256 encryption.",
+    "migration_button": "Migrate & Encrypt",
+    "migration_skip": "Skip for now",
+    "migration_skipped": "Migration skipped. Credentials are unavailable — restart the app to migrate again.",
+    "master_password": "Master password",
+    "confirm_password": "Confirm password",
+    "password_mismatch": "Passwords do not match",
+    "password_too_short": "Password must be at least 4 characters",
+    "change_password_title": "Change Master Password",
+    "change_password_old": "Current master password",
+    "change_password_new": "New master password",
+    "change_password_confirm": "Confirm new password",
+    "change_password_button": "Change",
+    "reset_title": "Forgot Password",
+    "reset_description": "This will delete the encrypted credential file and the current master password. All saved SSH passwords and private keys will be permanently lost. Server list is unaffected, but you'll need to re-enter credentials for each server. If you have a backup, you can restore it via \"Import Encrypted Backup\".",
+    "reset_button": "Forgot Password",
+    "lock_button": "Lock Credentials",
+    "export_button": "Export Encrypted Backup",
+    "import_button": "Import Encrypted Backup",
+    "import_password_hint": "Enter the master password for this backup file. The current credentials will only be overwritten after the password is verified.",
+    "settings_section": "Credential Security"
   }
 }

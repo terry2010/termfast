@@ -32,7 +32,18 @@
     "clear": "清除",
     "no_data": "暂无数据",
     "testing": "测试中...",
-    "required": "为必填项"
+    "required": "为必填项",
+    "processing": "处理中..."
+  },
+  "hostkey": {
+    "mismatch_title": "主机密钥变更",
+    "mismatch_warning": "服务器「{{name}}」的主机密钥已变更。这可能是服务器重装了系统，也可能存在中间人攻击。",
+    "expected": "原密钥指纹",
+    "actual": "新密钥指纹",
+    "mismatch_hint": "如果您确认服务器安全（如重装了系统），可以接受新密钥并重新连接。否则请取消并检查服务器。",
+    "accept_new_key": "接受新密钥",
+    "accepted": "已接受新密钥，请重新连接",
+    "accept_failed": "接受密钥失败"
   },
   "menu": {
     "servers": "服务器",
@@ -442,5 +453,35 @@
     "title": "出错了",
     "something_wrong": "发生错误",
     "retry": "重试"
+  },
+  "credentials": {
+    "setup_title": "设置主密码",
+    "setup_description": "主密码用于加密你的 SSH 凭据。请妥善保管，丢失后需要重置所有凭据。",
+    "setup_button": "设置主密码",
+    "unlock_title": "解锁凭据",
+    "unlock_description": "请输入主密码以解锁已加密的 SSH 凭据。",
+    "unlock_button": "解锁",
+    "migration_title": "加密迁移",
+    "migration_description": "检测到未加密的凭据文件。建议设置主密码进行加密迁移。迁移后凭据将受到 AES-256 加密保护。",
+    "migration_button": "迁移并加密",
+    "migration_skip": "暂不迁移",
+    "migration_skipped": "已跳过迁移。凭据暂不可用，重启应用后可再次迁移。",
+    "master_password": "主密码",
+    "confirm_password": "确认主密码",
+    "password_mismatch": "两次输入的密码不一致",
+    "password_too_short": "密码至少 4 个字符",
+    "change_password_title": "修改主密码",
+    "change_password_old": "当前主密码",
+    "change_password_new": "新主密码",
+    "change_password_confirm": "确认新主密码",
+    "change_password_button": "修改",
+    "reset_title": "忘记密码",
+    "reset_description": "将删除加密凭据文件和当前主密码。所有已保存的 SSH 密码和私钥将永久丢失，无法恢复。服务器列表不受影响，但每个服务器需要重新输入密码或密钥才能连接。如果之前导出过加密备份，可以通过「导入加密备份」恢复。",
+    "reset_button": "忘记密码",
+    "lock_button": "锁定凭据",
+    "export_button": "导出加密备份",
+    "import_button": "导入加密备份",
+    "import_password_hint": "请输入该备份文件的主密码。密码验证通过后才会覆盖当前凭据。",
+    "settings_section": "凭据安全"
   }
 }

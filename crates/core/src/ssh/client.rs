@@ -31,6 +31,9 @@ pub struct SshClientConfig {
     pub initial_backoff_secs: u64,
     pub max_backoff_secs: u64,
     pub skip_hostkey_verify: bool,
+    /// Known host key fingerprint (SHA256:xxx) from a previous connection.
+    /// None on first connection (TOFU: trust on first use).
+    pub known_host_key: Option<String>,
     /// Callback invoked on hostkey mismatch (§17.2)
     pub hostkey_mismatch_callback: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
     /// Optional hook to protect the socket before `connect()` (Android VpnService).
@@ -48,6 +51,7 @@ impl Default for SshClientConfig {
             initial_backoff_secs: 1,
             max_backoff_secs: 30,
             skip_hostkey_verify: false,
+            known_host_key: None,
             hostkey_mismatch_callback: None,
             socket_protector: None,
         }
@@ -101,6 +105,9 @@ impl client::Handler for SshHandler {
                 let matches = fp == *k;
                 if !matches {
                     tracing::warn!("hostkey mismatch: expected {}, got {}", k, fp);
+                    // Store the actual key so the caller can retrieve it for
+                    // the error message / accept-new-key flow.
+                    *recorded.lock().await = Some(fp.clone());
                     // Triple notification (§17.2): system notification + tray red + log highlight
                     if let Some(ref cb) = mismatch_cb {
                         cb(k.clone(), fp.clone());
@@ -129,6 +136,11 @@ pub struct SshClientHandle {
     state: Mutex<ConnectionState>,
     /// Auth banner captured during the most recent authentication (RFC4252 §5.4).
     auth_banner: Arc<tokio::sync::Mutex<Option<String>>>,
+    /// Host key fingerprint recorded during the most recent connection attempt.
+    /// On first connection: the server's key (to be persisted).
+    /// On mismatch: the actual (new) key from the server.
+    /// On matching reconnect: None (no change needed).
+    recorded_host_key: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
 impl SshClientHandle {
@@ -139,6 +151,7 @@ impl SshClientHandle {
             handle: Mutex::new(None),
             state: Mutex::new(ConnectionState::Disconnected),
             auth_banner: Arc::new(tokio::sync::Mutex::new(None)),
+            recorded_host_key: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -160,6 +173,8 @@ impl SshClientHandle {
         self.set_state(ConnectionState::Connecting).await;
         // Clear any banner from a previous connection attempt
         *self.auth_banner.lock().await = None;
+        // Clear recorded host key from previous attempt
+        *self.recorded_host_key.lock().await = None;
 
         let config = self.config.lock().await;
         let russh_config = Arc::new(client::Config {
@@ -169,12 +184,17 @@ impl SshClientHandle {
         });
 
         let handler = SshHandler {
-            known_host_key: None,
+            known_host_key: config.known_host_key.clone(),
             skip_hostkey_verify: config.skip_hostkey_verify,
             host_key_recorded: Arc::new(tokio::sync::Mutex::new(None)),
             hostkey_mismatch_callback: config.hostkey_mismatch_callback.clone(),
             auth_banner: self.auth_banner.clone(),
         };
+        // Clone the recorded-key Arc so we can read it after connect_stream
+        // consumes the handler.
+        let recorded_key = handler.host_key_recorded.clone();
+        // Clone known_host_key for error handling after drop(config)
+        let known_host_key = config.known_host_key.clone();
 
         let addr = format!("{}:{}", config.host, config.port);
         let user = config.user.clone();
@@ -219,6 +239,22 @@ impl SshClientHandle {
             Ok(h) => h,
             Err(e) => {
                 self.set_state_sync(ConnectionState::Disconnected);
+                // Check if this was a host key mismatch (russh returns UnknownKey
+                // when check_server_key returns Ok(false)).
+                let is_hostkey_mismatch = matches!(&e, russh::Error::UnknownKey);
+                if is_hostkey_mismatch {
+                    let known = known_host_key.clone();
+                    let actual = recorded_key.lock().await.clone();
+                    let detail = match (&known, &actual) {
+                        (Some(k), Some(a)) => format!("expected: {}, got: {}", k, a),
+                        (Some(k), None) => format!("expected: {}, got: <unknown>", k),
+                        _ => "host key verification failed".to_string(),
+                    };
+                    return Err(Error::Ipc(IpcError::new(
+                        ErrorCode::HostKeyMismatch,
+                        detail,
+                    )));
+                }
                 let base_msg = format!("SSH connect to {} failed: {}", addr, e);
                 let enhanced = if pre_banner.is_empty() {
                     base_msg
@@ -248,8 +284,31 @@ impl SshClientHandle {
         }
 
         *self.handle.lock().await = Some(Arc::new(handle));
+        // Save the recorded host key (if any) so the caller can persist it.
+        if let Some(k) = recorded_key.lock().await.clone() {
+            *self.recorded_host_key.lock().await = Some(k);
+        }
         self.set_state(ConnectionState::Connected).await;
         Ok(())
+    }
+
+    /// Get the host key fingerprint recorded during the last connection attempt.
+    /// Returns Some(fp) if this was a first connection (new key to persist) or
+    /// a mismatch (actual key from server). Returns None if the key matched.
+    pub async fn get_recorded_host_key(&self) -> Option<String> {
+        self.recorded_host_key.lock().await.clone()
+    }
+
+    /// Get the actual host key from a failed connection (mismatch case).
+    /// Same as get_recorded_host_key but named for clarity in error handling.
+    pub async fn get_mismatched_host_key(&self) -> Option<String> {
+        self.recorded_host_key.lock().await.clone()
+    }
+
+    /// Accept a new host key (after user confirmation) by updating the known key.
+    pub async fn accept_host_key(&self, fingerprint: String) {
+        self.config.lock().await.known_host_key = Some(fingerprint);
+        *self.recorded_host_key.lock().await = None;
     }
 
     /// Connect with reconnection logic (exponential backoff)
@@ -427,6 +486,62 @@ mod tests {
         let client = SshClientHandle::new(SshClientConfig::default());
         client.disconnect().await.unwrap();
         assert_eq!(client.state().await, ConnectionState::Disconnected);
+    }
+
+    /// Verify the detail string format produced on HostKeyMismatch.
+    /// The Android UI parses this with `Regex("got:\\s*(SHA256:\\S+)")`,
+    /// so the format must remain stable.
+    #[test]
+    fn test_hostkey_mismatch_detail_format() {
+        // Mirror the formatting logic in connect() (client.rs:248-252).
+        let cases: Vec<(Option<&str>, Option<&str>, &str)> = vec![
+            (
+                Some("SHA256:aaa"),
+                Some("SHA256:bbb"),
+                "expected: SHA256:aaa, got: SHA256:bbb",
+            ),
+            (
+                Some("SHA256:aaa"),
+                None,
+                "expected: SHA256:aaa, got: <unknown>",
+            ),
+            (None, Some("SHA256:bbb"), "host key verification failed"),
+            (None, None, "host key verification failed"),
+        ];
+        for (known, actual, expected) in cases {
+            let detail = match (known, actual) {
+                (Some(k), Some(a)) => format!("expected: {}, got: {}", k, a),
+                (Some(k), None) => format!("expected: {}, got: <unknown>", k),
+                _ => "host key verification failed".to_string(),
+            };
+            assert_eq!(detail, expected);
+
+            // Verify the Android-side regex contract: only the
+            // (Some, Some) case yields a usable SHA256 fingerprint.
+            // Android uses `Regex("got:\\s*(SHA256:\\S+)").find(raw)?.groupValues[1]`,
+            // i.e. capture group 1, so we use `captures()` here.
+            let re = regex::Regex::new(r"got:\s*(SHA256:\S+)").unwrap();
+            let extracted = re
+                .captures(&detail)
+                .map(|c| c.get(1).unwrap().as_str().to_string());
+            if let (Some(k), Some(a)) = (known, actual) {
+                assert!(k.starts_with("SHA256:"), "known must be SHA256");
+                assert!(a.starts_with("SHA256:"), "actual must be SHA256");
+                assert_eq!(
+                    extracted.as_deref(),
+                    Some(a),
+                    "regex should extract actual fingerprint"
+                );
+            } else if known.is_some() {
+                // (Some, None): "got: <unknown>" — regex must NOT match.
+                assert_eq!(
+                    extracted, None,
+                    "regex must not match when actual is <unknown>"
+                );
+            } else {
+                assert_eq!(extracted, None, "regex must not match fallback detail");
+            }
+        }
     }
 }
 

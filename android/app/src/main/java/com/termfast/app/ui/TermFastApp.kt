@@ -1,6 +1,7 @@
 package com.termfast.app.ui
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Article
@@ -13,6 +14,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -36,6 +39,8 @@ fun TermFastApp() {
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val current = backStack?.destination
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     Scaffold(
         bottomBar = {
@@ -62,7 +67,15 @@ fun TermFastApp() {
         NavHost(
             navController = navController,
             startDestination = Screen.Servers.route,
-            modifier = Modifier.padding(inner)
+            modifier = Modifier
+                .padding(inner)
+                .clickable(
+                    interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource(),
+                    indication = null,
+                ) {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
         ) {
             composable(Screen.Servers.route) { ServerListScreen(navController) }
             composable(Screen.Logs.route) { LogScreen() }

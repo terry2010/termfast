@@ -51,6 +51,9 @@ pub struct ServerInstance {
     pub channel_opener: Arc<SshChannelOpener>,
     pub status: Mutex<ServerStatus>,
     pub current_ip: Arc<Mutex<Option<String>>>,
+    /// Host key fingerprint — kept in sync with config.ssh.host_key_fingerprint.
+    /// Separate Mutex because `config` is not mutable through Arc.
+    pub host_key_fingerprint: Arc<Mutex<Option<String>>>,
     /// Trigger templates (shared, for type lookup during fire_event)
     pub trigger_templates: Arc<Mutex<Vec<TriggerTemplate>>>,
     /// Runtime triggers (kept in sync with config, so fire_on_connect sees latest)
@@ -100,18 +103,23 @@ impl ServerInstance {
             initial_backoff_secs: config.reconnect.initial_backoff_secs,
             max_backoff_secs: config.reconnect.max_backoff_secs,
             skip_hostkey_verify: config.ssh.skip_hostkey_verify,
+            known_host_key: config.ssh.host_key_fingerprint.clone(),
             hostkey_mismatch_callback: None,
             socket_protector: None,
         };
+
+        let host_key_fp = config.ssh.host_key_fingerprint.clone();
+        let triggers = config.triggers.clone();
 
         Self {
             ssh_client: Arc::new(SshClientHandle::new(ssh_config)),
             trigger_engine: Arc::new(TriggerEngine::new()),
             channel_opener: Arc::new(SshChannelOpener::empty()),
-            triggers: Arc::new(Mutex::new(config.triggers.clone())),
+            triggers: Arc::new(Mutex::new(triggers)),
             config,
             status: Mutex::new(ServerStatus::Disconnected),
             current_ip: Arc::new(Mutex::new(None)),
+            host_key_fingerprint: Arc::new(Mutex::new(host_key_fp)),
             trigger_templates: Arc::new(Mutex::new(Vec::new())),
             proxy_tasks: Mutex::new(Vec::new()),
             ip_check_task: Mutex::new(None),
@@ -176,6 +184,24 @@ impl ServerInstance {
         self.ssh_client.set_hostkey_mismatch_callback(cb).await;
     }
 
+    /// Get the actual host key fingerprint from a failed connection (mismatch).
+    /// Returns None if the last failure was not a host key mismatch.
+    pub async fn get_mismatched_host_key(&self) -> Option<String> {
+        self.ssh_client.get_mismatched_host_key().await
+    }
+
+    /// Accept a new host key after user confirmation (e.g. server was reinstalled).
+    /// Updates the in-memory state. The caller must persist the config to disk.
+    pub async fn accept_host_key(&self, fingerprint: String) {
+        self.ssh_client.accept_host_key(fingerprint.clone()).await;
+        *self.host_key_fingerprint.lock().await = Some(fingerprint);
+    }
+
+    /// Get the current host key fingerprint (from first connection or accepted key).
+    pub async fn get_host_key_fingerprint(&self) -> Option<String> {
+        self.host_key_fingerprint.lock().await.clone()
+    }
+
     /// Update trigger templates (called when config changes)
     pub async fn set_trigger_templates(&self, templates: Vec<TriggerTemplate>) {
         *self.trigger_templates.lock().await = templates;
@@ -238,6 +264,13 @@ impl ServerInstance {
                             );
                         }
                     }
+                }
+                // Persist the host key fingerprint if this was a first connection
+                // (TOFU). The caller (daemon/FFI) is responsible for saving the
+                // updated config to disk.
+                if let Some(fp) = self.ssh_client.get_recorded_host_key().await {
+                    tracing::info!("persisting host key fingerprint for {}: {}", self.config.id, fp);
+                    *self.host_key_fingerprint.lock().await = Some(fp);
                 }
                 *self.status.lock().await = ServerStatus::Connected;
                 // Save auth for auto-reconnect
@@ -906,6 +939,7 @@ mod tests {
                 key_auto_generated: false,
                 connection_mode: "single".into(),
                 skip_hostkey_verify: false,
+                host_key_fingerprint: None,
             },
             proxy: ProxyConfig {
                 enabled: false,
@@ -923,6 +957,7 @@ mod tests {
             last_known_ip: None,
             triggers: Vec::new(),
             suppress_firewall_badge: false,
+            test_url: "https://google.com".into(),
         }
     }
 

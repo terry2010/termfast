@@ -43,6 +43,9 @@ object RustBridge {
     external fun nativeStartVpn(id: String, tunFd: Int, mtu: Int, socks5Port: Int, dnsStrategy: String, ipv6Enabled: Boolean): Boolean
     external fun nativeStopVpn(id: String): Boolean
     external fun nativeGetLastError(): String
+    external fun nativeGetLastErrorCode(): String
+    external fun nativeGetLastErrorRaw(): String
+    external fun nativeAcceptHostKey(id: String, fingerprint: String): Boolean
 
     // --- Triggers ---
     external fun nativeListTriggers(serverId: String): String
@@ -64,6 +67,20 @@ object RustBridge {
     external fun nativeSaveCredential(serverId: String, type: String, value: String): Boolean
     external fun nativeLoadCredential(serverId: String, type: String): String?
     external fun nativeDeleteCredential(serverId: String, type: String): Boolean
+
+    // --- Credential encryption management ---
+    external fun nativeCredentialStatus(): String
+    external fun nativeCredentialInitialize(masterPassword: String): Boolean
+    external fun nativeCredentialUnlock(masterPassword: String): Boolean
+    external fun nativeCredentialUnlockWithKey(keyBase64: String): Boolean
+    external fun nativeCredentialGetKey(): String?
+    external fun nativeCredentialLock()
+    external fun nativeCredentialMigrate(masterPassword: String): Boolean
+    external fun nativeCredentialChangePassword(oldPassword: String, newPassword: String): Boolean
+    external fun nativeCredentialReset(): Boolean
+    external fun nativeCredentialExport(destPath: String): Boolean
+    external fun nativeCredentialImport(srcPath: String, masterPassword: String): Boolean
+    external fun nativeCredentialIsUnlocked(): Boolean
 
     // --- SSH Terminal (PTY) ---
     external fun nativeOpenTerminal(serverId: String, sessionId: String, cols: Int, rows: Int): Boolean

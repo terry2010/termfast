@@ -26,6 +26,7 @@ import { TemplateLibrary } from "@/components/shared/TemplateLibrary";
 import { AddServerDialog } from "@/components/shared/AddServerDialog";
 import { LogViewer } from "@/components/shared/LogViewer";
 import { UndoToast } from "@/components/shared/UndoToast";
+import { HostKeyMismatchDialog } from "@/components/shared/HostKeyMismatchDialog";
 import { ConfirmDialog, type DangerLevel } from "@/components/ui/ConfirmDialog";
 import { ContextMenuProvider } from "@/components/ui/ContextMenu";
 import { Toaster, toast } from "sonner";
@@ -327,78 +328,81 @@ export default function App() {
 
   return (
     <ContextMenuProvider>
-      <div className="flex flex-col h-screen bg-white dark:bg-[#121212] text-gray-900 dark:text-gray-100">
-        <TitleBar />
-        <PendingEventsBanner />
-        <div className="flex flex-1 overflow-hidden">
-          <ServerList
-            onAddServer={() => setShowAddServer(true)}
-            onOpenSettings={() => setShowSettings(true)}
-            onOpenTemplates={() => setShowTemplates(true)}
-            collapsed={sidebarCollapsed}
-            onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
-          />
-          <div className="flex-1 overflow-hidden bg-white dark:bg-[#1E1E1E]">
-            <ServerDetail />
+        <div className="flex flex-col h-screen bg-white dark:bg-[#121212] text-gray-900 dark:text-gray-100">
+          <TitleBar />
+          <PendingEventsBanner />
+          <div className="flex flex-1 overflow-hidden">
+            <ServerList
+              onAddServer={() => setShowAddServer(true)}
+              onOpenSettings={() => setShowSettings(true)}
+              onOpenTemplates={() => setShowTemplates(true)}
+              collapsed={sidebarCollapsed}
+              onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+            />
+            <div className="flex-1 overflow-hidden bg-white dark:bg-[#1E1E1E]">
+              <ServerDetail />
+            </div>
           </div>
+          <LogPanel onExpand={() => setShowLogViewer(true)} />
+
+          {/* Modals */}
+          {showOnboarding && (
+            <Onboarding onComplete={() => setShowOnboarding(false)} />
+          )}
+          {showSettings && (
+            <SettingsPage onClose={() => setShowSettings(false)} />
+          )}
+          {showTemplates && (
+            <TemplateLibrary onClose={() => setShowTemplates(false)} />
+          )}
+          {showAddServer && (
+            <AddServerDialog
+              onAdd={() => setShowAddServer(false)}
+              onCancel={() => setShowAddServer(false)}
+            />
+          )}
+          {editServer && (
+            <AddServerDialog
+              editServer={editServer}
+              onAdd={() => {
+                setEditServer(null);
+                // Reload server list
+                console.log("[edit] onAdd callback, reloading servers");
+                ipcInvoke<{ servers: any[] }>("ipc_list_servers")
+                  .then((data) => {
+                    if (data?.servers)
+                      useServerStore.setState({ servers: data.servers });
+                  })
+                  .catch(() => {});
+              }}
+              onCancel={() => setEditServer(null)}
+            />
+          )}
+          {showLogViewer && (
+            <LogViewer onClose={() => setShowLogViewer(false)} />
+          )}
+          <UndoToast />
+          <HostKeyMismatchDialog />
+
+          {/* Confirm dialog for server deletion (C3 fix) */}
+          {confirmDelete && (
+            <ConfirmDialog
+              level="high"
+              title={t("server.delete_title")}
+              message={t("server.delete_message", {
+                name: confirmDelete.serverName,
+              })}
+              confirmName={confirmDelete.serverName}
+              actions={[
+                t("server.delete_action_disconnect"),
+                t("server.delete_action_triggers"),
+                t("server.delete_action_config"),
+              ]}
+              onConfirm={handleConfirmDelete}
+              onCancel={() => setConfirmDelete(null)}
+            />
+          )}
         </div>
-        <LogPanel onExpand={() => setShowLogViewer(true)} />
-
-        {/* Modals */}
-        {showOnboarding && (
-          <Onboarding onComplete={() => setShowOnboarding(false)} />
-        )}
-        {showSettings && (
-          <SettingsPage onClose={() => setShowSettings(false)} />
-        )}
-        {showTemplates && (
-          <TemplateLibrary onClose={() => setShowTemplates(false)} />
-        )}
-        {showAddServer && (
-          <AddServerDialog
-            onAdd={() => setShowAddServer(false)}
-            onCancel={() => setShowAddServer(false)}
-          />
-        )}
-        {editServer && (
-          <AddServerDialog
-            editServer={editServer}
-            onAdd={() => {
-              setEditServer(null);
-              // Reload server list
-              console.log("[edit] onAdd callback, reloading servers");
-              ipcInvoke<{ servers: any[] }>("ipc_list_servers")
-                .then((data) => {
-                  if (data?.servers)
-                    useServerStore.setState({ servers: data.servers });
-                })
-                .catch(() => {});
-            }}
-            onCancel={() => setEditServer(null)}
-          />
-        )}
-        {showLogViewer && <LogViewer onClose={() => setShowLogViewer(false)} />}
-        <UndoToast />
-
-        {/* Confirm dialog for server deletion (C3 fix) */}
-        {confirmDelete && (
-          <ConfirmDialog
-            level="high"
-            title={t("server.delete_title")}
-            message={t("server.delete_message", {
-              name: confirmDelete.serverName,
-            })}
-            confirmName={confirmDelete.serverName}
-            actions={[
-              t("server.delete_action_disconnect"),
-              t("server.delete_action_triggers"),
-              t("server.delete_action_config"),
-            ]}
-            onConfirm={handleConfirmDelete}
-            onCancel={() => setConfirmDelete(null)}
-          />
-        )}
-      </div>
       <Toaster position="top-right" richColors closeButton />
     </ContextMenuProvider>
   );

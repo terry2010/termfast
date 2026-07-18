@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.termfast.app.RustBridge
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.ServerConfig
 import com.termfast.app.data.SettingsRepository
@@ -52,6 +53,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
     var vpnStarting by remember { mutableStateOf(false) }
     var vpnFailed by remember { mutableStateOf(false) }
     var vpnError by remember { mutableStateOf<String?>(null) }
+    var hostKeyMismatch by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(0) }
     var serverConfig by remember { mutableStateOf<ServerConfig?>(null) }
 
@@ -63,6 +65,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
         vpnStarting = true
         vpnFailed = false
         vpnError = null
+        hostKeyMismatch = null
     }
 
     val vpnLauncher = rememberLauncherForActivityResult(
@@ -112,11 +115,13 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
             val starting = SshVpnService.isStarting(context)
             val failed = SshVpnService.isFailedFor(context, serverId)
             val err = if (failed) SshVpnService.lastError else null
-            if (running != vpnRunning || starting != vpnStarting || failed != vpnFailed || err != vpnError) {
+            val mismatch = if (failed) SshVpnService.mismatchedHostKey else null
+            if (running != vpnRunning || starting != vpnStarting || failed != vpnFailed || err != vpnError || mismatch != hostKeyMismatch) {
                 vpnRunning = running
                 vpnStarting = starting
                 vpnFailed = failed
                 vpnError = err
+                hostKeyMismatch = mismatch
             }
         }
     }
@@ -133,6 +138,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                         val starting = SshVpnService.isStarting(context)
                         val failed = SshVpnService.isFailedFor(context, serverId)
                         val err = if (failed) SshVpnService.lastError else null
+                        val mismatch = if (failed) SshVpnService.mismatchedHostKey else null
                         withContext(Dispatchers.Main) {
                             status = s.status
                             exitIp = s.exit_ip
@@ -140,6 +146,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                             vpnStarting = starting
                             vpnFailed = failed
                             vpnError = err
+                            hostKeyMismatch = mismatch
                             proxyRunning = pr
                         }
                     }
@@ -151,6 +158,54 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
     }
 
     val serverName = serverConfig?.name?.ifBlank { serverConfig?.ssh?.host } ?: "服务器"
+
+    // Host key mismatch dialog state
+    var showHostKeyDialog by remember { mutableStateOf(false) }
+    var acceptingHostKey by remember { mutableStateOf(false) }
+    var acceptError by remember { mutableStateOf<String?>(null) }
+
+    // Show dialog whenever a mismatch is detected
+    LaunchedEffect(hostKeyMismatch) {
+        showHostKeyDialog = hostKeyMismatch != null
+        if (hostKeyMismatch != null) acceptError = null
+    }
+
+    fun acceptHostKey() {
+        val fp = hostKeyMismatch ?: return
+        acceptingHostKey = true
+        acceptError = null
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                RustBridge.ensureLoaded()
+                RustBridge.nativeAcceptHostKey(serverId, fp)
+            }
+            withContext(Dispatchers.Main) {
+                acceptingHostKey = false
+                if (ok) {
+                    showHostKeyDialog = false
+                    // Clear mismatch state and retry connection
+                    SshVpnService.clearError()
+                    hostKeyMismatch = null
+                    vpnFailed = false
+                    vpnError = null
+                    doStartVpn()
+                } else {
+                    // nativeAcceptHostKey failed (e.g. server instance not found);
+                    // keep dialog open so user can retry or reject instead of looping.
+                    acceptError = "接受主机密钥失败，请重试或拒绝。"
+                }
+            }
+        }
+    }
+
+    fun rejectHostKey() {
+        showHostKeyDialog = false
+        SshVpnService.clearError()
+        hostKeyMismatch = null
+        vpnFailed = false
+        vpnError = null
+        acceptError = null
+    }
 
     Scaffold(
         topBar = {
@@ -229,6 +284,18 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                     }
                 )
             }
+        }
+
+        // Host key mismatch dialog
+        if (showHostKeyDialog && hostKeyMismatch != null) {
+            HostKeyMismatchDialog(
+                serverName = serverName,
+                actualFingerprint = hostKeyMismatch!!,
+                accepting = acceptingHostKey,
+                acceptError = acceptError,
+                onAccept = { acceptHostKey() },
+                onReject = { rejectHostKey() },
+            )
         }
     }
 }
@@ -540,4 +607,77 @@ private fun ProxyTab(
             }
         }
     }
+}
+
+@Composable
+private fun HostKeyMismatchDialog(
+    serverName: String,
+    actualFingerprint: String,
+    accepting: Boolean,
+    acceptError: String? = null,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { if (!accepting) onReject() },
+        icon = { Icon(Icons.Filled.Warning, contentDescription = null) },
+        title = { Text("主机密钥不匹配") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "服务器「$serverName」的主机密钥与之前记录的不一致，可能存在中间人攻击风险。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "新密钥指纹：",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    actualFingerprint,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "仅当你确认此变更可信（如服务器重装、IP 变更）时才接受新密钥。否则请拒绝并检查服务器。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (acceptError != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        acceptError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onAccept,
+                enabled = !accepting,
+            ) {
+                if (accepting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text("接受并重连")
+                }
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onReject,
+                enabled = !accepting,
+            ) {
+                Text("拒绝")
+            }
+        },
+    )
 }

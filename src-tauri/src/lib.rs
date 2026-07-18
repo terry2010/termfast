@@ -5,7 +5,9 @@
 //! events are broadcast to both CLI and GUI clients.
 
 mod daemon_embed;
+mod credential_manager;
 
+use credential_manager::{credential_file_path, CredentialState};
 use daemon_embed::EmbeddedDaemon;
 use std::sync::Arc;
 use tauri::Manager;
@@ -118,10 +120,23 @@ pub fn run() {
             // Setup system tray icon (FP-6.4, FP-6.5)
             setup_tray(app)?;
 
-            // Start embedded daemon in background
+            // Create the encrypted credential store early so both the daemon
+            // and IPC commands can share it. The store starts locked; the
+            // frontend will call ipc_try_cached_unlock / ipc_unlock_credentials
+            // before any credential access.
+            let cred_path = credential_file_path();
+            tracing::info!("credential file path: {}", cred_path.display());
+            let cred_store = Arc::new(
+                termfast_credential::EncryptedFileCredentialStore::open(cred_path),
+            );
+            app.manage(CredentialState {
+                store: cred_store.clone(),
+            });
+
+            // Start embedded daemon in background, passing the shared credential store.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                match EmbeddedDaemon::start().await {
+                match EmbeddedDaemon::start_with_credential_store(cred_store).await {
                     Ok(daemon) => {
                         // Set up event forwarder: daemon events → Tauri emit to frontend (FP-6.2)
                         let handle_for_forwarder = handle.clone();
@@ -152,6 +167,7 @@ pub fn run() {
             ipc_update_general_config,
             ipc_list_servers,
             ipc_connect_server,
+            ipc_accept_host_key,
             ipc_disconnect_server,
             ipc_add_server,
             ipc_remove_server,
@@ -206,6 +222,17 @@ pub fn run() {
             ipc_terminal_resize,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
             ipc_quit_app,
+            // Credential encryption management
+            credential_manager::ipc_credential_status,
+            credential_manager::ipc_initialize_credentials,
+            credential_manager::ipc_unlock_credentials,
+            credential_manager::ipc_try_cached_unlock,
+            credential_manager::ipc_lock_credentials,
+            credential_manager::ipc_migrate_credentials,
+            credential_manager::ipc_change_credential_password,
+            credential_manager::ipc_reset_credentials,
+            credential_manager::ipc_export_credentials,
+            credential_manager::ipc_import_credentials,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -326,6 +353,20 @@ async fn ipc_connect_server(
         &state,
         termfast_daemon::proto::Action::ConnectServer,
         serde_json::json!({ "server_id": server_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_accept_host_key(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    fingerprint: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::AcceptHostKey,
+        serde_json::json!({ "server_id": server_id, "fingerprint": fingerprint }),
     )
     .await
 }
@@ -852,6 +893,7 @@ async fn ipc_test_connection(
         initial_backoff_secs: 1,
         max_backoff_secs: 5,
         skip_hostkey_verify: true,
+        known_host_key: None,
         hostkey_mismatch_callback: None,
         socket_protector: None,
     };

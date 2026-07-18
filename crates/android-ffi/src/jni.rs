@@ -33,6 +33,20 @@ pub fn last_connect_error() -> &'static Mutex<String> {
     LAST_CONNECT_ERROR.get_or_init(|| Mutex::new(String::new()))
 }
 
+/// Last connection error code (e.g. "AuthFailed", "HostKeyMismatch").
+static LAST_ERROR_CODE: OnceLock<Mutex<String>> = OnceLock::new();
+
+pub fn last_error_code() -> &'static Mutex<String> {
+    LAST_ERROR_CODE.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Last connection error raw detail (before formatting).
+static LAST_ERROR_RAW: OnceLock<Mutex<String>> = OnceLock::new();
+
+pub fn last_error_raw() -> &'static Mutex<String> {
+    LAST_ERROR_RAW.get_or_init(|| Mutex::new(String::new()))
+}
+
 /// Format an error code + detail into a user-friendly Chinese message.
 /// Mirrors the Kotlin ErrorMessages.format() logic.
 fn format_error_message(code: &str, detail: &str) -> String {
@@ -62,15 +76,15 @@ fn format_error_message(code: &str, detail: &str) -> String {
                 "用户名或密码错误，请重新输入".to_string()
             }
         }
-        "HostKeyMismatch" => {
-            "服务器主机密钥已变更，可能服务器重装了系统，请确认安全后重新连接".to_string()
-        }
         "CredentialNotFound" => {
             if d.contains("key file") {
                 "密钥文件不存在，请检查密钥路径".to_string()
             } else {
                 "未找到保存的凭据，请重新输入密码".to_string()
             }
+        }
+        "HostKeyMismatch" => {
+            "服务器主机密钥已变更，可能服务器重装了系统或存在中间人攻击，请确认安全后重新连接".to_string()
         }
         _ => format!("连接失败：{}", detail),
     }
@@ -375,6 +389,9 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
         let passphrase = store.load(&termfast_credential::make_key(&id_str, "key_passphrase")).ok();
         if key_content.is_empty() {
             tracing::error!("No key credential for {}", id_str);
+            *last_error_code().lock().unwrap() = "MissingCredential".to_string();
+            *last_error_raw().lock().unwrap() = "未保存密钥，请先在服务器设置中输入密钥".to_string();
+            *last_connect_error().lock().unwrap() = "未保存密钥，请先在服务器设置中输入密钥".to_string();
             return bool_to_jbool(false);
         }
         let key_dir = std::path::PathBuf::from(&data_dir).join("keys").join(&id_str);
@@ -387,6 +404,13 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
         }
     } else {
         let password = store.load(&termfast_credential::make_key(&id_str, "password")).unwrap_or_default();
+        if password.is_empty() {
+            tracing::error!("No password credential for {}", id_str);
+            *last_error_code().lock().unwrap() = "MissingCredential".to_string();
+            *last_error_raw().lock().unwrap() = "未保存密码，请先在服务器设置中输入密码".to_string();
+            *last_connect_error().lock().unwrap() = "未保存密码，请先在服务器设置中输入密码".to_string();
+            return bool_to_jbool(false);
+        }
         tracing::info!("nativeConnectServer: password loaded, len={}", password.len());
         AuthMethod::Password { password }
     };
@@ -397,6 +421,23 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
         match instance.connect(&auth).await {
             Ok(()) => {
                 instance.start_connection_monitor().await;
+                // Persist host key fingerprint if this was a first connection (TOFU).
+                if let Some(fp) = instance.get_host_key_fingerprint().await {
+                    tracing::info!("nativeConnectServer: persisting host key fingerprint: {}", fp);
+                    let mgr = {
+                        let st = state().lock().unwrap();
+                        st.config_manager.clone()
+                    };
+                    if let Some(mgr) = mgr {
+                        let _ = mgr.modify(|config| {
+                            if let Some(srv) = config.servers.iter_mut().find(|s| s.id == id_str) {
+                                if srv.ssh.host_key_fingerprint.is_none() {
+                                    srv.ssh.host_key_fingerprint = Some(fp);
+                                }
+                            }
+                        }).await;
+                    }
+                }
                 log_to_kotlin("info", "SSH connected successfully");
                 Ok(())
             }
@@ -419,6 +460,8 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
                 // nativeConnectServer call.
                 let user_msg = format_error_message(&code, &detail);
                 *last_connect_error().lock().unwrap() = user_msg;
+                *last_error_code().lock().unwrap() = code.clone();
+                *last_error_raw().lock().unwrap() = detail.clone();
                 // Emit status_changed event with error details so the UI
                 // can show a user-friendly localized message.
                 let event = crate::event::RustEvent::ServerStatusChanged {
@@ -626,6 +669,69 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetLastError<'a>
     env.new_string(&msg).unwrap_or_else(|_| env.new_string("").unwrap())
 }
 
+/// Returns the last connection error code (e.g. "AuthFailed", "HostKeyMismatch"),
+/// or empty string if no error.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetLastErrorCode<'a>(
+    mut env: JNIEnv<'a>,
+    _class: JClass<'a>,
+) -> JString<'a> {
+    let code = last_error_code().lock().unwrap().clone();
+    env.new_string(&code).unwrap_or_else(|_| env.new_string("").unwrap())
+}
+
+/// Returns the last connection error raw detail (before formatting),
+/// or empty string if no error. Used to extract fingerprints for HostKeyMismatch.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetLastErrorRaw<'a>(
+    mut env: JNIEnv<'a>,
+    _class: JClass<'a>,
+) -> JString<'a> {
+    let raw = last_error_raw().lock().unwrap().clone();
+    env.new_string(&raw).unwrap_or_else(|_| env.new_string("").unwrap())
+}
+
+/// Accept a new host key after user confirmation (server was reinstalled, etc.)
+/// Updates the SSH client's known key and persists the fingerprint to config.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeAcceptHostKey(
+    mut _env: JNIEnv,
+    _class: JClass,
+    id: JString,
+    fingerprint: JString,
+) -> jboolean {
+    let id_str = jstring_to_string(&mut _env, &id);
+    let fp_str = jstring_to_string(&mut _env, &fingerprint);
+    let instance = {
+        let st = state().lock().unwrap();
+        st.servers.get(&id_str).cloned()
+    };
+    if let Some(instance) = instance {
+        let rt = runtime();
+        rt.block_on(async {
+            instance.accept_host_key(fp_str.clone()).await;
+            // Persist to config
+            let mgr = {
+                let st = state().lock().unwrap();
+                st.config_manager.clone()
+            };
+            if let Some(mgr) = mgr {
+                let _ = mgr.modify(|config| {
+                    if let Some(srv) = config.servers.iter_mut().find(|s| s.id == id_str) {
+                        srv.ssh.host_key_fingerprint = Some(fp_str);
+                    }
+                }).await;
+            }
+        });
+        bool_to_jbool(true)
+    } else {
+        bool_to_jbool(false)
+    }
+}
+
 // === Event subscription ===
 
 #[cfg(target_os = "android")]
@@ -756,6 +862,249 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeDeleteCredential
     let store = crate::credential::android_credential_store();
     let key = termfast_credential::make_key(&sid, &ct);
     bool_to_jbool(store.delete(&key).is_ok())
+}
+
+// === Credential encryption management ===
+
+/// Returns one of: "needs_setup", "needs_migration", "locked", "unlocked"
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialStatus(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let store = crate::credential::android_credential_store();
+    let status = if store.is_pending() {
+        "pending"
+    } else if store.is_legacy_plaintext() {
+        "needs_migration"
+    } else if store.is_unlocked() {
+        "unlocked"
+    } else {
+        "locked"
+    };
+    string_to_jstring(&mut env, status).into_raw()
+}
+
+/// Initialize a new encrypted credential store with the given master password.
+/// Returns true on success, false on error.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialInitialize(
+    mut env: JNIEnv,
+    _class: JClass,
+    master_password: JString,
+) -> jboolean {
+    let pw = jstring_to_string(&mut env, &master_password);
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.initialize(&pw).is_ok())
+}
+
+/// Unlock the credential store with a master password.
+/// Returns true on success, false on error (wrong password).
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialUnlock(
+    mut env: JNIEnv,
+    _class: JClass,
+    master_password: JString,
+) -> jboolean {
+    let pw = jstring_to_string(&mut env, &master_password);
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.unlock(&pw).is_ok())
+}
+
+/// Unlock using a cached derived key (raw 32 bytes, base64-encoded by Kotlin).
+/// Returns true on success, false on error.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialUnlockWithKey(
+    mut env: JNIEnv,
+    _class: JClass,
+    key_base64: JString,
+) -> jboolean {
+    let encoded = jstring_to_string(&mut env, &key_base64);
+    let bytes = match base64_decode(&encoded) {
+        Some(b) if b.len() == 32 => b,
+        _ => return false as jboolean,
+    };
+    let key = termfast_credential::DerivedKey::from_bytes(&bytes);
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.unlock_with_key(key).is_ok())
+}
+
+/// Get the derived key (base64-encoded 32 bytes) for caching in Android Keystore.
+/// Returns null if the store is locked.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialGetKey(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let store = crate::credential::android_credential_store();
+    match store.derived_key() {
+        Some(key) => {
+            let encoded = base64_encode(key.as_bytes());
+            string_to_jstring(&mut env, &encoded).into_raw()
+        }
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Lock the credential store (clear cached key and map from memory).
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialLock(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    let store = crate::credential::android_credential_store();
+    store.lock();
+}
+
+/// Migrate a legacy plaintext credential file to encrypted format.
+/// Returns true on success, false on error.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialMigrate(
+    mut env: JNIEnv,
+    _class: JClass,
+    master_password: JString,
+) -> jboolean {
+    let pw = jstring_to_string(&mut env, &master_password);
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.migrate(&pw).is_ok())
+}
+
+/// Change the master password. Returns true on success, false on error.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialChangePassword(
+    mut env: JNIEnv,
+    _class: JClass,
+    old_password: JString,
+    new_password: JString,
+) -> jboolean {
+    let old = jstring_to_string(&mut env, &old_password);
+    let new = jstring_to_string(&mut env, &new_password);
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.change_password(&old, &new).is_ok())
+}
+
+/// Reset (delete) the encrypted credential file and lock.
+/// Returns true on success, false on error.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialReset(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.reset().is_ok())
+}
+
+/// Export the encrypted credential file to a destination path.
+/// Returns true on success, false on error.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialExport(
+    mut env: JNIEnv,
+    _class: JClass,
+    dest_path: JString,
+) -> jboolean {
+    let dest = jstring_to_string(&mut env, &dest_path);
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.export_to(std::path::Path::new(&dest)).is_ok())
+}
+
+/// Import an encrypted credential file from a source path.
+/// Verifies the master password before overwriting. Returns true on success.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialImport(
+    mut env: JNIEnv,
+    _class: JClass,
+    src_path: JString,
+    master_password: JString,
+) -> jboolean {
+    let src = jstring_to_string(&mut env, &src_path);
+    let pw = jstring_to_string(&mut env, &master_password);
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.import_from(std::path::Path::new(&src), &pw).is_ok())
+}
+
+/// Check if the credential store is currently unlocked.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialIsUnlocked(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    let store = crate::credential::android_credential_store();
+    bool_to_jbool(store.is_unlocked())
+}
+
+// --- base64 helpers (no external dep on Android) ---
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(bytes.len() * 4 / 3 + 4);
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
+        s.push(TABLE[((n >> 18) & 63) as usize] as char);
+        s.push(TABLE[((n >> 12) & 63) as usize] as char);
+        s.push(TABLE[((n >> 6) & 63) as usize] as char);
+        s.push(TABLE[(n & 63) as usize] as char);
+        i += 3;
+    }
+    let rem = bytes.len() - i;
+    if rem == 1 {
+        let n = (bytes[i] as u32) << 16;
+        s.push(TABLE[((n >> 18) & 63) as usize] as char);
+        s.push(TABLE[((n >> 12) & 63) as usize] as char);
+        s.push_str("==");
+    } else if rem == 2 {
+        let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8);
+        s.push(TABLE[((n >> 18) & 63) as usize] as char);
+        s.push(TABLE[((n >> 12) & 63) as usize] as char);
+        s.push(TABLE[((n >> 6) & 63) as usize] as char);
+        s.push('=');
+    }
+    s
+}
+
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut buf = Vec::with_capacity(s.len() * 3 / 4);
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        let mut vals = [0u8; 4];
+        let mut pad = 0;
+        for j in 0..4 {
+            let b = bytes[i + j];
+            if b == b'=' {
+                vals[j] = 0;
+                pad += 1;
+            } else {
+                vals[j] = TABLE.iter().position(|&c| c == b)? as u8;
+            }
+        }
+        let n = ((vals[0] as u32) << 18)
+            | ((vals[1] as u32) << 12)
+            | ((vals[2] as u32) << 6)
+            | (vals[3] as u32);
+        buf.push((n >> 16) as u8);
+        if pad < 2 {
+            buf.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            buf.push(n as u8);
+        }
+        i += 4;
+    }
+    Some(buf)
 }
 
 // === Key generation ===

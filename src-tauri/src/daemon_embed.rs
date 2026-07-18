@@ -9,7 +9,7 @@ use std::sync::Arc;
 use termfast_core::config::migration::load_config_with_migration;
 use termfast_core::config::{Config, ConfigManager, FileConfigStorage};
 use termfast_core::platform::{SetProxyResult, SystemProxyAdapter, SystemProxyConfig};
-use termfast_credential::KeychainCredentialStore;
+use termfast_credential::{CredentialStore, EncryptedFileCredentialStore};
 use termfast_daemon::{DaemonServer, DaemonState};
 
 /// Embedded daemon handle
@@ -64,6 +64,37 @@ impl EmbeddedDaemon {
         Self::start_with_config_and_storage(config, storage).await
     }
 
+    /// Start with a shared encrypted credential store (used by Tauri GUI).
+    /// The store starts locked; the frontend unlocks it via IPC before any
+    /// credential access. Until then, credential load/save returns errors
+    /// which the daemon handles gracefully (e.g. auto-connect is skipped).
+    pub async fn start_with_credential_store(
+        cred_store: Arc<EncryptedFileCredentialStore>,
+    ) -> anyhow::Result<Self> {
+        let storage = match FileConfigStorage::with_default_path() {
+            Ok(s) => {
+                tracing::info!("config path: {}", s.path().display());
+                s
+            }
+            Err(e) => {
+                tracing::warn!("failed to determine config path, using default: {}", e);
+                FileConfigStorage::new("config.json")
+            }
+        };
+        let config = match load_config_with_migration(storage.path()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(
+                    "failed to load config from {}: {} — starting with empty config",
+                    storage.path().display(),
+                    e
+                );
+                Config::default()
+            }
+        };
+        Self::start_with_config_storage_and_credential_store(config, storage, cred_store).await
+    }
+
     /// Start with a specific config and storage (ensures read/write path consistency)
     pub async fn start_with_config_and_storage(
         config: Config,
@@ -72,7 +103,8 @@ impl EmbeddedDaemon {
         // Load servers from config into server_manager before starting daemon
         let servers_from_config = config.servers.clone();
         let mgr = ConfigManager::with_storage(config, Arc::new(storage));
-        let cred_store = Arc::new(KeychainCredentialStore::new());
+        let cred_store: Arc<dyn CredentialStore> =
+            Arc::new(termfast_credential::KeychainCredentialStore::new());
         let proxy_adapter: Arc<dyn SystemProxyAdapter> = Arc::new(DesktopProxyAdapter);
         let state = DaemonState::with_adapter(mgr, cred_store, proxy_adapter);
 
@@ -135,6 +167,88 @@ impl EmbeddedDaemon {
                             servers_to_reconnect.len()
                         );
                         // Broadcast online event — frontend/ServerInstance will handle reconnection
+                        state
+                            .broadcast(
+                                "network:online",
+                                serde_json::json!({
+                                    "servers_to_reconnect": servers_to_reconnect,
+                                }),
+                            )
+                            .await;
+                    }
+                }
+            });
+        });
+
+        Ok(Self {
+            server,
+            _network_monitor_task: Some(monitor_task),
+        })
+    }
+
+    /// Start with a specific config, storage, and a pre-created encrypted
+    /// credential store (shared with Tauri IPC for unlock/migration).
+    pub async fn start_with_config_storage_and_credential_store(
+        config: Config,
+        storage: FileConfigStorage,
+        cred_store: Arc<EncryptedFileCredentialStore>,
+    ) -> anyhow::Result<Self> {
+        let servers_from_config = config.servers.clone();
+        let mgr = ConfigManager::with_storage(config, Arc::new(storage));
+        let cred_store_dyn: Arc<dyn CredentialStore> = cred_store;
+        let proxy_adapter: Arc<dyn SystemProxyAdapter> = Arc::new(DesktopProxyAdapter);
+        let state = DaemonState::with_adapter(mgr, cred_store_dyn, proxy_adapter);
+
+        for srv_config in servers_from_config {
+            if let Err(e) = state.server_manager.add_server(srv_config).await {
+                tracing::warn!("failed to load server from config: {}", e);
+            }
+        }
+
+        let server = DaemonServer::start(state).await?;
+        tracing::info!(
+            "embedded daemon started on {}",
+            server.socket_path().display()
+        );
+
+        {
+            let state = server.state();
+            if let Err(e) = state.runtime_state.load().await {
+                tracing::warn!("failed to load runtime_state: {}", e);
+            }
+            let servers = state.server_manager.list_servers().await;
+            for s in &servers {
+                s.set_runtime_state(state.runtime_state.clone()).await;
+            }
+        }
+
+        let monitor = Arc::new(termfast_desktop::network::NetworkMonitor::new());
+        let state_clone = server.state().clone();
+        let monitor_task = monitor.start_monitoring(5, move |new_state, servers_to_reconnect| {
+            let state = state_clone.clone();
+            tokio::spawn(async move {
+                match new_state {
+                    termfast_desktop::network::NetworkState::Offline => {
+                        tracing::warn!("network offline — pausing reconnection");
+                        let servers = state.server_manager.list_servers().await;
+                        let mut connected = Vec::new();
+                        for s in &servers {
+                            if s.is_connected().await {
+                                connected.push(s.id().to_string());
+                            }
+                        }
+                        state
+                            .broadcast(
+                                "network:offline",
+                                serde_json::json!({ "connected_servers": connected }),
+                            )
+                            .await;
+                    }
+                    termfast_desktop::network::NetworkState::Online => {
+                        tracing::info!(
+                            "network online — {} servers should reconnect",
+                            servers_to_reconnect.len()
+                        );
                         state
                             .broadcast(
                                 "network:online",

@@ -135,6 +135,9 @@ pub enum Action {
     // Onboarding (FP-8.1)
     DetectFirewall,
 
+    // Host key management
+    AcceptHostKey,
+
     // Terminal — interactive SSH shell sessions
     TerminalOpen,
     TerminalInput,

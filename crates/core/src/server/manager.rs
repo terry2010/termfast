@@ -189,6 +189,7 @@ mod tests {
                 key_auto_generated: false,
                 connection_mode: "single".into(),
                 skip_hostkey_verify: false,
+                host_key_fingerprint: None,
             },
             proxy: ProxyConfig {
                 enabled: true,
@@ -203,6 +204,7 @@ mod tests {
             last_known_ip: None,
             triggers: Vec::new(),
             suppress_firewall_badge: false,
+            test_url: "https://google.com".into(),
         }
     }
 

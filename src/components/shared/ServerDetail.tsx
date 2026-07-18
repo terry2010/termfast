@@ -153,6 +153,22 @@ export function ServerDetail() {
             new CustomEvent("edit-server", { detail: { serverId } }),
           );
         }
+        if (e instanceof IpcErrorImpl && e.code === "HostKeyMismatch") {
+          // Parse "expected: SHA256:xxx, got: SHA256:yyy" from detail
+          const detail = e.detail || "";
+          const expectedMatch = detail.match(/expected:\s*(SHA256:\S+)/);
+          const actualMatch = detail.match(/got:\s*(SHA256:\S+)/);
+          window.dispatchEvent(
+            new CustomEvent("hostkey-mismatch", {
+              detail: {
+                serverId,
+                serverName: server?.name || serverId,
+                expected: expectedMatch?.[1] || "unknown",
+                actual: actualMatch?.[1] || "unknown",
+              },
+            }),
+          );
+        }
         return;
       }
     }

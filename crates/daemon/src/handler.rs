@@ -81,6 +81,7 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::ConfigureKeyAuth => handle_configure_key_auth(state, &request.params).await,
         Action::SwitchAuthMethod => handle_switch_auth_method(state, &request.params).await,
         Action::DetectFirewall => handle_detect_firewall(state, &request.params).await,
+        Action::AcceptHostKey => handle_accept_host_key(state, &request.params).await,
         // Terminal — interactive SSH shell sessions
         Action::TerminalOpen => handle_terminal_open(state, &request.params).await,
         Action::TerminalInput => handle_terminal_input(state, &request.params).await,
@@ -576,6 +577,17 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
         Ok(()) => {
             // Start connection monitor for auto-reconnect
             server.start_connection_monitor().await;
+            // Persist host key fingerprint if this was a first connection (TOFU).
+            if let Some(fp) = server.get_host_key_fingerprint().await {
+                let mgr = state.config_manager.lock().await;
+                let _ = mgr.modify(|config| {
+                    if let Some(srv) = config.servers.iter_mut().find(|s| s.id == server_id) {
+                        if srv.ssh.host_key_fingerprint.is_none() {
+                            srv.ssh.host_key_fingerprint = Some(fp);
+                        }
+                    }
+                }).await;
+            }
             let log_entry = termfast_core::log::LogEntry {
                 timestamp: chrono::Utc::now(),
                 level: termfast_core::log::LogLevel::Info,
@@ -687,6 +699,44 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
             Err(err)
         }
     }
+}
+
+/// Accept a new host key after user confirmation (server was reinstalled, etc.)
+/// Params: { "server_id": "...", "fingerprint": "SHA256:..." }
+async fn handle_accept_host_key(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
+    let server_id = params["server_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let fingerprint = params["fingerprint"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing fingerprint"))?;
+
+    let server = state
+        .server_manager
+        .get_server(server_id)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::ServerNotFound, e.to_string()))?;
+
+    // Update the SSH client's known key and the instance's stored fingerprint
+    server.accept_host_key(fingerprint.to_string()).await;
+
+    // Persist to config file
+    let mgr = state.config_manager.lock().await;
+    mgr.modify(|config| {
+        if let Some(srv) = config.servers.iter_mut().find(|s| s.id == server_id) {
+            srv.ssh.host_key_fingerprint = Some(fingerprint.to_string());
+        }
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+
+    Ok(serde_json::json!({
+        "server_id": server_id,
+        "host_key_fingerprint": fingerprint,
+    }))
 }
 
 /// Disconnect from a server

@@ -47,6 +47,10 @@ class SshVpnService : VpnService() {
         var failedServerId: String? = null
             private set
 
+        @Volatile
+        var mismatchedHostKey: String? = null
+            private set
+
         fun isRunning(context: Context): Boolean = state == VpnState.RUNNING
         fun isStarting(context: Context): Boolean = state == VpnState.STARTING
         fun isFailed(context: Context): Boolean = state == VpnState.FAILED
@@ -60,9 +64,17 @@ class SshVpnService : VpnService() {
             state = VpnState.FAILED
         }
 
+        fun setHostKeyMismatch(serverId: String, error: String, actualFingerprint: String) {
+            failedServerId = serverId
+            lastError = error
+            mismatchedHostKey = actualFingerprint
+            state = VpnState.FAILED
+        }
+
         fun clearError() {
             lastError = null
             failedServerId = null
+            mismatchedHostKey = null
         }
 
         fun start(context: Context, serverId: String, settings: AppSettings = AppSettings(), socks5Port: Int = 1080) {
@@ -219,9 +231,23 @@ class SshVpnService : VpnService() {
 
         if (!RustBridge.nativeConnectServer(serverId)) {
             Log.e(TAG, "SSH connection failed")
-            val detail = RustBridge.nativeGetLastError()
-            val msg = if (detail.isNotBlank()) detail else "SSH 连接失败"
-            setFailed(serverId, msg)
+            val msg = RustBridge.nativeGetLastError().ifBlank { "SSH 连接失败" }
+            val errorCode = RustBridge.nativeGetLastErrorCode()
+            if (errorCode == "HostKeyMismatch") {
+                // Extract actual fingerprint from raw detail: "expected: SHA256:xxx, got: SHA256:yyy"
+                val raw = RustBridge.nativeGetLastErrorRaw()
+                val actualMatch = Regex("got:\\s*(SHA256:\\S+)").find(raw)
+                val actualFp = actualMatch?.groupValues?.get(1) ?: ""
+                if (actualFp.isBlank()) {
+                    // Cannot extract a usable fingerprint (e.g. actual=<unknown>);
+                    // fall back to generic failure so user is not shown an empty dialog.
+                    setFailed(serverId, msg)
+                } else {
+                    setHostKeyMismatch(serverId, msg, actualFp)
+                }
+            } else {
+                setFailed(serverId, msg)
+            }
             updateNotification(msg)
             stopSelf()
             return

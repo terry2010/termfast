@@ -279,6 +279,10 @@ pub struct SshConfig {
     /// Skip hostkey verification (security downgrade, §17.2)
     #[serde(default)]
     pub skip_hostkey_verify: bool,
+    /// Known host key fingerprint (SHA256:xxx). Persisted after first connection
+    /// for TOFU (Trust On First Use) verification. None on first connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_key_fingerprint: Option<String>,
 }
 
 fn default_ssh_port() -> u16 {
@@ -612,6 +616,7 @@ mod tests {
                 key_auto_generated: false,
                 connection_mode: "single".into(),
                 skip_hostkey_verify: false,
+                host_key_fingerprint: None,
             },
             proxy: ProxyConfig {
                 enabled: true,
@@ -626,6 +631,7 @@ mod tests {
             last_known_ip: None,
             triggers: Vec::new(),
             suppress_firewall_badge: false,
+            test_url: default_server_test_url(),
         };
         config.servers.push(server);
 
@@ -674,6 +680,7 @@ mod tests {
                 key_auto_generated: true,
                 connection_mode: "single".into(),
                 skip_hostkey_verify: false,
+                host_key_fingerprint: None,
             },
             proxy: ProxyConfig {
                 enabled: true,
@@ -688,6 +695,7 @@ mod tests {
             last_known_ip: Some("1.2.3.4".into()),
             triggers: Vec::new(),
             suppress_firewall_badge: false,
+            test_url: default_server_test_url(),
         };
         let json = serde_json::to_string(&server).unwrap();
         let de: ServerConfig = serde_json::from_str(&json).unwrap();

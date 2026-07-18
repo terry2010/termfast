@@ -1,7 +1,7 @@
 // SettingsPage — settings UI (§9.5 / FP-8.8)
 // Sidebar nav + single scrollable page with scroll-spy
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke } from "@/hooks/useIpc";
@@ -16,7 +16,7 @@ import {
 } from "@/hooks/useUpdater";
 
 type TabId =
-  "general" | "logs" | "proxy" | "trigger" | "notification" | "data" | "about";
+  "general" | "logs" | "proxy" | "trigger" | "notification" | "credentials" | "data" | "about";
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -33,6 +33,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     { id: "proxy", label: t("settings.proxy.title") },
     { id: "trigger", label: t("settings.trigger.title") },
     { id: "notification", label: t("settings.notification.title") },
+    { id: "credentials", label: t("credentials.settings_section") },
     { id: "data", label: t("settings.data.title") },
     { id: "about", label: t("settings.about.title") },
   ];
@@ -146,6 +147,13 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               }}
             >
               <NotificationSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.credentials = el;
+              }}
+            >
+              <CredentialSection />
             </div>
             <div
               ref={(el) => {
@@ -625,3 +633,384 @@ function promptInstallUpdate(
 }
 
 const APP_VERSION = "0.1.0";
+
+// === CREDENTIAL SECTION ===
+
+function CredentialSection() {
+  const { t } = useTranslation();
+  const [credStatus, setCredStatus] = useState<string>("pending");
+  const [showSetup, setShowSetup] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showReset, setShowReset] = useState(false);
+  const [setupPw, setSetupPw] = useState("");
+  const [setupConfirmPw, setSetupConfirmPw] = useState("");
+  const [oldPw, setOldPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Fetch credential status on mount.
+  const refreshStatus = useCallback(async () => {
+    try {
+      const status = await ipcInvoke<string>("ipc_credential_status");
+      setCredStatus(typeof status === "string" ? status : "pending");
+    } catch {
+      setCredStatus("pending");
+    }
+  }, []);
+  useEffect(() => { refreshStatus(); }, [refreshStatus]);
+
+  const handleSetup = useCallback(async () => {
+    if (setupPw !== setupConfirmPw || setupPw.length < 4) return;
+    setBusy(true);
+    try {
+      await ipcInvoke("ipc_initialize_credentials", { masterPassword: setupPw });
+      toast.success(t("credentials.setup_title"));
+      setShowSetup(false);
+      setSetupPw("");
+      setSetupConfirmPw("");
+      refreshStatus();
+    } catch (e: any) {
+      toast.error(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [setupPw, setupConfirmPw, t, refreshStatus]);
+
+  const handleChangePassword = useCallback(async () => {
+    if (newPw !== confirmPw || newPw.length < 4) return;
+    setBusy(true);
+    try {
+      await ipcInvoke("ipc_change_credential_password", {
+        oldPassword: oldPw,
+        newPassword: newPw,
+      });
+      toast.success(t("credentials.change_password_title"));
+      setShowChangePassword(false);
+      setOldPw("");
+      setNewPw("");
+      setConfirmPw("");
+    } catch (e: any) {
+      toast.error(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [oldPw, newPw, confirmPw, t]);
+
+  const handleReset = useCallback(async () => {
+    setBusy(true);
+    try {
+      await ipcInvoke("ipc_reset_credentials");
+      toast.success(t("credentials.reset_title"));
+      setShowReset(false);
+      refreshStatus();
+    } catch (e: any) {
+      toast.error(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [t, refreshStatus]);
+
+  const handleExport = useCallback(async () => {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const filePath = await save({
+        defaultPath: "termfast-credentials.enc",
+        filters: [{ name: "Encrypted Backup", extensions: ["enc"] }],
+      });
+      if (!filePath) return;
+      await ipcInvoke("ipc_export_credentials", { destPath: filePath });
+      toast.success(t("credentials.export_button"));
+    } catch (e: any) {
+      toast.error(e?.message || String(e));
+    }
+  }, [t]);
+
+  const [showImportPw, setShowImportPw] = useState(false);
+  const [importPath, setImportPath] = useState("");
+  const [importPw, setImportPw] = useState("");
+
+  const handleImport = useCallback(async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const filePath = await open({
+        filters: [{ name: "Encrypted Backup", extensions: ["enc"] }],
+        multiple: false,
+      });
+      if (!filePath || typeof filePath !== "string") return;
+      setImportPath(filePath);
+      setImportPw("");
+      setShowImportPw(true);
+    } catch (e: any) {
+      toast.error(e?.message || String(e));
+    }
+  }, []);
+
+  const handleImportConfirm = useCallback(async () => {
+    if (!importPw) return;
+    setBusy(true);
+    try {
+      await ipcInvoke("ipc_import_credentials", {
+        srcPath: importPath,
+        masterPassword: importPw,
+      });
+      toast.success(t("credentials.import_button"));
+      setShowImportPw(false);
+      setImportPw("");
+      setImportPath("");
+      refreshStatus();
+    } catch (e: any) {
+      toast.error(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [importPath, importPw, t, refreshStatus]);
+
+  const isPending = credStatus === "pending";
+
+  return (
+    <section className="space-y-4 pt-4">
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+        {t("credentials.settings_section")}
+      </h3>
+
+      <SettingGroup title={t("credentials.settings_section")}>
+        {isPending ? (
+          <SettingItem
+            label={t("credentials.setup_title")}
+            hint={t("credentials.setup_description")}
+          >
+            <button
+              onClick={() => setShowSetup(true)}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors"
+            >
+              {t("credentials.setup_button")}
+            </button>
+          </SettingItem>
+        ) : (
+          <>
+            <SettingItem
+              label={t("credentials.change_password_title")}
+              hint={t("credentials.setup_description")}
+            >
+              <button
+                onClick={() => setShowChangePassword(true)}
+                className="px-4 py-2 rounded-lg bg-gray-100 dark:bg-[#2A2A2A] text-gray-700 dark:text-gray-300 text-sm font-medium hover:bg-gray-200 dark:hover:bg-[#333] transition-colors"
+              >
+                {t("credentials.change_password_button")}
+              </button>
+            </SettingItem>
+            <SettingItem
+              label={t("credentials.export_button")}
+            >
+              <button
+                onClick={handleExport}
+                className="px-4 py-2 rounded-lg bg-gray-100 dark:bg-[#2A2A2A] text-gray-700 dark:text-gray-300 text-sm font-medium hover:bg-gray-200 dark:hover:bg-[#333] transition-colors"
+              >
+                {t("credentials.export_button")}
+              </button>
+            </SettingItem>
+            <SettingItem
+              label={t("credentials.import_button")}
+            >
+              <button
+                onClick={handleImport}
+                className="px-4 py-2 rounded-lg bg-gray-100 dark:bg-[#2A2A2A] text-gray-700 dark:text-gray-300 text-sm font-medium hover:bg-gray-200 dark:hover:bg-[#333] transition-colors"
+              >
+                {t("credentials.import_button")}
+              </button>
+            </SettingItem>
+            <SettingItem
+              label={t("credentials.reset_title")}
+              hint={t("credentials.reset_description")}
+            >
+              <button
+                onClick={() => setShowReset(true)}
+                className="px-4 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm font-medium hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+              >
+                {t("credentials.reset_button")}
+              </button>
+            </SettingItem>
+          </>
+        )}
+      </SettingGroup>
+
+      {/* Setup password modal */}
+      {showSetup && (
+        <Modal
+          title={t("credentials.setup_title")}
+          onClose={() => setShowSetup(false)}
+        >
+          <div className="p-6 space-y-4">
+            <h3 className="text-lg font-semibold">
+              {t("credentials.setup_title")}
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {t("credentials.setup_description")}
+            </p>
+            <input
+              type="password"
+              placeholder={t("credentials.master_password")}
+              value={setupPw}
+              onChange={(e) => setSetupPw(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            <input
+              type="password"
+              placeholder={t("credentials.confirm_password")}
+              value={setupConfirmPw}
+              onChange={(e) => setSetupConfirmPw(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            {setupPw && setupConfirmPw && setupPw !== setupConfirmPw && (
+              <p className="text-xs text-red-500">
+                {t("credentials.password_mismatch")}
+              </p>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowSetup(false)}
+                className="px-4 py-2 rounded-lg text-gray-600 dark:text-gray-400 text-sm"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={handleSetup}
+                disabled={busy || setupPw.length < 4 || setupPw !== setupConfirmPw}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {busy ? t("common.loading") : t("credentials.setup_button")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Change password modal */}
+      {showChangePassword && (
+        <Modal
+          title={t("credentials.change_password_title")}
+          onClose={() => setShowChangePassword(false)}
+        >
+          <div className="p-6 space-y-4">
+            <h3 className="text-lg font-semibold">
+              {t("credentials.change_password_title")}
+            </h3>
+            <input
+              type="password"
+              placeholder={t("credentials.change_password_old")}
+              value={oldPw}
+              onChange={(e) => setOldPw(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            <input
+              type="password"
+              placeholder={t("credentials.change_password_new")}
+              value={newPw}
+              onChange={(e) => setNewPw(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            <input
+              type="password"
+              placeholder={t("credentials.change_password_confirm")}
+              value={confirmPw}
+              onChange={(e) => setConfirmPw(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            {newPw && confirmPw && newPw !== confirmPw && (
+              <p className="text-xs text-red-500">
+                {t("credentials.password_mismatch")}
+              </p>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowChangePassword(false)}
+                className="px-4 py-2 rounded-lg text-gray-600 dark:text-gray-400 text-sm"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={handleChangePassword}
+                disabled={busy || !oldPw || newPw.length < 4 || newPw !== confirmPw}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {busy ? t("common.loading") : t("credentials.change_password_button")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Reset confirm modal */}
+      {showReset && (
+        <Modal
+          title={t("credentials.reset_title")}
+          onClose={() => setShowReset(false)}
+        >
+          <div className="p-6 space-y-4">
+            <h3 className="text-lg font-semibold text-red-600">
+              {t("credentials.reset_title")}
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {t("credentials.reset_description")}
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowReset(false)}
+                className="px-4 py-2 rounded-lg text-gray-600 dark:text-gray-400 text-sm"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={handleReset}
+                disabled={busy}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+              >
+                {busy ? t("common.loading") : t("credentials.reset_button")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Import password modal */}
+      {showImportPw && (
+        <Modal
+          title={t("credentials.import_button")}
+          onClose={() => setShowImportPw(false)}
+        >
+          <div className="p-6 space-y-4">
+            <h3 className="text-lg font-semibold">
+              {t("credentials.import_button")}
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {t("credentials.import_password_hint")}
+            </p>
+            <input
+              type="password"
+              placeholder={t("credentials.master_password")}
+              value={importPw}
+              onChange={(e) => setImportPw(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#2A2A2A] text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowImportPw(false)}
+                className="px-4 py-2 rounded-lg text-gray-600 dark:text-gray-400 text-sm"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={handleImportConfirm}
+                disabled={busy || !importPw}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {busy ? t("common.loading") : t("credentials.import_button")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </section>
+  );
+}

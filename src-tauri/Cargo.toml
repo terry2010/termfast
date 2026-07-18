@@ -1,6 +1,6 @@
 [package]
 name = "termfast-app"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["TermFast Contributors"]
@@ -38,3 +38,12 @@ termfast-desktop = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "4", features = ["apple-native-keyring-store"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "4", features = ["windows-native-keyring-store"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "4", features = ["zbus-secret-service-keyring-store"] }

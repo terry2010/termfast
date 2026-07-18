@@ -27,6 +27,7 @@ async fn setup_with_mock_server(port: u16) -> SshClientHandle {
         initial_backoff_secs: 1,
         max_backoff_secs: 5,
         skip_hostkey_verify: true,
+        known_host_key: None,
         hostkey_mismatch_callback: None,
         socket_protector: None,
     };
