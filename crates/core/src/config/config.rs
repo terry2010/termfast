@@ -101,6 +101,10 @@ pub struct GeneralConfig {
     /// User-defined custom variables for trigger templates (key → value)
     #[serde(default)]
     pub custom_variables: Vec<CustomVariable>,
+    // Cloud sync — which provider is active for config sync
+    /// "dropbox" | "baidu" | "" (none)
+    #[serde(default)]
+    pub cloud_sync_provider: String,
 }
 
 /// User-defined custom variable for trigger templates
@@ -180,6 +184,7 @@ impl Default for GeneralConfig {
             default_continue_on_error: false,
             default_ip_check_interval_secs: default_ip_check_interval(),
             custom_variables: Vec::new(),
+            cloud_sync_provider: String::new(),
         }
     }
 }

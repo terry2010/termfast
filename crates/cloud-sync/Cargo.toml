@@ -1,0 +1,29 @@
+[package]
+name = "termfast-cloud-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "multipart"] }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+md-5 = "0.10"
+hex = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+async-trait = { workspace = true }
+url = "2"
+urlencoding = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

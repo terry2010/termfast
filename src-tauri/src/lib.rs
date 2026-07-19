@@ -221,6 +221,16 @@ pub fn run() {
             ipc_terminal_resize,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
             ipc_quit_app,
+            // Cloud sync
+            ipc_cloud_sync_auth_url,
+            ipc_cloud_sync_exchange_code,
+            ipc_cloud_sync_save_token,
+            ipc_cloud_sync_load_token,
+            ipc_cloud_sync_upload,
+            ipc_cloud_sync_download,
+            ipc_cloud_sync_file_info,
+            ipc_cloud_sync_delete_remote,
+            ipc_cloud_sync_disconnect,
             // Credential encryption management
             credential_manager::ipc_credential_status,
             credential_manager::ipc_initialize_credentials,
@@ -1151,6 +1161,171 @@ async fn ipc_terminal_resize(
         &state,
         termfast_daemon::proto::Action::TerminalResize,
         params,
+    )
+    .await
+}
+
+// === Cloud sync IPC ===
+
+#[tauri::command]
+async fn ipc_cloud_sync_auth_url(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    redirect_uri: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = serde_json::json!({ "provider": provider });
+    if let Some(uri) = redirect_uri {
+        params["redirect_uri"] = serde_json::json!(uri);
+    }
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncGetAuthUrl,
+        params,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_exchange_code(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    code: String,
+    code_verifier: String,
+    redirect_uri: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = serde_json::json!({
+        "provider": provider,
+        "code": code,
+        "code_verifier": code_verifier,
+    });
+    if let Some(uri) = redirect_uri {
+        params["redirect_uri"] = serde_json::json!(uri);
+    }
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncExchangeCode,
+        params,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_save_token(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    passphrase: String,
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_at: Option<i64>,
+    token_type: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = serde_json::json!({
+        "provider": provider,
+        "passphrase": passphrase,
+        "access_token": access_token,
+    });
+    if let Some(rt) = refresh_token {
+        params["refresh_token"] = serde_json::json!(rt);
+    }
+    if let Some(ea) = expires_at {
+        params["expires_at"] = serde_json::json!(ea);
+    }
+    if let Some(tt) = token_type {
+        params["token_type"] = serde_json::json!(tt);
+    }
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncSaveToken,
+        params,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_load_token(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    passphrase: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncLoadToken,
+        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_upload(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    passphrase: String,
+    master_password: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncUpload,
+        serde_json::json!({
+            "provider": provider,
+            "passphrase": passphrase,
+            "master_password": master_password,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_download(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    passphrase: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncDownload,
+        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_file_info(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    passphrase: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncGetFileInfo,
+        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_delete_remote(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    passphrase: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncDeleteRemote,
+        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_disconnect(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    passphrase: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncDisconnect,
+        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
     )
     .await
 }

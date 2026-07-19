@@ -16,7 +16,7 @@ import {
 } from "@/hooks/useUpdater";
 
 type TabId =
-  "general" | "logs" | "proxy" | "trigger" | "notification" | "credentials" | "data" | "about";
+  "general" | "logs" | "proxy" | "trigger" | "notification" | "credentials" | "cloud_sync" | "data" | "about";
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -34,6 +34,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     { id: "trigger", label: t("settings.trigger.title") },
     { id: "notification", label: t("settings.notification.title") },
     { id: "credentials", label: t("credentials.settings_section") },
+    { id: "cloud_sync", label: t("settings.cloud_sync.title") },
     { id: "data", label: t("settings.data.title") },
     { id: "about", label: t("settings.about.title") },
   ];
@@ -154,6 +155,13 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               }}
             >
               <CredentialSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.cloud_sync = el;
+              }}
+            >
+              <CloudSyncSection />
             </div>
             <div
               ref={(el) => {
@@ -1080,6 +1088,321 @@ function CredentialSection() {
             </div>
           </div>
         </Modal>
+      )}
+    </section>
+  );
+}
+
+// === Cloud Sync Section ===
+
+function CloudSyncSection() {
+  const { t } = useTranslation();
+  const [provider, setProvider] = useState<"dropbox" | "baidu">("dropbox");
+  const [passphrase, setPassphrase] = useState("");
+  const [masterPassword, setMasterPassword] = useState("");
+  const [authUrl, setAuthUrl] = useState("");
+  const [codeVerifier, setCodeVerifier] = useState("");
+  const [authCode, setAuthCode] = useState("");
+  const [accessToken, setAccessToken] = useState("");
+  const [isAuthed, setIsAuthed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState<"idle" | "auth" | "code" | "token">("idle");
+
+  const checkAuth = async () => {
+    if (!passphrase) return;
+    try {
+      const res = await ipcInvoke<{
+        authenticated: boolean;
+        access_token?: string;
+      }>("ipc_cloud_sync_load_token", { provider, passphrase });
+      setIsAuthed(res.authenticated);
+      if (res.access_token) setAccessToken(res.access_token);
+    } catch {
+      setIsAuthed(false);
+    }
+  };
+
+  const startAuth = async () => {
+    setBusy(true);
+    try {
+      const res = await ipcInvoke<{
+        auth_url: string;
+        code_verifier: string | null;
+      }>("ipc_cloud_sync_auth_url", { provider });
+      setAuthUrl(res.auth_url);
+      setCodeVerifier(res.code_verifier ?? "");
+      setStep(res.code_verifier ? "code" : "token");
+      // Open URL in browser
+      window.open(res.auth_url, "_blank");
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exchangeCode = async () => {
+    setBusy(true);
+    try {
+      const res = await ipcInvoke<{
+        access_token: string;
+        refresh_token?: string;
+        expires_at?: number;
+      }>("ipc_cloud_sync_exchange_code", {
+        provider,
+        code: authCode,
+        code_verifier: codeVerifier,
+      });
+      await saveToken(res.access_token, res.refresh_token, res.expires_at);
+      setStep("idle");
+      setAuthCode("");
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveToken = async (
+    token: string,
+    refreshToken?: string,
+    expiresAt?: number,
+  ) => {
+    try {
+      await ipcInvoke("ipc_cloud_sync_save_token", {
+        provider,
+        passphrase,
+        access_token: token,
+        refresh_token: refreshToken,
+        expires_at: expiresAt,
+      });
+      setAccessToken(token);
+      setIsAuthed(true);
+      toast.success(t("settings.cloud_sync.connected"));
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const saveManualToken = async () => {
+    if (!accessToken.trim()) {
+      toast.error(t("settings.cloud_sync.enter_token"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await saveToken(accessToken.trim());
+      setStep("idle");
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const upload = async () => {
+    if (!masterPassword) {
+      toast.error(t("settings.cloud_sync.enter_master_password"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await ipcInvoke("ipc_cloud_sync_upload", {
+        provider,
+        passphrase,
+        master_password: masterPassword,
+      });
+      toast.success(t("settings.cloud_sync.upload_success"));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const download = async () => {
+    if (!masterPassword) {
+      toast.error(t("settings.cloud_sync.enter_master_password"));
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await ipcInvoke<{ blob: string; size: number }>(
+        "ipc_cloud_sync_download",
+        { provider, passphrase },
+      );
+      // Import the downloaded blob
+      await ipcInvoke("ipc_import_full", {
+        master_password: masterPassword,
+        blob: res.blob,
+      });
+      toast.success(t("settings.cloud_sync.download_success"));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy(true);
+    try {
+      await ipcInvoke("ipc_cloud_sync_disconnect", { provider, passphrase });
+      setIsAuthed(false);
+      setAccessToken("");
+      toast.success(t("settings.cloud_sync.disconnected"));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-4">
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+        {t("settings.cloud_sync.title")}
+      </h3>
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        {t("settings.cloud_sync.description")}
+      </p>
+
+      {/* Provider selection */}
+      <div className="flex gap-2">
+        {(["dropbox", "baidu"] as const).map((p) => (
+          <button
+            key={p}
+            onClick={() => {
+              setProvider(p);
+              setIsAuthed(false);
+              setStep("idle");
+            }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              provider === p
+                ? "bg-blue-500 text-white"
+                : "bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600"
+            }`}
+          >
+            {p === "dropbox" ? "Dropbox" : "百度网盘"}
+          </button>
+        ))}
+      </div>
+
+      {/* Passphrase for token encryption */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          {t("settings.cloud_sync.token_passphrase")}
+        </label>
+        <input
+          type="password"
+          value={passphrase}
+          onChange={(e) => setPassphrase(e.target.value)}
+          onBlur={checkAuth}
+          placeholder={t("settings.cloud_sync.token_passphrase_placeholder")}
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100"
+        />
+      </div>
+
+      {/* Auth status + connect/disconnect */}
+      {!isAuthed ? (
+        <div className="space-y-3">
+          <button
+            onClick={startAuth}
+            disabled={busy || !passphrase}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
+          >
+            {busy ? t("common.loading") : t("settings.cloud_sync.connect")}
+          </button>
+
+          {step === "code" && (
+            <div className="space-y-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+              <p className="text-sm text-blue-700 dark:text-blue-300">
+                {t("settings.cloud_sync.paste_code")}
+              </p>
+              <input
+                type="text"
+                value={authCode}
+                onChange={(e) => setAuthCode(e.target.value)}
+                placeholder="authorization code"
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
+              />
+              <button
+                onClick={exchangeCode}
+                disabled={busy || !authCode}
+                className="px-4 py-2 bg-green-500 text-white rounded-lg text-sm font-medium hover:bg-green-600 disabled:opacity-50"
+              >
+                {t("settings.cloud_sync.exchange")}
+              </button>
+            </div>
+          )}
+
+          {step === "token" && (
+            <div className="space-y-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+              <p className="text-sm text-blue-700 dark:text-blue-300">
+                {t("settings.cloud_sync.paste_token")}
+              </p>
+              <textarea
+                value={accessToken}
+                onChange={(e) => setAccessToken(e.target.value)}
+                placeholder="access_token"
+                rows={3}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm font-mono"
+              />
+              <button
+                onClick={saveManualToken}
+                disabled={busy || !accessToken.trim()}
+                className="px-4 py-2 bg-green-500 text-white rounded-lg text-sm font-medium hover:bg-green-600 disabled:opacity-50"
+              >
+                {t("settings.cloud_sync.save")}
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+            <span className="w-2 h-2 rounded-full bg-green-500" />
+            {t("settings.cloud_sync.connected_status")}
+          </div>
+
+          {/* Master password for config encryption */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {t("settings.cloud_sync.master_password")}
+            </label>
+            <input
+              type="password"
+              value={masterPassword}
+              onChange={(e) => setMasterPassword(e.target.value)}
+              placeholder={t("settings.cloud_sync.master_password_placeholder")}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={upload}
+              disabled={busy || !masterPassword}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
+            >
+              {busy ? t("common.loading") : t("settings.cloud_sync.upload")}
+            </button>
+            <button
+              onClick={download}
+              disabled={busy || !masterPassword}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
+            >
+              {busy ? t("common.loading") : t("settings.cloud_sync.download")}
+            </button>
+            <button
+              onClick={disconnect}
+              disabled={busy}
+              className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm font-medium hover:bg-red-600 disabled:opacity-50"
+            >
+              {t("settings.cloud_sync.disconnect")}
+            </button>
+          </div>
+        </div>
       )}
     </section>
   );

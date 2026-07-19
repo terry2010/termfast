@@ -143,6 +143,17 @@ pub enum Action {
     TerminalInput,
     TerminalClose,
     TerminalResize,
+
+    // Cloud sync — upload/download encrypted config to cloud providers
+    CloudSyncGetAuthUrl,
+    CloudSyncExchangeCode,
+    CloudSyncSaveToken,
+    CloudSyncLoadToken,
+    CloudSyncUpload,
+    CloudSyncDownload,
+    CloudSyncGetFileInfo,
+    CloudSyncDeleteRemote,
+    CloudSyncDisconnect,
 }
 
 /// Event types (daemon → all clients broadcast, §10.6)

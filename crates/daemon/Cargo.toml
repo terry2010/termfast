@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 termfast-core = { workspace = true }
 termfast-credential = { workspace = true }
+termfast-cloud-sync = { workspace = true }
 zeroize = "1"
 russh = { workspace = true }
 tokio = { workspace = true }
