@@ -7,16 +7,19 @@ use crate::error::{Error, ErrorCode, IpcError, Result};
 use russh::client;
 use russh::keys;
 use std::path::PathBuf;
+use zeroize::Zeroizing;
 
-/// Authentication method
+/// Authentication method.
+/// Passwords and passphrases are wrapped in `Zeroizing<String>` so they
+/// are securely wiped from memory when dropped.
 #[derive(Debug, Clone)]
 pub enum AuthMethod {
     Key {
         key_path: String,
-        passphrase: Option<String>,
+        passphrase: Option<Zeroizing<String>>,
     },
     Password {
-        password: String,
+        password: Zeroizing<String>,
     },
 }
 
@@ -29,7 +32,7 @@ pub async fn authenticate(
     match auth {
         AuthMethod::Password { password } => {
             let result = handle
-                .authenticate_password(user, password)
+                .authenticate_password(user, password.as_str())
                 .await
                 .map_err(|e| {
                     Error::Ipc(IpcError::new(
@@ -43,7 +46,7 @@ pub async fn authenticate(
             key_path,
             passphrase,
         } => {
-            let key_pair = load_keypair(key_path, passphrase.as_deref())?;
+            let key_pair = load_keypair(key_path, passphrase.as_deref().map(|s| s.as_str()))?;
             let key_with_alg =
                 keys::PrivateKeyWithHashAlg::new(std::sync::Arc::new(key_pair), None);
             let result = handle
@@ -177,6 +180,14 @@ pub async fn push_public_key(
     handle: &client::Handle<super::client::SshHandler>,
     public_key: &str,
 ) -> Result<()> {
+    // Validate that the public key is a single line — multi-line input
+    // would break authorized_keys format.
+    if public_key.lines().count() != 1 {
+        return Err(Error::Ipc(IpcError::new(
+            ErrorCode::InvalidParams,
+            "public key must be a single line",
+        )));
+    }
     let escaped_key = public_key.replace('\'', "'\\''");
     let command = format!(
         "mkdir -p ~/.ssh && echo '{}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys",
@@ -206,7 +217,7 @@ mod tests {
     #[test]
     fn test_auth_method_password() {
         let auth = AuthMethod::Password {
-            password: "test".into(),
+            password: Zeroizing::new("test".into()),
         };
         assert!(matches!(auth, AuthMethod::Password { .. }));
     }
@@ -215,7 +226,7 @@ mod tests {
     fn test_auth_method_key() {
         let auth = AuthMethod::Key {
             key_path: "/path/to/key".into(),
-            passphrase: Some("pass".into()),
+            passphrase: Some(Zeroizing::new("pass".into())),
         };
         assert!(matches!(auth, AuthMethod::Key { .. }));
     }

@@ -30,9 +30,22 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("keystores/release.keystore")
-            storePassword = "termfast"
-            keyAlias = "termfast"
-            keyPassword = "termfast"
+            // Read signing passwords from local.properties (gitignored) or
+            // environment variables. Falls back to dev default for local builds.
+            val localProps = java.util.Properties()
+            val localPropsFile = rootProject.file("local.properties")
+            if (localPropsFile.exists()) {
+                localProps.load(localPropsFile.inputStream())
+            }
+            storePassword = localProps.getProperty("TERMFAST_STORE_PASSWORD")
+                ?: System.getenv("TERMFAST_STORE_PASSWORD")
+                ?: "termfast"
+            keyAlias = localProps.getProperty("TERMFAST_KEY_ALIAS")
+                ?: System.getenv("TERMFAST_KEY_ALIAS")
+                ?: "termfast"
+            keyPassword = localProps.getProperty("TERMFAST_KEY_PASSWORD")
+                ?: System.getenv("TERMFAST_KEY_PASSWORD")
+                ?: "termfast"
         }
     }
 

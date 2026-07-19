@@ -674,10 +674,13 @@ fn set_pipe_security(pipe_name: &str) {
             &mut sd_size,
         );
         if ok != 0 && !sd.is_null() {
-            tracing::info!("named pipe security descriptor set (SDDL applied)");
+            // SDDL was parsed but NOT applied to the pipe — tokio's
+            // ServerOptions does not expose security_attributes. The
+            // pipe uses default DACL (same-user access only).
+            tracing::warn!("named pipe SDDL parsed but not applied (tokio limitation); pipe uses default DACL");
             LocalFree(sd);
         } else {
-            tracing::warn!("failed to set named pipe security descriptor");
+            tracing::warn!("failed to parse named pipe security descriptor");
         }
     }
 }

@@ -76,7 +76,7 @@ pub fn validate_master_password(password: &str) -> Result<()> {
 
 /// Derive AES-256 key from master password using Argon2id
 fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
-    let params = Params::new(64 * 1024, 3, 4, Some(32))
+    let params = Params::new(32 * 1024, 3, 1, Some(32))
         .map_err(|e| Error::Crypto(format!("argon2 params error: {}", e)))?;
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);

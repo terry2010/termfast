@@ -8,6 +8,7 @@ use termfast_core::ssh::auth::AuthMethod;
 use termfast_core::ssh::client::{ConnectionState, SshClientConfig, SshClientHandle};
 use termfast_core::ssh::exec;
 use termfast_test_utils::MockSshServer;
+use zeroize::Zeroizing;
 
 /// Start a mock SSH server on a given port and return a client handle
 async fn setup_with_mock_server(port: u16) -> SshClientHandle {
@@ -40,7 +41,7 @@ async fn setup_with_mock_server(port: u16) -> SshClientHandle {
 async fn test_ssh_connect_and_disconnect() {
     let client = setup_with_mock_server(3221).await;
     let auth = AuthMethod::Password {
-        password: "testpass".into(),
+        password: zeroize::Zeroizing::new("testpass".into()),
     };
 
     client.connect(&auth).await.expect("connect should succeed");
@@ -55,7 +56,7 @@ async fn test_ssh_connect_and_disconnect() {
 async fn test_ssh_exec_command() {
     let client = setup_with_mock_server(3222).await;
     let auth = AuthMethod::Password {
-        password: "testpass".into(),
+        password: zeroize::Zeroizing::new("testpass".into()),
     };
 
     client.connect(&auth).await.expect("connect should succeed");
@@ -69,7 +70,7 @@ async fn test_ssh_exec_command() {
 async fn test_ssh_detect_ip() {
     let client = setup_with_mock_server(3223).await;
     let auth = AuthMethod::Password {
-        password: "testpass".into(),
+        password: zeroize::Zeroizing::new("testpass".into()),
     };
 
     client.connect(&auth).await.expect("connect should succeed");
@@ -97,7 +98,7 @@ async fn test_ssh_auth_failure() {
 async fn test_ssh_open_direct_tcpip() {
     let client = setup_with_mock_server(3225).await;
     let auth = AuthMethod::Password {
-        password: "testpass".into(),
+        password: zeroize::Zeroizing::new("testpass".into()),
     };
 
     client.connect(&auth).await.expect("connect should succeed");
@@ -114,7 +115,7 @@ async fn test_ssh_open_direct_tcpip() {
 async fn test_ssh_reconnect() {
     let client = setup_with_mock_server(3226).await;
     let auth = AuthMethod::Password {
-        password: "testpass".into(),
+        password: zeroize::Zeroizing::new("testpass".into()),
     };
 
     client.connect(&auth).await.expect("connect should succeed");

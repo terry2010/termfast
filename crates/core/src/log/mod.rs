@@ -108,6 +108,45 @@ impl LogBuffer {
             .collect()
     }
 
+    /// Get entries filtered by server_id/kind/level, returning only the
+    /// last `limit` matches (most recent). More efficient than get_entries
+    /// + truncate when only recent logs are needed.
+    pub async fn get_entries_tail(
+        &self,
+        server_id: Option<&str>,
+        kind: Option<&LogKind>,
+        level: Option<&LogLevel>,
+        limit: usize,
+    ) -> Vec<LogEntry> {
+        let entries = self.entries.lock().await;
+        let mut result: Vec<LogEntry> = entries
+            .iter()
+            .rev()
+            .filter(|e| {
+                if let Some(sid) = server_id {
+                    if e.server_id.as_deref() != Some(sid) {
+                        return false;
+                    }
+                }
+                if let Some(k) = kind {
+                    if &e.kind != k {
+                        return false;
+                    }
+                }
+                if let Some(l) = level {
+                    if &e.level != l {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(limit)
+            .cloned()
+            .collect();
+        result.reverse();
+        result
+    }
+
     /// Clear all entries
     pub async fn clear(&self) {
         self.entries.lock().await.clear();

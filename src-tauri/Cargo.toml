@@ -34,6 +34,7 @@ tracing-subscriber = { workspace = true }
 termfast-core = { workspace = true }
 termfast-credential = { workspace = true }
 termfast-daemon = { workspace = true }
+zeroize = "1"
 termfast-desktop = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

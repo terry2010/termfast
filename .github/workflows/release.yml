@@ -167,6 +167,9 @@ jobs:
       - name: Create local.properties
         run: |
           echo "sdk.dir=${ANDROID_SDK_ROOT}" > android/local.properties
+          echo "TERMFAST_STORE_PASSWORD=${{ secrets.TERMFAST_STORE_PASSWORD }}" >> android/local.properties
+          echo "TERMFAST_KEY_ALIAS=${{ secrets.TERMFAST_KEY_ALIAS }}" >> android/local.properties
+          echo "TERMFAST_KEY_PASSWORD=${{ secrets.TERMFAST_KEY_PASSWORD }}" >> android/local.properties
 
       - name: Build release APK
         working-directory: android

@@ -75,7 +75,7 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
             key_path: keyPath,
             key_auto_generated: false,
             connection_mode: "single",
-            skip_hostkey_verify: true,
+            skip_hostkey_verify: false,
           },
           proxy: {
             enabled: true,

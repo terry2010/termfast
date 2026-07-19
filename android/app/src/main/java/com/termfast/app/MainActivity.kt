@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.termfast.app.data.CredentialManager
 import com.termfast.app.data.ErrorMessages
 import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
@@ -53,6 +54,8 @@ class MainActivity : ComponentActivity() {
         RustBridge.ensureLoaded()
         val dataDir = filesDir.absolutePath
         RustRepository.init(dataDir)
+        // Try auto-unlock with cached derived key (no user prompt).
+        CredentialManager.tryCachedUnlock(this)
         NotificationHelper.ensureChannels(this)
         requestNotificationPermission()
         handleStartVpnIntent(intent)

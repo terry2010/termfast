@@ -914,7 +914,7 @@ async fn ipc_test_connection(
         if pw.is_empty() {
             return Err("password is required for password auth".to_string());
         }
-        AuthMethod::Password { password: pw }
+        AuthMethod::Password { password: zeroize::Zeroizing::new(pw) }
     };
 
     match client.connect(&auth).await {

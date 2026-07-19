@@ -248,7 +248,8 @@ impl EncryptedFileCredentialStore {
             .map
             .as_ref()
             .ok_or_else(|| anyhow!("credential store is locked"))?;
-        let json = serde_json::to_vec(map)?;
+        // Zeroizing so the plaintext JSON is wiped after encryption.
+        let json = zeroize::Zeroizing::new(serde_json::to_vec(map)?);
         // encrypt() needs a non-locked store; clone key to avoid holding the
         // mutex across the file write.
         let key_clone = key.clone();

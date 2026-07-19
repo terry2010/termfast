@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 ssh-key = { version = "0.7.0-rc.11", features = ["rand_core", "getrandom", "encryption"] }
 rand = { workspace = true }
 socket2 = "0.5"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -812,8 +812,7 @@ async fn handle_get_logs(state: &DaemonState, params: &serde_json::Value) -> Han
     let server_id = params["server_id"].as_str();
     let limit = params["limit"].as_u64().unwrap_or(1000) as usize;
 
-    let entries = state.log_buffer.get_entries(server_id, None, None).await;
-    let entries: Vec<_> = entries.into_iter().rev().take(limit).collect();
+    let entries = state.log_buffer.get_entries_tail(server_id, None, None, limit).await;
 
     let json = serde_json::to_value(&entries).map_err(|e| {
         IpcError::new(
@@ -891,14 +890,16 @@ fn build_auth_method(
                     format!("password not found: {}", e),
                 )
             })?;
-            Ok(termfast_core::ssh::auth::AuthMethod::Password { password })
+            Ok(termfast_core::ssh::auth::AuthMethod::Password { password: zeroize::Zeroizing::new(password) })
         }
         "key" => {
             let passphrase_key = termfast_credential::make_key(
                 server_id,
                 termfast_credential::cred_type::KEY_PASSPHRASE,
             );
-            let passphrase = state.credential_store.load(&passphrase_key).ok();
+            let passphrase = state.credential_store.load(&passphrase_key)
+                .ok()
+                .map(zeroize::Zeroizing::new);
             Ok(termfast_core::ssh::auth::AuthMethod::Key {
                 key_path: key_path.to_string(),
                 passphrase,
@@ -1784,7 +1785,8 @@ async fn handle_delete_credential(
 async fn handle_export_full(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
     let master_password = params["master_password"]
         .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing master_password"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing master_password"))?
+        .to_string();
 
     let mgr = state.config_manager.lock().await;
     let config = mgr.get().await;
@@ -1827,9 +1829,14 @@ async fn handle_export_full(state: &DaemonState, params: &serde_json::Value) -> 
         key_files,
     };
 
-    // Encrypt with master password
-    let blob = termfast_core::migration::export_full(master_password, &export_data)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("export encrypt error: {}", e)))?;
+    // Encrypt with master password — Argon2id is CPU-intensive, run on
+    // blocking pool to avoid stalling the async executor.
+    let blob = tokio::task::spawn_blocking(move || {
+        termfast_core::migration::export_full(&master_password, &export_data)
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, format!("spawn_blocking error: {}", e)))?
+    .map_err(|e| IpcError::new(ErrorCode::Internal, format!("export encrypt error: {}", e)))?;
 
     // Return as base64-encoded string
     use base64::Engine;
@@ -1878,7 +1885,8 @@ async fn handle_import_servers(state: &DaemonState, params: &serde_json::Value) 
 async fn handle_import_full(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
     let master_password = params["master_password"]
         .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing master_password"))?;
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing master_password"))?
+        .to_string();
     let blob_b64 = params["blob"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing blob"))?;
@@ -1889,9 +1897,14 @@ async fn handle_import_full(state: &DaemonState, params: &serde_json::Value) -> 
         .decode(blob_b64)
         .map_err(|e| IpcError::new(ErrorCode::InvalidParams, format!("invalid base64: {}", e)))?;
 
-    // Decrypt with master password
-    let export_data = termfast_core::migration::import_full(master_password, &blob)
-        .map_err(|e| IpcError::new(ErrorCode::DecryptionFailed, format!("decrypt error: {}", e)))?;
+    // Decrypt with master password — Argon2id is CPU-intensive, run on
+    // blocking pool to avoid stalling the async executor.
+    let export_data = tokio::task::spawn_blocking(move || {
+        termfast_core::migration::import_full(&master_password, &blob)
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, format!("spawn_blocking error: {}", e)))?
+    .map_err(|e| IpcError::new(ErrorCode::DecryptionFailed, format!("decrypt error: {}", e)))?;
 
     // Reset attempt counter on success
     termfast_core::migration::reset_attempts();
@@ -2748,10 +2761,9 @@ async fn handle_terminal_input(state: &DaemonState, params: &serde_json::Value) 
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing data"))?;
 
     tracing::info!(
-        "handle_terminal_input: session_id={} data_len={} data={:?}",
+        "handle_terminal_input: session_id={} data_len={}",
         session_id,
         data.len(),
-        data
     );
 
     state

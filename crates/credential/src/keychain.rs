@@ -104,10 +104,17 @@ impl CredentialStore for KeychainCredentialStore {
             }
         }
 
-        // Try fallback (in-memory) store
-        let fb = self.fallback.lock().unwrap();
-        if let Some(ref store) = *fb {
-            let v = store.load(key)?;
+        // Try fallback (in-memory) store — avoid holding fallback lock
+        // while acquiring cache lock to prevent lock-ordering issues.
+        let fb_value = {
+            let fb = self.fallback.lock().unwrap();
+            if let Some(ref store) = *fb {
+                Some(store.load(key)?)
+            } else {
+                None
+            }
+        };
+        if let Some(v) = fb_value {
             self.cache
                 .lock()
                 .unwrap()

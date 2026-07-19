@@ -19,7 +19,8 @@
 //! is treated as a legacy plaintext JSON file that needs migration.
 
 use anyhow::{anyhow, bail, Context, Result};
-use rand::RngCore;
+use rand::Rng;
+use rand::rng;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use zeroize::Zeroize;
@@ -39,12 +40,12 @@ const NONCE_LEN: usize = 12;
 /// Header size before ciphertext: magic(4) + version(1) + salt(16) + nonce(12) + sync_version(8).
 pub const HEADER_LEN: usize = 4 + 1 + SALT_LEN + NONCE_LEN + 8;
 /// Argon2id parameters.
-/// 16 MiB memory / 2 iterations / 1 lane — balances security and responsiveness
-/// on mobile devices. 64 MiB (OWASP desktop recommendation) causes multi-second
-/// delays and ANR risk on low-end Android phones. 16 MiB is still well above
-/// the brute-force resistance threshold for interactive master passwords.
-const ARGON2_M_COST: u32 = 16384; // 16 MiB
-const ARGON2_T_COST: u32 = 2;
+/// 32 MiB memory / 3 iterations / 1 lane — balances security and responsiveness
+/// across desktop and mobile. Above OWASP minimum (16 MiB / 2 iter) while
+/// avoiding the ANR risk of 64 MiB on low-end Android. Argon2id runs on
+/// background threads (spawn_blocking) so UI is not blocked.
+const ARGON2_M_COST: u32 = 32768; // 32 MiB
+const ARGON2_T_COST: u32 = 3;
 const ARGON2_P_COST: u32 = 1;
 /// Derived key length (AES-256).
 const KEY_LEN: usize = 32;
@@ -131,7 +132,7 @@ impl EncryptedCredentialStore {
             bail!("credential store already initialized");
         }
         let mut salt = [0u8; SALT_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rng().fill_bytes(&mut salt);
         let key = derive_key(master_password, &salt)?;
         let ciphertext = encrypt_with_key(&key, &salt, 0, credentials_json)?;
         let mut out = Vec::with_capacity(HEADER_LEN + ciphertext.ct.len());
@@ -158,10 +159,13 @@ impl EncryptedCredentialStore {
     }
 
     /// Decrypt the credentials file using a previously unlocked key.
-    pub fn decrypt(&self, key: &DerivedKey) -> Result<Vec<u8>> {
+    /// Returns `Zeroizing<Vec<u8>>` so the plaintext is wiped from memory
+    /// when dropped.
+    pub fn decrypt(&self, key: &DerivedKey) -> Result<zeroize::Zeroizing<Vec<u8>>> {
         let data = std::fs::read(&self.path).context("credential file not found")?;
         let header = read_header(&data)?;
-        decrypt_with_key(key, &header, &data[HEADER_LEN..])
+        let plaintext = decrypt_with_key(key, &header, &data[HEADER_LEN..])?;
+        Ok(zeroize::Zeroizing::new(plaintext))
     }
 
     /// Encrypt new credentials JSON with a cached key and write to disk.
@@ -218,7 +222,7 @@ impl EncryptedCredentialStore {
         let plaintext = decrypt_with_key(&old_key, &header, &data[HEADER_LEN..])?;
         // Re-encrypt with new password + new salt.
         let mut new_salt = [0u8; SALT_LEN];
-        rand::thread_rng().fill_bytes(&mut new_salt);
+        rng().fill_bytes(&mut new_salt);
         let new_key = derive_key(new_password, &new_salt)?;
         let ct = encrypt_with_key(&new_key, &new_salt, header.sync_version, &plaintext)?;
         let mut out = Vec::with_capacity(HEADER_LEN + ct.ct.len());
@@ -340,7 +344,7 @@ fn encrypt_with_key(
     plaintext: &[u8],
 ) -> Result<EncryptedPayload> {
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rng().fill_bytes(&mut nonce_bytes);
     // AAD = magic + version + salt + nonce + sync_version (the full header).
     let mut aad = Vec::with_capacity(HEADER_LEN);
     aad.extend_from_slice(MAGIC);
@@ -409,7 +413,7 @@ mod tests {
 
         let key = store.unlock("masterpw").unwrap();
         let decrypted = store.decrypt(&key).unwrap();
-        assert_eq!(decrypted, creds);
+        assert_eq!(&*decrypted, creds);
     }
 
     #[test]
@@ -437,7 +441,7 @@ mod tests {
         let store2 = EncryptedCredentialStore::open(store_path(dir.path()));
         assert_eq!(store2.sync_version(), 2);
         let decrypted = store2.decrypt(&key).unwrap();
-        assert_eq!(decrypted, b"v2");
+        assert_eq!(&*decrypted, b"v2");
     }
 
     #[test]
@@ -446,7 +450,7 @@ mod tests {
         let store = EncryptedCredentialStore::open(store_path(dir.path()));
         store.initialize("pw", b"").unwrap();
         let key = store.unlock("pw").unwrap();
-        assert_eq!(store.decrypt(&key).unwrap(), b"");
+        assert_eq!(&*store.decrypt(&key).unwrap(), b"");
     }
 
     #[test]
@@ -480,7 +484,7 @@ mod tests {
         // Content should match original.
         let key = store.unlock("newmaster").unwrap();
         let decrypted = store.decrypt(&key).unwrap();
-        assert_eq!(decrypted, original);
+        assert_eq!(&*decrypted, original);
     }
 
     #[test]
@@ -519,7 +523,7 @@ mod tests {
         assert!(store.unlock("oldpw").is_err());
         // New password should work and preserve content.
         let key = store.unlock("newpw").unwrap();
-        assert_eq!(store.decrypt(&key).unwrap(), b"secret data");
+        assert_eq!(&*store.decrypt(&key).unwrap(), b"secret data");
     }
 
     #[test]
@@ -530,7 +534,7 @@ mod tests {
         assert!(store.change_password("wrong", "new").is_err());
         // Original should still work.
         let key = store.unlock("realpw").unwrap();
-        assert_eq!(store.decrypt(&key).unwrap(), b"data");
+        assert_eq!(&*store.decrypt(&key).unwrap(), b"data");
     }
 
     #[test]
@@ -551,7 +555,7 @@ mod tests {
         store2.import_from(&export_path).unwrap();
         assert!(store2.is_initialized());
         let key = store2.unlock("pw").unwrap();
-        assert_eq!(store2.decrypt(&key).unwrap(), b"export me");
+        assert_eq!(&*store2.decrypt(&key).unwrap(), b"export me");
     }
 
     #[test]

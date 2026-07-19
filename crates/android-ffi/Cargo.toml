@@ -12,6 +12,7 @@ name = "termfast_android_ffi"
 [dependencies]
 termfast-core = { workspace = true }
 termfast-credential = { workspace = true }
+zeroize = "1"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

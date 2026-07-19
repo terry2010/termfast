@@ -198,10 +198,14 @@ pub async fn ipc_initialize_credentials(
     state: State<'_, CredentialState>,
     master_password: String,
 ) -> Result<(), String> {
-    state
-        .store
-        .initialize(&master_password)
-        .map_err(|e| e.to_string())?;
+    let store = state.store.clone();
+    // Argon2id is CPU-intensive — run on blocking pool to avoid stalling
+    // the async executor and freezing the UI.
+    tauri::async_runtime::spawn_blocking(move || {
+        store.initialize(&master_password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     // Cache the derived key in OS keychain.
     if let Some(key) = state.store.derived_key() {
         save_cached_key(&key);
@@ -214,10 +218,12 @@ pub async fn ipc_unlock_credentials(
     state: State<'_, CredentialState>,
     master_password: String,
 ) -> Result<(), String> {
-    state
-        .store
-        .unlock(&master_password)
-        .map_err(|e| e.to_string())?;
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.unlock(&master_password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     // Cache the derived key for future auto-unlock.
     if let Some(key) = state.store.derived_key() {
         save_cached_key(&key);
@@ -233,7 +239,14 @@ pub async fn ipc_try_cached_unlock(
         return Ok(true);
     }
     if let Some(key) = load_cached_key() {
-        match state.store.unlock_with_key(key) {
+        let store = state.store.clone();
+        // decrypt() reads the credential file — run on blocking pool.
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            store.unlock_with_key(key)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        match result {
             Ok(()) => return Ok(true),
             Err(e) => {
                 tracing::warn!("cached key failed to unlock: {}", e);
@@ -258,10 +271,12 @@ pub async fn ipc_migrate_credentials(
     state: State<'_, CredentialState>,
     master_password: String,
 ) -> Result<(), String> {
-    state
-        .store
-        .migrate(&master_password)
-        .map_err(|e| e.to_string())?;
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.migrate(&master_password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     if let Some(key) = state.store.derived_key() {
         save_cached_key(&key);
     }
@@ -274,10 +289,14 @@ pub async fn ipc_change_credential_password(
     old_password: String,
     new_password: String,
 ) -> Result<(), String> {
-    let _new_key = state
-        .store
-        .change_password(&old_password, &new_password)
-        .map_err(|e| e.to_string())?;
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .change_password(&old_password, &new_password)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     // Update the cached key in OS keychain.
     if let Some(key) = state.store.derived_key() {
         save_cached_key(&key);
@@ -287,7 +306,12 @@ pub async fn ipc_change_credential_password(
 
 #[tauri::command]
 pub async fn ipc_reset_credentials(state: State<'_, CredentialState>) -> Result<(), String> {
-    state.store.reset().map_err(|e| e.to_string())?;
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.reset().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     delete_cached_key();
     Ok(())
 }
@@ -297,10 +321,14 @@ pub async fn ipc_export_credentials(
     state: State<'_, CredentialState>,
     dest_path: String,
 ) -> Result<(), String> {
-    state
-        .store
-        .export_to(std::path::Path::new(&dest_path))
-        .map_err(|e| e.to_string())
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .export_to(std::path::Path::new(&dest_path))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -309,10 +337,14 @@ pub async fn ipc_import_credentials(
     src_path: String,
     master_password: String,
 ) -> Result<(), String> {
-    state
-        .store
-        .import_from(std::path::Path::new(&src_path), &master_password)
-        .map_err(|e| e.to_string())?;
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .import_from(std::path::Path::new(&src_path), &master_password)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     // Import succeeded and store is now unlocked with the new credentials.
     // Cache the new derived key for future auto-unlock.
     if let Some(key) = state.store.derived_key() {

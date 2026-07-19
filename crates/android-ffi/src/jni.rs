@@ -181,25 +181,33 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetDataDir(
     path: JString,
 ) {
     let dir = jstring_to_string(&mut env, &path);
-    let mut st = state().lock().unwrap();
-    st.data_dir = dir.clone();
     // Initialize credential store for this data directory
     crate::credential::init_credential_store(&dir);
     // Initialize config manager for this data directory
     let path_buf = std::path::PathBuf::from(&dir);
-    if let Ok(cm) = crate::config::config_manager_for_dir(path_buf) {
+    // Do all async work OUTSIDE the state lock to avoid blocking
+    // other JNI calls during startup.
+    let (servers, config_manager) = if let Ok(cm) = crate::config::config_manager_for_dir(path_buf) {
         let rt = runtime();
         let config = cm.get_blocking();
         let templates = config.trigger_templates.clone();
+        let mut servers = std::collections::HashMap::new();
         for server in config.servers.iter() {
             let instance = Arc::new(ServerInstance::new(server.clone()));
             let _ = rt.block_on(instance.set_trigger_templates(templates.clone()));
             let _ = rt.block_on(instance.set_triggers(server.triggers.clone()));
             let _ = rt.block_on(instance.set_socket_protector(Arc::new(crate::network::AndroidSocketProtector)));
-            st.servers.insert(server.id.clone(), instance);
+            servers.insert(server.id.clone(), instance);
         }
-        st.config_manager = Some(cm);
-    }
+        (servers, Some(cm))
+    } else {
+        (std::collections::HashMap::new(), None)
+    };
+    // Now briefly acquire the lock to update state.
+    let mut st = state().lock().unwrap();
+    st.data_dir = dir;
+    st.servers = servers;
+    st.config_manager = config_manager;
 }
 
 #[cfg(target_os = "android")]
@@ -386,7 +394,9 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
     let store = crate::credential::android_credential_store();
     let auth = if instance.config.ssh.auth_method == "key" {
         let key_content = store.load(&termfast_credential::make_key(&id_str, "key")).unwrap_or_default();
-        let passphrase = store.load(&termfast_credential::make_key(&id_str, "key_passphrase")).ok();
+        let passphrase = store.load(&termfast_credential::make_key(&id_str, "key_passphrase"))
+            .ok()
+            .map(zeroize::Zeroizing::new);
         if key_content.is_empty() {
             tracing::error!("No key credential for {}", id_str);
             *last_error_code().lock().unwrap() = "MissingCredential".to_string();
@@ -411,8 +421,8 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
             *last_connect_error().lock().unwrap() = "未保存密码，请先在服务器设置中输入密码".to_string();
             return bool_to_jbool(false);
         }
-        tracing::info!("nativeConnectServer: password loaded, len={}", password.len());
-        AuthMethod::Password { password }
+        tracing::info!("nativeConnectServer: password loaded");
+        AuthMethod::Password { password: zeroize::Zeroizing::new(password) }
     };
 
     let rt = runtime();

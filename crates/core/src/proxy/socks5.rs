@@ -172,7 +172,11 @@ pub async fn handle_connection(
         let mut password = vec![0u8; plen[0] as usize];
         socket.read_exact(&mut password).await?;
 
-        if username != auth.username.as_bytes() || password != auth.password.as_bytes() {
+        // Constant-time comparison to prevent timing side-channel on
+        // username/password length and prefix.
+        if !ct_eq(&username, auth.username.as_bytes())
+            || !ct_eq(&password, auth.password.as_bytes())
+        {
             socket.write_all(&[0x01, 0x01]).await?; // auth failure
             return Err(Error::Other("SOCKS5 auth failed".into()));
         }
@@ -384,4 +388,17 @@ mod tests {
         });
         assert!(server.auth.is_some());
     }
+}
+
+/// Constant-time byte slice comparison. Returns true if slices are equal.
+/// Prevents timing side-channels that could leak password length/prefix.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
