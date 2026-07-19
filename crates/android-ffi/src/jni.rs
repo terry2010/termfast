@@ -298,15 +298,23 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeUpdateServer(
     let id = server.id.clone();
     let mut st = state().lock().unwrap();
     // Update config
-    if let Some(ref cm) = st.config_manager {
+    let templates = if let Some(ref cm) = st.config_manager {
         let rt = runtime();
         let _ = rt.block_on(cm.modify(|cfg| {
             if let Some(slot) = cfg.servers.iter_mut().find(|s| s.id == id) {
                 *slot = server.clone();
             }
         }));
-    }
-    // Config is persisted above; runtime instance doesn't need test_url update
+        cm.get_blocking().trigger_templates.clone()
+    } else {
+        Vec::new()
+    };
+    // Rebuild the ServerInstance so runtime uses the updated config (host, port, etc.)
+    let instance = Arc::new(ServerInstance::new(server));
+    let rt = runtime();
+    let _ = rt.block_on(instance.set_trigger_templates(templates));
+    let _ = rt.block_on(instance.set_socket_protector(Arc::new(crate::network::AndroidSocketProtector)));
+    st.servers.insert(id, instance);
     bool_to_jbool(true)
 }
 
