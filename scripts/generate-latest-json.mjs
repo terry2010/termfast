@@ -103,7 +103,8 @@ async function main() {
     if (sigAsset) {
       signature = (await downloadText(sigAsset.browser_download_url)).trim();
     } else {
-      console.warn(`Signature asset not found for: ${assetName} (continuing without signature)`);
+      console.error(`Signature asset not found for: ${assetName} — refusing to publish unsigned update`);
+      process.exit(1);
     }
     platforms[platformKey] = {
       signature,

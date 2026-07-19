@@ -31,11 +31,46 @@ $BAIDU_APP_SECRET   = getenv('BAIDU_APP_SECRET') ?: '';
 // so CORS does not apply. The webview never calls this server directly;
 // all requests go through Tauri IPC → Rust reqwest → here.
 
+// === 速率限制：基于客户端 IP 的滑动窗口 ===
+// 每分钟最多 10 次请求，防止滥用服务器作为 OAuth 代理
+function checkRateLimit(): bool {
+    $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $file = sys_get_temp_dir() . '/termfast_ratelimit_' . md5($ip);
+    $now = time();
+    $window = 60; // 60 秒窗口
+    $maxRequests = 10;
+
+    $data = [];
+    if (file_exists($file)) {
+        $raw = file_get_contents($file);
+        $data = array_filter(unserialize($raw) ?: [], fn($t) => $t > $now - $window);
+    }
+    if (count($data) >= $maxRequests) {
+        return false;
+    }
+    $data[] = $now;
+    file_put_contents($file, serialize($data));
+    return true;
+}
+
 // === 路由 ===
 header('Content-Type: application/json; charset=utf-8');
 
 $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'];
+
+// ping 端点不受速率限制
+if ($action === 'ping' && $method === 'GET') {
+    echo json_encode(['ok' => true, 'time' => time()]);
+    exit;
+}
+
+// 所有其他端点检查速率限制
+if (!checkRateLimit()) {
+    http_response_code(429);
+    echo json_encode(['error' => 'rate limit exceeded, try again later']);
+    exit;
+}
 
 try {
     if ($action === 'auth_url' && $method === 'GET') {
@@ -44,16 +79,13 @@ try {
         handleExchange();
     } elseif ($action === 'refresh' && $method === 'POST') {
         handleRefresh();
-    } elseif ($action === 'ping' && $method === 'GET') {
-        // 健康检查
-        echo json_encode(['ok' => true, 'time' => time()]);
     } else {
         http_response_code(404);
         echo json_encode(['error' => 'unknown action']);
     }
 } catch (Exception $e) {
     http_response_code(500);
-    echo json_encode(['error' => $e->getMessage()]);
+    echo json_encode(['error' => 'internal error']);
 }
 
 // === 端点实现 ===
@@ -214,7 +246,9 @@ function handleRefresh() {
 // === 工具函数 ===
 
 /**
- * 发送 POST 请求，返回响应体。
+ * 发送 POST 请求，返回过滤后的响应体。
+ * 成功时透传 token JSON（含 access_token/refresh_token）。
+ * 失败时返回标准化错误，不泄露上游内部信息。
  */
 function httpPost($url, $params) {
     $ch = curl_init($url);
@@ -228,20 +262,34 @@ function httpPost($url, $params) {
             'Accept: application/json',
         ],
     ]);
-    
+
     $resp = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $err = curl_error($ch);
     curl_close($ch);
-    
+
     if ($err) {
         http_response_code(502);
-        return json_encode(['error' => 'upstream error: ' . $err]);
+        return json_encode(['error' => 'upstream connection error']);
     }
-    
+
     if ($code >= 400) {
-        http_response_code($code);
+        // Parse upstream error and return standardized message
+        // without leaking internal details (e.g. invalid_client, app_key format)
+        $parsed = json_decode($resp, true);
+        $errorType = $parsed['error'] ?? $parsed['error_description'] ?? 'unknown';
+        // Map common OAuth errors to generic messages
+        $safeErrors = [
+            'invalid_grant' => 'authorization code or refresh token is invalid or expired',
+            'invalid_client' => 'server authentication failed',
+            'invalid_request' => 'malformed request',
+            'unauthorized_client' => 'not authorized',
+            'unsupported_grant_type' => 'unsupported operation',
+        ];
+        $msg = $safeErrors[$errorType] ?? 'request failed';
+        http_response_code($code >= 500 ? 502 : 400);
+        return json_encode(['error' => $msg]);
     }
-    
-    return $resp ?: json_encode(['error' => 'empty response']);
+
+    return $resp ?: json_encode(['error' => 'empty response from upstream']);
 }

@@ -129,8 +129,24 @@ class GitHubReleaseUpdater(
     }
 
     fun isNewer(remote: GitHubRelease, localVersion: String): Boolean {
-        // tag_name like "v0.1.0"
+        // tag_name like "v0.1.0" — use semantic version comparison
+        // (string comparison would wrongly treat 0.10.0 < 0.2.0)
         val remoteVer = remote.tag_name.removePrefix("v")
-        return remoteVer != localVersion && remoteVer.isNotEmpty()
+        if (remoteVer.isEmpty()) return false
+        return compareVersions(remoteVer, localVersion) > 0
+    }
+
+    /// Semantic version comparison: returns >0 if a > b, 0 if equal, <0 if a < b.
+    /// Handles versions like "0.10.0" vs "0.2.0" correctly (10 > 2).
+    private fun compareVersions(a: String, b: String): Int {
+        val partsA = a.split(".").map { it.toIntOrNull() ?: 0 }
+        val partsB = b.split(".").map { it.toIntOrNull() ?: 0 }
+        val maxLen = maxOf(partsA.size, partsB.size)
+        for (i in 0 until maxLen) {
+            val va = partsA.getOrElse(i) { 0 }
+            val vb = partsB.getOrElse(i) { 0 }
+            if (va != vb) return va - vb
+        }
+        return 0
     }
 }
