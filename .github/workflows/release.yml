@@ -193,7 +193,7 @@ jobs:
 
   # === Generate latest.json from the signed release assets and deploy to gh-pages ===
   update-manifest:
-    needs: [build, build-android]
+    needs: [build]
     if: always() && !cancelled()
     permissions:
       contents: write
