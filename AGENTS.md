@@ -80,9 +80,62 @@ edit(file_path="big_file.rs", old_string="// === SECTION 2 END ===",
 
 - 使用 `tauri-plugin-updater` 实现自动更新
 - 签名密钥：`~/.tauri/termfast-signing.key`（私钥）+ `tauri.conf.json` 里的 `pubkey`（公钥）
-- 更新清单：`latest.json` 托管在 GitHub Pages（`gh-pages` 分支）
+- 更新清单：`latest.php` 部署在 `termfast.xisj.com`（PHP 动态生成，带 5 分钟缓存）
+- 备用清单：`latest.json` 仍部署到 GitHub Pages（`gh-pages` 分支）作为 fallback
 - 安装包存储：GitHub Releases
-- 国内加速：`latest.json` 里的 URL 用 `gh-proxy.com` 前缀
+- 国内加速：`latest.php` 根据客户端 IP（GeoLite2-City 数据库）智能选源
+  - 国内 → `termfast.xisj.com/releases/`（Nginx 反代 GitHub Releases）
+  - 海外 → `github.com` 直连
+
+### 服务器端文件（`server/` 目录）
+
+| 文件 | 用途 |
+|------|------|
+| `latest.php` | Tauri 更新清单 + IP 智能选源（主更新端点） |
+| `ip.php` | 只显示客户端 IP |
+| `ip2.php` | 显示客户端 IP + 浏览器信息 + IP 归属地 |
+| `cloud-sync.php` | 云同步 OAuth 代理 |
+| `lib/geoip.php` | GeoIP 查询共用函数（MaxMind GeoLite2-City） |
+| `data/GeoLite2-City.mmdb` | IP 地理位置数据库（63MB，每月更新） |
+| `composer.json` | PHP 依赖（maxmind-db/reader） |
+
+### 服务器部署
+
+1. 安装 PHP + composer：
+   ```bash
+   apt install php php-curl php-mbstring composer
+   ```
+2. 安装 PHP 依赖：
+   ```bash
+   cd server && composer install
+   ```
+3. 下载 GeoLite2-City 数据库（需注册 MaxMind 免费账号）：
+   - 注册：https://www.maxmind.com/en/geolite2/signup
+   - 下载 GeoLite2-City.mmdb 放到 `server/data/`
+   - 或用 `geoipupdate` 工具自动更新
+4. Nginx 配置：
+   - PHP 文件放到 `/var/www/html/tools/`
+   - 加 `/releases/` 反代 location（见下方 Nginx 配置）
+5. crontab 每月自动更新 GeoIP 数据库：
+   ```bash
+   0 0 1 * * /usr/bin/geoipupdate
+   ```
+
+### Nginx 配置（GitHub Releases 反代）
+
+```nginx
+# 反代 GitHub Releases 下载，供国内用户加速
+location /releases/ {
+    proxy_pass https://github.com/terry2010/termfast/releases/download/;
+    proxy_set_header Host github.com;
+    proxy_set_header Accept-Encoding "";
+    proxy_ssl_server_name on;
+    proxy_buffering on;
+    proxy_max_temp_file_size 1g;
+    # 缓存大文件 1 小时
+    proxy_cache_valid 200 1h;
+}
+```
 
 ### 首次配置（每个仓库只需一次）
 
@@ -93,8 +146,8 @@ edit(file_path="big_file.rs", old_string="// === SECTION 2 END ===",
 2. 将 **私钥内容** 添加到 GitHub 仓库 Secret：
    - 名称：`TAURI_SIGNING_PRIVATE_KEY`
    - 值：`cat ~/.tauri/termfast-signing.key` 的完整内容
-3. 确认 `src-tauri/tauri.conf.json` 中 `plugins.updater.endpoints` 指向你的 GitHub Pages 地址。
-4. 在仓库 **Settings → Pages** 中启用 GitHub Pages，Source 选择 `Deploy from a branch`，Branch 选择 `gh-pages`。
+3. 确认 `src-tauri/tauri.conf.json` 中 `plugins.updater.endpoints` 指向 `https://termfast.xisj.com/tools/latest.php`。
+4. 在仓库 **Settings → Pages** 中启用 GitHub Pages（备用 fallback），Source 选择 `Deploy from a branch`，Branch 选择 `gh-pages`。
 
 ### 发布流程
 
@@ -114,7 +167,8 @@ edit(file_path="big_file.rs", old_string="// === SECTION 2 END ===",
    - 用 `TAURI_SIGNING_PRIVATE_KEY` 对更新包签名
    - 创建 GitHub Release（草稿 → 自动发布）
    - 从 Release Asset 中读取 `.sig` 文件
-   - 生成 `latest.json` 并部署到 `gh-pages` 分支
+   - 生成 `latest.json`（GitHub 直连 URL）并部署到 `gh-pages` 分支（备用）
+   - `latest.php` 自动从 GitHub API 抓取最新 Release（5 分钟缓存），无需手动更新服务器
 
 ### 环境变量 / Secrets
 

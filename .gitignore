@@ -23,3 +23,8 @@ Thumbs.db
 
 # 日志
 *.log
+
+# GeoIP 数据库（63MB 二进制，不从 git 下载，见 AGENTS.md 部署说明）
+server/data/*.mmdb
+# PHP composer 依赖
+server/vendor/

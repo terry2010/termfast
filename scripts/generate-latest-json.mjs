@@ -16,7 +16,6 @@ if (!tag) {
 const version = tag.replace(/^v/, "");
 const repo = process.env.GITHUB_REPOSITORY || "terry2010/termfast";
 const [owner, repoName] = repo.split("/");
-const proxyPrefix = process.env.GH_PROXY_PREFIX || "https://gh-proxy.com/";
 
 // Read the actual productName from tauri.conf.json so asset names match the bundle.
 const tauriConf = JSON.parse(fs.readFileSync(path.join(process.cwd(), "src-tauri", "tauri.conf.json"), "utf8"));
@@ -27,8 +26,11 @@ const baseReleaseUrl = `https://github.com/${owner}/${repoName}/releases/downloa
  * @param {string} assetName
  */
 function assetUrl(assetName) {
-  const encoded = encodeURIComponent(assetName).replace(/%20/g, "%20");
-  return `${proxyPrefix}${baseReleaseUrl}/${encoded}`;
+  // GitHub Pages latest.json is a fallback backup — use GitHub direct URLs.
+  // The primary update endpoint is latest.php on termfast.xisj.com which
+  // dynamically selects proxy vs direct based on client IP.
+  const encoded = encodeURIComponent(assetName);
+  return `${baseReleaseUrl}/${encoded}`;
 }
 
 async function githubApi(url) {
