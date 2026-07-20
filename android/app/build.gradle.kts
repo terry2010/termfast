@@ -15,8 +15,8 @@ android {
         applicationId = "com.termfast.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 27
-        versionName = "0.2.7"
+        versionCode = 29
+        versionName = "0.2.9"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
