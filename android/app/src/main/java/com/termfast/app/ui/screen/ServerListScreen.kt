@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
@@ -66,6 +67,9 @@ fun ServerListScreen(navController: NavController) {
     var vpnError by remember { mutableStateOf(SshVpnService.lastError) }
     var vpnServerId by remember { mutableStateOf(SshVpnService.activeServerId) }
     var pendingVpnServer by remember { mutableStateOf<ServerConfig?>(null) }
+    // Per-server proxy running state
+    var proxyRunningIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var proxyStartingIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     val vpnLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -106,6 +110,8 @@ fun ServerListScreen(navController: NavController) {
                 val failed = SshVpnService.isFailed(context)
                 val err = SshVpnService.lastError
                 val sid = SshVpnService.activeServerId
+                // Check proxy running state for each server
+                val proxyRunning = list.filter { repo.isProxyRunning(it.id) }.map { it.id }.toSet()
                 withContext(Dispatchers.Main) {
                     servers = list
                     statuses = st
@@ -114,6 +120,7 @@ fun ServerListScreen(navController: NavController) {
                     vpnFailed = failed
                     vpnError = err
                     vpnServerId = sid
+                    proxyRunningIds = proxyRunning
                     loading = false
                 }
             }
@@ -221,6 +228,42 @@ fun ServerListScreen(navController: NavController) {
                                 startVpn(server)
                             }
                         },
+                        proxyRunning = server.id in proxyRunningIds,
+                        proxyStarting = server.id in proxyStartingIds,
+                        onProxyToggle = {
+                            scope.launch {
+                                if (server.id in proxyRunningIds) {
+                                    // Stop proxy
+                                    withContext(Dispatchers.IO) {
+                                        repo.stopProxy(server.id)
+                                    }
+                                    proxyRunningIds = proxyRunningIds - server.id
+                                } else {
+                                    // Start proxy — ensure SSH connected first
+                                    proxyStartingIds = proxyStartingIds + server.id
+                                    val ok = withContext(Dispatchers.IO) {
+                                        // Connect SSH if not already connected
+                                        val st = repo.getServerStatus(server.id)
+                                        if (st.status != "connected") {
+                                            val connected = repo.connectServer(server.id)
+                                            if (!connected) {
+                                                android.util.Log.w("ServerList", "proxy: connectServer failed for ${server.id}")
+                                                return@withContext false
+                                            }
+                                        }
+                                        val socks5Port = server.proxy?.socks5_port ?: 1080
+                                        val startOk = repo.startProxy(server.id, socks5Port, 0, 0)
+                                        android.util.Log.i("ServerList", "proxy: startProxy returned $startOk for ${server.id} port $socks5Port")
+                                        startOk
+                                    }
+                                    android.util.Log.i("ServerList", "proxy: ok=$ok, clearing starting state for ${server.id}")
+                                    proxyStartingIds = proxyStartingIds - server.id
+                                    if (ok) {
+                                        proxyRunningIds = proxyRunningIds + server.id
+                                    }
+                                }
+                            }
+                        },
                         onTest = {
                             scope.launch {
                                 testing = true
@@ -312,9 +355,12 @@ private fun ServerCard(
     vpnStarting: Boolean,
     vpnFailed: Boolean = false,
     vpnError: String? = null,
+    proxyRunning: Boolean,
+    proxyStarting: Boolean = false,
     testResult: String?,
     testing: Boolean,
     onVpnToggle: () -> Unit,
+    onProxyToggle: () -> Unit,
     onTest: () -> Unit,
     onClick: () -> Unit,
     onTerminal: () -> Unit,
@@ -507,19 +553,27 @@ private fun ServerCard(
 
             Spacer(Modifier.height(12.dp))
 
-            // Action buttons row: terminal+test on right
+            // Action buttons row: proxy+terminal+test on right
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Spacer(Modifier.weight(1f))
-                // Terminal button — right
+                // SOCKS5 proxy toggle button
+                OutlinedIconButton(
+                    icon = if (proxyRunning) Icons.Filled.Stop else Icons.Filled.Cloud,
+                    contentDescription = "代理",
+                    onClick = onProxyToggle,
+                    loading = proxyStarting,
+                    tint = if (proxyRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // Terminal button
                 OutlinedIconButton(
                     icon = Icons.Filled.Terminal,
                     contentDescription = "终端",
                     onClick = onTerminal,
                 )
-                // Test button — right
+                // Test button
                 OutlinedIconButton(
                     icon = Icons.Filled.Speed,
                     contentDescription = "测试",

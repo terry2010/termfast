@@ -37,13 +37,14 @@ fun TerminalScreen(navController: NavController, serverId: String) {
     val repo = remember { RustRepository }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val sessionId = remember { UUID.randomUUID().toString() }
+    // Reuse session per server — don't create a new one every time.
+    val sessionId = remember { TerminalSessionManager.getOrCreateSession(serverId) }
     val listState = rememberLazyListState()
 
-    // Terminal output lines
-    var outputLines by remember { mutableStateOf<List<String>>(emptyList()) }
-    var connected by remember { mutableStateOf(false) }
-    var connecting by remember { mutableStateOf(true) }
+    // Terminal output lines — restore from cache if available
+    var outputLines by remember { mutableStateOf(TerminalSessionManager.getOutput(serverId)) }
+    var connected by remember { mutableStateOf(TerminalSessionManager.isConnected(serverId)) }
+    var connecting by remember { mutableStateOf(!connected) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var inputText by remember { mutableStateOf("") }
 
@@ -57,6 +58,7 @@ fun TerminalScreen(navController: NavController, serverId: String) {
                         val clean = event.data.replace(Regex("\u001B\\[[0-9;]*[a-zA-Z]"), "")
                         val newLines = clean.split("\n")
                         outputLines = outputLines + newLines
+                        TerminalSessionManager.updateOutput(serverId, outputLines)
                         if (outputLines.isNotEmpty()) {
                             listState.animateScrollToItem(outputLines.size - 1)
                         }
@@ -66,7 +68,9 @@ fun TerminalScreen(navController: NavController, serverId: String) {
                     if (event.session_id == sessionId) {
                         connected = false
                         connecting = false
+                        TerminalSessionManager.setConnected(serverId, false)
                         outputLines = outputLines + "\n[连接已关闭]"
+                        TerminalSessionManager.updateOutput(serverId, outputLines)
                     }
                 }
                 is RustEvent.TerminalError -> {
@@ -74,7 +78,9 @@ fun TerminalScreen(navController: NavController, serverId: String) {
                         errorMsg = event.error
                         connecting = false
                         connected = false
+                        TerminalSessionManager.setConnected(serverId, false)
                         outputLines = outputLines + "\n[错误: ${event.error}]"
+                        TerminalSessionManager.updateOutput(serverId, outputLines)
                     }
                 }
                 else -> {}
@@ -82,14 +88,20 @@ fun TerminalScreen(navController: NavController, serverId: String) {
         }
     }
 
-    // Open terminal session on screen entry
+    // Open terminal session on screen entry (only if not already connected)
     LaunchedEffect(serverId, sessionId) {
+        if (connected) return@LaunchedEffect
         scope.launch {
             withContext(Dispatchers.IO) {
+                // Wait for credential store to be ready (unlocked or pending).
+                val deadline = System.currentTimeMillis() + 3000
+                while (System.currentTimeMillis() < deadline) {
+                    if (com.termfast.app.data.CredentialManager.isUnlocked()) break
+                    kotlinx.coroutines.delay(50)
+                }
                 // Ensure SSH is connected first
                 val status = repo.getServerStatus(serverId)
                 if (status.status != "connected") {
-                    // Try to connect
                     val ok = repo.connectServer(serverId)
                     if (!ok) {
                         withContext(Dispatchers.Main) {
@@ -105,6 +117,7 @@ fun TerminalScreen(navController: NavController, serverId: String) {
                     if (ok) {
                         connected = true
                         connecting = false
+                        TerminalSessionManager.setConnected(serverId, true)
                     } else {
                         errorMsg = "无法打开终端会话"
                         connecting = false
@@ -114,12 +127,7 @@ fun TerminalScreen(navController: NavController, serverId: String) {
         }
     }
 
-    // Close terminal on dispose
-    DisposableEffect(sessionId) {
-        onDispose {
-            repo.closeTerminal(sessionId)
-        }
-    }
+    // Don't close terminal on dispose — keep it running in background for reuse
 
     val terminalBg = Color(0xFF1E1E2E)
     val terminalFg = Color(0xFFCDD6F4)

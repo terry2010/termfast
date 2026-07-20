@@ -681,6 +681,11 @@ impl ServerInstance {
         *self.proxy_running.lock().await
     }
 
+    /// Check if proxy is running (blocking, for sync contexts like JNI)
+    pub fn is_proxy_running_blocking(&self) -> bool {
+        self.proxy_running.try_lock().map(|g| *g).unwrap_or(false)
+    }
+
     /// Check if SSH connection is established
     pub async fn is_connected(&self) -> bool {
         self.ssh_client.is_connected().await

@@ -22,6 +22,9 @@ pub struct FfiState {
     pub config_manager: Option<ConfigManager>,
     pub servers: std::collections::HashMap<String, Arc<ServerInstance>>,
     pub event_callback: Option<GlobalRef>,
+    /// Ports reserved by running proxies (port → server_id).
+    /// Updated atomically with the conflict check under the state lock.
+    pub reserved_ports: std::collections::HashMap<u16, String>,
 }
 
 static STATE: OnceLock<Mutex<FfiState>> = OnceLock::new();
@@ -97,6 +100,7 @@ pub fn state() -> &'static Mutex<FfiState> {
             config_manager: None,
             servers: std::collections::HashMap::new(),
             event_callback: None,
+            reserved_ports: std::collections::HashMap::new(),
         })
     })
 }
@@ -346,6 +350,8 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoveServer(
             // Disconnect SSH
             let _ = instance.disconnect().await;
         });
+        // Release reserved ports
+        release_ports(&id_str);
     }
     // Remove from config
     let st = state().lock().unwrap();
@@ -562,11 +568,53 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStartProxy(
     _mixed_port: jint,
 ) -> jboolean {
     let id_str = jstring_to_string(&mut _env, &id);
-    // Clone instance and release lock before block_on to avoid blocking other JNI calls
-    let instance = {
-        let st = state().lock().unwrap();
-        st.servers.get(&id_str).cloned()
+    // Atomically check for port conflicts and reserve ports under the state lock.
+    // This prevents two concurrent start_proxy calls from both succeeding.
+    // NOTE: log_to_kotlin dispatches events via state().lock() too, so we must
+    // not call it while holding the lock — collect the error first, release
+    // the lock, then log.
+    let (instance, port_conflict_msg) = {
+        let mut st = state().lock().unwrap();
+        let instance = st.servers.get(&id_str).cloned();
+        let mut conflict: Option<String> = None;
+        if let Some(ref inst) = instance {
+            // Collect ports this server will use
+            let socks5 = inst.config.proxy.socks5_port;
+            let http = inst.config.proxy.http_port;
+            let mixed = inst.config.proxy.mixed_port;
+            let mut ports_to_reserve = Vec::new();
+            if mixed > 0 {
+                ports_to_reserve.push(mixed);
+            } else {
+                ports_to_reserve.push(socks5);
+                if http > 0 { ports_to_reserve.push(http); }
+            }
+            // Check if any port is already reserved by another server
+            for &port in &ports_to_reserve {
+                if let Some(owner) = st.reserved_ports.get(&port) {
+                    if owner != &id_str {
+                        conflict = Some(format!("端口 {} 被其他服务器占用，请修改端口配置", port));
+                        break;
+                    }
+                }
+            }
+            if conflict.is_none() {
+                // Reserve the ports
+                for port in ports_to_reserve {
+                    st.reserved_ports.insert(port, id_str.clone());
+                }
+            }
+        }
+        (instance, conflict)
     };
+    // Log outside the state lock to avoid deadlock with dispatch_event_to_kotlin
+    if let Some(msg) = port_conflict_msg {
+        tracing::error!("{}", msg);
+        log_to_kotlin("error", &msg);
+        *last_error_code().lock().unwrap() = "PortInUse".to_string();
+        *last_error_raw().lock().unwrap() = msg;
+        return bool_to_jbool(false);
+    }
     if let Some(instance) = instance {
         let rt = runtime();
         log_to_kotlin("info", &format!("Starting proxy for server {}...", id_str));
@@ -576,6 +624,8 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStartProxy(
                 bool_to_jbool(true)
             }
             Err(e) => {
+                // Release reserved ports on failure
+                release_ports(&id_str);
                 log_to_kotlin("error", &format!("Proxy start failed: {:?}", e));
                 bool_to_jbool(false)
             }
@@ -583,6 +633,12 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStartProxy(
     } else {
         bool_to_jbool(false)
     }
+}
+
+/// Release all ports reserved by a server.
+fn release_ports(server_id: &str) {
+    let mut st = state().lock().unwrap();
+    st.reserved_ports.retain(|_, owner| owner != server_id);
 }
 
 #[cfg(target_os = "android")]
@@ -600,6 +656,8 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStopProxy(
     if let Some(instance) = instance {
         let rt = runtime();
         let _ = rt.block_on(instance.stop_proxy());
+        // Release reserved ports
+        release_ports(&id_str);
         bool_to_jbool(true)
     } else {
         bool_to_jbool(false)
