@@ -103,6 +103,11 @@ fun TermFastApp() {
                 val id = backStack.arguments?.getString("serverId") ?: ""
                 com.termfast.app.ui.screen.TerminalScreen(navController, id)
             }
+            composable("terminal/{serverId}/{sessionId}") { backStack ->
+                val id = backStack.arguments?.getString("serverId") ?: ""
+                val sid = backStack.arguments?.getString("sessionId") ?: ""
+                com.termfast.app.ui.screen.TerminalScreen(navController, id, sid)
+            }
         }
     }
 }

@@ -54,6 +54,8 @@ class MainActivity : ComponentActivity() {
         RustBridge.ensureLoaded()
         val dataDir = filesDir.absolutePath
         RustRepository.init(dataDir)
+        // Start global terminal session event collector
+        com.termfast.app.ui.screen.TerminalSessionManager.startGlobalCollector()
         // Try auto-unlock with cached derived key (no user prompt).
         // Run on IO dispatcher to avoid ANR — Argon2id key derivation
         // (32 MiB memory) can take 200-500ms on low-end devices.

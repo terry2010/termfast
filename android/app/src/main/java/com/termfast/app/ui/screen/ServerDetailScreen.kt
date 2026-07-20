@@ -6,24 +6,36 @@ import android.net.VpnService
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.termfast.app.RustBridge
@@ -248,6 +260,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                     vpnError = vpnError,
                     onVpnToggle = { toggleVpn() },
                     onTerminal = { navController.navigate("terminal/$serverId") },
+                    onOpenSession = { sid -> navController.navigate("terminal/$serverId/$sid") },
                 )
                 1 -> ProxyTab(
                     serverId = serverId,
@@ -303,6 +316,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
 // === SECTION 1 END ===
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun OverviewTab(
     serverId: String,
     status: String,
@@ -314,7 +328,26 @@ private fun OverviewTab(
     vpnError: String? = null,
     onVpnToggle: () -> Unit,
     onTerminal: () -> Unit,
+    onOpenSession: (String) -> Unit = {},
 ) {
+    // Refresh terminal sessions list on each composition + lifecycle resume
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var terminalSessions by remember { mutableStateOf(TerminalSessionManager.getSessions(serverId)) }
+    LaunchedEffect(lifecycleOwner, serverId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                terminalSessions = TerminalSessionManager.getSessions(serverId)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        // Also poll periodically while on this screen
+        while (true) {
+            kotlinx.coroutines.delay(1000)
+            terminalSessions = TerminalSessionManager.getSessions(serverId)
+        }
+    }
+    val hasSessions = terminalSessions.isNotEmpty()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -388,15 +421,68 @@ private fun OverviewTab(
             )
         }
 
-        // Terminal quick-access button
+        // Terminal quick-access button — text changes based on existing sessions
         OutlinedButton(
             onClick = onTerminal,
             modifier = Modifier.fillMaxWidth().height(48.dp),
             shape = RoundedCornerShape(14.dp),
         ) {
-            Icon(Icons.Filled.Terminal, contentDescription = null, modifier = Modifier.size(20.dp))
+            Icon(
+                if (hasSessions) Icons.Filled.Add else Icons.Filled.Terminal,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
             Spacer(Modifier.width(8.dp))
-            Text("打开 SSH 终端")
+            Text(if (hasSessions) "新建 SSH 终端" else "打开 SSH 终端")
+        }
+
+        // Active terminal sessions list
+        if (hasSessions) {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                ),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "活跃终端会话",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    terminalSessions.forEachIndexed { idx, session ->
+                        if (idx > 0) HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 6.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                        )
+                        TerminalSessionRow(
+                            session = session,
+                            index = idx + 1,
+                            onClick = { onOpenSession(session.sessionId) },
+                            onRename = { name ->
+                                TerminalSessionManager.renameSession(session.sessionId, name)
+                                terminalSessions = TerminalSessionManager.getSessions(serverId)
+                            },
+                            onReconnect = {
+                                TerminalSessionManager.reconnectSession(serverId, session.sessionId) {
+                                    terminalSessions = TerminalSessionManager.getSessions(serverId)
+                                }
+                            },
+                            onDisconnect = {
+                                TerminalSessionManager.disconnectSession(session.sessionId)
+                                terminalSessions = TerminalSessionManager.getSessions(serverId)
+                            },
+                            onDelete = {
+                                RustRepository.closeTerminal(session.sessionId)
+                                TerminalSessionManager.closeSessionBySessionId(session.sessionId)
+                                terminalSessions = TerminalSessionManager.getSessions(serverId)
+                            },
+                        )
+                    }
+                }
+            }
         }
 
         // Status info card
@@ -451,6 +537,240 @@ private fun StatusRow(label: String, value: String, positive: Boolean? = null) {
 }
 
 // === SECTION 2 END ===
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun TerminalSessionRow(
+    session: TerminalSessionManager.SessionState,
+    index: Int,
+    onClick: () -> Unit,
+    onRename: (String) -> Unit,
+    onReconnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var showSheet by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf(session.name) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    // Rename dialog
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("重命名终端") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    label = { Text("名称") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRename(renameText)
+                    showRenameDialog = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // Delete confirmation dialog
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("删除终端会话") },
+            text = { Text("确定要删除「${session.name.ifBlank { "终端 #$index" }}」并断开连接吗？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteDialog = false
+                        onDelete()
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // Bottom sheet action menu
+    if (showSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSheet = false },
+            sheetState = sheetState,
+        ) {
+            // Sheet header — session name + status
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    session.name.ifBlank { "终端 #$index" },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (session.connected) "已连接" else "已断开",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (session.connected)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            // Rename
+            ListItem(
+                headlineContent = { Text("重命名") },
+                leadingContent = { Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(24.dp)) },
+                modifier = Modifier.clickable {
+                    showSheet = false
+                    renameText = session.name
+                    showRenameDialog = true
+                },
+            )
+            // Reconnect
+            ListItem(
+                headlineContent = { Text("重连") },
+                leadingContent = { Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(24.dp)) },
+                modifier = Modifier.clickable {
+                    showSheet = false
+                    onReconnect()
+                },
+            )
+            // Disconnect
+            ListItem(
+                headlineContent = { Text(if (session.connected) "断开" else "已断开") },
+                leadingContent = { Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(24.dp)) },
+                modifier = Modifier.clickable {
+                    if (session.connected) {
+                        showSheet = false
+                        onDisconnect()
+                    }
+                },
+                colors = ListItemDefaults.colors(
+                    headlineColor = if (session.connected)
+                        MaterialTheme.colorScheme.onSurface
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+            )
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            // Delete
+            ListItem(
+                headlineContent = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                leadingContent = {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                },
+                modifier = Modifier.clickable {
+                    showSheet = false
+                    showDeleteDialog = true
+                },
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = {
+            if (it == SwipeToDismissBoxValue.EndToStart) {
+                showDeleteDialog = true
+            }
+            false // Don't actually dismiss, just show dialog
+        }
+    )
+
+    SwipeToDismissBox(
+        state = dismissState,
+        backgroundContent = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(end = 20.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "删除",
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        },
+        enableDismissFromStartToEnd = false,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { showSheet = true },
+                )
+                .padding(vertical = 10.dp, horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                Icons.Filled.Terminal,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = if (session.connected)
+                    MaterialTheme.colorScheme.primary
+                else
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    session.name.ifBlank { "终端 #$index" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (session.connected) "已连接" else "已断开",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (session.connected)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.error,
+                )
+            }
+            // More button (3-dot menu)
+            IconButton(
+                onClick = { showSheet = true },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Filled.MoreVert,
+                    contentDescription = "更多",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun ProxyTab(

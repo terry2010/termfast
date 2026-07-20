@@ -210,6 +210,7 @@ fun ServerListScreen(navController: NavController) {
                         vpnStarting = cardVpnStarting,
                         vpnFailed = cardVpnFailed,
                         vpnError = cardVpnError,
+                        terminalSessionCount = TerminalSessionManager.getSessions(server.id).size,
                         testResult = testResult,
                         testing = testing,
                         onVpnToggle = {
@@ -297,7 +298,14 @@ fun ServerListScreen(navController: NavController) {
                             }
                         },
                         onClick = { navController.navigate("server_detail/${server.id}") },
-                        onTerminal = { navController.navigate("terminal/${server.id}") },
+                        onTerminal = {
+                            val sessions = TerminalSessionManager.getSessions(server.id)
+                            when (sessions.size) {
+                                0 -> navController.navigate("terminal/${server.id}")
+                                1 -> navController.navigate("terminal/${server.id}/${sessions[0].sessionId}")
+                                else -> navController.navigate("server_detail/${server.id}")
+                            }
+                        },
                         onDelete = {
                             scope.launch {
                                 withContext(Dispatchers.IO) {
@@ -357,6 +365,7 @@ private fun ServerCard(
     vpnError: String? = null,
     proxyRunning: Boolean,
     proxyStarting: Boolean = false,
+    terminalSessionCount: Int = 0,
     testResult: String?,
     testing: Boolean,
     onVpnToggle: () -> Unit,
@@ -567,12 +576,26 @@ private fun ServerCard(
                     loading = proxyStarting,
                     tint = if (proxyRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                // Terminal button
-                OutlinedIconButton(
-                    icon = Icons.Filled.Terminal,
-                    contentDescription = "终端",
-                    onClick = onTerminal,
-                )
+                // Terminal button with badge
+                Box {
+                    OutlinedIconButton(
+                        icon = Icons.Filled.Terminal,
+                        contentDescription = "终端",
+                        onClick = onTerminal,
+                    )
+                    if (terminalSessionCount > 0) {
+                        Badge(
+                            modifier = Modifier.align(Alignment.TopEnd),
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ) {
+                            Text(
+                                if (terminalSessionCount > 9) "9+" else terminalSessionCount.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                }
                 // Test button
                 OutlinedIconButton(
                     icon = Icons.Filled.Speed,
