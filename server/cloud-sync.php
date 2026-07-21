@@ -13,7 +13,7 @@
  * 部署：
  *   1. 放到服务器 /var/www/html/tools/cloud-sync.php
  *   2. 配置 app_key / app_secret，二选一：
- *      a) 复制 config.local.php.example 为 config.local.php，填入值
+ *      a) 复制 config.local.example.php 为 config.local.php，填入值
  *         （config.local.php 已在 .gitignore，不会提交）
  *      b) 或在 Nginx/PHP-FPM 配置环境变量：
  *           fastcgi_param BAIDU_APP_KEY "xxx";
