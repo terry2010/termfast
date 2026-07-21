@@ -433,7 +433,7 @@ private fun SetupPasswordDialog(
 ) {
     var pw by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
-    val canSubmit = pw.length >= 4 && pw == confirm && !busy
+    val canSubmit = pw.length >= 8 && pw == confirm && !busy
 
     AlertDialog(
         onDismissRequest = { onDismiss() },
@@ -483,7 +483,7 @@ private fun ChangePasswordDialog(
     var old by remember { mutableStateOf("") }
     var new by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
-    val canSubmit = old.isNotEmpty() && new.length >= 4 && new == confirm && !busy
+    val canSubmit = old.isNotEmpty() && new.length >= 8 && new == confirm && !busy
 
     AlertDialog(
         onDismissRequest = { onDismiss() },

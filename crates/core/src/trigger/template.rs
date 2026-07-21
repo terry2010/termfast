@@ -212,11 +212,20 @@ mod tests {
         vars.insert("OldIP".into(), "5.6.7.8".into());
         vars.insert("ProtectedPort".into(), "3000".into());
 
-        let template = "firewall-cmd --permanent --add-rich-rule='rule family=\"{{.IPFamily}}\" source address=\"{{.NewIP}}\" port protocol=\"tcp\" port=\"{{.ProtectedPort}}\" accept'";
+        // New template format: variables assigned to shell vars first, then used as $VAR
+        let template = "FAMILY={{.IPFamily}}; NEWIP={{.NewIP}}; PORT={{.ProtectedPort}}; firewall-cmd --permanent --add-rich-rule=\"rule family=\\\"$FAMILY\\\" source address=\\\"$NEWIP\\\" port protocol=\\\"tcp\\\" port=\\\"$PORT\\\" accept\"";
         let result = render_template(template, &vars);
-        assert!(result.contains("ipv4"));
-        assert!(result.contains("1.2.3.4"));
-        assert!(result.contains("3000"));
+        // Values must appear as shell var assignments (shell-escaped in single quotes)
+        assert!(result.contains("FAMILY='ipv4'"));
+        assert!(result.contains("NEWIP='1.2.3.4'"));
+        assert!(result.contains("PORT='3000'"));
+        // Inside the double-quoted rich rule, $VAR must NOT be single-quoted
+        assert!(result.contains("family=\\\"$FAMILY\\\""));
+        assert!(result.contains("address=\\\"$NEWIP\\\""));
+        assert!(result.contains("port=\\\"$PORT\\\""));
+        // Must NOT contain single-quoted values inside the rich rule
+        assert!(!result.contains("family=\\\"'ipv4'\\\""));
+        assert!(!result.contains("address=\\\"'1.2.3.4'\\\""));
     }
 
     #[test]
@@ -283,12 +292,17 @@ mod tests {
         vars.insert("ServerName".into(), "Tokyo".into());
         vars.insert("NewIP".into(), "1.2.3.4".into());
 
-        let template = "curl --max-time 8 -s 'https://api.telegram.org/bot{{.TelegramToken}}/sendMessage' --data-urlencode 'chat_id={{.TelegramChatID}}' --data-urlencode 'text=VPS {{.ServerName}} reconnected from {{.NewIP}}'";
+        // New template format: variables assigned to shell vars first
+        let template = "TOKEN={{.TelegramToken}}; CHATID={{.TelegramChatID}}; NAME={{.ServerName}}; IP={{.NewIP}}; curl --max-time 8 -s \"https://api.telegram.org/bot$TOKEN/sendMessage\" --data-urlencode \"chat_id=$CHATID\" --data-urlencode \"text=VPS $NAME reconnected from $IP\"";
         let result = render_template(template, &vars);
-        assert!(result.contains("123:ABC"));
-        assert!(result.contains("456"));
-        assert!(result.contains("Tokyo"));
-        assert!(result.contains("1.2.3.4"));
+        // Shell var assignments must be single-quoted (shell-escaped)
+        assert!(result.contains("TOKEN='123:ABC'"));
+        assert!(result.contains("CHATID='456'"));
+        assert!(result.contains("NAME='Tokyo'"));
+        assert!(result.contains("IP='1.2.3.4'"));
+        // URL must use $TOKEN (not literal token value with quotes)
+        assert!(result.contains("bot$TOKEN/sendMessage"));
+        assert!(!result.contains("bot'123:ABC'"));
     }
 
     #[test]

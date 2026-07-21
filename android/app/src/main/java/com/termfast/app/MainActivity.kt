@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity() {
         // (32 MiB memory) can take 200-500ms on low-end devices.
         CoroutineScope(Dispatchers.IO).launch {
             val ok = CredentialManager.tryCachedUnlock(this@MainActivity)
-            android.util.Log.i("MainActivity", "tryCachedUnlock result: $ok, isUnlocked: ${CredentialManager.isUnlocked()}")
+            if (BuildConfig.DEBUG) android.util.Log.i("MainActivity", "tryCachedUnlock result: $ok, isUnlocked: ${CredentialManager.isUnlocked()}")
         }
         NotificationHelper.ensureChannels(this)
         requestNotificationPermission()
@@ -203,6 +203,16 @@ class MainActivity : ComponentActivity() {
 
     private fun handleStartVpnIntent(intent: android.content.Intent) {
         if (intent.getBooleanExtra("start_vpn", false)) {
+            // M-2: Reject start_vpn from external apps — only accept from launcher (system) or self.
+            // getCallingPackage() is unreliable for activity intents, so we check the action:
+            // our own TileService uses a specific action; third-party startActivity won't set it.
+            val action = intent.action
+            val isLauncher = action == android.content.Intent.ACTION_MAIN
+            val isOwnAction = action == "com.termfast.app.START_VPN"
+            if (!isLauncher && !isOwnAction) {
+                android.util.Log.w("MainActivity", "Rejected start_vpn with action=$action")
+                return
+            }
             val serverId = intent.getStringExtra("server_id") ?: return
             val prepare = VpnService.prepare(this)
             if (prepare != null) {

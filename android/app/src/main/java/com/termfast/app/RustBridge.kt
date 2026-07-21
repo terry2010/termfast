@@ -13,11 +13,14 @@ object RustBridge {
         if (!loaded) {
             System.loadLibrary("termfast_android_ffi")
             nativeInit()
+            // M-1: Set Rust log level based on BuildConfig.DEBUG
+            nativeSetLogLevel(if (BuildConfig.DEBUG) 4 else 2) // Debug=4, Warn=2
             loaded = true
         }
     }
 
     external fun nativeInit()
+    external fun nativeSetLogLevel(level: Int)
     external fun nativePing(): Int
 
     // --- Config ---

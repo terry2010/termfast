@@ -1922,12 +1922,14 @@ async fn handle_import_full(state: &DaemonState, params: &serde_json::Value) -> 
     termfast_core::migration::reset_attempts();
 
     // Apply config
-    let mgr = state.config_manager.lock().await;
-    mgr.modify(|config| {
-        *config = export_data.config.clone();
-    })
-    .await
-    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    {
+        let mgr = state.config_manager.lock().await;
+        mgr.modify(|config| {
+            *config = export_data.config.clone();
+        })
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    } // mgr dropped here — releases the lock before re-acquiring below
 
     // Restore credentials
     for (server_id, pwd) in &export_data.passwords {
@@ -1942,14 +1944,46 @@ async fn handle_import_full(state: &DaemonState, params: &serde_json::Value) -> 
         );
         let _ = state.credential_store.save(&key, pass);
     }
-    // Restore key files
-    for (server_id, content) in &export_data.key_files {
-        // Find the server's key_path from config
+    // Restore key files — validate key_path to prevent path traversal
+    // (H-1: imported key_path could point to arbitrary files like authorized_keys)
+    {
         let mgr = state.config_manager.lock().await;
         let config = mgr.get().await;
-        if let Some(server) = config.servers.iter().find(|s| s.id == *server_id) {
-            if !server.ssh.key_path.is_empty() {
-                let _ = std::fs::write(&server.ssh.key_path, content);
+        for (server_id, content) in &export_data.key_files {
+            if let Some(server) = config.servers.iter().find(|s| s.id == *server_id) {
+                if server.ssh.key_path.is_empty() {
+                    continue;
+                }
+                // Only allow writing to ~/.ssh/ or app data dir; reject .. traversal
+                let key_path = std::path::Path::new(&server.ssh.key_path);
+                let canonical = match key_path.canonicalize() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        // File may not exist yet; canonicalize parent
+                        match key_path.parent().and_then(|p| p.canonicalize().ok()) {
+                            Some(parent) => parent.join(key_path.file_name().unwrap_or_default()),
+                            None => continue,
+                        }
+                    }
+                };
+                let home = directories::BaseDirs::new()
+                    .map(|d| d.home_dir().to_path_buf())
+                    .unwrap_or_default();
+                let ssh_dir = home.join(".ssh");
+                let is_safe = canonical.starts_with(&ssh_dir)
+                    || canonical.starts_with(std::env::temp_dir().join("termfast"));
+                if !is_safe {
+                    tracing::warn!("import_full: refusing to write key to {}", canonical.display());
+                    continue;
+                }
+                if let Err(e) = std::fs::write(&canonical, content) {
+                    tracing::warn!("import_full: failed to write key file {}: {}", canonical.display(), e);
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&canonical, std::fs::Permissions::from_mode(0o600));
+                }
             }
         }
     }

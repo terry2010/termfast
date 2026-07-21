@@ -433,6 +433,7 @@ class SshVpnService : VpnService() {
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setContentIntent(pi)
             .setOngoing(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .build()
     }
 

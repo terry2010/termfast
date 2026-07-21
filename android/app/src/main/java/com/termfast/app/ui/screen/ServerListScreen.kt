@@ -2,6 +2,7 @@ package com.termfast.app.ui.screen
 
 import android.app.Activity
 import android.net.VpnService
+import com.termfast.app.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -256,10 +257,10 @@ fun ServerListScreen(navController: NavController) {
                                         }
                                         val socks5Port = server.proxy?.socks5_port ?: 1080
                                         val startOk = repo.startProxy(server.id, socks5Port, 0, 0)
-                                        android.util.Log.i("ServerList", "proxy: startProxy returned $startOk for ${server.id} port $socks5Port")
+                                        if (BuildConfig.DEBUG) android.util.Log.i("ServerList", "proxy: startProxy returned $startOk for ${server.id} port $socks5Port")
                                         startOk
                                     }
-                                    android.util.Log.i("ServerList", "proxy: ok=$ok, clearing starting state for ${server.id}")
+                                    if (BuildConfig.DEBUG) android.util.Log.i("ServerList", "proxy: ok=$ok, clearing starting state for ${server.id}")
                                     proxyStartingIds = proxyStartingIds - server.id
                                     if (ok) {
                                         proxyRunningIds = proxyRunningIds + server.id

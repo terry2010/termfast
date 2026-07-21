@@ -20,6 +20,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# M-2: restrict default token permissions at workflow level
+permissions:
+  contents: read
+
 jobs:
   # === Build signed bundles for each desktop platform ===
   build:
@@ -39,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     continue-on-error: ${{ matrix.platform == 'windows-latest' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - name: Check required secrets
         shell: bash
@@ -52,12 +56,12 @@ jobs:
           fi
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
         with:
           node-version: 20
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -69,10 +73,10 @@ jobs:
           true
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
       - name: Build Tauri release bundle
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@2d793bf2c8c505b9b76211601b09aab48922225d # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -91,12 +95,15 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - name: Check required secrets
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          TERMFAST_STORE_PASSWORD: ${{ secrets.TERMFAST_STORE_PASSWORD }}
+          TERMFAST_KEY_ALIAS: ${{ secrets.TERMFAST_KEY_ALIAS }}
+          TERMFAST_KEY_PASSWORD: ${{ secrets.TERMFAST_KEY_PASSWORD }}
         run: |
           if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "::error::ANDROID_KEYSTORE_BASE64 secret is missing."
@@ -104,14 +111,19 @@ jobs:
             echo "Add the output as a GitHub Secret named ANDROID_KEYSTORE_BASE64"
             exit 1
           fi
+          if [ -z "$TERMFAST_STORE_PASSWORD" ] || [ -z "$TERMFAST_KEY_ALIAS" ] || [ -z "$TERMFAST_KEY_PASSWORD" ]; then
+            echo "::error::TERMFAST_STORE_PASSWORD / TERMFAST_KEY_ALIAS / TERMFAST_KEY_PASSWORD secrets are missing."
+            echo "Add them in GitHub Settings → Secrets → Actions"
+            exit 1
+          fi
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           targets: aarch64-linux-android
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
         with:
           packages: ''
       - name: Install Android SDK packages
@@ -123,7 +135,7 @@ jobs:
             "ndk;27.3.13750724"
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v4
         with:
           distribution: temurin
           java-version: 17
@@ -182,12 +194,23 @@ jobs:
           cp android/app/build/outputs/apk/release/app-release.apk \
              android/TermFast-${VERSION}-android-arm64.apk
 
+      - name: Compute APK SHA-256
+        id: apk_sha
+        run: |
+          APK=$(ls android/TermFast-*-android-arm64.apk)
+          SHA=$(sha256sum "$APK" | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "APK SHA-256: $SHA"
+
       - name: Upload APK to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: ${{ inputs.tag || github.ref_name }}
-          body: "See the assets below to download this version."
+          body: |
+            See the assets below to download this version.
+
+            **Android APK SHA-256:** `${{ steps.apk_sha.outputs.sha256 }}`
           draft: true
           prerelease: false
           files: android/TermFast-*-android-arm64.apk
@@ -200,10 +223,10 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
         with:
           node-version: 20
 
@@ -215,7 +238,7 @@ jobs:
         run: node scripts/generate-latest-json.mjs
 
       - name: Deploy latest.json to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+        uses: peaceiris/actions-gh-pages@1ef5a1b1df4c63fe21a2242edbee6cac921ece01 # v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./public

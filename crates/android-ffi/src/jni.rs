@@ -111,6 +111,11 @@ fn jstring_to_string(env: &mut JNIEnv, s: &JString) -> String {
         .unwrap_or_default()
 }
 
+/// Like jstring_to_string but returns Zeroizing<String> for sensitive data (L-10)
+fn jstring_to_secret(env: &mut JNIEnv, s: &JString) -> zeroize::Zeroizing<String> {
+    zeroize::Zeroizing::new(jstring_to_string(env, s))
+}
+
 fn string_to_jstring<'a>(env: &mut JNIEnv<'a>, s: &str) -> JString<'a> {
     env.new_string(s).unwrap_or_else(|_| env.new_string("").unwrap())
 }
@@ -166,6 +171,26 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeInit(
     _class: JClass,
 ) {
     crate::runtime::init_android_logging();
+}
+
+/// Set the Rust log level (M-1: Kotlin calls this with Debug or Warn based on BuildConfig.DEBUG)
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetLogLevel(
+    mut _env: JNIEnv,
+    _class: JClass,
+    level: jint,
+) {
+    let filter = match level {
+        0 => log::LevelFilter::Off,
+        1 => log::LevelFilter::Error,
+        2 => log::LevelFilter::Warn,
+        3 => log::LevelFilter::Info,
+        4 => log::LevelFilter::Debug,
+        5 => log::LevelFilter::Trace,
+        _ => log::LevelFilter::Warn,
+    };
+    crate::runtime::set_log_level(filter);
 }
 
 #[cfg(target_os = "android")]
@@ -361,6 +386,18 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoveServer(
             cfg.servers.retain(|s| s.id != id_str);
         }));
     }
+    let data_dir = st.data_dir.clone();
+    drop(st);
+    // Clean up credentials and key files (H-1/L-3: was not cleaned up)
+    let store = crate::credential::android_credential_store();
+    let _ = store.delete(&termfast_credential::make_key(&id_str, "password"));
+    let _ = store.delete(&termfast_credential::make_key(&id_str, "key"));
+    let _ = store.delete(&termfast_credential::make_key(&id_str, "key_passphrase"));
+    // Remove the key directory (private key file on disk)
+    if !data_dir.is_empty() {
+        let key_dir = std::path::PathBuf::from(&data_dir).join("keys").join(&id_str);
+        let _ = std::fs::remove_dir_all(&key_dir);
+    }
     bool_to_jbool(true)
 }
 
@@ -390,6 +427,14 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
     use termfast_core::ssh::auth::AuthMethod;
 
     let id_str = jstring_to_string(&mut _env, &id);
+    // Validate server_id to prevent path traversal (L-7: consistent with generate_keypair_at)
+    if !id_str.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        tracing::error!("nativeConnectServer: invalid server_id '{}'", id_str);
+        *last_error_code().lock().unwrap() = "InvalidParams".to_string();
+        *last_error_raw().lock().unwrap() = "无效的服务器 ID".to_string();
+        *last_connect_error().lock().unwrap() = "无效的服务器 ID".to_string();
+        return bool_to_jbool(false);
+    }
     let (instance, data_dir) = {
         let st = state().lock().unwrap();
         let instance = match st.servers.get(&id_str).cloned() {
@@ -421,7 +466,13 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
         let key_dir = std::path::PathBuf::from(&data_dir).join("keys").join(&id_str);
         let _ = std::fs::create_dir_all(&key_dir);
         let key_path = key_dir.join("id_ed25519");
-        let _ = std::fs::write(&key_path, key_content);
+        let _ = std::fs::write(&key_path, &key_content);
+        // Set 0600 permissions on the private key file (H-1: was missing)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+        }
         AuthMethod::Key {
             key_path: key_path.to_string_lossy().to_string(),
             passphrase,
@@ -519,6 +570,15 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeDisconnectServer
     if let Some(instance) = instance {
         let rt = runtime();
         let _ = rt.block_on(instance.disconnect());
+        // Clean up the private key file from disk after disconnect (H-1)
+        let data_dir = {
+            let st = state().lock().unwrap();
+            st.data_dir.clone()
+        };
+        if !data_dir.is_empty() {
+            let key_dir = std::path::PathBuf::from(&data_dir).join("keys").join(&id_str);
+            let _ = std::fs::remove_dir_all(&key_dir);
+        }
         bool_to_jbool(true)
     } else {
         bool_to_jbool(false)
@@ -973,7 +1033,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialInitia
     _class: JClass,
     master_password: JString,
 ) -> jboolean {
-    let pw = jstring_to_string(&mut env, &master_password);
+    let pw = jstring_to_secret(&mut env, &master_password);
     let store = crate::credential::android_credential_store();
     bool_to_jbool(store.initialize(&pw).is_ok())
 }
@@ -987,7 +1047,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialUnlock
     _class: JClass,
     master_password: JString,
 ) -> jboolean {
-    let pw = jstring_to_string(&mut env, &master_password);
+    let pw = jstring_to_secret(&mut env, &master_password);
     let store = crate::credential::android_credential_store();
     bool_to_jbool(store.unlock(&pw).is_ok())
 }
@@ -1049,7 +1109,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialMigrat
     _class: JClass,
     master_password: JString,
 ) -> jboolean {
-    let pw = jstring_to_string(&mut env, &master_password);
+    let pw = jstring_to_secret(&mut env, &master_password);
     let store = crate::credential::android_credential_store();
     bool_to_jbool(store.migrate(&pw).is_ok())
 }
@@ -1106,7 +1166,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialImport
     master_password: JString,
 ) -> jboolean {
     let src = jstring_to_string(&mut env, &src_path);
-    let pw = jstring_to_string(&mut env, &master_password);
+    let pw = jstring_to_secret(&mut env, &master_password);
     let store = crate::credential::android_credential_store();
     bool_to_jbool(store.import_from(std::path::Path::new(&src), &pw).is_ok())
 }

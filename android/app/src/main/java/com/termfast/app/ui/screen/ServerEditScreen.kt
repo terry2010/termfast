@@ -99,21 +99,24 @@ fun ServerEditScreen(navController: NavController, serverId: String?) {
             FloatingActionButton(
                 onClick = {
                     val id = serverId ?: UUID.randomUUID().toString()
+                    // L-8: validate port ranges (1-65535)
+                    fun validPort(s: String, default: Int) =
+                        s.toIntOrNull()?.let { if (it in 1..65535) it else default } ?: default
                     val config = ServerConfig(
                         id = id,
                         name = name,
                         ssh = SshConfig(
                             host = host,
-                            port = port.toIntOrNull() ?: 22,
+                            port = validPort(port, 22),
                             user = user,
                             auth_method = authMethod,
                             skip_hostkey_verify = skipHostkeyVerify,
                         ),
                         proxy = ProxyConfig(
                             enabled = proxyEnabled,
-                            socks5_port = socks5Port.toIntOrNull() ?: 1080,
-                            http_port = httpPort.toIntOrNull() ?: 0,
-                            mixed_port = mixedPort.toIntOrNull() ?: 0,
+                            socks5_port = validPort(socks5Port, 1080),
+                            http_port = validPort(httpPort, 0),
+                            mixed_port = validPort(mixedPort, 0),
                         ),
                         ip_check = existingIpCheck,
                         triggers = existingTriggers,

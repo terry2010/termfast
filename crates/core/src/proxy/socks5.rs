@@ -396,13 +396,13 @@ mod tests {
 /// Does NOT short-circuit on length mismatch — always compares the full
 ///   shorter slice to avoid leaking length information via timing.
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = 0u8;
-    // XOR length difference so different lengths are detected
-    diff ^= (a.len() as u8).wrapping_sub(b.len() as u8);
+    let mut diff = 0u32;
+    // Compare full length difference (L-7: was truncated to u8, now u32)
+    diff ^= (a.len() as u32).wrapping_sub(b.len() as u32);
     // Compare up to the shorter length
     let min_len = a.len().min(b.len());
     for i in 0..min_len {
-        diff |= a[i] ^ b[i];
+        diff |= (a[i] ^ b[i]) as u32;
     }
     diff == 0
 }

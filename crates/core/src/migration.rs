@@ -107,12 +107,13 @@ pub fn export_full(master_password: &str, data: &FullExportData) -> Result<Vec<u
     // Serialize data
     let plaintext = serde_json::to_vec(data)?;
 
-    // Encrypt
+    // Encrypt — use MAGIC as AAD (M-4: bind magic to GCM authentication)
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| Error::Crypto(format!("aes init error: {}", e)))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
+    let payload = aes_gcm::aead::Payload { msg: plaintext.as_ref(), aad: MAGIC.as_slice() };
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
+        .encrypt(nonce, payload)
         .map_err(|e| Error::Crypto(format!("aes encrypt error: {}", e)))?;
 
     // Build blob: [magic][salt][nonce][ciphertext]
@@ -196,7 +197,10 @@ pub fn import_full(master_password: &str, blob: &[u8]) -> Result<FullExportData>
         .map_err(|e| Error::Crypto(format!("aes init error: {}", e)))?;
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let plaintext = match cipher.decrypt(nonce, ciphertext) {
+    // Use magic as AAD (M-4: bind magic to GCM authentication)
+    let aad = magic;
+    let payload = aes_gcm::aead::Payload { msg: ciphertext, aad };
+    let plaintext = match cipher.decrypt(nonce, payload) {
         Ok(pt) => pt,
         Err(_) => {
             // Wrong password — increment attempt counter

@@ -101,7 +101,7 @@ class GitHubReleaseUpdater(
                 return@withContext null
             }
             val sha256Hex = digest.digest().joinToString("") { "%02x".format(it) }
-            android.util.Log.i("GitHubReleaseUpdater",
+            if (com.termfast.app.BuildConfig.DEBUG) android.util.Log.i("GitHubReleaseUpdater",
                 "Downloaded APK: size=${outFile.length()}, sha256=$sha256Hex")
             DownloadResult(outFile, sha256Hex, expected, outFile.length())
         } catch (e: Exception) {
@@ -116,6 +116,15 @@ class GitHubReleaseUpdater(
         if (expectedDigest.isNullOrBlank()) return false  // fail closed
         val expected = expectedDigest.removePrefix("sha256:").trim().lowercase()
         return result.sha256.lowercase() == expected
+    }
+
+    /// Extract APK SHA-256 from the release body (M-3: digest field is always null
+    /// because GitHub API doesn't return it; we parse it from the body instead).
+    /// Expects format: **Android APK SHA-256:** `abc123...`
+    fun extractSha256FromBody(body: String?): String? {
+        if (body.isNullOrBlank()) return null
+        val regex = Regex("""Android APK SHA-256[:\s]*`?([0-9a-fA-F]{64})`?""")
+        return regex.find(body)?.groupValues?.getOrNull(1)?.lowercase()
     }
 
     fun installApk(file: File) {

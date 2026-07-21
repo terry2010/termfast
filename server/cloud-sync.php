@@ -27,6 +27,11 @@ $DROPBOX_APP_SECRET = getenv('DROPBOX_APP_SECRET') ?: '';
 $BAIDU_APP_KEY      = getenv('BAIDU_APP_KEY') ?: '';
 $BAIDU_APP_SECRET   = getenv('BAIDU_APP_SECRET') ?: '';
 
+// === 安全响应头 (L-2) ===
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Cache-Control: no-store');
+
 // CORS: not needed — HTTP calls come from Rust reqwest (not browser fetch),
 // so CORS does not apply. The webview never calls this server directly;
 // all requests go through Tauri IPC → Rust reqwest → here.
@@ -135,6 +140,18 @@ function handleAuthUrl() {
     } elseif ($provider === 'baidu') {
         // 百度 Authorization Code flow（有 refresh_token！不再用 implicit grant）
         $state = bin2hex(random_bytes(16));
+        // L-1: Store state server-side for later verification in exchange
+        $stateFile = sys_get_temp_dir() . '/termfast_oauth_states.json';
+        $states = [];
+        if (is_file($stateFile)) {
+            $states = json_decode(file_get_contents($stateFile), true) ?: [];
+        }
+        $states[$state] = time();
+        // Prune entries older than 10 minutes
+        foreach ($states as $k => $v) {
+            if (time() - $v > 600) unset($states[$k]);
+        }
+        file_put_contents($stateFile, json_encode($states));
         $url = sprintf(
             'https://openapi.baidu.com/oauth/2.0/authorize?response_type=code&client_id=%s&redirect_uri=%s&scope=basic,netdisk&display=mobile&state=%s',
             urlencode($BAIDU_APP_KEY),
@@ -177,7 +194,33 @@ function handleExchange() {
         echo json_encode(['error' => 'missing code']);
         return;
     }
-    
+
+    // Validate redirect_uri (H-2: was missing — only auth_url endpoint checked)
+    if ($redirect_uri !== 'oob' && !preg_match('/^https?:\/\/localhost(:\d+)?\//', $redirect_uri)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'invalid redirect_uri']);
+        return;
+    }
+
+    // L-1: Validate OAuth state for baidu (CSRF protection)
+    if ($provider === 'baidu') {
+        if (!$state) {
+            http_response_code(400);
+            echo json_encode(['error' => 'missing state']);
+            return;
+        }
+        $stateFile = sys_get_temp_dir() . '/termfast_oauth_states.json';
+        $states = is_file($stateFile) ? (json_decode(file_get_contents($stateFile), true) ?: []) : [];
+        if (!isset($states[$state])) {
+            http_response_code(400);
+            echo json_encode(['error' => 'invalid or expired state']);
+            return;
+        }
+        // Consume the state (one-time use)
+        unset($states[$state]);
+        file_put_contents($stateFile, json_encode($states));
+    }
+
     if ($provider === 'dropbox') {
         $params = http_build_query([
             'grant_type' => 'authorization_code',

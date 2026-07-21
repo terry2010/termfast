@@ -9,11 +9,16 @@
 require_once __DIR__ . '/lib/geoip.php';
 
 header('Content-Type: application/json; charset=utf-8');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
 
-// 优先取真实 IP（处理反代场景）
-$ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? '';
-if (strpos($ip, ',') !== false) {
-    $ip = trim(explode(',', $ip)[0]);
+// M-1: 优先使用 REMOTE_ADDR（不可被客户端伪造），仅在反代场景下才解析 XFF
+$ip = $_SERVER['REMOTE_ADDR'] ?? '';
+if ($ip === '' || $ip === '127.0.0.1') {
+    $xff = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_X_REAL_IP'] ?? '';
+    if ($xff !== '') {
+        $ip = trim(explode(',', $xff)[0]);
+    }
 }
 
 $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
