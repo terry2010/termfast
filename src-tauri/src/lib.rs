@@ -232,6 +232,8 @@ pub fn run() {
             ipc_cloud_sync_delete_remote,
             ipc_cloud_sync_disconnect,
             ipc_cloud_sync_refresh_token,
+            ipc_cloud_sync_auth_with_callback,
+            ipc_cloud_sync_wait_callback,
             // Credential encryption management
             credential_manager::ipc_credential_status,
             credential_manager::ipc_initialize_credentials,
@@ -1222,7 +1224,6 @@ async fn ipc_cloud_sync_exchange_code(
 async fn ipc_cloud_sync_save_token(
     state: tauri::State<'_, AppState>,
     provider: String,
-    passphrase: String,
     access_token: String,
     refresh_token: Option<String>,
     expires_at: Option<i64>,
@@ -1230,7 +1231,6 @@ async fn ipc_cloud_sync_save_token(
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({
         "provider": provider,
-        "passphrase": passphrase,
         "access_token": access_token,
     });
     if let Some(rt) = refresh_token {
@@ -1254,12 +1254,11 @@ async fn ipc_cloud_sync_save_token(
 async fn ipc_cloud_sync_load_token(
     state: tauri::State<'_, AppState>,
     provider: String,
-    passphrase: String,
 ) -> Result<serde_json::Value, String> {
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::CloudSyncLoadToken,
-        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+        serde_json::json!({ "provider": provider }),
     )
     .await
 }
@@ -1268,17 +1267,20 @@ async fn ipc_cloud_sync_load_token(
 async fn ipc_cloud_sync_upload(
     state: tauri::State<'_, AppState>,
     provider: String,
-    passphrase: String,
     master_password: String,
+    sync_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let mut params = serde_json::json!({
+        "provider": provider,
+        "master_password": master_password,
+    });
+    if let Some(sp) = sync_path {
+        params["sync_path"] = serde_json::json!(sp);
+    }
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::CloudSyncUpload,
-        serde_json::json!({
-            "provider": provider,
-            "passphrase": passphrase,
-            "master_password": master_password,
-        }),
+        params,
     )
     .await
 }
@@ -1287,12 +1289,16 @@ async fn ipc_cloud_sync_upload(
 async fn ipc_cloud_sync_download(
     state: tauri::State<'_, AppState>,
     provider: String,
-    passphrase: String,
+    sync_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let mut params = serde_json::json!({ "provider": provider });
+    if let Some(sp) = sync_path {
+        params["sync_path"] = serde_json::json!(sp);
+    }
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::CloudSyncDownload,
-        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+        params,
     )
     .await
 }
@@ -1301,12 +1307,16 @@ async fn ipc_cloud_sync_download(
 async fn ipc_cloud_sync_file_info(
     state: tauri::State<'_, AppState>,
     provider: String,
-    passphrase: String,
+    sync_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let mut params = serde_json::json!({ "provider": provider });
+    if let Some(sp) = sync_path {
+        params["sync_path"] = serde_json::json!(sp);
+    }
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::CloudSyncGetFileInfo,
-        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+        params,
     )
     .await
 }
@@ -1315,12 +1325,16 @@ async fn ipc_cloud_sync_file_info(
 async fn ipc_cloud_sync_delete_remote(
     state: tauri::State<'_, AppState>,
     provider: String,
-    passphrase: String,
+    sync_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let mut params = serde_json::json!({ "provider": provider });
+    if let Some(sp) = sync_path {
+        params["sync_path"] = serde_json::json!(sp);
+    }
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::CloudSyncDeleteRemote,
-        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+        params,
     )
     .await
 }
@@ -1329,12 +1343,11 @@ async fn ipc_cloud_sync_delete_remote(
 async fn ipc_cloud_sync_disconnect(
     state: tauri::State<'_, AppState>,
     provider: String,
-    passphrase: String,
 ) -> Result<serde_json::Value, String> {
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::CloudSyncDisconnect,
-        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+        serde_json::json!({ "provider": provider }),
     )
     .await
 }
@@ -1343,12 +1356,41 @@ async fn ipc_cloud_sync_disconnect(
 async fn ipc_cloud_sync_refresh_token(
     state: tauri::State<'_, AppState>,
     provider: String,
-    passphrase: String,
 ) -> Result<serde_json::Value, String> {
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::CloudSyncRefreshToken,
-        serde_json::json!({ "provider": provider, "passphrase": passphrase }),
+        serde_json::json!({ "provider": provider }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_auth_with_callback(
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    let mut params = serde_json::json!({ "provider": provider });
+    if let Some(p) = port {
+        params["port"] = serde_json::json!(p);
+    }
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncAuthWithCallback,
+        params,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_cloud_sync_wait_callback(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::CloudSyncWaitCallback,
+        serde_json::json!({}),
     )
     .await
 }

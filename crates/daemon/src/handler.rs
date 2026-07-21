@@ -99,6 +99,8 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::CloudSyncDeleteRemote => handle_cloud_sync_delete_remote(state, &request.params).await,
         Action::CloudSyncDisconnect => handle_cloud_sync_disconnect(state, &request.params).await,
         Action::CloudSyncRefreshToken => handle_cloud_sync_refresh_token(state, &request.params).await,
+        Action::CloudSyncAuthWithCallback => handle_cloud_sync_auth_with_callback(state, &request.params).await,
+        Action::CloudSyncWaitCallback => handle_cloud_sync_wait_callback(state, &request.params).await,
     };
 
     match result {
@@ -3028,13 +3030,18 @@ async fn log_and_broadcast(
 /// Get the token file path (stored alongside config).
 fn token_file_path(_state: &DaemonState) -> std::path::PathBuf {
     directories::BaseDirs::new()
-        .map(|d| d.config_dir().join("termfast").join("cloud_tokens.enc"))
-        .unwrap_or_else(|| std::path::PathBuf::from("cloud_tokens.enc"))
+        .map(|d| d.config_dir().join("termfast").join("cloud_tokens.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("cloud_tokens.json"))
 }
 
 /// Get the sync file path on cloud storage.
-fn sync_path() -> &'static str {
-    termfast_cloud_sync::SYNC_FILE_PATH
+/// Reads custom path from params if provided, otherwise uses default.
+fn sync_path_from_params(params: &serde_json::Value) -> String {
+    params["sync_path"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| termfast_cloud_sync::SYNC_FILE_PATH.to_string())
 }
 
 /// Build a provider instance from the provider type string.
@@ -3116,9 +3123,6 @@ async fn handle_cloud_sync_save_token(
     let provider = params["provider"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
-    let passphrase = params["passphrase"]
-        .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing passphrase"))?;
     let access_token = params["access_token"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing access_token"))?;
@@ -3141,7 +3145,7 @@ async fn handle_cloud_sync_save_token(
 
     // Load existing tokens (if any) and merge
     let mut data = if termfast_cloud_sync::token_store::token_file_exists(&path) {
-        termfast_cloud_sync::token_store::load_tokens(&path, passphrase)
+        termfast_cloud_sync::token_store::load_tokens(&path)
             .unwrap_or_default()
     } else {
         termfast_cloud_sync::token_store::TokenStoreData::default()
@@ -3156,7 +3160,7 @@ async fn handle_cloud_sync_save_token(
         },
     );
 
-    termfast_cloud_sync::token_store::save_tokens(&path, passphrase, &data)
+    termfast_cloud_sync::token_store::save_tokens(&path, &data)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token: {}", e)))?;
 
     Ok(serde_json::json!({ "ok": true }))
@@ -3169,9 +3173,6 @@ async fn handle_cloud_sync_load_token(
     let provider = params["provider"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
-    let passphrase = params["passphrase"]
-        .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing passphrase"))?;
 
     let path = token_file_path(state);
 
@@ -3179,7 +3180,7 @@ async fn handle_cloud_sync_load_token(
         return Ok(serde_json::json!({ "authenticated": false }));
     }
 
-    let data = termfast_cloud_sync::token_store::load_tokens(&path, passphrase)
+    let data = termfast_cloud_sync::token_store::load_tokens(&path)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
 
     let stored = data.tokens.get(provider);
@@ -3197,16 +3198,13 @@ async fn handle_cloud_sync_upload(
     let provider = params["provider"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
-    let passphrase = params["passphrase"]
-        .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing passphrase"))?;
     let master_password = params["master_password"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing master_password"))?;
 
     // Load cloud token
     let path = token_file_path(state);
-    let data = termfast_cloud_sync::token_store::load_tokens(&path, passphrase)
+    let data = termfast_cloud_sync::token_store::load_tokens(&path)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
     let stored = data.tokens.get(provider).ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
@@ -3217,7 +3215,8 @@ async fn handle_cloud_sync_upload(
 
     // Upload to cloud
     let p = build_provider(provider)?;
-    p.upload(&stored.token, sync_path(), &export_blob)
+    let sync_path = sync_path_from_params(params);
+    p.upload(&stored.token, &sync_path, &export_blob)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("upload: {}", e)))?;
 
@@ -3231,13 +3230,10 @@ async fn handle_cloud_sync_download(
     let provider = params["provider"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
-    let passphrase = params["passphrase"]
-        .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing passphrase"))?;
 
     // Load cloud token
     let path = token_file_path(state);
-    let data = termfast_cloud_sync::token_store::load_tokens(&path, passphrase)
+    let data = termfast_cloud_sync::token_store::load_tokens(&path)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
     let stored = data.tokens.get(provider).ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
@@ -3245,8 +3241,9 @@ async fn handle_cloud_sync_download(
 
     // Download from cloud
     let p = build_provider(provider)?;
+    let sync_path = sync_path_from_params(params);
     let blob = p
-        .download(&stored.token, sync_path())
+        .download(&stored.token, &sync_path)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("download: {}", e)))?;
 
@@ -3263,20 +3260,18 @@ async fn handle_cloud_sync_file_info(
     let provider = params["provider"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
-    let passphrase = params["passphrase"]
-        .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing passphrase"))?;
 
     let path = token_file_path(state);
-    let data = termfast_cloud_sync::token_store::load_tokens(&path, passphrase)
+    let data = termfast_cloud_sync::token_store::load_tokens(&path)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
     let stored = data.tokens.get(provider).ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
 
     let p = build_provider(provider)?;
+    let sync_path = sync_path_from_params(params);
     let info = p
-        .file_info(&stored.token, sync_path())
+        .file_info(&stored.token, &sync_path)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("file_info: {}", e)))?;
 
@@ -3294,19 +3289,17 @@ async fn handle_cloud_sync_delete_remote(
     let provider = params["provider"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
-    let passphrase = params["passphrase"]
-        .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing passphrase"))?;
 
     let path = token_file_path(state);
-    let data = termfast_cloud_sync::token_store::load_tokens(&path, passphrase)
+    let data = termfast_cloud_sync::token_store::load_tokens(&path)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
     let stored = data.tokens.get(provider).ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
 
     let p = build_provider(provider)?;
-    p.delete(&stored.token, sync_path())
+    let sync_path = sync_path_from_params(params);
+    p.delete(&stored.token, &sync_path)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("delete: {}", e)))?;
 
@@ -3320,17 +3313,14 @@ async fn handle_cloud_sync_disconnect(
     let provider = params["provider"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
-    let passphrase = params["passphrase"]
-        .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing passphrase"))?;
 
     let path = token_file_path(state);
-    let mut data = termfast_cloud_sync::token_store::load_tokens(&path, passphrase)
+    let mut data = termfast_cloud_sync::token_store::load_tokens(&path)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
 
     data.tokens.remove(provider);
 
-    termfast_cloud_sync::token_store::save_tokens(&path, passphrase, &data)
+    termfast_cloud_sync::token_store::save_tokens(&path, &data)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token: {}", e)))?;
 
     Ok(serde_json::json!({ "ok": true }))
@@ -3343,12 +3333,9 @@ async fn handle_cloud_sync_refresh_token(
     let provider = params["provider"]
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
-    let passphrase = params["passphrase"]
-        .as_str()
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing passphrase"))?;
 
     let path = token_file_path(state);
-    let mut data = termfast_cloud_sync::token_store::load_tokens(&path, passphrase)
+    let mut data = termfast_cloud_sync::token_store::load_tokens(&path)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
 
     let stored = data.tokens.get(provider).cloned().ok_or_else(|| {
@@ -3371,7 +3358,7 @@ async fn handle_cloud_sync_refresh_token(
         },
     );
 
-    termfast_cloud_sync::token_store::save_tokens(&path, passphrase, &data)
+    termfast_cloud_sync::token_store::save_tokens(&path, &data)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token: {}", e)))?;
 
     Ok(serde_json::json!({
@@ -3431,4 +3418,148 @@ async fn export_encrypted_config(
     .map_err(|e| IpcError::new(ErrorCode::Internal, format!("export encrypt: {}", e)))?;
 
     Ok(blob)
+}
+
+/// Start OAuth auth with local callback server.
+/// Starts a localhost HTTP server, gets the auth URL from the proxy,
+/// stores the callback receiver in state, and returns the URL.
+/// The caller opens the URL in a browser, then calls CloudSyncWaitCallback.
+async fn handle_cloud_sync_auth_with_callback(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
+    let provider = params["provider"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
+    let port = params["port"].as_u64().unwrap_or(19834) as u16;
+
+    // Start local callback server — try port range 19834-19839
+    // (all registered as redirect URIs in Baidu console)
+    let mut server = None;
+    let mut last_err = String::new();
+    for p in port..=(port + 5).min(19839) {
+        match termfast_cloud_sync::callback::CallbackServer::start(p).await {
+            Ok(s) => {
+                server = Some(s);
+                break;
+            }
+            Err(e) => {
+                last_err = format!("port {}: {}", p, e);
+                tracing::warn!("callback server bind failed: {}", last_err);
+            }
+        }
+    }
+    let server = server.ok_or_else(|| {
+        IpcError::new(
+            ErrorCode::Internal,
+            format!("all callback ports 19834-19839 occupied: {}", last_err),
+        )
+    })?;
+
+    let redirect_uri = server.redirect_uri();
+
+    // Get auth URL from provider (via proxy server)
+    let p = build_provider(provider)?;
+    let (real_auth_url, code_verifier, state_str) = p
+        .fetch_auth_url(&redirect_uri)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("fetch auth url: {}", e)))?;
+
+    // Store pending auth info and callback receiver in state
+    let rx = server.wait_for_callback_consumer();
+    *state.cloud_sync_callback.lock().await = Some(rx);
+    *state.cloud_sync_pending.lock().await = Some(crate::server::CloudSyncPendingAuth {
+        provider: provider.to_string(),
+        code_verifier: code_verifier.unwrap_or_default(),
+        redirect_uri: redirect_uri.clone(),
+        state: state_str,
+    });
+
+    Ok(serde_json::json!({
+        "auth_url": real_auth_url,
+        "redirect_uri": redirect_uri,
+    }))
+}
+
+/// Wait for the OAuth callback to complete, then exchange code and save token.
+async fn handle_cloud_sync_wait_callback(
+    state: &DaemonState,
+    _params: &serde_json::Value,
+) -> HandlerResult {
+    // Take the callback receiver from state
+    let rx = state
+        .cloud_sync_callback
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "no pending callback"))?;
+
+    // Take pending auth info
+    let pending = state
+        .cloud_sync_pending
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "no pending auth"))?;
+
+    // Wait for callback (5 min timeout)
+    let result = match tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        rx,
+    ).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(_)) => return Err(IpcError::new(ErrorCode::Internal, "callback channel closed")),
+        Err(_) => return Err(IpcError::new(ErrorCode::Internal, "callback timed out (5 min)")),
+    };
+
+    if result.code.is_empty() {
+        return Err(IpcError::new(ErrorCode::Internal, "no code in callback"));
+    }
+
+    // Verify state for Baidu (CSRF protection)
+    if pending.provider == "baidu" && !pending.state.is_empty() && result.state != pending.state {
+        return Err(IpcError::new(ErrorCode::Internal, "OAuth state mismatch (CSRF?)"));
+    }
+
+    // Exchange code for token
+    let p = build_provider(&pending.provider)?;
+    let token = p
+        .exchange_code(&result.code, &pending.code_verifier, &pending.redirect_uri)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("OAuth exchange: {}", e)))?;
+
+    // Save token to store
+    let provider_type: termfast_cloud_sync::CloudProvider = pending
+        .provider
+        .parse::<termfast_cloud_sync::CloudProvider>()
+        .map_err(|e: termfast_cloud_sync::CloudSyncError| {
+            IpcError::new(ErrorCode::InvalidParams, e.to_string())
+        })?;
+
+    let path = token_file_path(state);
+    let mut data = if termfast_cloud_sync::token_store::token_file_exists(&path) {
+        termfast_cloud_sync::token_store::load_tokens(&path).unwrap_or_default()
+    } else {
+        termfast_cloud_sync::token_store::TokenStoreData::default()
+    };
+
+    data.tokens.insert(
+        pending.provider.clone(),
+        termfast_cloud_sync::token_store::StoredToken {
+            provider: provider_type,
+            token: token.clone(),
+            stored_at: chrono::Utc::now().timestamp(),
+        },
+    );
+
+    termfast_cloud_sync::token_store::save_tokens(&path, &data)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token: {}", e)))?;
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "access_token": token.access_token,
+        "refresh_token": token.refresh_token,
+        "expires_at": token.expires_at,
+        "token_type": token.token_type,
+    }))
 }

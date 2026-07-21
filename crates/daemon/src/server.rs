@@ -35,6 +35,19 @@ pub struct DaemonState {
     pub runtime_state: Arc<termfast_core::config::RuntimeStateManager>,
     /// Terminal session manager — interactive SSH terminals
     pub terminal_manager: Arc<crate::terminal::TerminalManager>,
+    /// Cloud sync OAuth callback receiver (set by auth_with_callback, consumed by wait_callback)
+    pub cloud_sync_callback: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<termfast_cloud_sync::callback::CallbackResult>>>>,
+    /// Cloud sync pending auth info (provider + code_verifier for the in-flight callback)
+    pub cloud_sync_pending: Arc<Mutex<Option<CloudSyncPendingAuth>>>,
+}
+
+/// Pending OAuth auth info stored while waiting for browser callback.
+#[derive(Clone)]
+pub struct CloudSyncPendingAuth {
+    pub provider: String,
+    pub code_verifier: String,
+    pub redirect_uri: String,
+    pub state: String,
 }
 
 /// A connected client
@@ -87,6 +100,8 @@ impl DaemonState {
                     },
                 ),
             ),
+            cloud_sync_callback: Arc::new(Mutex::new(None)),
+            cloud_sync_pending: Arc::new(Mutex::new(None)),
         }
     }
 

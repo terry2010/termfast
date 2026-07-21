@@ -155,6 +155,14 @@ pub enum Action {
     CloudSyncDeleteRemote,
     CloudSyncDisconnect,
     CloudSyncRefreshToken,
+    /// One-step auth: start callback server, get auth URL, wait for callback,
+    /// exchange code, save token. Params: { provider, port?, sync_path? }
+    /// Returns: { auth_url } — caller opens URL in browser, then waits.
+    /// The daemon holds the callback server and exchanges automatically.
+    CloudSyncAuthWithCallback,
+    /// Wait for the OAuth callback to complete (after CloudSyncAuthWithCallback).
+    /// Returns: { ok, access_token, refresh_token, expires_at } or error on timeout.
+    CloudSyncWaitCallback,
 }
 
 /// Event types (daemon → all clients broadcast, §10.6)

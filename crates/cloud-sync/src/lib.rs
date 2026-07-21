@@ -8,6 +8,7 @@
 //! upload, so the cloud provider only sees ciphertext.
 
 pub mod baidu;
+pub mod callback;
 pub mod dropbox;
 pub mod token_store;
 
@@ -86,6 +87,39 @@ pub trait CloudProviderTrait: Send + Sync {
     /// For PKCE flows, returns the URL + code_verifier (caller must save it).
     /// For implicit flows, returns just the URL.
     fn auth_url(&self, redirect_uri: &str) -> (String, Option<String>);
+
+    /// Fetch the real auth URL from the proxy server.
+    /// `auth_url()` returns a proxy URL; this method actually fetches it
+    /// and returns the real provider auth URL + state (for CSRF verification).
+    async fn fetch_auth_url(
+        &self,
+        redirect_uri: &str,
+    ) -> Result<(String, Option<String>, String), CloudSyncError> {
+        let (proxy_url, code_verifier) = self.auth_url(redirect_uri);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| CloudSyncError::Api(format!("http client: {}", e)))?;
+
+        let resp = client
+            .get(&proxy_url)
+            .send()
+            .await
+            .map_err(|e| CloudSyncError::Api(format!("proxy request: {}", e)))?;
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| CloudSyncError::Api(format!("proxy parse: {}", e)))?;
+
+        let real_url = json["auth_url"]
+            .as_str()
+            .ok_or_else(|| CloudSyncError::Api("proxy returned no auth_url".into()))?
+            .to_string();
+        let state = json["state"].as_str().unwrap_or("").to_string();
+
+        Ok((real_url, code_verifier, state))
+    }
 
     /// Exchange an authorization code for an OAuth token (PKCE flow).
     /// Returns error for implicit-only providers.
@@ -168,7 +202,9 @@ impl From<serde_json::Error> for CloudSyncError {
     }
 }
 
-/// Default sync file path on cloud storage
+/// Default sync file path on cloud storage.
+/// For Baidu Netdisk, this is relative to the app sandbox `/apps/termfast/`.
+/// So the full path on Baidu is `/apps/termfast/TermFast/config.enc`.
 pub const SYNC_FILE_PATH: &str = "/TermFast/config.enc";
 
 /// Cloud sync proxy server — handles OAuth token exchange.

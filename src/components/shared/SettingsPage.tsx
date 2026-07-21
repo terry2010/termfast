@@ -3,6 +3,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke } from "@/hooks/useIpc";
 import type { SupportedLanguage } from "@/i18n/config";
@@ -1097,91 +1098,56 @@ function CredentialSection() {
 
 function CloudSyncSection() {
   const { t } = useTranslation();
-  const [provider, setProvider] = useState<"dropbox" | "baidu">("dropbox");
-  const [passphrase, setPassphrase] = useState("");
+  const [provider, setProvider] = useState<"dropbox" | "baidu">("baidu");
   const [masterPassword, setMasterPassword] = useState("");
-  const [authUrl, setAuthUrl] = useState("");
-  const [codeVerifier, setCodeVerifier] = useState("");
-  const [authCode, setAuthCode] = useState("");
-  const [accessToken, setAccessToken] = useState("");
+  const [syncPath, setSyncPath] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [step, setStep] = useState<"idle" | "code">("idle");
+  const [waiting, setWaiting] = useState(false);
 
   const checkAuth = async () => {
-    if (!passphrase) return;
     try {
       const res = await ipcInvoke<{
         authenticated: boolean;
         access_token?: string;
-      }>("ipc_cloud_sync_load_token", { provider, passphrase });
+      }>("ipc_cloud_sync_load_token", { provider });
       setIsAuthed(res.authenticated);
-      if (res.access_token) setAccessToken(res.access_token);
     } catch {
       setIsAuthed(false);
     }
   };
 
+  useEffect(() => {
+    checkAuth();
+  }, [provider]);
+
   const startAuth = async () => {
     setBusy(true);
     try {
+      // Start callback server + get auth URL
       const res = await ipcInvoke<{
         auth_url: string;
-        code_verifier: string | null;
-      }>("ipc_cloud_sync_auth_url", { provider });
-      setAuthUrl(res.auth_url);
-      setCodeVerifier(res.code_verifier ?? "");
-      // Both Dropbox and Baidu now use Authorization Code flow via server
-      setStep("code");
-      // Open URL in browser
-      window.open(res.auth_url, "_blank");
+        redirect_uri: string;
+      }>("ipc_cloud_sync_auth_with_callback", { provider });
+
+      // Open URL in system default browser
+      await openUrl(res.auth_url);
+
+      // Wait for callback (blocks until user authorizes or timeout)
+      setWaiting(true);
+      try {
+        await ipcInvoke("ipc_cloud_sync_wait_callback", {});
+        setIsAuthed(true);
+        toast.success(t("settings.cloud_sync.connected"));
+      } catch (e) {
+        toast.error(String(e));
+      } finally {
+        setWaiting(false);
+      }
     } catch (e) {
       toast.error(String(e));
     } finally {
       setBusy(false);
-    }
-  };
-
-  const exchangeCode = async () => {
-    setBusy(true);
-    try {
-      const res = await ipcInvoke<{
-        access_token: string;
-        refresh_token?: string;
-        expires_at?: number;
-      }>("ipc_cloud_sync_exchange_code", {
-        provider,
-        code: authCode,
-        code_verifier: codeVerifier,
-      });
-      await saveToken(res.access_token, res.refresh_token, res.expires_at);
-      setStep("idle");
-      setAuthCode("");
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveToken = async (
-    token: string,
-    refreshToken?: string,
-    expiresAt?: number,
-  ) => {
-    try {
-      await ipcInvoke("ipc_cloud_sync_save_token", {
-        provider,
-        passphrase,
-        access_token: token,
-        refresh_token: refreshToken,
-        expires_at: expiresAt,
-      });
-      setAccessToken(token);
-      setIsAuthed(true);
-      toast.success(t("settings.cloud_sync.connected"));
-    } catch (e) {
-      toast.error(String(e));
     }
   };
 
@@ -1196,17 +1162,16 @@ function CloudSyncSection() {
       try {
         await ipcInvoke("ipc_cloud_sync_upload", {
           provider,
-          passphrase,
           master_password: masterPassword,
+          sync_path: syncPath || undefined,
         });
       } catch (e) {
         if (String(e).includes("expired") || String(e).includes("401")) {
-          // Try refresh
-          await ipcInvoke("ipc_cloud_sync_refresh_token", { provider, passphrase });
+          await ipcInvoke("ipc_cloud_sync_refresh_token", { provider });
           await ipcInvoke("ipc_cloud_sync_upload", {
             provider,
-            passphrase,
             master_password: masterPassword,
+            sync_path: syncPath || undefined,
           });
         } else {
           throw e;
@@ -1231,14 +1196,14 @@ function CloudSyncSection() {
       try {
         res = await ipcInvoke<{ blob: string; size: number }>(
           "ipc_cloud_sync_download",
-          { provider, passphrase },
+          { provider, sync_path: syncPath || undefined },
         );
       } catch (e) {
         if (String(e).includes("expired") || String(e).includes("401")) {
-          await ipcInvoke("ipc_cloud_sync_refresh_token", { provider, passphrase });
+          await ipcInvoke("ipc_cloud_sync_refresh_token", { provider });
           res = await ipcInvoke<{ blob: string; size: number }>(
             "ipc_cloud_sync_download",
-            { provider, passphrase },
+            { provider, sync_path: syncPath || undefined },
           );
         } else {
           throw e;
@@ -1260,9 +1225,8 @@ function CloudSyncSection() {
   const disconnect = async () => {
     setBusy(true);
     try {
-      await ipcInvoke("ipc_cloud_sync_disconnect", { provider, passphrase });
+      await ipcInvoke("ipc_cloud_sync_disconnect", { provider });
       setIsAuthed(false);
-      setAccessToken("");
       toast.success(t("settings.cloud_sync.disconnected"));
     } catch (e) {
       toast.error(String(e));
@@ -1288,7 +1252,6 @@ function CloudSyncSection() {
             onClick={() => {
               setProvider(p);
               setIsAuthed(false);
-              setStep("idle");
             }}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               provider === p
@@ -1301,19 +1264,21 @@ function CloudSyncSection() {
         ))}
       </div>
 
-      {/* Passphrase for token encryption */}
+      {/* Cloud path (optional, defaults to /TermFast/config.enc) */}
       <div>
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          {t("settings.cloud_sync.token_passphrase")}
+          {t("settings.cloud_sync.cloud_path")}
         </label>
         <input
-          type="password"
-          value={passphrase}
-          onChange={(e) => setPassphrase(e.target.value)}
-          onBlur={checkAuth}
-          placeholder={t("settings.cloud_sync.token_passphrase_placeholder")}
+          type="text"
+          value={syncPath}
+          onChange={(e) => setSyncPath(e.target.value)}
+          placeholder={t("settings.cloud_sync.cloud_path_placeholder")}
           className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100"
         />
+        <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+          {t("settings.cloud_sync.cloud_path_hint")}
+        </p>
       </div>
 
       {/* Auth status + connect/disconnect */}
@@ -1321,32 +1286,19 @@ function CloudSyncSection() {
         <div className="space-y-3">
           <button
             onClick={startAuth}
-            disabled={busy || !passphrase}
+            disabled={busy}
             className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
           >
-            {busy ? t("common.loading") : t("settings.cloud_sync.connect")}
+            {waiting
+              ? t("settings.cloud_sync.waiting_callback")
+              : busy
+                ? t("common.loading")
+                : t("settings.cloud_sync.connect")}
           </button>
-
-          {step === "code" && (
-            <div className="space-y-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-              <p className="text-sm text-blue-700 dark:text-blue-300">
-                {t("settings.cloud_sync.paste_code")}
-              </p>
-              <input
-                type="text"
-                value={authCode}
-                onChange={(e) => setAuthCode(e.target.value)}
-                placeholder="authorization code"
-                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
-              />
-              <button
-                onClick={exchangeCode}
-                disabled={busy || !authCode}
-                className="px-4 py-2 bg-green-500 text-white rounded-lg text-sm font-medium hover:bg-green-600 disabled:opacity-50"
-              >
-                {t("settings.cloud_sync.exchange")}
-              </button>
-            </div>
+          {waiting && (
+            <p className="text-sm text-blue-600 dark:text-blue-400">
+              {t("settings.cloud_sync.waiting_hint")}
+            </p>
           )}
         </div>
       ) : (
