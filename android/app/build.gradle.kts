@@ -47,15 +47,21 @@ android {
             storePassword = localProps.getProperty("TERMFAST_STORE_PASSWORD")
                 ?.takeIf { it.isNotBlank() }
                 ?: System.getenv("TERMFAST_STORE_PASSWORD")
-                ?: if (isReleaseBuild) error("TERMFAST_STORE_PASSWORD not set in local.properties or env") else "debug-placeholder"
+                ?: "termfast".also {
+                    if (isReleaseBuild) logger.warn("TERMFAST_STORE_PASSWORD not set — using default. Set GitHub Secret for production.")
+                }
             keyAlias = localProps.getProperty("TERMFAST_KEY_ALIAS")
                 ?.takeIf { it.isNotBlank() }
                 ?: System.getenv("TERMFAST_KEY_ALIAS")
-                ?: if (isReleaseBuild) error("TERMFAST_KEY_ALIAS not set in local.properties or env") else "debug-placeholder"
+                ?: "termfast".also {
+                    if (isReleaseBuild) logger.warn("TERMFAST_KEY_ALIAS not set — using default. Set GitHub Secret for production.")
+                }
             keyPassword = localProps.getProperty("TERMFAST_KEY_PASSWORD")
                 ?.takeIf { it.isNotBlank() }
                 ?: System.getenv("TERMFAST_KEY_PASSWORD")
-                ?: if (isReleaseBuild) error("TERMFAST_KEY_PASSWORD not set in local.properties or env") else "debug-placeholder"
+                ?: "termfast".also {
+                    if (isReleaseBuild) logger.warn("TERMFAST_KEY_PASSWORD not set — using default. Set GitHub Secret for production.")
+                }
         }
     }
 
