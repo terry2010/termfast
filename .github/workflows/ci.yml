@@ -30,6 +30,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
           components: clippy
       - name: Install dependencies (Linux)
@@ -104,6 +105,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: Check ${{ matrix.label }}
         run: cargo check -p termfast-core --target ${{ matrix.target }}
