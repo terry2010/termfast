@@ -207,8 +207,9 @@ impl From<serde_json::Error> for CloudSyncError {
 }
 
 /// Default sync file path on cloud storage.
-/// For Baidu Netdisk, this is relative to the app sandbox `/apps/termfast/`.
-/// So the full path on Baidu is `/apps/termfast/TermFast/config.enc`.
+/// For Baidu Netdisk, the BaiduProvider automatically prepends the app
+/// sandbox prefix `/apps/云盘备份/`, so the full path on Baidu is
+/// `/apps/云盘备份/TermFast/config.enc`.
 pub const SYNC_FILE_PATH: &str = "/TermFast/config.enc";
 
 /// Cloud sync proxy server — handles OAuth token exchange.

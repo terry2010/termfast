@@ -18,6 +18,23 @@ use std::time::Duration;
 const PCS_BASE: &str = "https://d.pcs.baidu.com";
 const PAN_BASE: &str = "https://pan.baidu.com";
 
+/// Baidu sandbox app name (registered on Baidu Open Platform).
+/// Third-party apps can only access files under `/apps/<app_name>/`.
+const BAIDU_APP_NAME: &str = "云盘备份";
+
+/// Prepend the Baidu sandbox prefix `/apps/<app_name>/` to a relative path.
+/// Baidu's API requires absolute paths under the app sandbox directory.
+/// If the path already starts with `/apps/`, it is returned as-is (allows
+/// custom override).
+fn baidu_path(path: &str) -> String {
+    if path.starts_with("/apps/") {
+        return path.to_string();
+    }
+    // Ensure path starts with /
+    let p = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };
+    format!("/apps/{}{}", BAIDU_APP_NAME, p)
+}
+
 /// Build a reqwest client with timeouts to prevent indefinite hangs.
 fn reqwest_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -131,6 +148,7 @@ impl CloudProviderTrait for BaiduProvider {
         path: &str,
         data: &[u8],
     ) -> Result<(), CloudSyncError> {
+        let path = baidu_path(path);
         // Baidu uses a 3-step upload: precreate → upload slices → create
         let client = reqwest_client();
         let access_token = &token.access_token;
@@ -182,7 +200,7 @@ impl CloudProviderTrait for BaiduProvider {
         let upload_url = format!(
             "{}/rest/2.0/pcs/superfile2?method=upload&type=tmpfile&path={}&uploadid={}&partseq=0",
             PCS_BASE,
-            urlencoding::encode(path),
+            urlencoding::encode(&path),
             uploadid
         );
 
@@ -257,11 +275,12 @@ impl CloudProviderTrait for BaiduProvider {
         token: &OAuthToken,
         path: &str,
     ) -> Result<Vec<u8>, CloudSyncError> {
+        let path = baidu_path(path);
         let client = reqwest_client();
         let url = format!(
             "{}/rest/2.0/pcs/file?method=download&path={}",
             PCS_BASE,
-            urlencoding::encode(path),
+            urlencoding::encode(&path),
         );
 
         let resp = client
@@ -291,11 +310,12 @@ impl CloudProviderTrait for BaiduProvider {
         token: &OAuthToken,
         path: &str,
     ) -> Result<RemoteFileInfo, CloudSyncError> {
+        let path = baidu_path(path);
         let client = reqwest_client();
         let url = format!(
             "{}/rest/2.0/pcs/file?method=meta&path={}",
             PAN_BASE,
-            urlencoding::encode(path),
+            urlencoding::encode(&path),
         );
 
         let resp = client
@@ -343,6 +363,7 @@ impl CloudProviderTrait for BaiduProvider {
     }
 
     async fn delete(&self, token: &OAuthToken, path: &str) -> Result<(), CloudSyncError> {
+        let path = baidu_path(path);
         let client = reqwest_client();
         let url = format!(
             "{}/rest/2.0/pcs/file?method=delete",
@@ -352,7 +373,7 @@ impl CloudProviderTrait for BaiduProvider {
         let resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", token.access_token))
-            .form(&[("path", path)])
+            .form(&[("path", &path)])
             .send()
             .await?;
 
