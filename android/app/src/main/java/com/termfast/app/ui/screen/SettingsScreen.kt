@@ -116,6 +116,9 @@ fun SettingsScreen(navController: NavController) {
             // Credential security section
             CredentialSection()
 
+            // HTTP proxy for cloud sync
+            HttpProxySection()
+
             // Cloud sync section
             CloudSyncSection()
 
@@ -625,5 +628,78 @@ private fun InfoRow(label: String, value: String) {
     ) {
         Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun HttpProxySection() {
+    val context = LocalContext.current
+    val repo = remember { com.termfast.app.data.RustRepository(context) }
+    var config by remember { mutableStateOf(repo.getConfig()) }
+    var proxyMode by remember { mutableStateOf(config?.general?.http_proxy_mode ?: "auto") }
+    var proxyUrl by remember { mutableStateOf(config?.general?.http_proxy_url ?: "") }
+
+    fun save(mode: String, url: String) {
+        val cfg = config ?: return
+        val updated = cfg.copy(general = cfg.general.copy(http_proxy_mode = mode, http_proxy_url = url))
+        if (repo.saveConfig(updated)) {
+            config = updated
+            proxyMode = mode
+            proxyUrl = url
+        }
+    }
+
+    SettingsSectionCard(title = "网络代理", icon = Icons.Filled.Apps) {
+        // Proxy mode selector
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("模式", style = MaterialTheme.typography.bodyLarge)
+            var expanded by remember { mutableStateOf(false) }
+            Box {
+                TextButton(onClick = { expanded = true }) {
+                    Text(when (proxyMode) {
+                        "auto" -> "自动（跟随系统）"
+                        "disabled" -> "禁用"
+                        "custom" -> "自定义"
+                        else -> "自动"
+                    })
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    DropdownMenuItem(text = { Text("自动（跟随系统）") }, onClick = {
+                        expanded = false
+                        save("auto", proxyUrl)
+                    })
+                    DropdownMenuItem(text = { Text("禁用") }, onClick = {
+                        expanded = false
+                        save("disabled", proxyUrl)
+                    })
+                    DropdownMenuItem(text = { Text("自定义") }, onClick = {
+                        expanded = false
+                        save("custom", proxyUrl)
+                    })
+                }
+            }
+        }
+
+        // Custom proxy URL input (only shown when mode == custom)
+        if (proxyMode == "custom") {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+            OutlinedTextField(
+                value = proxyUrl,
+                onValueChange = { proxyUrl = it },
+                label = { Text("代理地址") },
+                placeholder = { Text("http://127.0.0.1:7890") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            )
+            Button(
+                onClick = { save("custom", proxyUrl) },
+                modifier = Modifier.padding(top = 4.dp),
+            ) { Text("保存") }
+        }
     }
 }

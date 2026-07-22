@@ -86,15 +86,33 @@ fn local_config_mtime() -> Option<String> {
 }
 
 /// Build a provider instance from the provider type string.
+/// Reads proxy settings from config to construct the provider with
+/// the correct proxy mode.
 fn build_provider(
     provider: &str,
 ) -> Result<Box<dyn CloudProviderTrait>, String> {
+    // Read proxy settings from config
+    let (proxy_mode_str, proxy_url) = {
+        let st = crate::jni::state().lock().unwrap();
+        match st.config_manager.as_ref() {
+            Some(cm) => {
+                let config = cm.get_blocking();
+                (
+                    config.general.http_proxy_mode.clone(),
+                    config.general.http_proxy_url.clone(),
+                )
+            }
+            None => ("auto".to_string(), String::new()),
+        }
+    };
+    let proxy_mode = termfast_cloud_sync::proxy::ProxyMode::from_config(&proxy_mode_str, &proxy_url);
+
     match provider {
         "dropbox" => Ok(Box::new(
-            termfast_cloud_sync::dropbox::DropboxProvider::new(),
+            termfast_cloud_sync::dropbox::DropboxProvider::with_proxy_mode(proxy_mode),
         )),
         "baidu" => Ok(Box::new(
-            termfast_cloud_sync::baidu::BaiduProvider::new(),
+            termfast_cloud_sync::baidu::BaiduProvider::with_proxy_mode(proxy_mode),
         )),
         _ => Err(format!("unknown provider: {}", provider)),
     }
@@ -123,10 +141,11 @@ pub fn auth_url(provider: &str) -> Result<String, String> {
     // Fetch the real auth URL from the proxy server (synchronous blocking)
     let rt = crate::runtime::runtime();
     let result = rt.block_on(async {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|e| format!("http client: {}", e))?;
+        let client = termfast_cloud_sync::proxy::build_client(
+            p.proxy_mode(),
+            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(10),
+        );
         let resp = client
             .get(&proxy_url)
             .send()
