@@ -10,6 +10,7 @@
 pub mod baidu;
 pub mod callback;
 pub mod dropbox;
+pub mod proxy;
 pub mod sync_crypto;
 pub mod sync_state;
 pub mod token_store;
@@ -85,6 +86,9 @@ pub trait CloudProviderTrait: Send + Sync {
     /// Provider type identifier
     fn provider_type(&self) -> CloudProvider;
 
+    /// Get the proxy mode for this provider instance.
+    fn proxy_mode(&self) -> &crate::proxy::ProxyMode;
+
     /// Generate the OAuth authorization URL for the user to open in a browser.
     /// For PKCE flows, returns the URL + code_verifier (caller must save it).
     /// For implicit flows, returns just the URL.
@@ -98,10 +102,11 @@ pub trait CloudProviderTrait: Send + Sync {
         redirect_uri: &str,
     ) -> Result<(String, Option<String>, String), CloudSyncError> {
         let (proxy_url, code_verifier) = self.auth_url(redirect_uri);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|e| CloudSyncError::Api(format!("http client: {}", e)))?;
+        let client = crate::proxy::build_client(
+            self.proxy_mode(),
+            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(10),
+        );
 
         let resp = client
             .get(&proxy_url)

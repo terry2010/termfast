@@ -279,7 +279,12 @@
       "auto_start": "开机自启",
       "minimize_to_tray": "最小化到托盘",
       "log_level": "日志级别",
-      "log_to_file": "日志写入文件"
+      "log_to_file": "日志写入文件",
+      "http_proxy_mode": "网络代理",
+      "http_proxy_auto": "自动（跟随系统）",
+      "http_proxy_disabled": "禁用",
+      "http_proxy_custom": "自定义",
+      "http_proxy_url": "代理地址"
     },
     "theme": {
       "system": "跟随系统",

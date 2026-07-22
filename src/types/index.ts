@@ -174,6 +174,12 @@ export interface GeneralConfig {
   notify_ip_change: boolean;
   /// User-defined custom variables for trigger templates
   custom_variables: CustomVariable[];
+  /// Cloud sync provider: "dropbox" | "baidu" | ""
+  cloud_sync_provider: string;
+  /// HTTP proxy mode: "auto" | "disabled" | "custom"
+  http_proxy_mode: string;
+  /// Custom proxy URL (used when http_proxy_mode == "custom")
+  http_proxy_url: string;
 }
 
 /// User-defined custom variable for trigger templates

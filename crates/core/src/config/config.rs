@@ -105,6 +105,16 @@ pub struct GeneralConfig {
     /// "dropbox" | "baidu" | "" (none)
     #[serde(default)]
     pub cloud_sync_provider: String,
+    /// Outbound HTTP proxy mode for cloud sync requests.
+    /// "auto" — use system proxy if available (default)
+    /// "disabled" — never use proxy
+    /// "custom" — use proxy_url
+    #[serde(default = "default_proxy_mode")]
+    pub http_proxy_mode: String,
+    /// Custom proxy URL, used when http_proxy_mode == "custom".
+    /// e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:7891"
+    #[serde(default)]
+    pub http_proxy_url: String,
 }
 
 /// User-defined custom variable for trigger templates
@@ -140,6 +150,9 @@ fn default_log_max_size_mb() -> u32 {
 }
 fn default_proxy_test_url() -> String {
     "https://api.ipify.org".into()
+}
+fn default_proxy_mode() -> String {
+    "auto".into()
 }
 fn default_socks5_port() -> u16 {
     1080
@@ -185,6 +198,8 @@ impl Default for GeneralConfig {
             default_ip_check_interval_secs: default_ip_check_interval(),
             custom_variables: Vec::new(),
             cloud_sync_provider: String::new(),
+            http_proxy_mode: default_proxy_mode(),
+            http_proxy_url: String::new(),
         }
     }
 }

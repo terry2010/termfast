@@ -369,10 +369,8 @@ function httpPost($url, $params) {
             'unsupported_grant_type' => 'unsupported operation',
         ];
         $msg = $safeErrors[$errorType] ?? 'request failed';
-        // DEBUG: temporarily include raw upstream response for troubleshooting
-        error_log("[cloud-sync] upstream error: code=$code, resp=$resp, errorType=$errorType");
         http_response_code($code >= 500 ? 502 : 400);
-        return json_encode(['error' => $msg, 'debug_raw' => $resp, 'debug_code' => $code]);
+        return json_encode(['error' => $msg]);
     }
 
     return $resp ?: json_encode(['error' => 'empty response from upstream']);
