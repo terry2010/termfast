@@ -245,6 +245,7 @@ pub fn run() {
             credential_manager::ipc_reset_credentials,
             credential_manager::ipc_export_credentials,
             credential_manager::ipc_import_credentials,
+            ipc_get_system_locale,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1269,10 +1270,20 @@ async fn ipc_cloud_sync_load_token(
 #[tauri::command]
 async fn ipc_cloud_sync_upload(
     state: tauri::State<'_, AppState>,
+    cred_state: tauri::State<'_, CredentialState>,
     provider: String,
     master_password: Option<String>,
     sync_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // Block upload if credential store is in pending mode (no master password
+    // set). Uploading without a local master password doesn't make sense.
+    if cred_state.store.is_pending() {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "reason": "not_initialized",
+            "message": "请先设置主密码后再上传到云端",
+        }));
+    }
     // Use provided password, or fall back to cached master password from
     // credential store unlock (so user doesn't need to type it again).
     let master_password = master_password
@@ -1441,4 +1452,15 @@ fn create_tray_icon(color: termfast_desktop::tray::TrayIconColor) -> tauri::imag
         }
     }
     tauri::image::Image::new_owned(rgba, size, size)
+}
+
+/// Get the system locale for language detection.
+/// Returns BCP-47 tag like "zh-CN", "zh-TW", "en-US", "ja-JP" etc.
+#[tauri::command]
+fn ipc_get_system_locale() -> String {
+    // sys-locale crate: returns the user's preferred locale as a BCP-47 tag.
+    // On macOS: reads NSLocale preferred languages.
+    // On Windows: reads GetUserDefaultLocaleName / GetUserPreferredUILanguages.
+    // On Linux: reads LANG/LC_ALL env.
+    sys_locale::get_locales().next().unwrap_or_else(|| "en-US".to_string())
 }

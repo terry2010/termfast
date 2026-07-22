@@ -10,7 +10,7 @@ import {
 import { useServerStore } from "@/stores/serverStore";
 import { useConfigStore } from "@/stores/configStore";
 import { useTriggerStore } from "@/stores/triggerStore";
-import i18n, { resolveLanguage } from "@/i18n/config";
+import i18n, { asyncResolveLanguage } from "@/i18n/config";
 import { useDaemonEvents } from "@/hooks/useDaemonEvents";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { ipcInvoke } from "@/hooks/useIpc";
@@ -77,14 +77,24 @@ export default function App() {
     });
 
     ipcInvoke<any>("ipc_get_config")
-      .then((data) => {
+      .then(async (data) => {
         if (data) {
           setConfig(data);
           // Apply saved language preference on startup
           const savedLang = data?.general?.language;
           if (savedLang) {
-            i18n.changeLanguage(resolveLanguage(savedLang));
+            // Use async resolve to get OS-level locale for "system"
+            const resolved = await asyncResolveLanguage(savedLang);
+            i18n.changeLanguage(resolved);
+          } else {
+            // No saved preference — detect from OS
+            const detected = await asyncResolveLanguage("system");
+            i18n.changeLanguage(detected);
           }
+        } else {
+          // No config yet (first run) — detect from OS
+          const detected = await asyncResolveLanguage("system");
+          i18n.changeLanguage(detected);
         }
       })
       .catch((e) => console.error("load config failed:", e));

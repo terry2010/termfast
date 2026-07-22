@@ -380,6 +380,19 @@ pub fn upload(params_json: &str) -> Result<String, String> {
         .to_string();
     let force = params["force"].as_bool().unwrap_or(false);
 
+    // Block upload if credential store is in pending mode (no master password
+    // set). Uploading would export unencrypted in-memory credentials wrapped
+    // with whatever password the user typed — but the local data isn't
+    // properly encrypted yet, so this is likely a mistake.
+    let store = crate::credential::android_credential_store();
+    if store.is_pending() {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "reason": "not_initialized",
+            "message": "请先设置主密码后再上传到云端",
+        }).to_string());
+    }
+
     // Password change detection: compare input password hash with stored hash.
     // If they differ, return password_mismatch so the frontend can ask the
     // user to confirm the cloud password change.

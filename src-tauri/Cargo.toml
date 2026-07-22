@@ -39,6 +39,7 @@ termfast-desktop = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+sys-locale = "0.3.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "4", features = ["apple-native-keyring-store"] }

@@ -7,7 +7,7 @@ import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke } from "@/hooks/useIpc";
 import type { SupportedLanguage } from "@/i18n/config";
-import i18n, { resolveLanguage } from "@/i18n/config";
+import i18n, { asyncResolveLanguage } from "@/i18n/config";
 import { Modal } from "@/components/ui/Modal";
 import { toast } from "sonner";
 import {
@@ -281,7 +281,7 @@ function GeneralSection() {
           onChange={(e) => {
             const lang = e.target.value as SupportedLanguage;
             updateAndSave({ language: lang });
-            i18n.changeLanguage(resolveLanguage(lang));
+            asyncResolveLanguage(lang).then((resolved) => i18n.changeLanguage(resolved));
           }}
           className="input w-36"
         >
@@ -1154,6 +1154,11 @@ function CloudSyncSection() {
         } else {
           throw e;
         }
+      }
+      // Handle not initialized — no master password set
+      if (res.ok === false && res.reason === "not_initialized") {
+        toast.error(res.message || "请先设置主密码后再上传到云端");
+        return;
       }
       // Handle password mismatch — ask user to confirm cloud password change
       if (res.ok === false && res.reason === "password_mismatch") {

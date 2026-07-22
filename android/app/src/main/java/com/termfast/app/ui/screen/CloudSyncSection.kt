@@ -214,6 +214,9 @@ fun CloudSyncSection() {
                         // Password mismatch — close password dialog, show confirmation
                         showUploadDialog = null
                         showPasswordMismatchDialog = Pair(p, pw)
+                    } else if (resp.reason == "not_initialized") {
+                        showUploadDialog = null
+                        Toast.makeText(context, resp.message ?: "请先设置主密码后再上传到云端", Toast.LENGTH_LONG).show()
                     } else {
                         msg = "上传失败：${resp.message ?: resp.reason ?: "未知错误"}"
                         showUploadDialog = null
