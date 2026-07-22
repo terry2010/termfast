@@ -1273,11 +1273,30 @@ async fn ipc_cloud_sync_upload(
     master_password: Option<String>,
     sync_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    // Use provided password, or fall back to cached master password from
-    // credential store unlock (so user doesn't need to type it again).
-    let master_password = master_password
-        .or_else(crate::credential_manager::cached_master_password)
-        .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
+    // Security: upload must use the same master password that encrypted
+    // the local credentials.enc. If the user types a wrong password, the
+    // uploaded cloud backup would be encrypted with a different password,
+    // making it impossible to download & apply on other devices.
+    //
+    // Strategy:
+    // 1. If cached_master_password is available (user unlocked with password),
+    //    always use it — ignore the frontend-provided password to prevent
+    //    accidental wrong-password uploads.
+    // 2. If cached_master_password is not available (user unlocked via cached
+    //    derived key from OS keychain), use the frontend-provided password,
+    //    but verify it can unlock the local credential store first.
+    let master_password = match crate::credential_manager::cached_master_password() {
+        Some(cached) => cached,
+        None => {
+            // No cached password — verify the provided password can unlock
+            let pw = master_password
+                .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
+            // Verify by attempting to unlock the credential store
+            crate::credential_manager::verify_master_password(&pw)
+                .map_err(|e| format!("master password verification failed: {}", e))?;
+            pw
+        }
+    };
     let mut params = serde_json::json!({
         "provider": provider,
         "master_password": master_password,

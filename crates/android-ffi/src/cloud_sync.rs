@@ -380,6 +380,15 @@ pub fn upload(params_json: &str) -> Result<String, String> {
         .to_string();
     let force = params["force"].as_bool().unwrap_or(false);
 
+    // Security: verify the master password can unlock the local credential
+    // store before uploading. This prevents accidental wrong-password uploads
+    // which would make the cloud backup undecryptable on other devices.
+    let store = crate::credential::android_credential_store();
+    if store.is_initialized() {
+        store.unlock(&master_password)
+            .map_err(|_| "主密码错误，无法解锁本地凭据存储".to_string())?;
+    }
+
     // Load token
     let path = token_file_path();
     let data = token_store::load_tokens(&path).map_err(|e| format!("load token: {}", e))?;

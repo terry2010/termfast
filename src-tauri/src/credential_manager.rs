@@ -41,6 +41,23 @@ fn clear_cached_master_password() {
     }
 }
 
+/// Verify that the given master password can unlock the local credential store.
+/// Used by cloud sync upload to ensure the upload password matches the local
+/// encryption password (prevents accidental wrong-password uploads).
+/// Does NOT change the unlock state or cache the password.
+pub fn verify_master_password(password: &str) -> Result<(), String> {
+    let path = credential_file_path();
+    let store = termfast_credential::EncryptedCredentialStore::open(path);
+    if !store.is_initialized() {
+        // No encrypted file — can't verify. Allow upload (first-time setup case).
+        return Ok(());
+    }
+    store.unlock(password).map_err(|_| {
+        "主密码错误，无法解锁本地凭据存储".to_string()
+    })?;
+    Ok(())
+}
+
 /// Tauri-managed state holding the encrypted credential store.
 pub struct CredentialState {
     pub store: Arc<EncryptedFileCredentialStore>,
