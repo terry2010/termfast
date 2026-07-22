@@ -247,12 +247,12 @@ function handleExchange() {
     }
 
     if ($provider === 'dropbox') {
+        // Dropbox PKCE: no client_secret needed (public client)
         $params = http_build_query([
             'grant_type' => 'authorization_code',
             'code' => $code,
             'code_verifier' => $code_verifier,
             'client_id' => $DROPBOX_APP_KEY,
-            'client_secret' => $DROPBOX_APP_SECRET,
             'redirect_uri' => $redirect_uri,
         ]);
         echo httpPost('https://api.dropboxapi.com/oauth2/token', $params);
@@ -302,11 +302,11 @@ function handleRefresh() {
     }
     
     if ($provider === 'dropbox') {
+        // Dropbox PKCE: no client_secret needed (public client)
         $params = http_build_query([
             'grant_type' => 'refresh_token',
             'refresh_token' => $refresh_token,
             'client_id' => $DROPBOX_APP_KEY,
-            'client_secret' => $DROPBOX_APP_SECRET,
         ]);
         echo httpPost('https://api.dropboxapi.com/oauth2/token', $params);
         
