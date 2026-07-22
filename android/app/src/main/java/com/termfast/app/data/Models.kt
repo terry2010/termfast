@@ -36,6 +36,9 @@ data class GeneralConfig(
     val default_http_port: Int = 8080,
     val default_trigger_timeout_secs: Long = 30,
     val default_ip_check_interval_secs: Long = 300,
+    val cloud_sync_provider: String = "",
+    val http_proxy_mode: String = "auto",
+    val http_proxy_url: String = "",
 )
 
 @Serializable
