@@ -27,6 +27,9 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
   );
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const isScrollingRef = useRef(false);
+  // Cache master password when user unlocks credential store, so cloud sync
+  // section can reuse it without asking the user to type it again.
+  const [cachedMasterPassword, setCachedMasterPassword] = useState("");
 
   const tabs: { id: TabId; label: string }[] = [
     { id: "general", label: t("settings.general.title") },
@@ -154,14 +157,14 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                 sectionRefs.current.credentials = el;
               }}
             >
-              <CredentialSection />
+              <CredentialSection onUnlockPassword={setCachedMasterPassword} />
             </div>
             <div
               ref={(el) => {
                 sectionRefs.current.cloud_sync = el;
               }}
             >
-              <CloudSyncSection />
+              <CloudSyncSection cachedMasterPassword={cachedMasterPassword} />
             </div>
             <div
               ref={(el) => {
@@ -602,7 +605,7 @@ const APP_VERSION = "0.1.0";
 
 // === CREDENTIAL SECTION ===
 
-function CredentialSection() {
+function CredentialSection({ onUnlockPassword }: { onUnlockPassword?: (pw: string) => void }) {
   const { t } = useTranslation();
   const [credStatus, setCredStatus] = useState<string>("pending");
   const [showSetup, setShowSetup] = useState(false);
@@ -635,6 +638,7 @@ function CredentialSection() {
       await ipcInvoke("ipc_initialize_credentials", { masterPassword: setupPw });
       toast.success(t("credentials.setup_title"));
       setShowSetup(false);
+      onUnlockPassword?.(setupPw);
       setSetupPw("");
       setSetupConfirmPw("");
       refreshStatus();
@@ -643,7 +647,7 @@ function CredentialSection() {
     } finally {
       setBusy(false);
     }
-  }, [setupPw, setupConfirmPw, t, refreshStatus]);
+  }, [setupPw, setupConfirmPw, t, refreshStatus, onUnlockPassword]);
 
   const handleUnlock = useCallback(async () => {
     if (!unlockPw) return;
@@ -652,6 +656,7 @@ function CredentialSection() {
       await ipcInvoke("ipc_unlock_credentials", { masterPassword: unlockPw });
       toast.success(t("credentials.unlock_button"));
       setShowUnlock(false);
+      onUnlockPassword?.(unlockPw);
       setUnlockPw("");
       refreshStatus();
     } catch (e: any) {
@@ -1053,10 +1058,16 @@ function CredentialSection() {
 
 // === Cloud Sync Section ===
 
-function CloudSyncSection() {
+function CloudSyncSection({ cachedMasterPassword }: { cachedMasterPassword?: string }) {
   const { t } = useTranslation();
   const [provider, setProvider] = useState<"dropbox" | "baidu">("baidu");
-  const [masterPassword, setMasterPassword] = useState("");
+  // If user already unlocked credential store, reuse that password.
+  const [masterPassword, setMasterPassword] = useState(cachedMasterPassword ?? "");
+  // Keep masterPassword in sync when cachedMasterPassword changes (e.g. user
+  // unlocks after CloudSyncSection has mounted).
+  useEffect(() => {
+    if (cachedMasterPassword) setMasterPassword(cachedMasterPassword);
+  }, [cachedMasterPassword]);
   const [syncPath, setSyncPath] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [busy, setBusy] = useState(false);
