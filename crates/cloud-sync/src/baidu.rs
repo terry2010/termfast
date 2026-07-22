@@ -378,11 +378,13 @@ impl CloudProviderTrait for BaiduProvider {
         path: &str,
     ) -> Result<RemoteFileInfo, CloudSyncError> {
         let full_path = baidu_path(path);
+        tracing::debug!("baidu file_info: full_path={}", full_path);
         // Split into parent dir + filename, then use method=list to find the file.
         // (method=meta requires fsids, not path — unusable for path-based lookup.)
         let (dir, filename) = match full_path.rsplit_once('/') {
             Some((d, f)) if !d.is_empty() && !f.is_empty() => (d, f),
             _ => {
+                tracing::warn!("baidu file_info: cannot split path '{}'", full_path);
                 return Ok(RemoteFileInfo {
                     exists: false,
                     size: None,
@@ -391,6 +393,7 @@ impl CloudProviderTrait for BaiduProvider {
                 });
             }
         };
+        tracing::debug!("baidu file_info: dir='{}' filename='{}'", dir, filename);
 
         let client = reqwest_client();
         let url = format!(
@@ -406,6 +409,7 @@ impl CloudProviderTrait for BaiduProvider {
 
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
+            tracing::warn!("baidu file_info: HTTP 404");
             return Ok(RemoteFileInfo {
                 exists: false,
                 size: None,
@@ -416,15 +420,24 @@ impl CloudProviderTrait for BaiduProvider {
 
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
+            tracing::warn!("baidu file_info: HTTP {} body={}", status, &body[..body.len().min(200)]);
             return Err(http_error(
                 "查询文件信息失败",
                 status, body
             ));
         }
 
-        let meta: BaiduFileMeta = resp.json().await?;
+        let body_text = resp.text().await.unwrap_or_default();
+        tracing::debug!("baidu file_info: response body={}", &body_text[..body_text.len().min(500)]);
+
+        let meta: BaiduFileMeta = serde_json::from_str(&body_text)
+            .map_err(|e| {
+                tracing::warn!("baidu file_info: JSON parse error: {}", e);
+                CloudSyncError::Api(format!("file_info JSON parse: {}", e))
+            })?;
 
         if meta.errno != 0 {
+            tracing::warn!("baidu file_info: errno={}", meta.errno);
             return Ok(RemoteFileInfo {
                 exists: false,
                 size: None,
@@ -433,14 +446,21 @@ impl CloudProviderTrait for BaiduProvider {
             });
         }
 
+        tracing::debug!("baidu file_info: list has {} entries", meta.list.len());
+        for f in &meta.list {
+            tracing::debug!("baidu file_info: entry name={:?} size={}", f.name(), f.size);
+        }
+
         // Find the file matching our target filename in the directory listing
-        let info = meta.list.iter().find(|f| f.filename.as_deref() == Some(filename));
-        Ok(RemoteFileInfo {
+        let info = meta.list.iter().find(|f| f.name() == Some(filename));
+        let result = Ok(RemoteFileInfo {
             exists: info.is_some(),
             size: info.map(|f| f.size),
             hash: info.and_then(|f| f.md5.clone()),
             modified: info.map(|f| f.local_mtime.to_string()),
-        })
+        });
+        tracing::debug!("baidu file_info: result exists={}", info.is_some());
+        result
     }
 
     async fn delete(&self, token: &OAuthToken, path: &str) -> Result<(), CloudSyncError> {
@@ -502,8 +522,24 @@ struct BaiduFileInfo {
     #[serde(default)]
     md5: Option<String>,
     local_mtime: i64,
+    /// Baidu list API returns server_filename; meta API returns filename.
+    /// We try both, plus fallback to extracting from path.
+    #[serde(default)]
+    server_filename: Option<String>,
     #[serde(default)]
     filename: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+impl BaiduFileInfo {
+    /// Get the filename from whichever field is available.
+    fn name(&self) -> Option<&str> {
+        self.server_filename
+            .as_deref()
+            .or(self.filename.as_deref())
+            .or(self.path.as_deref().and_then(|p| p.rsplit('/').next()))
+    }
 }
 
 /// Baidu OAuth token response (Authorization Code flow)
@@ -650,27 +686,45 @@ mod tests {
     /// 目录下有多个文件时，只匹配目标 filename 的那个
     #[test]
     fn test_baidu_file_info_list_filename_match() {
+        // method=list 返回 server_filename 和 path，不返回 filename
         let json = r#"{
             "errno": 0,
             "list": [
-                {"size": 100, "filename": "other.bin", "local_mtime": 1000},
-                {"size": 2048, "filename": "config.enc", "md5": "abc123", "local_mtime": 1721568000}
+                {"size": 100, "server_filename": "other.bin", "path": "/apps/云盘备份/TermFast/other.bin", "local_mtime": 1000},
+                {"size": 2048, "server_filename": "config.enc", "path": "/apps/云盘备份/TermFast/config.enc", "md5": "abc123", "local_mtime": 1721568000}
             ]
         }"#;
         let meta: BaiduFileMeta = serde_json::from_str(json).unwrap();
         assert_eq!(meta.errno, 0);
-        // 模拟 file_info 里 find(filename == "config.enc") 的逻辑
+        // 模拟 file_info 里 find(name == "config.enc") 的逻辑
         let target = "config.enc";
-        let info = meta.list.iter().find(|f| f.filename.as_deref() == Some(target));
+        let info = meta.list.iter().find(|f| f.name() == Some(target));
         assert!(info.is_some());
         let info = info.unwrap();
         assert_eq!(info.size, 2048);
         assert_eq!(info.md5.as_deref(), Some("abc123"));
-        assert_eq!(info.filename.as_deref(), Some("config.enc"));
+        assert_eq!(info.name(), Some("config.enc"));
         // 确认不会误匹配 other.bin
-        let wrong = meta.list.iter().find(|f| f.filename.as_deref() == Some("other.bin"));
+        let wrong = meta.list.iter().find(|f| f.name() == Some("other.bin"));
         assert!(wrong.is_some());
         assert_ne!(wrong.unwrap().size, 2048);
+    }
+
+    /// 验证 server_filename 缺失时从 path 提取 filename 的 fallback 逻辑
+    #[test]
+    fn test_baidu_file_info_name_from_path_fallback() {
+        let json = r#"{
+            "errno": 0,
+            "list": [
+                {"size": 512, "path": "/apps/云盘备份/TermFast/config.enc", "local_mtime": 1000}
+            ]
+        }"#;
+        let meta: BaiduFileMeta = serde_json::from_str(json).unwrap();
+        let info = meta.list.first().unwrap();
+        // server_filename 和 filename 都缺失，应从 path 提取
+        assert_eq!(info.server_filename, None);
+        assert_eq!(info.filename, None);
+        assert_eq!(info.name(), Some("config.enc"));
     }
 
     /// 验证百度错误码翻译为用户友好文案
