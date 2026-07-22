@@ -167,13 +167,13 @@ impl CloudProviderTrait for BaiduProvider {
         ];
 
         let precreate_url = format!(
-            "{}/rest/2.0/xpan/file?method=precreate",
+            "{}/rest/2.0/xpan/file?method=precreate&access_token={}",
             PAN_BASE,
+            urlencoding::encode(access_token),
         );
 
         let resp = client
             .post(&precreate_url)
-            .header("Authorization", format!("Bearer {}", access_token))
             .form(&precreate_form)
             .send()
             .await?;
@@ -200,10 +200,11 @@ impl CloudProviderTrait for BaiduProvider {
 
         // Step 2: upload single slice (whole file as one slice for small files)
         let upload_url = format!(
-            "{}/rest/2.0/pcs/superfile2?method=upload&type=tmpfile&path={}&uploadid={}&partseq=0",
+            "{}/rest/2.0/pcs/superfile2?method=upload&type=tmpfile&path={}&uploadid={}&partseq=0&access_token={}",
             PCS_BASE,
             urlencoding::encode(&path),
-            uploadid
+            uploadid,
+            urlencoding::encode(access_token),
         );
 
         let part = reqwest::multipart::Part::bytes(data.to_vec())
@@ -215,7 +216,6 @@ impl CloudProviderTrait for BaiduProvider {
 
         let resp = client
             .post(&upload_url)
-            .header("Authorization", format!("Bearer {}", access_token))
             .multipart(form)
             .send().await?;
 
@@ -241,13 +241,13 @@ impl CloudProviderTrait for BaiduProvider {
         ];
 
         let create_url = format!(
-            "{}/rest/2.0/xpan/file?method=create",
+            "{}/rest/2.0/xpan/file?method=create&access_token={}",
             PAN_BASE,
+            urlencoding::encode(access_token),
         );
 
         let resp = client
             .post(&create_url)
-            .header("Authorization", format!("Bearer {}", access_token))
             .form(&create_form)
             .send()
             .await?;
@@ -282,14 +282,14 @@ impl CloudProviderTrait for BaiduProvider {
         let path = baidu_path(path);
         let client = reqwest_client();
         let url = format!(
-            "{}/rest/2.0/pcs/file?method=download&path={}",
+            "{}/rest/2.0/pcs/file?method=download&path={}&access_token={}",
             PCS_BASE,
             urlencoding::encode(&path),
+            urlencoding::encode(&token.access_token),
         );
 
         let resp = client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", token.access_token))
             .send().await?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -317,14 +317,14 @@ impl CloudProviderTrait for BaiduProvider {
         let path = baidu_path(path);
         let client = reqwest_client();
         let url = format!(
-            "{}/rest/2.0/xpan/multimedia?method=meta&path={}",
+            "{}/rest/2.0/xpan/multimedia?method=meta&path={}&access_token={}",
             PAN_BASE,
             urlencoding::encode(&path),
+            urlencoding::encode(&token.access_token),
         );
 
         let resp = client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", token.access_token))
             .send().await?;
 
         let status = resp.status();
@@ -370,13 +370,13 @@ impl CloudProviderTrait for BaiduProvider {
         let path = baidu_path(path);
         let client = reqwest_client();
         let url = format!(
-            "{}/rest/2.0/xpan/file?method=delete",
+            "{}/rest/2.0/xpan/file?method=delete&access_token={}",
             PAN_BASE,
+            urlencoding::encode(&token.access_token),
         );
 
         let resp = client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", token.access_token))
             .form(&[("path", &path)])
             .send()
             .await?;
