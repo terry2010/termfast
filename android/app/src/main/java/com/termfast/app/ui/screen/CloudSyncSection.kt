@@ -186,7 +186,11 @@ fun CloudSyncSection() {
                     }
                     busy = false
                     if (resp.ok) {
-                        msg = "上传成功（${resp.size ?: 0} 字节）"
+                        val remotePath = if (p == CloudSyncManager.Provider.BAIDU)
+                            "我的应用/云盘备份/TermFast"
+                        else
+                            "/TermFast"
+                        msg = "上传成功（${resp.size ?: 0} 字节）\n云端路径：$remotePath"
                         showUploadDialog = null
                         dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
                         baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)

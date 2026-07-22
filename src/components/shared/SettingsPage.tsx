@@ -1132,7 +1132,10 @@ function CloudSyncSection() {
           throw e;
         }
       }
-      toast.success(t("settings.cloud_sync.upload_success"));
+      const remotePath = provider === "baidu"
+        ? "我的应用/云盘备份/TermFast"
+        : "/TermFast";
+      toast.success(t("settings.cloud_sync.upload_success") + `\n${t("settings.cloud_sync.remote_path")}: ${remotePath}`);
     } catch (e) {
       toast.error(String(e));
     } finally {

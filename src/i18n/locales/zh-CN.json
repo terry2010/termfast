@@ -322,6 +322,7 @@
       "connected": "已连接到云端",
       "connected_status": "已连接",
       "upload_success": "配置已上传到云端",
+      "remote_path": "云端路径",
       "download_success": "配置已从云端下载并导入",
       "disconnected": "已断开云端连接",
       "enter_master_password": "请输入主密码",
