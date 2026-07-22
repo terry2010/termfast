@@ -1257,16 +1257,6 @@ function CloudSyncSection() {
         setBusy(false);
         return;
       }
-      // Handle password mismatch with local — cloud password ≠ local password
-      if (res.ok === false && res.reason === "password_mismatch_local") {
-        const { message } = await import("@tauri-apps/plugin-dialog");
-        await message(
-          res.message || "云端主密码与本地主密码不一致，请将本地主密码修改为云端主密码后重新下载",
-          { title: "密码不一致", kind: "warning", okLabel: t("common.ok") }
-        );
-        setBusy(false);
-        return;
-      }
       // Handle special responses (no_update, local_newer, no_remote_data, decrypt_failed)
       if (res.ok === false && res.reason) {
         if (res.reason === "local_newer") {

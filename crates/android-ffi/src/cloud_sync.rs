@@ -541,6 +541,20 @@ pub fn download(params_json: &str) -> Result<String, String> {
         .to_string();
     let force_download = params["force_download"].as_bool().unwrap_or(false);
 
+    // If credential store is initialized (not pending), verify the password
+    // can unlock it before proceeding with download. If not, tell the user
+    // to change their local master password first.
+    let store = crate::credential::android_credential_store();
+    if !store.is_pending() && store.is_initialized() {
+        if let Err(_) = store.unlock(&master_password) {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "reason": "wrong_password",
+                "message": "输入的主密码与本地主密码不一致，请先修改主密码后再下载",
+            }).to_string());
+        }
+    }
+
     // Load token
     let path = token_file_path();
     let data = token_store::load_tokens(&path).map_err(|e| format!("load token: {}", e))?;
@@ -664,23 +678,11 @@ pub fn download(params_json: &str) -> Result<String, String> {
     let export_data: FullExportData = serde_json::from_value(payload.config.clone())
         .map_err(|e| format!("parse config: {}", e))?;
 
-    // Before applying, verify the download password matches the local
-    // master password (if local store is initialized). If they differ,
-    // stop — applying would overwrite local data with credentials
-    // encrypted under a different password, making them unusable.
+    // If store is pending (no local password set), initialize with the
+    // download password so credentials persist encrypted.
     {
         let store = crate::credential::android_credential_store();
-        if !store.is_pending() && store.is_initialized() {
-            if let Err(_) = store.unlock(&master_password) {
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "reason": "password_mismatch_local",
-                    "message": "云端数据已解密，但云端主密码与本地主密码不一致。\n请将本地主密码修改为云端主密码后重新下载，才能正常使用同步的凭据。",
-                }).to_string());
-            }
-        } else if store.is_pending() {
-            // No local password set — initialize with download password
-            // so credentials persist encrypted.
+        if store.is_pending() {
             let _ = store.initialize(&master_password);
         }
     }

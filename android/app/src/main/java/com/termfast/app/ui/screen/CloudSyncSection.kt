@@ -257,11 +257,6 @@ fun CloudSyncSection() {
                             showDownloadDialog = null
                             Toast.makeText(context, resp.message ?: "输入的主密码与本地主密码不一致，请先修改主密码后再下载", Toast.LENGTH_LONG).show()
                         }
-                        resp.reason == "password_mismatch_local" -> {
-                            msg = resp.message ?: "云端主密码与本地主密码不一致"
-                            showDownloadDialog = null
-                            Toast.makeText(context, resp.message ?: "云端主密码与本地主密码不一致，请将本地主密码修改为云端主密码后重新下载", Toast.LENGTH_LONG).show()
-                        }
                         resp.reason == "rollback_detected" -> {
                             // Close password dialog, show rollback confirmation
                             showDownloadDialog = null

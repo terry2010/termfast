@@ -1330,6 +1330,18 @@ async fn ipc_cloud_sync_download(
     let master_password = master_password
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
+    // If credential store is initialized (not pending), verify the password
+    // can unlock it before proceeding with download. If not, tell the user
+    // to change their local master password first.
+    if !cred_state.store.is_pending() && cred_state.store.is_initialized() {
+        if let Err(_) = cred_state.store.unlock(&master_password) {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "reason": "wrong_password",
+                "message": "输入的主密码与本地主密码不一致，请先修改主密码后再下载",
+            }));
+        }
+    }
     let mut params = serde_json::json!({
         "provider": provider,
         "master_password": master_password,
@@ -1340,29 +1352,12 @@ async fn ipc_cloud_sync_download(
     if let Some(fd) = force_download {
         params["force_download"] = serde_json::json!(fd);
     }
-    let result = forward_to_daemon(
+    forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::CloudSyncDownload,
         params,
     )
-    .await?;
-
-    // After download succeeds: if the cloud data was decrypted and applied
-    // successfully, verify the download password matches the local master
-    // password. If they differ, the local credentials.enc won't be usable
-    // with the cloud password — tell the user to change their local password.
-    if result.get("ok") == Some(&serde_json::json!(true)) {
-        if !cred_state.store.is_pending() && cred_state.store.is_initialized() {
-            if let Err(_) = cred_state.store.unlock(&master_password) {
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "reason": "password_mismatch_local",
-                    "message": "云端数据已下载，但云端主密码与本地主密码不一致。\n请将本地主密码修改为云端主密码后重新下载，才能正常使用同步的凭据。",
-                }));
-            }
-        }
-    }
-    Ok(result)
+    .await
 }
 
 #[tauri::command]
