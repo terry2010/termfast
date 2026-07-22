@@ -1160,6 +1160,20 @@ function CloudSyncSection() {
         toast.error(res.message || "请先设置主密码后再上传到云端");
         return;
       }
+      // Handle wrong password — prompt user to change password first
+      if (res.ok === false && res.reason === "wrong_password") {
+        const { ask } = await import("@tauri-apps/plugin-dialog");
+        const confirmed = await ask(
+          (res.message || "输入的主密码与本地主密码不一致") + "\n\n是否现在修改主密码？",
+          { title: "主密码不正确", kind: "warning" }
+        );
+        if (confirmed) {
+          // Navigate to settings credential section — trigger change password
+          // The user needs to change their local master password first
+          toast.info("请在「凭据安全」区域修改主密码后重新上传");
+        }
+        return;
+      }
       // Handle password mismatch — ask user to confirm cloud password change
       if (res.ok === false && res.reason === "password_mismatch") {
         const { ask } = await import("@tauri-apps/plugin-dialog");
@@ -1229,6 +1243,19 @@ function CloudSyncSection() {
         } else {
           throw e;
         }
+      }
+      // Handle wrong password — prompt user to change password first
+      if (res.ok === false && res.reason === "wrong_password") {
+        const { ask } = await import("@tauri-apps/plugin-dialog");
+        const confirmed = await ask(
+          (res.message || "输入的主密码与本地主密码不一致") + "\n\n是否现在修改主密码？",
+          { title: "主密码不正确", kind: "warning" }
+        );
+        if (confirmed) {
+          toast.info("请在「凭据安全」区域修改主密码后重新下载");
+        }
+        setBusy(false);
+        return;
       }
       // Handle special responses (no_update, local_newer, no_remote_data, decrypt_failed)
       if (res.ok === false && res.reason) {

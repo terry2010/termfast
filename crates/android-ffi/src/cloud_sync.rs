@@ -393,6 +393,16 @@ pub fn upload(params_json: &str) -> Result<String, String> {
         }).to_string());
     }
 
+    // Verify the password can unlock the local credential store.
+    // If not, tell the frontend to prompt the user to change their password.
+    if let Err(_) = store.unlock(&master_password) {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "reason": "wrong_password",
+            "message": "输入的主密码与本地主密码不一致，请先修改主密码后再上传",
+        }).to_string());
+    }
+
     // Password change detection: compare input password hash with stored hash.
     // If they differ, return password_mismatch so the frontend can ask the
     // user to confirm the cloud password change.
@@ -530,6 +540,19 @@ pub fn download(params_json: &str) -> Result<String, String> {
         .ok_or("missing master_password")?
         .to_string();
     let force_download = params["force_download"].as_bool().unwrap_or(false);
+
+    // If credential store is initialized (not pending), verify the password
+    // can unlock it before proceeding with download.
+    let store = crate::credential::android_credential_store();
+    if !store.is_pending() && store.is_initialized() {
+        if let Err(_) = store.unlock(&master_password) {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "reason": "wrong_password",
+                "message": "输入的主密码与本地主密码不一致，请先修改主密码后再下载",
+            }).to_string());
+        }
+    }
 
     // Load token
     let path = token_file_path();

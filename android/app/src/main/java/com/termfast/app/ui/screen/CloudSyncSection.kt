@@ -217,6 +217,9 @@ fun CloudSyncSection() {
                     } else if (resp.reason == "not_initialized") {
                         showUploadDialog = null
                         Toast.makeText(context, resp.message ?: "请先设置主密码后再上传到云端", Toast.LENGTH_LONG).show()
+                    } else if (resp.reason == "wrong_password") {
+                        showUploadDialog = null
+                        Toast.makeText(context, resp.message ?: "输入的主密码与本地主密码不一致，请先修改主密码后再上传", Toast.LENGTH_LONG).show()
                     } else {
                         msg = "上传失败：${resp.message ?: resp.reason ?: "未知错误"}"
                         showUploadDialog = null
@@ -248,6 +251,11 @@ fun CloudSyncSection() {
                         resp.ok -> {
                             msg = "下载成功：来自 ${resp.device_name ?: "未知设备"}，${resp.size ?: 0} 字节"
                             showDownloadDialog = null
+                        }
+                        resp.reason == "wrong_password" -> {
+                            msg = resp.message ?: "输入的主密码与本地主密码不一致"
+                            showDownloadDialog = null
+                            Toast.makeText(context, resp.message ?: "输入的主密码与本地主密码不一致，请先修改主密码后再下载", Toast.LENGTH_LONG).show()
                         }
                         resp.reason == "rollback_detected" -> {
                             // Close password dialog, show rollback confirmation

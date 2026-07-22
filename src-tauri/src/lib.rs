@@ -1289,6 +1289,15 @@ async fn ipc_cloud_sync_upload(
     let master_password = master_password
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
+    // Verify the password can unlock the local credential store.
+    // If not, tell the frontend to prompt the user to change their password.
+    if let Err(_) = cred_state.store.unlock(&master_password) {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "reason": "wrong_password",
+            "message": "输入的主密码与本地主密码不一致，请先修改主密码后再上传",
+        }));
+    }
     let mut params = serde_json::json!({
         "provider": provider,
         "master_password": master_password,
@@ -1307,14 +1316,27 @@ async fn ipc_cloud_sync_upload(
 #[tauri::command]
 async fn ipc_cloud_sync_download(
     state: tauri::State<'_, AppState>,
+    cred_state: tauri::State<'_, CredentialState>,
     provider: String,
     master_password: Option<String>,
     sync_path: Option<String>,
     force_download: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    // Resolve the master password: use provided or cached.
     let master_password = master_password
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
+    // If credential store is initialized (not pending), verify the password
+    // can unlock it before proceeding with download.
+    if !cred_state.store.is_pending() && cred_state.store.is_initialized() {
+        if let Err(_) = cred_state.store.unlock(&master_password) {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "reason": "wrong_password",
+                "message": "输入的主密码与本地主密码不一致，请先修改主密码后再下载",
+            }));
+        }
+    }
     let mut params = serde_json::json!({
         "provider": provider,
         "master_password": master_password,
