@@ -329,7 +329,8 @@
       "password_required_title": "必须设置主密码",
       "password_required_desc": "必须设置主密码后才能{{action}}，否则服务器密码和配置会泄漏！请在上方「主密码」输入框中输入您的主密码。",
       "disconnect_title": "确认断开云端连接",
-      "disconnect_desc": "断开连接后，本地保存的 OAuth 令牌将被删除，您需要重新授权才能再次同步。\n\n云端已上传的加密配置文件不受影响，仍保留在网盘中。\n\n确定要断开连接吗？"
+      "disconnect_desc": "断开连接后，本地保存的 OAuth 令牌将被删除，您需要重新授权才能再次同步。\n\n云端已上传的加密配置文件不受影响，仍保留在网盘中。\n\n确定要断开连接吗？",
+      "password_required": "云同步需要主密码来加解密配置文件，请输入您的主密码。"
     },
     "notification": {
       "title": "通知",

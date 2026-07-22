@@ -327,7 +327,8 @@
       "password_required_title": "Master password required",
       "password_required_desc": "You must set a master password before {{action}}, otherwise server passwords and config will be exposed! Please enter your master password in the field above.",
       "disconnect_title": "Confirm disconnect",
-      "disconnect_desc": "After disconnecting, the locally stored OAuth token will be deleted and you will need to re-authorize to sync again.\n\nThe encrypted config file already uploaded to the cloud is unaffected and remains in your netdisk.\n\nAre you sure you want to disconnect?"
+      "disconnect_desc": "After disconnecting, the locally stored OAuth token will be deleted and you will need to re-authorize to sync again.\n\nThe encrypted config file already uploaded to the cloud is unaffected and remains in your netdisk.\n\nAre you sure you want to disconnect?",
+      "password_required": "Cloud sync needs your master password to encrypt/decrypt the config file. Please enter it below."
     },
     "notification": {
       "title": "Notifications",

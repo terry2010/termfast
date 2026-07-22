@@ -1056,13 +1056,16 @@ function CredentialSection() {
 function CloudSyncSection() {
   const { t } = useTranslation();
   const [provider, setProvider] = useState<"dropbox" | "baidu">("baidu");
-  // masterPassword is no longer needed in the frontend — the backend caches
-  // it when the credential store is unlocked and uses it automatically.
   const [syncPath, setSyncPath] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  // Master password prompt for cloud sync (shown when cached password is
+  // not available, e.g. user unlocked via cached derived key, not password).
+  const [showPwPrompt, setShowPwPrompt] = useState(false);
+  const [pwPromptText, setPwPromptText] = useState("");
+  const [pendingAction, setPendingAction] = useState<"upload" | "download" | null>(null);
 
   const checkAuth = async () => {
     try {
@@ -1110,23 +1113,30 @@ function CloudSyncSection() {
     }
   };
 
-  const upload = async () => {
+  const upload = async (masterPassword?: string) => {
     setBusy(true);
     try {
-      // Try upload, if token expired try refresh then retry.
-      // master_password is omitted — backend uses cached password from
-      // credential store unlock.
       try {
         await ipcInvoke("ipc_cloud_sync_upload", {
           provider,
           sync_path: syncPath || undefined,
+          master_password: masterPassword,
         });
       } catch (e) {
-        if (String(e).includes("expired") || String(e).includes("401")) {
+        const msg = String(e);
+        if (msg.includes("master password not available")) {
+          // Cached password not available — prompt user to enter it
+          setPendingAction("upload");
+          setPwPromptText("");
+          setShowPwPrompt(true);
+          return;
+        }
+        if (msg.includes("expired") || msg.includes("401")) {
           await ipcInvoke("ipc_cloud_sync_refresh_token", { provider });
           await ipcInvoke("ipc_cloud_sync_upload", {
             provider,
             sync_path: syncPath || undefined,
+            master_password: masterPassword,
           });
         } else {
           throw e;
@@ -1143,35 +1153,58 @@ function CloudSyncSection() {
     }
   };
 
-  const download = async () => {
+  const download = async (masterPassword?: string) => {
     setBusy(true);
     try {
       let res: { blob: string; size: number };
       try {
         res = await ipcInvoke<{ blob: string; size: number }>(
           "ipc_cloud_sync_download",
-          { provider, sync_path: syncPath || undefined },
+          { provider, sync_path: syncPath || undefined, master_password: masterPassword },
         );
       } catch (e) {
-        if (String(e).includes("expired") || String(e).includes("401")) {
+        const msg = String(e);
+        if (msg.includes("master password not available")) {
+          // Cached password not available — prompt user to enter it
+          setPendingAction("download");
+          setPwPromptText("");
+          setShowPwPrompt(true);
+          return;
+        }
+        if (msg.includes("expired") || msg.includes("401")) {
           await ipcInvoke("ipc_cloud_sync_refresh_token", { provider });
           res = await ipcInvoke<{ blob: string; size: number }>(
             "ipc_cloud_sync_download",
-            { provider, sync_path: syncPath || undefined },
+            { provider, sync_path: syncPath || undefined, master_password: masterPassword },
           );
         } else {
           throw e;
         }
       }
-      // Import the downloaded blob (master_password omitted — backend uses cache)
       await ipcInvoke("ipc_import_full", {
         blob: res.blob,
+        master_password: masterPassword,
       });
       toast.success(t("settings.cloud_sync.download_success"));
     } catch (e) {
       toast.error(String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Execute the pending action with the user-provided master password
+  const executeWithPassword = async () => {
+    const pw = pwPromptText;
+    if (!pw) return;
+    setShowPwPrompt(false);
+    setPwPromptText("");
+    const action = pendingAction;
+    setPendingAction(null);
+    if (action === "upload") {
+      await upload(pw);
+    } else if (action === "download") {
+      await download(pw);
     }
   };
 
@@ -1268,14 +1301,14 @@ function CloudSyncSection() {
 
           <div className="flex gap-2">
             <button
-              onClick={upload}
+              onClick={() => upload()}
               disabled={busy}
               className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
             >
               {busy ? t("common.loading") : t("settings.cloud_sync.upload")}
             </button>
             <button
-              onClick={download}
+              onClick={() => download()}
               disabled={busy}
               className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
             >
@@ -1318,6 +1351,44 @@ function CloudSyncSection() {
                 className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
               >
                 {busy ? t("common.loading") : t("settings.cloud_sync.disconnect")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Master password prompt for cloud sync (when cached password unavailable) */}
+      {showPwPrompt && (
+        <Modal
+          title={t("credentials.master_password")}
+          onClose={() => { setShowPwPrompt(false); setPwPromptText(""); setPendingAction(null); }}
+        >
+          <div className="p-6 space-y-4">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {t("settings.cloud_sync.password_required")}
+            </p>
+            <input
+              type="password"
+              value={pwPromptText}
+              onChange={(e) => setPwPromptText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") executeWithPassword(); }}
+              placeholder={t("credentials.master_password")}
+              autoFocus
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
+            />
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => { setShowPwPrompt(false); setPwPromptText(""); setPendingAction(null); }}
+                className="px-4 py-2 rounded-lg text-gray-600 dark:text-gray-400 text-sm"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={executeWithPassword}
+                disabled={!pwPromptText}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {t("common.confirm")}
               </button>
             </div>
           </div>
