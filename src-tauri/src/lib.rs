@@ -1471,7 +1471,7 @@ async fn ipc_cloud_sync_wait_callback(
 }
 
 /// Create a tray icon image — transparent background with a thick white
-/// terminal prompt ">_" and cursor block.
+/// terminal prompt ">_" and cursor block, inside a thin rounded square border.
 /// Uses icon_as_template(true) so macOS auto-inverts on light/dark menus.
 /// 32x32 RGBA.
 fn create_tray_icon(_color: termfast_desktop::tray::TrayIconColor) -> tauri::image::Image<'static> {
@@ -1488,43 +1488,77 @@ fn create_tray_icon(_color: termfast_desktop::tray::TrayIconColor) -> tauri::ima
         }
     };
 
-    // Draw ">_" prompt and cursor block — very thick (4px) lines
+    // Draw rounded square border — 1px thick, 2px inset
+    // Outer bounds: (2,2) to (29,29), corner radius = 4
+    let lo = 2i32;
+    let hi = 29i32;
+    let cr = 4i32;
+    let span = hi - lo; // 27
+
+    for y in lo..=hi {
+        for x in lo..=hi {
+            let dx = x - lo;
+            let dy = y - lo;
+            // Top/bottom straight edges
+            let top_bottom = (y == lo || y == hi) && dx >= cr && dx <= span - cr;
+            // Left/right straight edges
+            let left_right = (x == lo || x == hi) && dy >= cr && dy <= span - cr;
+            // Four corners — arc points at radius cr from corner center
+            let r_sq = (cr * cr) as i32;
+            let r_inner_sq = ((cr - 1) * (cr - 1)) as i32;
+            let corner_pt = |cx: i32, cy: i32| {
+                let ddx = x - cx;
+                let ddy = y - cy;
+                let d = ddx * ddx + ddy * ddy;
+                d >= r_inner_sq && d <= r_sq + 2
+            };
+            let tl = dx < cr && dy < cr && corner_pt(lo + cr, lo + cr);
+            let tr = (span - dx) < cr && dy < cr && corner_pt(hi - cr, lo + cr);
+            let bl = dx < cr && (span - dy) < cr && corner_pt(lo + cr, hi - cr);
+            let br = (span - dx) < cr && (span - dy) < cr && corner_pt(hi - cr, hi - cr);
+            if top_bottom || left_right || tl || tr || bl || br {
+                set_pixel(&mut rgba, x, y);
+            }
+        }
+    }
+
+    // Draw ">_" prompt and cursor block — thick (4px) lines, spread out
     //
     // ">" chevron: 4px thick
-    //   Upper arm: (3,7) → (12,16)
-    //   Lower arm: (12,16) → (3,25)
-    // "_" underline: 4px thick, wider
-    //   x: 14..22, y: 22..26
-    // Cursor block: solid rectangle, taller
-    //   x: 24..30, y: 8..26
+    //   Upper arm: (5,8) → (12,15)
+    //   Lower arm: (12,15) → (5,22)
+    // "_" underline: 4px thick
+    //   x: 15..21, y: 22..26
+    // Cursor block: solid rectangle, height 14
+    //   x: 24..28, y: 9..23
 
-    // Draw ">" upper arm: from (3,7) to (12,16), 4px thick
-    for i in 0..=9 {
-        let px = 3 + i;
-        let py = 7 + i;
+    // Draw ">" upper arm: from (5,8) to (12,15), 4px thick
+    for i in 0..=7 {
+        let px = 5 + i;
+        let py = 8 + i;
         for t in 0..4 {
             set_pixel(&mut rgba, px + t, py);
         }
     }
-    // Draw ">" lower arm: from (12,16) to (3,25), 4px thick
-    for i in 0..=9 {
+    // Draw ">" lower arm: from (12,15) to (5,22), 4px thick
+    for i in 0..=7 {
         let px = 12 - i;
-        let py = 16 + i;
+        let py = 15 + i;
         for t in 0..4 {
             set_pixel(&mut rgba, px + t, py);
         }
     }
 
-    // Draw "_" — thick horizontal bar, wider
-    for px in 14..24 {
+    // Draw "_" — thick horizontal bar
+    for px in 15..21 {
         for py in 22..26 {
             set_pixel(&mut rgba, px, py);
         }
     }
 
-    // Draw cursor block — solid rectangle
+    // Draw cursor block — solid rectangle, height 14
     for py in 9..23 {
-        for px in 26..30 {
+        for px in 24..28 {
             set_pixel(&mut rgba, px, py);
         }
     }
