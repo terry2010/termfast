@@ -356,16 +356,22 @@ impl DaemonServer {
 
         // Step 5: Disconnect all SSH connections (with 3s ACK wait)
         tracing::info!("[5/7] disconnecting SSH sessions (3s ACK wait)");
+        let mut any_disconnected = false;
         for server_id in &server_ids {
             if let Ok(server) = self.state.server_manager.get_server(server_id).await {
                 if server.is_connected().await {
                     tracing::debug!("disconnecting server {}", server_id);
                     let _ = server.disconnect().await;
+                    any_disconnected = true;
                 }
             }
         }
-        // Wait for SSH disconnect ACK (3s)
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // Only wait for SSH disconnect ACK if we actually disconnected something
+        if any_disconnected {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        } else {
+            tracing::info!("[5/7] no SSH connections to disconnect, skipping ACK wait");
+        }
 
         // Step 6: Skip keychain credential deletion on shutdown.
         // On macOS, deleting keychain entries triggers a system password prompt
