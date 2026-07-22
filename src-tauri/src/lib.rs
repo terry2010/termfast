@@ -1291,13 +1291,16 @@ async fn ipc_cloud_sync_upload(
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
     // Verify the password can unlock the local credential store.
-    // If not, tell the frontend to prompt the user to change their password.
-    if let Err(_) = cred_state.store.unlock(&master_password) {
-        return Ok(serde_json::json!({
-            "ok": false,
-            "reason": "wrong_password",
-            "message": "输入的主密码与本地主密码不一致，请先修改主密码后再上传",
-        }));
+    let cred_path = credential_manager::credential_file_path();
+    if cred_path.exists() {
+        if let Err(e) = cred_state.store.unlock(&master_password) {
+            tracing::warn!("upload pre-check: unlock failed: {:?}", e);
+            return Ok(serde_json::json!({
+                "ok": false,
+                "reason": "wrong_password",
+                "message": "输入的主密码与本地主密码不一致，请先修改主密码后再上传",
+            }));
+        }
     }
     let mut params = serde_json::json!({
         "provider": provider,
@@ -1330,21 +1333,23 @@ async fn ipc_cloud_sync_download(
     let master_password = master_password
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
-    // If credential store is initialized (not pending), verify the password
-    // can unlock it before proceeding with download. If not, tell the user
-    // to change their local master password first.
-    let is_pending = cred_state.store.is_pending();
-    let is_init = cred_state.store.is_initialized();
-    tracing::info!("download pre-check: is_pending={}, is_initialized={}", is_pending, is_init);
-    if !is_pending && is_init {
-        let unlock_result = cred_state.store.unlock(&master_password);
-        tracing::info!("download pre-check: unlock result = {:?}", unlock_result.as_ref().map(|_| ()).map_err(|e| e.to_string()));
-        if let Err(_) = unlock_result {
-            return Ok(serde_json::json!({
-                "ok": false,
-                "reason": "wrong_password",
-                "message": "输入的主密码与本地主密码不一致，请先修改主密码后再下载",
-            }));
+    // Verify the password can unlock the local credential store.
+    // If the encrypted file exists, the password must match it.
+    // If the file doesn't exist (fresh install / pending), skip verification.
+    let cred_path = credential_manager::credential_file_path();
+    let cred_file_exists = cred_path.exists();
+    tracing::info!("download pre-check: cred_file={}, path={}", cred_file_exists, cred_path.display());
+    if cred_file_exists {
+        match cred_state.store.unlock(&master_password) {
+            Ok(_) => tracing::info!("download pre-check: unlock OK"),
+            Err(e) => {
+                tracing::warn!("download pre-check: unlock failed: {:?}", e);
+                return Ok(serde_json::json!({
+                    "ok": false,
+                    "reason": "wrong_password",
+                    "message": "输入的主密码与本地主密码不一致，请先修改主密码后再下载",
+                }));
+            }
         }
     }
     let mut params = serde_json::json!({
