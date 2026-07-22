@@ -319,6 +319,28 @@ function GeneralSection() {
           onChange={(v) => updateAndSave({ minimize_to_tray: v })}
         />
       </SettingItem>
+      <SettingItem label={t("settings.general.http_proxy_mode")}>
+        <select
+          value={config.general.http_proxy_mode || "auto"}
+          onChange={(e) => updateAndSave({ http_proxy_mode: e.target.value })}
+          className="input w-36"
+        >
+          <option value="auto">{t("settings.general.http_proxy_auto")}</option>
+          <option value="disabled">{t("settings.general.http_proxy_disabled")}</option>
+          <option value="custom">{t("settings.general.http_proxy_custom")}</option>
+        </select>
+      </SettingItem>
+      {(config.general.http_proxy_mode === "custom") && (
+        <SettingItem label={t("settings.general.http_proxy_url")}>
+          <input
+            type="text"
+            value={config.general.http_proxy_url || ""}
+            onChange={(e) => updateAndSave({ http_proxy_url: e.target.value })}
+            placeholder="http://127.0.0.1:7890"
+            className="input w-64"
+          />
+        </SettingItem>
+      )}
     </SettingGroup>
   );
 }

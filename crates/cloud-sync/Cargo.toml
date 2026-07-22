@@ -28,5 +28,12 @@ argon2 = "0.5"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 unicode-normalization = "0.1"
 
+# Platform-specific proxy detection
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_System_Registry"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

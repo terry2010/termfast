@@ -277,7 +277,12 @@
       "auto_start": "Start at Login",
       "minimize_to_tray": "Minimize to Tray",
       "log_level": "Log Level",
-      "log_to_file": "Log to File"
+      "log_to_file": "Log to File",
+      "http_proxy_mode": "HTTP Proxy",
+      "http_proxy_auto": "Auto (follow system)",
+      "http_proxy_disabled": "Disabled",
+      "http_proxy_custom": "Custom",
+      "http_proxy_url": "Proxy URL"
     },
     "theme": {
       "system": "System",

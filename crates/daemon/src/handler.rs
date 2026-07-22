@@ -1083,6 +1083,12 @@ async fn handle_update_general_config(
                 })
                 .collect();
         }
+        if let Some(v) = params["http_proxy_mode"].as_str() {
+            config.general.http_proxy_mode = v.to_string();
+        }
+        if let Some(v) = params["http_proxy_url"].as_str() {
+            config.general.http_proxy_url = v.to_string();
+        }
     })
     .await
     .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
@@ -3321,17 +3327,29 @@ fn sync_path_from_params(params: &serde_json::Value) -> String {
 }
 
 /// Build a provider instance from the provider type string.
-/// No app_key needed — providers get OAuth URLs and exchange tokens
-/// through the cloud sync proxy server.
-fn build_provider(
+/// Reads proxy settings from config to construct the provider with
+/// the correct proxy mode.
+async fn build_provider(
+    state: &DaemonState,
     provider: &str,
 ) -> Result<Box<dyn termfast_cloud_sync::CloudProviderTrait>, IpcError> {
+    // Read proxy settings from config
+    let (proxy_mode_str, proxy_url) = {
+        let mgr = state.config_manager.lock().await;
+        let config = mgr.get().await;
+        (
+            config.general.http_proxy_mode.clone(),
+            config.general.http_proxy_url.clone(),
+        )
+    };
+    let proxy_mode = termfast_cloud_sync::proxy::ProxyMode::from_config(&proxy_mode_str, &proxy_url);
+
     match provider {
         "dropbox" => Ok(Box::new(
-            termfast_cloud_sync::dropbox::DropboxProvider::new(),
+            termfast_cloud_sync::dropbox::DropboxProvider::with_proxy_mode(proxy_mode),
         )),
         "baidu" => Ok(Box::new(
-            termfast_cloud_sync::baidu::BaiduProvider::new(),
+            termfast_cloud_sync::baidu::BaiduProvider::with_proxy_mode(proxy_mode),
         )),
         _ => Err(IpcError::new(
             ErrorCode::InvalidParams,
@@ -3341,7 +3359,7 @@ fn build_provider(
 }
 
 async fn handle_cloud_sync_auth_url(
-    _state: &DaemonState,
+    state: &DaemonState,
     params: &serde_json::Value,
 ) -> HandlerResult {
     let provider = params["provider"]
@@ -3351,7 +3369,7 @@ async fn handle_cloud_sync_auth_url(
         .as_str()
         .unwrap_or("http://localhost:17380/callback");
 
-    let p = build_provider(provider)?;
+    let p = build_provider(state, provider).await?;
     let (url, code_verifier) = p.auth_url(redirect_uri);
 
     Ok(serde_json::json!({
@@ -3362,7 +3380,7 @@ async fn handle_cloud_sync_auth_url(
 }
 
 async fn handle_cloud_sync_exchange_code(
-    _state: &DaemonState,
+    state: &DaemonState,
     params: &serde_json::Value,
 ) -> HandlerResult {
     let provider = params["provider"]
@@ -3377,11 +3395,11 @@ async fn handle_cloud_sync_exchange_code(
     let redirect_uri = params["redirect_uri"]
         .as_str()
         .unwrap_or("http://localhost:17380/callback");
-    let state = params["state"].as_str().unwrap_or("");
+    let oauth_state = params["state"].as_str().unwrap_or("");
 
-    let p = build_provider(provider)?;
+    let p = build_provider(state, provider).await?;
     let token = p
-        .exchange_code(code, code_verifier, redirect_uri, state)
+        .exchange_code(code, code_verifier, redirect_uri, oauth_state)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("OAuth exchange: {}", e)))?;
 
@@ -3508,7 +3526,7 @@ async fn handle_cloud_sync_upload(
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
 
-    let p = build_provider(&provider)?;
+    let p = build_provider(state, &provider).await?;
     let sync_path = sync_path_from_params(params);
 
     // Check remote file info for conflict detection
@@ -3615,7 +3633,7 @@ async fn handle_cloud_sync_download(
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
 
-    let p = build_provider(&provider)?;
+    let p = build_provider(state, &provider).await?;
     let sync_path = sync_path_from_params(params);
 
     // Check remote file info
@@ -3773,7 +3791,7 @@ async fn handle_cloud_sync_file_info(
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
 
-    let p = build_provider(provider)?;
+    let p = build_provider(state, provider).await?;
     let sync_path = sync_path_from_params(params);
     let info = p
         .file_info(&stored.token, &sync_path)
@@ -3830,7 +3848,7 @@ async fn handle_cloud_sync_delete_remote(
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
 
-    let p = build_provider(provider)?;
+    let p = build_provider(state, provider).await?;
     let sync_path = sync_path_from_params(params);
     p.delete(&stored.token, &sync_path)
         .await
@@ -3875,7 +3893,7 @@ async fn handle_cloud_sync_refresh_token(
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
 
-    let p = build_provider(provider)?;
+    let p = build_provider(state, provider).await?;
     let new_token = p
         .refresh_token(&stored.token)
         .await
@@ -4449,7 +4467,7 @@ async fn handle_cloud_sync_auth_with_callback(
     let redirect_uri = server.redirect_uri();
 
     // Get auth URL from provider (via proxy server)
-    let p = build_provider(provider)?;
+    let p = build_provider(state, provider).await?;
     let (real_auth_url, code_verifier, state_str) = p
         .fetch_auth_url(&redirect_uri)
         .await
@@ -4518,7 +4536,7 @@ async fn handle_cloud_sync_wait_callback(
     }
 
     // Exchange code for token
-    let p = build_provider(&pending.provider)?;
+    let p = build_provider(state, &pending.provider).await?;
     let token = p
         .exchange_code(&result.code, &pending.code_verifier, &pending.redirect_uri, &result.state)
         .await

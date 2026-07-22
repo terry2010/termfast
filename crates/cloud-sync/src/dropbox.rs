@@ -17,11 +17,19 @@ const CONTENT_BASE: &str = "https://content.dropboxapi.com/2";
 
 /// Dropbox provider. No app_key or secret stored in the binary —
 /// all OAuth operations go through the cloud sync proxy server.
-pub struct DropboxProvider;
+pub struct DropboxProvider {
+    proxy_mode: crate::proxy::ProxyMode,
+}
 
 impl DropboxProvider {
     pub fn new() -> Self {
-        Self
+        Self {
+            proxy_mode: crate::proxy::ProxyMode::Auto,
+        }
+    }
+
+    pub fn with_proxy_mode(proxy_mode: crate::proxy::ProxyMode) -> Self {
+        Self { proxy_mode }
     }
 }
 
@@ -35,6 +43,10 @@ impl Default for DropboxProvider {
 impl CloudProviderTrait for DropboxProvider {
     fn provider_type(&self) -> CloudProvider {
         CloudProvider::Dropbox
+    }
+
+    fn proxy_mode(&self) -> &crate::proxy::ProxyMode {
+        &self.proxy_mode
     }
 
     fn auth_url(&self, redirect_uri: &str) -> (String, Option<String>) {
@@ -59,7 +71,7 @@ impl CloudProviderTrait for DropboxProvider {
         redirect_uri: &str,
         _state: &str,
     ) -> Result<OAuthToken, CloudSyncError> {
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).connect_timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::proxy::build_client(&self.proxy_mode, std::time::Duration::from_secs(30), std::time::Duration::from_secs(10));
 
         let body = serde_json::json!({
             "provider": "dropbox",
@@ -92,7 +104,7 @@ impl CloudProviderTrait for DropboxProvider {
             .as_ref()
             .ok_or(CloudSyncError::TokenExpired)?;
 
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).connect_timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::proxy::build_client(&self.proxy_mode, std::time::Duration::from_secs(30), std::time::Duration::from_secs(10));
 
         let body = serde_json::json!({
             "provider": "dropbox",
@@ -121,7 +133,7 @@ impl CloudProviderTrait for DropboxProvider {
         path: &str,
         data: &[u8],
     ) -> Result<(), CloudSyncError> {
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).connect_timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::proxy::build_client(&self.proxy_mode, std::time::Duration::from_secs(30), std::time::Duration::from_secs(10));
         let api_arg = serde_json::json!({
             "path": path,
             "mode": "overwrite",
@@ -158,7 +170,7 @@ impl CloudProviderTrait for DropboxProvider {
         token: &OAuthToken,
         path: &str,
     ) -> Result<Vec<u8>, CloudSyncError> {
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).connect_timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::proxy::build_client(&self.proxy_mode, std::time::Duration::from_secs(30), std::time::Duration::from_secs(10));
         let api_arg = serde_json::json!({ "path": path });
 
         let resp = client
@@ -195,7 +207,7 @@ impl CloudProviderTrait for DropboxProvider {
         token: &OAuthToken,
         path: &str,
     ) -> Result<RemoteFileInfo, CloudSyncError> {
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).connect_timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::proxy::build_client(&self.proxy_mode, std::time::Duration::from_secs(30), std::time::Duration::from_secs(10));
 
         let resp = client
             .post(format!("{}/files/get_metadata", API_BASE))
@@ -236,7 +248,7 @@ impl CloudProviderTrait for DropboxProvider {
     }
 
     async fn delete(&self, token: &OAuthToken, path: &str) -> Result<(), CloudSyncError> {
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).connect_timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::proxy::build_client(&self.proxy_mode, std::time::Duration::from_secs(30), std::time::Duration::from_secs(10));
 
         let resp = client
             .post(format!("{}/files/delete_v2", API_BASE))

@@ -105,33 +105,37 @@ fn http_error(prefix: &str, status: reqwest::StatusCode, body: String) -> CloudS
 }
 
 /// Build a reqwest client with timeouts to prevent indefinite hangs.
-fn reqwest_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+fn reqwest_client_with_proxy(
+    mode: &crate::proxy::ProxyMode,
+) -> reqwest::Client {
+    crate::proxy::build_client(mode, Duration::from_secs(30), Duration::from_secs(10))
 }
 
 /// Build a reqwest client with a long timeout for file uploads.
 /// Uploads can take a while depending on file size and network speed.
-fn reqwest_upload_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+fn reqwest_upload_client_with_proxy(
+    mode: &crate::proxy::ProxyMode,
+) -> reqwest::Client {
+    crate::proxy::build_client(mode, Duration::from_secs(300), Duration::from_secs(10))
 }
 
 /// Baidu provider. No app_key or secret stored in the binary —
 /// all OAuth operations go through the cloud sync proxy server.
 /// Uses Authorization Code flow (via server) which provides refresh_token
 /// (10-year validity), unlike implicit grant which had no refresh.
-pub struct BaiduProvider;
+pub struct BaiduProvider {
+    proxy_mode: crate::proxy::ProxyMode,
+}
 
 impl BaiduProvider {
     pub fn new() -> Self {
-        Self
+        Self {
+            proxy_mode: crate::proxy::ProxyMode::Auto,
+        }
+    }
+
+    pub fn with_proxy_mode(proxy_mode: crate::proxy::ProxyMode) -> Self {
+        Self { proxy_mode }
     }
 }
 
@@ -145,6 +149,10 @@ impl Default for BaiduProvider {
 impl CloudProviderTrait for BaiduProvider {
     fn provider_type(&self) -> CloudProvider {
         CloudProvider::Baidu
+    }
+
+    fn proxy_mode(&self) -> &crate::proxy::ProxyMode {
+        &self.proxy_mode
     }
 
     fn auth_url(&self, redirect_uri: &str) -> (String, Option<String>) {
@@ -165,7 +173,7 @@ impl CloudProviderTrait for BaiduProvider {
         redirect_uri: &str,
         state: &str,
     ) -> Result<OAuthToken, CloudSyncError> {
-        let client = reqwest_client();
+        let client = reqwest_client_with_proxy(&self.proxy_mode);
 
         let body = serde_json::json!({
             "provider": "baidu",
@@ -196,7 +204,7 @@ impl CloudProviderTrait for BaiduProvider {
             .as_ref()
             .ok_or(CloudSyncError::TokenExpired)?;
 
-        let client = reqwest_client();
+        let client = reqwest_client_with_proxy(&self.proxy_mode);
 
         let body = serde_json::json!({
             "provider": "baidu",
@@ -229,7 +237,7 @@ impl CloudProviderTrait for BaiduProvider {
     ) -> Result<(), CloudSyncError> {
         let path = baidu_path(path);
         // Baidu uses a 3-step upload: precreate → upload slices → create
-        let client = reqwest_client();
+        let client = reqwest_client_with_proxy(&self.proxy_mode);
         let access_token = &token.access_token;
 
         // Step 1: precreate
@@ -290,7 +298,7 @@ impl CloudProviderTrait for BaiduProvider {
 
         let form = reqwest::multipart::Form::new().part("file", part);
 
-        let resp = reqwest_upload_client()
+        let resp = reqwest_upload_client_with_proxy(&self.proxy_mode)
             .post(&upload_url)
             .multipart(form)
             .send().await?;
@@ -353,7 +361,7 @@ impl CloudProviderTrait for BaiduProvider {
         path: &str,
     ) -> Result<Vec<u8>, CloudSyncError> {
         let path = baidu_path(path);
-        let client = reqwest_client();
+        let client = reqwest_client_with_proxy(&self.proxy_mode);
         let url = format!(
             "{}/rest/2.0/pcs/file?method=download&path={}&access_token={}",
             PCS_BASE,
@@ -405,7 +413,7 @@ impl CloudProviderTrait for BaiduProvider {
         };
         tracing::debug!("baidu file_info: dir='{}' filename='{}'", dir, filename);
 
-        let client = reqwest_client();
+        let client = reqwest_client_with_proxy(&self.proxy_mode);
         let url = format!(
             "{}/rest/2.0/xpan/file?method=list&dir={}&access_token={}",
             PAN_BASE,
@@ -481,7 +489,7 @@ impl CloudProviderTrait for BaiduProvider {
 
     async fn delete(&self, token: &OAuthToken, path: &str) -> Result<(), CloudSyncError> {
         let path = baidu_path(path);
-        let client = reqwest_client();
+        let client = reqwest_client_with_proxy(&self.proxy_mode);
         let url = format!(
             "{}/rest/2.0/xpan/file?method=delete&access_token={}",
             PAN_BASE,
