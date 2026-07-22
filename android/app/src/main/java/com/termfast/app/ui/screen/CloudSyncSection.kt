@@ -598,7 +598,7 @@ private fun CloudProviderRow(
         }
         if (status.authenticated) {
             val syncInfo = if (status.last_synced != null) {
-                "上次同步：${status.last_synced}"
+                "上次同步：${formatTimestamp(status.last_synced)}"
             } else if (status.has_remote) {
                 "云端有数据（未同步过）"
             } else {
