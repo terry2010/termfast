@@ -248,6 +248,7 @@ fun CloudSyncSection() {
                         }
                         resp.reason == "decrypt_failed" -> {
                             msg = "解密失败，主密码与云端不一致"
+                            showDownloadDialog = null
                         }
                         resp.reason == "no_update" -> {
                             // Close password dialog, show overwrite confirmation
