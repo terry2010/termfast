@@ -33,7 +33,8 @@
     "no_data": "No data",
     "testing": "Testing...",
     "required": "is required",
-    "processing": "Processing..."
+    "processing": "Processing...",
+    "built_in": "Built-in"
   },
   "hostkey": {
     "mismatch_title": "Host Key Changed",

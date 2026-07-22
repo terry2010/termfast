@@ -33,7 +33,8 @@
     "no_data": "暂无数据",
     "testing": "测试中...",
     "required": "为必填项",
-    "processing": "处理中..."
+    "processing": "处理中...",
+    "built_in": "内置"
   },
   "hostkey": {
     "mismatch_title": "主机密钥变更",
