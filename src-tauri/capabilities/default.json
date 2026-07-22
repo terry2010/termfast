@@ -16,6 +16,7 @@
     "core:window:allow-set-title",
     "core:window:allow-hide",
     "core:window:allow-show",
+    "core:window:allow-set-focus",
     "core:tray:default",
     "core:menu:default",
     "notification:allow-notify",
