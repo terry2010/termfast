@@ -31,6 +31,7 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 object CloudSyncManager {
     private const val TAG = "CloudSyncManager"
+    private const val PREFS_NAME = "cloud_sync_cache"
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Cloud provider identifiers. */
@@ -161,16 +162,27 @@ object CloudSyncManager {
     /** Get full sync status (authenticated + remote file info + last sync). */
     fun status(provider: String): SyncStatus {
         val raw = RustBridge.nativeCloudSyncStatus(provider)
-        return runCatching { json.decodeFromString(SyncStatus.serializer(), raw) }
+        val rustStatus = runCatching { json.decodeFromString(SyncStatus.serializer(), raw) }
             .onFailure { Log.e(TAG, "status parse failed: $it") }
             .getOrDefault(SyncStatus())
+        // Rust 端 sync_state 用主密码加密，status 无密码时解密失败，
+        // last_synced 为 null。用 SharedPreferences 缓存补充。
+        val (cachedSynced, cachedDevice) = readCache(provider)
+        return rustStatus.copy(
+            last_synced = rustStatus.last_synced ?: cachedSynced,
+            last_device = rustStatus.last_device ?: cachedDevice,
+        )
     }
 
     /** Upload encrypted config to cloud. */
     fun upload(provider: String, masterPassword: String, force: Boolean = false): SyncResponse {
         val params = buildParamsJson(provider, masterPassword, force = force)
         val raw = RustBridge.nativeCloudSyncUpload(params)
-        return parseSyncResponse(raw)
+        val resp = parseSyncResponse(raw)
+        if (resp.ok) {
+            writeCache(provider, resp.updated_at, resp.device_name)
+        }
+        return resp
     }
 
     /** Download and apply encrypted config from cloud. */
@@ -181,14 +193,52 @@ object CloudSyncManager {
     ): SyncResponse {
         val params = buildParamsJson(provider, masterPassword, forceDownload = forceDownload)
         val raw = RustBridge.nativeCloudSyncDownload(params)
-        return parseSyncResponse(raw)
+        val resp = parseSyncResponse(raw)
+        if (resp.ok) {
+            writeCache(provider, resp.updated_at, resp.device_name)
+        }
+        return resp
     }
 
     /** Disconnect a provider (remove token). */
-    fun disconnect(provider: String): Boolean =
-        RustBridge.nativeCloudSyncDisconnect(provider)
+    fun disconnect(provider: String): Boolean {
+        val ok = RustBridge.nativeCloudSyncDisconnect(provider)
+        if (ok) clearCache(provider)
+        return ok
+    }
 
     // === SECTION cloud_sync_manager_2 END ===
+
+    /** Read cached sync info from SharedPreferences. */
+    private fun readCache(provider: String): Pair<String?, String?> {
+        val prefs = appContext?.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        if (prefs != null) {
+            val synced = prefs.getString("${provider}_last_synced", null)
+            val device = prefs.getString("${provider}_last_device", null)
+            if (synced != null) return Pair(synced, device)
+        }
+        return Pair(null, null)
+    }
+
+    /** Write sync info to SharedPreferences after successful upload/download. */
+    private fun writeCache(provider: String, updatedAt: String?, deviceName: String?) {
+        val ctx = appContext ?: return
+        val prefs = ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            if (updatedAt != null) putString("${provider}_last_synced", updatedAt)
+            if (deviceName != null) putString("${provider}_last_device", deviceName)
+        }.apply()
+    }
+
+    /** Clear cached sync info for a provider (on disconnect). */
+    private fun clearCache(provider: String) {
+        val ctx = appContext ?: return
+        val prefs = ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().remove("${provider}_last_synced").remove("${provider}_last_device").apply()
+    }
+
+    /** App context for SharedPreferences (set from Application.onCreate). */
+    var appContext: android.content.Context? = null
 
     private fun buildParamsJson(
         provider: String,

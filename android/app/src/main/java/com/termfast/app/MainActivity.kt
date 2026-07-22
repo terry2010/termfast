@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
         RustBridge.ensureLoaded()
         val dataDir = filesDir.absolutePath
         RustRepository.init(dataDir)
+        CloudSyncManager.appContext = applicationContext
         // Start global terminal session event collector
         com.termfast.app.ui.screen.TerminalSessionManager.startGlobalCollector()
         // Try auto-unlock with cached derived key (no user prompt).
