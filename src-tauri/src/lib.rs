@@ -1516,15 +1516,15 @@ fn create_tray_icon(_color: termfast_desktop::tray::TrayIconColor) -> tauri::ima
     }
 
     // Draw "_" — thick horizontal bar, wider
-    for px in 14..22 {
+    for px in 14..24 {
         for py in 22..26 {
             set_pixel(&mut rgba, px, py);
         }
     }
 
-    // Draw cursor block — solid rectangle, taller
-    for py in 8..26 {
-        for px in 24..30 {
+    // Draw cursor block — solid rectangle
+    for py in 9..23 {
+        for px in 26..30 {
             set_pixel(&mut rgba, px, py);
         }
     }
