@@ -44,8 +44,11 @@ import kotlinx.coroutines.withContext
 fun CloudSyncSection() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var dropboxStatus by remember { mutableStateOf(CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)) }
-    var baiduStatus by remember { mutableStateOf(CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)) }
+    // Status loads asynchronously — Rust status() runs Argon2id decryption
+    // (32 MiB memory, 200-500ms per call) which blocks the main thread if
+    // called synchronously during composition.
+    var dropboxStatus by remember { mutableStateOf(CloudSyncManager.SyncStatus()) }
+    var baiduStatus by remember { mutableStateOf(CloudSyncManager.SyncStatus()) }
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
     // Upload dialog state: provider + whether this is a force upload (after conflict)
@@ -68,6 +71,14 @@ fun CloudSyncSection() {
     // provider + cached_password
     var showPasswordMismatchDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
 
+    // Load status asynchronously on first composition (IO thread)
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
+            baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+        }
+    }
+
     // Collect OAuth events (deep link callback)
     LaunchedEffect(Unit) {
         CloudSyncManager.oauthEvents.collect { event ->
@@ -75,8 +86,12 @@ fun CloudSyncSection() {
             when (event) {
                 is OAuthEvent.Success -> {
                     msg = "${event.provider} 授权成功"
-                    dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
-                    baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
+                            baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+                        }
+                    }
                 }
                 is OAuthEvent.Error -> msg = "授权失败：${event.message}"
                 OAuthEvent.Cancelled -> msg = "授权已取消"
@@ -126,7 +141,9 @@ fun CloudSyncSection() {
                     }
                     if (ok) {
                         msg = "已断开 Dropbox"
-                        dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
+                        withContext(Dispatchers.IO) {
+                            dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
+                        }
                     }
                 }
             },
@@ -168,7 +185,9 @@ fun CloudSyncSection() {
                     }
                     if (ok) {
                         msg = "已断开百度网盘"
-                        baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+                        withContext(Dispatchers.IO) {
+                            baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+                        }
                     }
                 }
             },
@@ -204,8 +223,10 @@ fun CloudSyncSection() {
                             "/TermFast"
                         msg = "上传成功（${resp.size ?: 0} 字节）\n云端路径：$remotePath"
                         showUploadDialog = null
-                        dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
-                        baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+                        withContext(Dispatchers.IO) {
+                            dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
+                            baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+                        }
                     } else if (resp.conflict) {
                         // Conflict — close password dialog, show conflict confirmation
                         showUploadDialog = null
@@ -492,8 +513,10 @@ fun CloudSyncSection() {
                                 else
                                     "/TermFast"
                                 msg = "上传成功（${resp.size ?: 0} 字节）\n云端路径：$remotePath"
-                                dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
-                                baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+                                withContext(Dispatchers.IO) {
+                                    dropboxStatus = CloudSyncManager.status(CloudSyncManager.Provider.DROPBOX)
+                                    baiduStatus = CloudSyncManager.status(CloudSyncManager.Provider.BAIDU)
+                                }
                             } else if (resp.conflict) {
                                 showConflictDialog = Pair(p, resp.reason ?: "conflict")
                             } else {
