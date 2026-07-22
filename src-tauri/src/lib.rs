@@ -1559,7 +1559,7 @@ fn create_tray_icon(_color: termfast_desktop::tray::TrayIconColor) -> tauri::ima
 
     // Draw cursor block — square 8x8
     for py in 12..20 {
-        for px in 22..28 {
+        for px in 20..26 {
             set_pixel(&mut rgba, px, py);
         }
     }
