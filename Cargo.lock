@@ -7007,6 +7007,7 @@ dependencies = [
  "directories",
  "libc",
  "mach2",
+ "rand 0.10.2",
  "regex",
  "russh",
  "serde",

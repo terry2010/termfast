@@ -669,7 +669,11 @@ function CredentialSection() {
         oldPassword: oldPw,
         newPassword: newPw,
       });
-      toast.success(t("credentials.change_password_title"));
+      // H2 fix: warn user that cloud backup still uses old password.
+      // Cloud backup is encrypted with the master password directly,
+      // so after changing password, old cloud backup can only be
+      // downloaded with the OLD password. User must re-upload.
+      toast.success(t("credentials.change_password_success_with_cloud"), { duration: 8000 });
       setShowChangePassword(false);
       setOldPw("");
       setNewPw("");

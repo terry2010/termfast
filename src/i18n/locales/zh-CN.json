@@ -502,6 +502,8 @@
     "change_password_new": "新主密码",
     "change_password_confirm": "确认新主密码",
     "change_password_button": "修改",
+    "change_password_success_with_cloud": "主密码已修改。重要提醒：云端备份仍用旧密码加密，请重新上传备份以保持云同步可用。",
+    "change_password_success": "主密码修改成功。",
     "reset_title": "忘记密码",
     "reset_description": "将删除加密凭据文件和当前主密码。所有已保存的 SSH 密码和私钥将永久丢失，无法恢复。服务器列表不受影响，但每个服务器需要重新输入密码或密钥才能连接。如果之前导出过加密备份，可以通过「导入加密备份」恢复。",
     "reset_button": "忘记密码",

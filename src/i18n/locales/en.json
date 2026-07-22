@@ -499,6 +499,8 @@
     "change_password_new": "New master password",
     "change_password_confirm": "Confirm new password",
     "change_password_button": "Change",
+    "change_password_success_with_cloud": "Master password changed. Important: your existing cloud backup is still encrypted with the old password. Please upload a new backup to keep cloud sync working.",
+    "change_password_success": "Master password changed successfully.",
     "reset_title": "Forgot Password",
     "reset_description": "This will delete the encrypted credential file and the current master password. All saved SSH passwords and private keys will be permanently lost. Server list is unaffected, but you'll need to re-enter credentials for each server. If you have a backup, you can restore it via \"Import Encrypted Backup\".",
     "reset_button": "Forgot Password",

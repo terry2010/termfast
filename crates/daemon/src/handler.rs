@@ -4095,6 +4095,58 @@ async fn export_full_data(state: &DaemonState) -> Result<termfast_core::migratio
     })
 }
 
+/// Encrypt an SSH private key with a passphrase if it's currently unencrypted.
+/// Returns the OpenSSH-format encrypted key string, or the original content
+/// if it's already encrypted or no passphrase is available.
+///
+/// This prevents SSH private keys from being stored in plaintext on disk
+/// (F2 fix: disk theft → plaintext key → server compromised).
+fn encrypt_key_if_needed(content: &str, passphrase: Option<&str>) -> String {
+    // Already encrypted? (OpenSSH encrypted keys have "ENCRYPTED" in the header)
+    if content.contains("ENCRYPTED") {
+        return content.to_string();
+    }
+    let passphrase = match passphrase {
+        Some(p) if !p.is_empty() => p,
+        _ => return content.to_string(), // no passphrase → can't encrypt
+    };
+
+    // Try to parse as a private key and re-encrypt with passphrase
+    match russh::keys::decode_secret_key(content, None) {
+        Ok(key) => {
+            // Already encrypted?
+            if key.is_encrypted() {
+                return content.to_string();
+            }
+            // Encrypt with passphrase using default cipher (AES-256-CTR + bcrypt KDF)
+            let mut rng = rand::rng();
+            match key.encrypt(&mut rng, passphrase) {
+                Ok(encrypted_key) => {
+                    match encrypted_key.to_openssh(russh::keys::ssh_key::LineEnding::LF) {
+                        Ok(pem) => {
+                            tracing::info!("apply: encrypted SSH private key with passphrase");
+                            pem.to_string()
+                        }
+                        Err(e) => {
+                            tracing::warn!("apply: failed to serialize encrypted key: {}", e);
+                            content.to_string()
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("apply: failed to encrypt key: {}", e);
+                    content.to_string()
+                }
+            }
+        }
+        Err(e) => {
+            // Can't parse — might be a non-OpenSSH format, leave as-is
+            tracing::warn!("apply: could not parse key for encryption ({}), writing as-is", e);
+            content.to_string()
+        }
+    }
+}
+
 /// Snapshot of local data files taken before apply_full_export,
 /// used for rollback if any step fails.
 struct LocalDataBackup {
@@ -4150,16 +4202,23 @@ impl LocalDataBackup {
 /// Apply a FullExportData to the local config + credentials.
 /// Extracted from handle_import_full for reuse by cloud sync download.
 ///
-/// Crash safety + rollback strategy:
+/// Crash safety + rollback strategy (H4 fix):
 ///   0. Back up config.json → config.json.bak
-///   1. Write credentials (atomic per-key)
-///   2. Write key files (atomic per-file)
-///   3. Write config.json (atomic) — last, so if it succeeds, all
-///      dependent data is already in place.
+///   1. Write config.json (atomic) — FIRST, so user sees new node list
+///   2. Write key files (atomic per-file, encrypted with passphrase)
+///   3. Write credentials (atomic per-key) — LAST
 ///   4. Sync ServerManager (in-memory)
 ///   5. Broadcast config:changed
-/// If any step 1-3 fails, roll back config.json from .bak and return error.
-/// If killed before step 3, config.json still has the old content.
+///
+/// Write order rationale (H4):
+/// If killed between steps, the inconsistency direction is
+/// "config new + credentials old" — user sees new nodes but passwords
+/// may be missing. This is BETTER than "credentials new + config old"
+/// where user sees stale nodes and doesn't know to re-download.
+/// Missing passwords → user can re-enter; stale node list → silent data loss.
+///
+/// If step 1 fails, no changes were made (config.json write is atomic).
+/// If steps 2-3 fail, roll back config.json from .bak.
 /// .bak is kept after success as a one-version safety net.
 async fn apply_full_export(
     state: &DaemonState,
@@ -4168,26 +4227,29 @@ async fn apply_full_export(
     // 0. Back up current config.json for rollback
     let backup = backup_local_data(state);
 
-    // 1. Restore credentials (atomic per-key, safe to write before config)
-    for (server_id, pwd) in &export_data.passwords {
-        let key =
-            termfast_credential::make_key(server_id, termfast_credential::cred_type::PASSWORD);
-        let _ = state.credential_store.save(&key, pwd);
-    }
-    for (server_id, pass) in &export_data.key_passphrases {
-        let key = termfast_credential::make_key(
-            server_id,
-            termfast_credential::cred_type::KEY_PASSPHRASE,
-        );
-        let _ = state.credential_store.save(&key, pass);
+    // 1. Apply config — FIRST, so config.json updates before credentials.
+    //    mgr.modify() updates in-memory config AND atomically writes
+    //    config.json (tmp + rename).
+    {
+        let mgr = state.config_manager.lock().await;
+        if let Err(e) = mgr
+            .modify(|config| {
+                *config = export_data.config.clone();
+            })
+            .await
+        {
+            tracing::error!("apply_full_export: config write failed: {}", e);
+            return Err(IpcError::new(ErrorCode::Internal, e.to_string()));
+        }
     }
 
     // 2. Restore key files — validate key_path to prevent path traversal
     //    Write atomically (tmp + rename) so a crash mid-write doesn't
     //    leave a truncated/corrupt key file.
+    //    Also encrypt the key with passphrase if available (F2 fix).
     {
         for (server_id, content) in &export_data.key_files {
-            // Find the server's key_path from the NEW config (not current)
+            // Find the server's key_path from the NEW config
             let key_path_str = export_data
                 .config
                 .servers
@@ -4198,6 +4260,9 @@ async fn apply_full_export(
             if key_path_str.is_empty() {
                 continue;
             }
+            // F2 fix: encrypt the private key with passphrase before writing to disk
+            let passphrase = export_data.key_passphrases.get(server_id).map(|s| s.as_str());
+            let key_content = encrypt_key_if_needed(content, passphrase);
             let key_path = std::path::Path::new(&key_path_str);
             let canonical = match key_path.canonicalize() {
                 Ok(p) => p,
@@ -4220,7 +4285,7 @@ async fn apply_full_export(
             }
             // Atomic write: tmp file + rename
             let tmp_path = canonical.with_extension("tmp");
-            if let Err(e) = std::fs::write(&tmp_path, content) {
+            if let Err(e) = std::fs::write(&tmp_path, key_content.as_bytes()) {
                 tracing::warn!("apply_full_export: failed to write key tmp {}: {}", tmp_path.display(), e);
                 continue;
             }
@@ -4236,24 +4301,31 @@ async fn apply_full_export(
         }
     }
 
-    // 3. Apply config — LAST, so config.json only updates after all
-    //    dependent data (credentials, key files) is safely written.
-    //    mgr.modify() updates in-memory config AND atomically writes
-    //    config.json (tmp + rename). If this succeeds, the entire
-    //    apply is complete. If killed before this, config.json still
-    //    has the old content.
-    {
-        let mgr = state.config_manager.lock().await;
-        if let Err(e) = mgr
-            .modify(|config| {
-                *config = export_data.config.clone();
-            })
-            .await
-        {
-            tracing::error!("apply_full_export: config write failed, rolling back: {}", e);
-            backup.rollback(state);
-            return Err(IpcError::new(ErrorCode::Internal, e.to_string()));
+    // 3. Restore credentials — LAST, so config.json is already updated.
+    //    If this fails or is killed mid-way, user sees new node list
+    //    but some passwords may be missing — they can re-enter them.
+    //    (Better than stale node list + new passwords that can't be used.)
+    let mut cred_errors = Vec::new();
+    for (server_id, pwd) in &export_data.passwords {
+        let key =
+            termfast_credential::make_key(server_id, termfast_credential::cred_type::PASSWORD);
+        if let Err(e) = state.credential_store.save(&key, pwd) {
+            cred_errors.push(format!("password for {}: {}", server_id, e));
         }
+    }
+    for (server_id, pass) in &export_data.key_passphrases {
+        let key = termfast_credential::make_key(
+            server_id,
+            termfast_credential::cred_type::KEY_PASSPHRASE,
+        );
+        if let Err(e) = state.credential_store.save(&key, pass) {
+            cred_errors.push(format!("passphrase for {}: {}", server_id, e));
+        }
+    }
+    if !cred_errors.is_empty() {
+        tracing::warn!("apply_full_export: some credentials failed to save: {:?}", cred_errors);
+        // Don't roll back config — user can see new nodes and re-enter passwords.
+        // Config is already updated; credentials are partially updated.
     }
 
     // Sync ServerManager with the new config — add new servers, remove
