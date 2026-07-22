@@ -3348,8 +3348,11 @@ fn sync_state_path(_state: &DaemonState) -> std::path::PathBuf {
 
 /// Path to the local config.json file.
 fn local_config_path(_state: &DaemonState) -> std::path::PathBuf {
-    directories::BaseDirs::new()
-        .map(|d| d.config_dir().join("termfast").join("config.json"))
+    // Must match the path used by FileConfigStorage::default_path()
+    // (directories::ProjectDirs, NOT BaseDirs) — otherwise mtime checks
+    // read the wrong file and no_update logic breaks.
+    directories::ProjectDirs::from("", "", "termfast")
+        .map(|d| d.data_dir().join("config.json"))
         .unwrap_or_else(|| std::path::PathBuf::from("config.json"))
 }
 
@@ -3674,7 +3677,6 @@ async fn handle_cloud_sync_download(
     .map_err(|e| IpcError::new(ErrorCode::Internal, format!("spawn_blocking: {}", e)))?;
 
     let local_hash = sync_state.last_hash(&provider);
-    let local_updated_at = sync_state.last_sync_info(&provider).updated_at;
     let last_local_mtime = sync_state.last_local_mtime(&provider).map(String::from);
     let current_local_mtime = local_config_mtime(state);
 

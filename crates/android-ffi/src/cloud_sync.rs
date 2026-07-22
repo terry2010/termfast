@@ -521,7 +521,6 @@ pub fn download(params_json: &str) -> Result<String, String> {
     }).map_err(|e| e)?;
     let sync_state = sync_state;
     let local_hash = sync_state.last_hash(&provider);
-    let local_updated_at = sync_state.last_sync_info(&provider).updated_at;
     let last_local_mtime = sync_state.last_local_mtime(&provider).map(String::from);
     let current_local_mtime = local_config_mtime();
 
