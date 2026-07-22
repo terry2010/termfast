@@ -45,6 +45,7 @@ fn clear_cached_master_password() {
 /// Used by cloud sync upload to ensure the upload password matches the local
 /// encryption password (prevents accidental wrong-password uploads).
 /// Does NOT change the unlock state or cache the password.
+#[allow(dead_code)]
 pub fn verify_master_password(password: &str) -> Result<(), String> {
     let path = credential_file_path();
     let store = termfast_credential::EncryptedCredentialStore::open(path);

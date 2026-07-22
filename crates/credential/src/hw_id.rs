@@ -16,8 +16,6 @@
 //! - Steal full disk → can get hw_id → but master_pw not on disk → still safe ✅
 //! - Full disk + master_pw → can decrypt (unavoidable for any scheme)
 
-use std::path::Path;
-
 /// Get the hardware ID for the current platform.
 /// Returns a string that uniquely identifies this machine.
 /// Falls back to a constant if the platform method fails (better than

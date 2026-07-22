@@ -4215,6 +4215,7 @@ fn encrypt_key_if_needed(content: &str, passphrase: Option<&str>) -> String {
 
 /// Snapshot of local data files taken before apply_full_export,
 /// used for rollback if any step fails.
+#[allow(dead_code)]
 struct LocalDataBackup {
     config_bak: Option<std::path::PathBuf>,
 }
@@ -4244,6 +4245,7 @@ fn backup_local_data(state: &DaemonState) -> LocalDataBackup {
 impl LocalDataBackup {
     /// Roll back: restore .bak files to their original locations.
     /// Called when apply_full_export fails at any step.
+    #[allow(dead_code)]
     fn rollback(&self, state: &DaemonState) {
         if let Some(ref bak) = self.config_bak {
             let config_path = local_config_path(state);
@@ -4259,6 +4261,7 @@ impl LocalDataBackup {
     /// Clean up .bak files after successful apply.
     /// We keep the .bak for one more session as a safety net —
     /// it will be overwritten on the next apply.
+    #[allow(dead_code)]
     fn cleanup(&self) {
         // Keep .bak files — they'll be overwritten on next apply.
         // This provides a one-version-back safety net.
@@ -4291,7 +4294,7 @@ async fn apply_full_export(
     export_data: &termfast_core::migration::FullExportData,
 ) -> Result<(), IpcError> {
     // 0. Back up current config.json for rollback
-    let backup = backup_local_data(state);
+    let _backup = backup_local_data(state);
 
     // 1. Apply config — FIRST, so config.json updates before credentials.
     //    mgr.modify() updates in-memory config AND atomically writes
