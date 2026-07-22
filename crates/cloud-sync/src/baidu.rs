@@ -113,6 +113,16 @@ fn reqwest_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// Build a reqwest client with a long timeout for file uploads.
+/// Uploads can take a while depending on file size and network speed.
+fn reqwest_upload_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 /// Baidu provider. No app_key or secret stored in the binary —
 /// all OAuth operations go through the cloud sync proxy server.
 /// Uses Authorization Code flow (via server) which provides refresh_token
@@ -280,7 +290,7 @@ impl CloudProviderTrait for BaiduProvider {
 
         let form = reqwest::multipart::Form::new().part("file", part);
 
-        let resp = client
+        let resp = reqwest_upload_client()
             .post(&upload_url)
             .multipart(form)
             .send().await?;
