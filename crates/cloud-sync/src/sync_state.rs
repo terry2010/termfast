@@ -303,4 +303,32 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// 向后兼容: 反序列化不含 last_local_mtime 字段的旧格式 JSON
+    /// 验证旧 sync_state 文件能正常加载，last_local_mtime 默认为 None
+    #[test]
+    fn test_backward_compat_old_json_without_local_mtime() {
+        let old_json = r#"{
+            "baidu": {
+                "last_hash": "md5hash123",
+                "last_device_name": "Terry-iPhone",
+                "last_updated_at": "2026-07-20T18:30:00Z"
+            },
+            "dropbox": {
+                "last_hash": "abc123hash",
+                "last_device_name": "Terry-MacBook",
+                "last_updated_at": "2026-07-21T10:00:00Z"
+            }
+        }"#;
+        let state: SyncState = serde_json::from_str(old_json).unwrap();
+        // 旧字段正常加载
+        assert_eq!(state.last_hash("baidu"), Some("md5hash123"));
+        assert_eq!(state.last_local_mtime("baidu"), None);
+        assert_eq!(state.last_hash("dropbox"), Some("abc123hash"));
+        assert_eq!(state.last_local_mtime("dropbox"), None);
+        // 其他字段也正常
+        let info = state.last_sync_info("baidu");
+        assert_eq!(info.device_name.as_deref(), Some("Terry-iPhone"));
+        assert_eq!(info.updated_at.as_deref(), Some("2026-07-20T18:30:00Z"));
+    }
 }
