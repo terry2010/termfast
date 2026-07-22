@@ -45,58 +45,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .on_window_event(|window, event| {
-            // macOS HIG: clicking the red close button only closes the window,
-            // the app stays alive in the menu bar / Dock. The user quits via
-            // Cmd+Q or the tray menu "Quit".  On non-macOS platforms the
-            // close button exits the app (unless minimize_to_tray is on).
+            // All platforms: clicking the close button hides the window
+            // instead of exiting. The app stays alive in the system tray /
+            // Dock. The user quits via Cmd+Q, tray menu "Quit", or the
+            // app menu. This matches macOS HIG and standard tray-app
+            // behavior on Windows.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let app_handle = window.app_handle().clone();
                 api.prevent_close();
-
+                let app_handle = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    #[cfg(target_os = "macos")]
-                    {
-                        // macOS: always hide window, never exit on close
-                        if let Some(win) = app_handle.get_webview_window("main") {
-                            let _ = win.hide();
-                        }
-                    }
-
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        // Non-macOS: check minimize_to_tray setting
-                        let minimize_to_tray = if let Some(state) =
-                            app_handle.try_state::<AppState>()
-                        {
-                            let guard = state.daemon.lock().await;
-                            if let Some(ref daemon) = *guard {
-                                let mgr = daemon.server.state().config_manager.lock().await;
-                                let config = mgr.get().await;
-                                config.general.minimize_to_tray
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        if minimize_to_tray {
-                            if let Some(win) = app_handle.get_webview_window("main") {
-                                let _ = win.hide();
-                            }
-                            return;
-                        }
-
-                        // Graceful shutdown
-                        if let Some(state) = app_handle.try_state::<AppState>() {
-                            tracing::info!("window close: starting graceful shutdown");
-                            let guard = state.daemon.lock().await;
-                            if let Some(ref daemon) = *guard {
-                                daemon.server.shutdown().await;
-                            }
-                            tracing::info!("graceful shutdown complete, exiting");
-                        }
-                        app_handle.exit(0);
+                    if let Some(win) = app_handle.get_webview_window("main") {
+                        let _ = win.hide();
                     }
                 });
             }
@@ -247,8 +206,19 @@ pub fn run() {
             credential_manager::ipc_import_credentials,
             ipc_get_system_locale,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // macOS: when user clicks Dock icon while window is hidden,
+            // show the window again (matches standard macOS behavior).
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
 
 // === SECTION 1 END ===
