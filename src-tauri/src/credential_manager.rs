@@ -58,6 +58,19 @@ pub fn verify_master_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Clear the cloud sync password hash file.
+/// Called when the master password is set/changed/reset, so that stale
+/// sync password hashes don't cause false "password_mismatch" warnings
+/// on the next upload.
+fn clear_sync_password_hash() {
+    // sync_hash.dat sits next to credentials.enc and config.json
+    let path = credential_file_path()
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("sync_hash.dat");
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Tauri-managed state holding the encrypted credential store.
 pub struct CredentialState {
     pub store: Arc<EncryptedFileCredentialStore>,
@@ -249,6 +262,9 @@ pub async fn ipc_initialize_credentials(
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
         *g = Some(pw_for_cache);
     }
+    // Clear stale sync password hash — new master password means
+    // the old cloud sync password hash is no longer relevant.
+    clear_sync_password_hash();
     Ok(())
 }
 
@@ -360,6 +376,8 @@ pub async fn ipc_change_credential_password(
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
         *g = Some(pw_for_cache);
     }
+    // Clear stale sync password hash — password changed.
+    clear_sync_password_hash();
     Ok(())
 }
 
@@ -373,6 +391,7 @@ pub async fn ipc_reset_credentials(state: State<'_, CredentialState>) -> Result<
     .map_err(|e| e.to_string())??;
     delete_cached_key();
     clear_cached_master_password();
+    clear_sync_password_hash();
     Ok(())
 }
 

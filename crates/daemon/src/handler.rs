@@ -3677,6 +3677,18 @@ async fn handle_cloud_sync_download(
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("download: {}", e)))?;
     let blob_size = blob.len();
 
+    // Debug: log blob header for diagnosing decrypt failures
+    if blob.len() >= 5 {
+        tracing::info!(
+            "cloud sync download: blob_size={}, magic={:02x?}, version={}",
+            blob_size,
+            &blob[..4],
+            blob[4]
+        );
+    } else {
+        tracing::warn!("cloud sync download: blob too short ({} bytes)", blob.len());
+    }
+
     // Decrypt — on blocking thread (Argon2id)
     let mp = master_password.clone();
     let decrypt_result = tokio::task::spawn_blocking(move || {
@@ -3687,7 +3699,9 @@ async fn handle_cloud_sync_download(
 
     let payload = match decrypt_result {
         Ok(p) => p,
-        Err(_) => {
+        Err(ref e) => {
+            // Log the specific error for diagnosis
+            tracing::warn!("cloud sync decrypt failed: {:?}", e);
             // Decryption failed — password mismatch or corrupted data
             // Return a flag so the frontend can prompt for the cloud password
             return Ok(build_decrypt_failed_response());

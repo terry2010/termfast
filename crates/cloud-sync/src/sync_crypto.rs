@@ -538,4 +538,25 @@ mod tests {
         // Version byte should be 2
         assert_eq!(blob[4], FORMAT_VERSION_V2);
     }
+
+    #[test]
+    fn test_v2_cross_platform_params() {
+        // Simulate cross-device: encrypt with mobile params (Android),
+        // decrypt on desktop (params read from blob header).
+        // This verifies that params are stored in the header and decrypt
+        // uses the stored params, not platform defaults.
+        let payload = test_payload();
+        let plaintext = serde_json::to_vec(&payload).unwrap();
+
+        // Encrypt with mobile params (as Android would)
+        let mut salt = [0u8; SALT_LEN];
+        rng().fill_bytes(&mut salt);
+        let mobile_params = envelope::Argon2Params::mobile();
+        let blob = envelope::encrypt(MAGIC_CONFIG, "testPw123", &salt, &[], mobile_params, &plaintext).unwrap();
+
+        // Decrypt with decrypt_config (which reads params from blob header)
+        let decrypted = decrypt_config("testPw123", &blob).unwrap();
+        assert_eq!(decrypted.device_name, payload.device_name);
+        assert_eq!(decrypted.config, payload.config);
+    }
 }

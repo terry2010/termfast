@@ -463,6 +463,16 @@ pub fn upload(params_json: &str) -> Result<String, String> {
     })?
     .map_err(|e| format!("encrypt: {}", e))?;
 
+    // Debug: log blob header
+    if blob.len() >= 5 {
+        log::info!(
+            "cloud sync upload: blob_size={}, magic={:02x?}, version={}",
+            blob.len(),
+            &blob[..4],
+            blob[4]
+        );
+    }
+
     // Upload
     rt.block_on(p.upload(&stored.token, &sync_path, &blob))
         .map_err(|e| format!("upload: {}", e))?;

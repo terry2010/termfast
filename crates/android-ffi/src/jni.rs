@@ -1035,7 +1035,13 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialInitia
 ) -> jboolean {
     let pw = jstring_to_secret(&mut env, &master_password);
     let store = crate::credential::android_credential_store();
-    bool_to_jbool(store.initialize(&pw).is_ok())
+    let ok = store.initialize(&pw).is_ok();
+    if ok {
+        // Clear stale sync password hash — new master password means
+        // the old cloud sync password hash is no longer relevant.
+        let _ = std::fs::remove_file(crate::cloud_sync::data_dir().join("sync_hash.dat"));
+    }
+    bool_to_jbool(ok)
 }
 
 /// Unlock the credential store with a master password.
@@ -1126,7 +1132,13 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialChange
     let old = jstring_to_string(&mut env, &old_password);
     let new = jstring_to_string(&mut env, &new_password);
     let store = crate::credential::android_credential_store();
-    bool_to_jbool(store.change_password(&old, &new).is_ok())
+    let ok = store.change_password(&old, &new).is_ok();
+    if ok {
+        // Clear stale sync password hash — password changed, old cloud
+        // sync password hash no longer matches.
+        let _ = std::fs::remove_file(crate::cloud_sync::data_dir().join("sync_hash.dat"));
+    }
+    bool_to_jbool(ok)
 }
 
 /// Reset (delete) the encrypted credential file and lock.
@@ -1138,7 +1150,12 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialReset(
     _class: JClass,
 ) -> jboolean {
     let store = crate::credential::android_credential_store();
-    bool_to_jbool(store.reset().is_ok())
+    let ok = store.reset().is_ok();
+    if ok {
+        // Clear sync password hash on reset too.
+        let _ = std::fs::remove_file(crate::cloud_sync::data_dir().join("sync_hash.dat"));
+    }
+    bool_to_jbool(ok)
 }
 
 /// Export the encrypted credential file to a destination path.
