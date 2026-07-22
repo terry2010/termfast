@@ -1086,6 +1086,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let icon = create_tray_icon(termfast_desktop::tray::TrayIconColor::Gray);
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
+        .icon_as_template(true)
         .tooltip("TermFast")
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -1469,84 +1470,62 @@ async fn ipc_cloud_sync_wait_callback(
     .await
 }
 
-/// Create a tray icon image — a blue rounded square with a white
-/// terminal prompt ">_" and a blinking cursor block.
-/// 32x32 RGBA, suitable for system tray on macOS/Windows/Linux.
+/// Create a tray icon image — transparent background with a thick white
+/// terminal prompt ">_" and cursor block.
+/// Uses icon_as_template(true) so macOS auto-inverts on light/dark menus.
+/// 32x32 RGBA.
 fn create_tray_icon(_color: termfast_desktop::tray::TrayIconColor) -> tauri::image::Image<'static> {
     let size = 32u32;
     let mut rgba = vec![0u8; (size * size * 4) as usize];
-    let center = (size / 2) as i32;
-    let radius = 13i32; // rounded square half-size
-    let corner = 4i32;  // rounded corner radius
 
-    // Blue background (#2563eb) with white terminal prompt
-    let bg = [37u8, 99, 235, 255];
+    // Transparent background, white foreground (template image)
     let fg = [255u8, 255, 255, 255];
 
-    // Helper: set a pixel to foreground color
-    let mut set_pixel = |rgba: &mut [u8], x: i32, y: i32, color: [u8; 4]| {
+    let mut set_pixel = |rgba: &mut [u8], x: i32, y: i32| {
         if x >= 0 && x < size as i32 && y >= 0 && y < size as i32 {
             let idx = ((y * size as i32 + x) * 4) as usize;
-            rgba[idx..idx + 4].copy_from_slice(&color);
+            rgba[idx..idx + 4].copy_from_slice(&fg);
         }
     };
 
-    for y in 0..size as i32 {
-        for x in 0..size as i32 {
-            let dx = x - center;
-            let dy = y - center;
-            let in_square = dx.abs() <= radius && dy.abs() <= radius;
-            let corner_ok = if in_square {
-                let cx = if dx >= 0 { radius - corner } else { -radius + corner };
-                let cy = if dy >= 0 { radius - corner } else { -radius + corner };
-                let ddx = (dx - cx).max(0);
-                let ddy = (dy - cy).max(0);
-                ddx * ddx + ddy * ddy <= corner * corner
-            } else {
-                false
-            };
-            if corner_ok {
-                set_pixel(&mut rgba, x, y, bg);
-            }
+    // Draw ">_" prompt and cursor block — thick (3px) lines
+    //
+    // ">" chevron: 3px thick, from left edge to center
+    //   Upper arm: (4,8) → (11,15)
+    //   Lower arm: (11,15) → (4,22)
+    // "_" underline: 3px thick
+    //   x: 13..19, y: 20..22
+    // Cursor block: solid rectangle
+    //   x: 21..27, y: 9..22
+
+    // Draw ">" upper arm: from (4,8) to (11,15), 3px thick
+    for i in 0..=7 {
+        let px = 4 + i;
+        let py = 8 + i;
+        for t in 0..3 {
+            set_pixel(&mut rgba, px + t, py);
+        }
+    }
+    // Draw ">" lower arm: from (11,15) to (4,22), 3px thick
+    for i in 0..=7 {
+        let px = 11 - i;
+        let py = 15 + i;
+        for t in 0..3 {
+            set_pixel(&mut rgba, px + t, py);
         }
     }
 
-    // Draw ">_" prompt and cursor block in white
-    // Coordinates relative to center (16,16)
-    //
-    // ">" — chevron shape, 2px thick lines
-    //   Upper arm: (5,9) → (10,14)
-    //   Lower arm: (5,19) → (10,14)
-    // "_" — horizontal bar at bottom
-    //   (12,19) to (17,19), 2px thick (y=19,20)
-    // Cursor block — solid rectangle
-    //   (19,10) to (24,20)
-
-    // Draw ">" upper arm: from (5,9) to (10,14)
-    for i in 0..=5 {
-        let px = 5 + i;
-        let py = 9 + i;
-        set_pixel(&mut rgba, px, py, fg);
-        set_pixel(&mut rgba, px + 1, py, fg); // 2px thick
-    }
-    // Draw ">" lower arm: from (10,14) to (5,19)
-    for i in 0..=5 {
-        let px = 10 - i;
-        let py = 14 + i;
-        set_pixel(&mut rgba, px, py, fg);
-        set_pixel(&mut rgba, px + 1, py, fg); // 2px thick
+    // Draw "_" — thick horizontal bar
+    for px in 13..19 {
+        for py in 20..23 {
+            set_pixel(&mut rgba, px, py);
+        }
     }
 
-    // Draw "_" — horizontal bar
-    for px in 12..=17 {
-        set_pixel(&mut rgba, px, 19, fg);
-        set_pixel(&mut rgba, px, 20, fg);
-    }
-
-    // Draw cursor block — solid rectangle (19,10) to (24,20)
-    for py in 10..=20 {
-        for px in 19..=24 {
-            set_pixel(&mut rgba, px, py, fg);
+    // Draw cursor block — solid rectangle
+    for py in 9..23 {
+        for px in 21..28 {
+            set_pixel(&mut rgba, px, py);
         }
     }
 
