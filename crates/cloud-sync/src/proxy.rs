@@ -261,12 +261,3 @@ mod windows_proxy {
 fn detect_windows_proxy() -> Option<String> {
     windows_proxy::detect()
 }
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn detect_macos_proxy() -> Option<String> {
-    None
-}
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn detect_windows_proxy() -> Option<String> {
-    None
-}
