@@ -387,7 +387,7 @@ impl FileLogger {
         }
 
         // Sort by mtime descending (newest first)
-        rotated_files.sort_by(|a, b| b.1.cmp(&a.1));
+        rotated_files.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         // Remove files beyond max_files
         for (path, _) in rotated_files.iter().skip(self.max_files) {

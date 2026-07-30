@@ -130,7 +130,7 @@ mod macos_proxy {
                 let host_key = CFString::new("HTTPSProxy");
                 let port_key = CFString::new("HTTPSPort");
                 if let (Some(host), Some(port)) = (dict.find(&host_key), dict.find(&port_key)) {
-                    let url = format!("http://{}:{}", host.to_string(), port.to_string());
+                    let url = format!("http://{}:{}", *host, *port);
                     CFRelease(dict_ref as *const _);
                     return Some(url);
                 }
@@ -142,7 +142,7 @@ mod macos_proxy {
                 let host_key = CFString::new("HTTPProxy");
                 let port_key = CFString::new("HTTPPort");
                 if let (Some(host), Some(port)) = (dict.find(&host_key), dict.find(&port_key)) {
-                    let url = format!("http://{}:{}", host.to_string(), port.to_string());
+                    let url = format!("http://{}:{}", *host, *port);
                     CFRelease(dict_ref as *const _);
                     return Some(url);
                 }

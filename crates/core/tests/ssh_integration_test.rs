@@ -8,7 +8,6 @@ use termfast_core::ssh::auth::AuthMethod;
 use termfast_core::ssh::client::{ConnectionState, SshClientConfig, SshClientHandle};
 use termfast_core::ssh::exec;
 use termfast_test_utils::MockSshServer;
-use zeroize::Zeroizing;
 
 /// Start a mock SSH server on a given port and return a client handle
 async fn setup_with_mock_server(port: u16) -> SshClientHandle {

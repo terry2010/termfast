@@ -374,7 +374,7 @@ impl CloudProviderTrait for BaiduProvider {
             .send().await?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(CloudSyncError::NotFound(path.into()));
+            return Err(CloudSyncError::NotFound(path));
         }
 
         if !resp.status().is_success() {

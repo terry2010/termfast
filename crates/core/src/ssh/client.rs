@@ -485,112 +485,6 @@ impl SshClientHandle {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_connection_state_equality() {
-        assert_eq!(ConnectionState::Connected, ConnectionState::Connected);
-        assert_ne!(ConnectionState::Connecting, ConnectionState::Connected);
-    }
-
-    #[test]
-    fn test_ssh_client_config_default() {
-        let config = SshClientConfig::default();
-        assert_eq!(config.port, 22);
-        assert_eq!(config.heartbeat_interval, 15);
-        assert_eq!(config.max_attempts, 10);
-        assert_eq!(config.initial_backoff_secs, 1);
-        assert_eq!(config.max_backoff_secs, 30);
-    }
-
-    #[tokio::test]
-    async fn test_new_client_starts_disconnected() {
-        let client = SshClientHandle::new(SshClientConfig::default());
-        assert_eq!(client.state().await, ConnectionState::Disconnected);
-        assert!(!client.is_connected().await);
-    }
-
-    #[test]
-    fn test_exponential_backoff_sequence() {
-        let mut backoff = 1u64;
-        let max = 30u64;
-        let sequence: Vec<u64> = (0..10)
-            .map(|_| {
-                let current = backoff;
-                backoff = (backoff * 2).min(max);
-                current
-            })
-            .collect();
-
-        assert_eq!(sequence, vec![1, 2, 4, 8, 16, 30, 30, 30, 30, 30]);
-    }
-
-    #[tokio::test]
-    async fn test_disconnect_when_not_connected() {
-        let client = SshClientHandle::new(SshClientConfig::default());
-        client.disconnect().await.unwrap();
-        assert_eq!(client.state().await, ConnectionState::Disconnected);
-    }
-
-    /// Verify the detail string format produced on HostKeyMismatch.
-    /// The Android UI parses this with `Regex("got:\\s*(SHA256:\\S+)")`,
-    /// so the format must remain stable.
-    #[test]
-    fn test_hostkey_mismatch_detail_format() {
-        // Mirror the formatting logic in connect() (client.rs:248-252).
-        let cases: Vec<(Option<&str>, Option<&str>, &str)> = vec![
-            (
-                Some("SHA256:aaa"),
-                Some("SHA256:bbb"),
-                "expected: SHA256:aaa, got: SHA256:bbb",
-            ),
-            (
-                Some("SHA256:aaa"),
-                None,
-                "expected: SHA256:aaa, got: <unknown>",
-            ),
-            (None, Some("SHA256:bbb"), "host key verification failed"),
-            (None, None, "host key verification failed"),
-        ];
-        for (known, actual, expected) in cases {
-            let detail = match (known, actual) {
-                (Some(k), Some(a)) => format!("expected: {}, got: {}", k, a),
-                (Some(k), None) => format!("expected: {}, got: <unknown>", k),
-                _ => "host key verification failed".to_string(),
-            };
-            assert_eq!(detail, expected);
-
-            // Verify the Android-side regex contract: only the
-            // (Some, Some) case yields a usable SHA256 fingerprint.
-            // Android uses `Regex("got:\\s*(SHA256:\\S+)").find(raw)?.groupValues[1]`,
-            // i.e. capture group 1, so we use `captures()` here.
-            let re = regex::Regex::new(r"got:\s*(SHA256:\S+)").unwrap();
-            let extracted = re
-                .captures(&detail)
-                .map(|c| c.get(1).unwrap().as_str().to_string());
-            if let (Some(k), Some(a)) = (known, actual) {
-                assert!(k.starts_with("SHA256:"), "known must be SHA256");
-                assert!(a.starts_with("SHA256:"), "actual must be SHA256");
-                assert_eq!(
-                    extracted.as_deref(),
-                    Some(a),
-                    "regex should extract actual fingerprint"
-                );
-            } else if known.is_some() {
-                // (Some, None): "got: <unknown>" — regex must NOT match.
-                assert_eq!(
-                    extracted, None,
-                    "regex must not match when actual is <unknown>"
-                );
-            } else {
-                assert_eq!(extracted, None, "regex must not match fallback detail");
-            }
-        }
-    }
-}
-
 /// A stream wrapper that first returns pre-read bytes, then reads from the
 /// underlying stream. This lets us peek at the server's pre-banner lines and
 /// then hand the same stream (with those bytes still visible) to russh.
@@ -787,5 +681,112 @@ async fn connect_socket(
     {
         let _ = protector; // no-op on Windows; VpnService is not available there
         tokio::net::TcpStream::connect(addr).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_connection_state_equality() {
+        assert_eq!(ConnectionState::Connected, ConnectionState::Connected);
+        assert_ne!(ConnectionState::Connecting, ConnectionState::Connected);
+    }
+
+    #[test]
+    fn test_ssh_client_config_default() {
+        let config = SshClientConfig::default();
+        assert_eq!(config.port, 22);
+        assert_eq!(config.heartbeat_interval, 15);
+        assert_eq!(config.max_attempts, 10);
+        assert_eq!(config.initial_backoff_secs, 1);
+        assert_eq!(config.max_backoff_secs, 30);
+    }
+
+    #[tokio::test]
+    async fn test_new_client_starts_disconnected() {
+        let client = SshClientHandle::new(SshClientConfig::default());
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
+        assert!(!client.is_connected().await);
+    }
+
+    #[test]
+    fn test_exponential_backoff_sequence() {
+        let mut backoff = 1u64;
+        let max = 30u64;
+        let sequence: Vec<u64> = (0..10)
+            .map(|_| {
+                let current = backoff;
+                backoff = (backoff * 2).min(max);
+                current
+            })
+            .collect();
+
+        assert_eq!(sequence, vec![1, 2, 4, 8, 16, 30, 30, 30, 30, 30]);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_when_not_connected() {
+        let client = SshClientHandle::new(SshClientConfig::default());
+        client.disconnect().await.unwrap();
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
+    }
+
+    /// Verify the detail string format produced on HostKeyMismatch.
+    /// The Android UI parses this with `Regex("got:\\s*(SHA256:\\S+)")`,
+    /// so the format must remain stable.
+    #[test]
+    fn test_hostkey_mismatch_detail_format() {
+        // Mirror the formatting logic in connect() (client.rs:248-252).
+        let cases: Vec<(Option<&str>, Option<&str>, &str)> = vec![
+            (
+                Some("SHA256:aaa"),
+                Some("SHA256:bbb"),
+                "expected: SHA256:aaa, got: SHA256:bbb",
+            ),
+            (
+                Some("SHA256:aaa"),
+                None,
+                "expected: SHA256:aaa, got: <unknown>",
+            ),
+            (None, Some("SHA256:bbb"), "host key verification failed"),
+            (None, None, "host key verification failed"),
+        ];
+        // Compile regex once outside the loop (clippy::regex_creation_in_loops)
+        let re = regex::Regex::new(r"got:\s*(SHA256:\S+)").unwrap();
+        for (known, actual, expected) in cases {
+            let detail = match (known, actual) {
+                (Some(k), Some(a)) => format!("expected: {}, got: {}", k, a),
+                (Some(k), None) => format!("expected: {}, got: <unknown>", k),
+                _ => "host key verification failed".to_string(),
+            };
+            assert_eq!(detail, expected);
+
+            // Verify the Android-side regex contract: only the
+            // (Some, Some) case yields a usable SHA256 fingerprint.
+            // Android uses `Regex("got:\\s*(SHA256:\\S+)").find(raw)?.groupValues[1]`,
+            // i.e. capture group 1, so we use `captures()` here.
+            let extracted = re
+                .captures(&detail)
+                .map(|c| c.get(1).unwrap().as_str().to_string());
+            if let (Some(k), Some(a)) = (known, actual) {
+                assert!(k.starts_with("SHA256:"), "known must be SHA256");
+                assert!(a.starts_with("SHA256:"), "actual must be SHA256");
+                assert_eq!(
+                    extracted.as_deref(),
+                    Some(a),
+                    "regex should extract actual fingerprint"
+                );
+            } else if known.is_some() {
+                // (Some, None): "got: <unknown>" — regex must NOT match.
+                assert_eq!(
+                    extracted, None,
+                    "regex must not match when actual is <unknown>"
+                );
+            } else {
+                assert_eq!(extracted, None, "regex must not match fallback detail");
+            }
+        }
     }
 }

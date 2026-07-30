@@ -363,6 +363,21 @@ async fn handle_connect(
     Ok(())
 }
 
+/// Constant-time byte slice comparison. Returns true if slices are equal.
+/// Does NOT short-circuit on length mismatch — always compares the full
+///   shorter slice to avoid leaking length information via timing.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = 0u32;
+    // Compare full length difference (L-7: was truncated to u8, now u32)
+    diff ^= (a.len() as u32).wrapping_sub(b.len() as u32);
+    // Compare up to the shorter length
+    let min_len = a.len().min(b.len());
+    for i in 0..min_len {
+        diff |= (a[i] ^ b[i]) as u32;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,19 +405,4 @@ mod tests {
         });
         assert!(server.auth.is_some());
     }
-}
-
-/// Constant-time byte slice comparison. Returns true if slices are equal.
-/// Does NOT short-circuit on length mismatch — always compares the full
-///   shorter slice to avoid leaking length information via timing.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = 0u32;
-    // Compare full length difference (L-7: was truncated to u8, now u32)
-    diff ^= (a.len() as u32).wrapping_sub(b.len() as u32);
-    // Compare up to the shorter length
-    let min_len = a.len().min(b.len());
-    for i in 0..min_len {
-        diff |= (a[i] ^ b[i]) as u32;
-    }
-    diff == 0
 }

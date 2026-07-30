@@ -96,7 +96,7 @@ impl Argon2Params {
     }
 
     /// Serialize to 10 bytes (m_cost:4 + t_cost:4 + p_cost:2).
-    fn to_bytes(&self) -> [u8; PARAMS_LEN] {
+    fn to_bytes(self) -> [u8; PARAMS_LEN] {
         let mut buf = [0u8; PARAMS_LEN];
         buf[0..4].copy_from_slice(&self.m_cost.to_le_bytes());
         buf[4..8].copy_from_slice(&self.t_cost.to_le_bytes());
