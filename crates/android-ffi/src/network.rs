@@ -33,8 +33,10 @@ pub fn clear_protect_callback() {
 #[derive(Debug, Clone, Copy)]
 pub struct AndroidSocketProtector;
 
+#[cfg(unix)]
 impl SocketProtector for AndroidSocketProtector {
     fn protect_socket(&self, socket: &Socket) -> std::io::Result<()> {
+        use std::os::unix::io::AsRawFd;
         let fd = socket.as_raw_fd();
         let lock = protect_callback().lock().unwrap();
         if let Some(ref cb) = *lock {
@@ -50,5 +52,10 @@ impl SocketProtector for AndroidSocketProtector {
     }
 }
 
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
+#[cfg(not(unix))]
+impl SocketProtector for AndroidSocketProtector {
+    fn protect_socket(&self, _socket: &Socket) -> std::io::Result<()> {
+        // Non-Unix (Windows): no-op, VpnService is Android-only
+        Ok(())
+    }
+}
