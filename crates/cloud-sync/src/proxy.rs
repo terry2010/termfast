@@ -183,7 +183,7 @@ mod windows_proxy {
     /// Checks `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings`.
     pub fn detect() -> Option<String> {
         unsafe {
-            let subkey = b"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\0";
+            let subkey = c"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
             let mut hkey = windows::Win32::System::Registry::HKEY::default();
             let result = RegOpenKeyExA(
                 HKEY_CURRENT_USER,
@@ -202,7 +202,7 @@ mod windows_proxy {
             let mut reg_type = REG_VALUE_TYPE::default();
             let _ = RegQueryValueExA(
                 hkey,
-                PCSTR(b"ProxyEnable\0".as_ptr()),
+                PCSTR(c"ProxyEnable".as_ptr()),
                 None,
                 Some(&mut reg_type),
                 Some(&mut enabled as *mut u32 as *mut u8),
@@ -221,7 +221,7 @@ mod windows_proxy {
             let mut reg_type2 = REG_VALUE_TYPE::default();
             let _ = RegQueryValueExA(
                 hkey,
-                PCSTR(b"ProxyServer\0".as_ptr()),
+                PCSTR(c"ProxyServer".as_ptr()),
                 None,
                 Some(&mut reg_type2),
                 Some(buf.as_mut_ptr()),
