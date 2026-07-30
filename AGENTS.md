@@ -52,6 +52,86 @@
 reviewer 返回报告后，主 agent 根据报告决定是否进入下一功能点。
 未通过项必须补完后重新 spawn reviewer 复审。
 
+## 单个功能点开发流程（7 步）
+
+每个功能点（FP）按以下步骤开发，走完 7 步才能标记完成、进入下一个功能点。
+
+### 第 1 步：读验收标准，确认范围
+
+- 打开设计文档，找到该功能点的验收标准（逐条）
+- 确认要改哪些文件、新建哪些文件
+- 有不确定的先查代码确认，不猜
+
+### 第 2 步：写代码
+
+- 按文件写入规范：超过 200 行分段写入，每次 ≤150 行
+- 遵循现有代码风格（看邻近文件的 import、命名、错误处理模式）
+- 不加不必要的注释，不改无关代码
+
+### 第 3 步：编译通过
+
+```bash
+cd src-tauri && cargo check --lib
+cd src-tauri && cargo clippy --lib
+npx tsc --noEmit
+```
+
+修到零 error 零 warning。
+
+### 第 4 步：写单元测试
+
+- 覆盖正常路径 + 边界情况 + 错误路径
+- 用 mock（`crates/test-utils/src/mock_ssh.rs`）
+
+```bash
+cd src-tauri && cargo test --lib
+```
+
+修到全绿。
+
+### 第 5 步：spawn reviewer 审计
+
+- 用 `run_subagent`（profile = `reviewer`）spawn 只读 reviewer
+- prompt 包含：改动文件列表 + 验收标准（逐条）
+- 要求 reviewer 逐条核对，输出带证据的结论
+
+### 第 6 步：根据 reviewer 报告修复
+
+- 未通过的项必须补完
+- 补完后重新 spawn reviewer 复审，直到全部通过
+
+### 第 7 步：标记完成，进入下一个功能点
+
+- todo_write 标记 completed
+- 回到第 1 步开发下一个功能点
+
+## 全部功能开发完成后的流程
+
+### 第 8 步：编译 + 测试全量验证
+
+```bash
+cd src-tauri && cargo check --lib
+cd src-tauri && cargo clippy --lib
+cd src-tauri && cargo test --lib
+npx tsc --noEmit
+cargo build --target aarch64-linux-android -p termfast-android-ffi
+cd android && ./gradlew :app:assembleDebug
+```
+
+全部通过。
+
+### 第 9 步：编写验证文档
+
+新建文档（放在 `docs/` 目录），内容包括：
+- 每个功能点的具体验证步骤（怎么操作、预期结果）
+- 桌面端验证清单
+- Android 端验证清单
+- 异常场景验证（断连、端口冲突、服务器拒绝等）
+
+### 第 10 步：移交用户验证
+
+用户按文档执行验证，有问题反馈给 agent，agent 修复。
+
 ## 文件写入规范（防止 GUI OOM）
 
 写入文件时必须**一段一段地写入**，不能一次性写入整个文件的全部内容。

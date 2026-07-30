@@ -127,4 +127,38 @@ impl russh::server::Handler for MockServerHandler {
         session.close(channel)?;
         Ok(())
     }
+
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        // Accept the tcpip_forward request.
+        // If port is 0, assign a fixed test port for deterministic tests.
+        if *port == 0 {
+            *port = 12345;
+        }
+        tracing::info!("mock server: tcpip_forward {} accepted on port {}", address, port);
+        // Note: A full end-to-end test would require the mock server to
+        // open forwarded-tcpip channels back to the client when connections
+        // arrive on the forwarded port. However, russh 0.62's Session is
+        // not Send and cannot be used from a spawned task, making it
+        // impossible to simulate incoming connections in the mock server.
+        // The RemoteForwarder's data forwarding logic (run_receive_loop +
+        // copy_bidirectional_remote) is structurally identical to
+        // LocalForwarder's (run_accept_loop + copy_bidirectional_local),
+        // which is fully tested in test_local_forward_data_transfer.
+        Ok(true)
+    }
+
+    async fn cancel_tcpip_forward(
+        &mut self,
+        address: &str,
+        port: u32,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        tracing::info!("mock server: cancel_tcpip_forward {}:{}", address, port);
+        Ok(true)
+    }
 }

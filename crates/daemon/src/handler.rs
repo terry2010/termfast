@@ -102,6 +102,15 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::CloudSyncRefreshToken => handle_cloud_sync_refresh_token(state, &request.params).await,
         Action::CloudSyncAuthWithCallback => handle_cloud_sync_auth_with_callback(state, &request.params).await,
         Action::CloudSyncWaitCallback => handle_cloud_sync_wait_callback(state, &request.params).await,
+
+        // Port forwarding (PF-5)
+        Action::ListPortForwards => handle_list_port_forwards(state, &request.params).await,
+        Action::AddPortForward => handle_add_port_forward(state, &request.params).await,
+        Action::UpdatePortForward => handle_update_port_forward(state, &request.params).await,
+        Action::DeletePortForward => handle_delete_port_forward(state, &request.params).await,
+        Action::StartPortForward => handle_start_port_forward(state, &request.params).await,
+        Action::StopPortForward => handle_stop_port_forward(state, &request.params).await,
+        Action::GetPortForwardStatus => handle_get_port_forward_status(state, &request.params).await,
     };
 
     match result {
@@ -4579,4 +4588,458 @@ async fn handle_cloud_sync_wait_callback(
         "expires_at": token.expires_at,
         "token_type": token.token_type,
     }))
+}
+
+// === SECTION: Port forwarding handlers (PF-5) ===
+
+/// List all port forward rules for a server (PF-5.1)
+async fn handle_list_port_forwards(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params["server_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+
+    let server = state.server_manager.get_server(server_id).await?;
+    let mgr = server.port_forward_manager();
+
+    // Get config rules
+    let config_rules: Vec<termfast_core::config::PortForwardRule> = {
+        let cm = state.config_manager.lock().await;
+        let config = cm.get().await;
+        config
+            .find_server(server_id)
+            .map(|s| s.port_forwards.clone())
+            .unwrap_or_default()
+    };
+
+    // Get runtime statuses
+    let statuses = mgr.get_all_statuses().await;
+    let status_map: std::collections::HashMap<String, termfast_core::proxy::PortForwardStatus> =
+        statuses.into_iter().map(|s| (s.rule_id.clone(), s)).collect();
+
+    // Merge config + runtime status
+    let rules: Vec<serde_json::Value> = config_rules
+        .iter()
+        .map(|rule| {
+            let status = status_map.get(&rule.id);
+            serde_json::json!({
+                "id": rule.id,
+                "name": rule.name,
+                "type": rule.forward_type,
+                "local_host": rule.local_host,
+                "local_port": rule.local_port,
+                "remote_host": rule.remote_host,
+                "remote_port": rule.remote_port,
+                "enabled": rule.enabled,
+                "auto_start": rule.auto_start,
+                "running": status.map(|s| s.running).unwrap_or(false),
+                "error": status.and_then(|s| s.error.clone()),
+                "active_connections": status.map(|s| s.active_connections).unwrap_or(0),
+                "bytes_in": status.map(|s| s.bytes_in).unwrap_or(0),
+                "bytes_out": status.map(|s| s.bytes_out).unwrap_or(0),
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({ "rules": rules }))
+}
+
+/// Add a port forward rule (PF-5.2)
+async fn handle_add_port_forward(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params["server_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+
+    // Verify server exists
+    let _server = state.server_manager.get_server(server_id).await?;
+
+    // Parse the rule from params, allowing "type" as alias for "forward_type"
+    // and not requiring "id" (we generate it)
+    let rule_json = &params["rule"];
+    let name = rule_json["name"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule.name"))?;
+    let forward_type: termfast_core::config::PortForwardType =
+        serde_json::from_value(rule_json["type"].clone()).map_err(|e| {
+            IpcError::new(ErrorCode::InvalidParams, format!("invalid rule.type: {}", e))
+        })?;
+    let local_host = rule_json["local_host"]
+        .as_str()
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    let local_port = rule_json["local_port"]
+        .as_u64()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule.local_port"))?;
+    if local_port > 65535 {
+        return Err(IpcError::new(ErrorCode::InvalidParams, "local_port must be <= 65535"));
+    }
+    let remote_host = rule_json["remote_host"]
+        .as_str()
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    let remote_port = rule_json["remote_port"]
+        .as_u64()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule.remote_port"))?;
+    if remote_port > 65535 {
+        return Err(IpcError::new(ErrorCode::InvalidParams, "remote_port must be <= 65535"));
+    }
+    let enabled = rule_json["enabled"].as_bool().unwrap_or(true);
+    let auto_start = rule_json["auto_start"].as_bool().unwrap_or(false);
+
+    let rule = termfast_core::config::PortForwardRule {
+        id: termfast_core::config::Config::generate_port_forward_id(),
+        name: name.to_string(),
+        forward_type,
+        local_host,
+        local_port: local_port as u16,
+        remote_host,
+        remote_port: remote_port as u16,
+        enabled,
+        auto_start,
+    };
+
+    let rule_id = rule.id.clone();
+
+    // Save to config
+    let cm = state.config_manager.lock().await;
+    cm.modify(|config| {
+        if let Some(srv) = config.find_server_mut(server_id) {
+            srv.port_forwards.push(rule.clone());
+        }
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    drop(cm);
+
+    state
+        .broadcast(
+            "port_forward:added",
+            serde_json::json!({ "server_id": server_id, "rule_id": rule_id }),
+        )
+        .await;
+
+    Ok(serde_json::json!({ "rule_id": rule_id }))
+}
+
+/// Update a port forward rule (PF-5.3)
+async fn handle_update_port_forward(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params["server_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let rule_id = params["rule_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule_id"))?;
+
+    // Parse the updated rule from params
+    let rule_json = &params["rule"];
+    let name = rule_json["name"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule.name"))?;
+    let forward_type: termfast_core::config::PortForwardType =
+        serde_json::from_value(rule_json["type"].clone()).map_err(|e| {
+            IpcError::new(ErrorCode::InvalidParams, format!("invalid rule.type: {}", e))
+        })?;
+    let local_host = rule_json["local_host"]
+        .as_str()
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    let local_port = rule_json["local_port"]
+        .as_u64()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule.local_port"))?;
+    if local_port > 65535 {
+        return Err(IpcError::new(ErrorCode::InvalidParams, "local_port must be <= 65535"));
+    }
+    let remote_host = rule_json["remote_host"]
+        .as_str()
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    let remote_port = rule_json["remote_port"]
+        .as_u64()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule.remote_port"))?;
+    if remote_port > 65535 {
+        return Err(IpcError::new(ErrorCode::InvalidParams, "remote_port must be <= 65535"));
+    }
+    let enabled = rule_json["enabled"].as_bool().unwrap_or(true);
+    let auto_start = rule_json["auto_start"].as_bool().unwrap_or(false);
+
+    let updated_rule = termfast_core::config::PortForwardRule {
+        id: rule_id.to_string(),
+        name: name.to_string(),
+        forward_type,
+        local_host,
+        local_port: local_port as u16,
+        remote_host,
+        remote_port: remote_port as u16,
+        enabled,
+        auto_start,
+    };
+
+    // Stop the running forwarder if it's running (config changed)
+    let server = state.server_manager.get_server(server_id).await?;
+    let mgr = server.port_forward_manager();
+    let was_running = mgr.get_status(rule_id).await.map(|s| s.running).unwrap_or(false);
+    if was_running {
+        let _ = mgr.stop_rule(rule_id).await;
+    }
+
+    // Update config — verify rule exists
+    let cm = state.config_manager.lock().await;
+    let mut rule_found = false;
+    cm.modify(|config| {
+        if let Some(srv) = config.find_server_mut(server_id) {
+            if let Some(existing) = srv.port_forwards.iter_mut().find(|r| r.id == rule_id) {
+                *existing = updated_rule.clone();
+                rule_found = true;
+            }
+        }
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    drop(cm);
+
+    if !rule_found {
+        return Err(IpcError::new(
+            ErrorCode::Internal,
+            format!("port forward rule {} not found", rule_id),
+        ));
+    }
+
+    state
+        .broadcast(
+            "port_forward:updated",
+            serde_json::json!({ "server_id": server_id, "rule_id": rule_id, "was_running": was_running }),
+        )
+        .await;
+
+    Ok(serde_json::json!({ "ok": true, "was_running": was_running }))
+}
+
+/// Delete a port forward rule (PF-5.4)
+async fn handle_delete_port_forward(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params["server_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let rule_id = params["rule_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule_id"))?;
+
+    // Stop the forwarder if running
+    let server = state.server_manager.get_server(server_id).await?;
+    let mgr = server.port_forward_manager();
+    let _ = mgr.stop_rule(rule_id).await;
+
+    // Remove from config — verify rule existed
+    let cm = state.config_manager.lock().await;
+    let mut rule_found = false;
+    cm.modify(|config| {
+        if let Some(srv) = config.find_server_mut(server_id) {
+            let before = srv.port_forwards.len();
+            srv.port_forwards.retain(|r| r.id != rule_id);
+            rule_found = srv.port_forwards.len() < before;
+        }
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    drop(cm);
+
+    if !rule_found {
+        return Err(IpcError::new(
+            ErrorCode::Internal,
+            format!("port forward rule {} not found", rule_id),
+        ));
+    }
+
+    state
+        .broadcast(
+            "port_forward:deleted",
+            serde_json::json!({ "server_id": server_id, "rule_id": rule_id }),
+        )
+        .await;
+
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// Start a port forward rule (PF-5.5)
+async fn handle_start_port_forward(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params["server_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let rule_id = params["rule_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule_id"))?;
+
+    let server = state.server_manager.get_server(server_id).await?;
+    let mgr = server.port_forward_manager();
+
+    // Find the rule in config
+    let rule: termfast_core::config::PortForwardRule = {
+        let cm = state.config_manager.lock().await;
+        let config = cm.get().await;
+        config
+            .find_server(server_id)
+            .and_then(|s| s.port_forwards.iter().find(|r| r.id == rule_id).cloned())
+            .ok_or_else(|| IpcError::new(ErrorCode::Internal, format!("port forward rule {} not found", rule_id)))?
+    };
+
+    // Auto-connect SSH if not already connected (PF: no prerequisite to start port forward)
+    if server.status().await != termfast_core::server::instance::ServerStatus::Connected {
+        // Build auth method from config + credential store
+        let srv_config = {
+            let cm = state.config_manager.lock().await;
+            let config = cm.get().await;
+            config.find_server(server_id).cloned()
+                .ok_or_else(|| IpcError::new(ErrorCode::ServerNotFound, format!("server {} not found in config", server_id)))?
+        };
+        let auth = build_auth_method(
+            state,
+            server_id,
+            &srv_config.ssh.auth_method,
+            srv_config.ssh.key_path.as_str(),
+        )?;
+        server.connect(&auth).await?;
+        server.start_connection_monitor().await;
+        // Broadcast connected status
+        state.broadcast("server:status_changed", serde_json::json!({
+            "server_id": server_id,
+            "status": "connected",
+            "client_ip": server.client_ip().await,
+        })).await;
+    }
+
+    // Try to start the rule; if it fails with AdministrativelyProhibited,
+    // the SSH session was established before sshd_config was updated.
+    // Disconnect and reconnect to pick up the new config, then retry.
+    match mgr.start_rule(&rule).await {
+        Ok(()) => {}
+        Err(e) => {
+            let err_str = format!("{}", e);
+            if err_str.contains("AdministrativelyProhibited") || err_str.contains("rejected by the other party") {
+                // Reconnect SSH to pick up new sshd_config
+                let _ = server.disconnect().await;
+                let srv_config = {
+                    let cm = state.config_manager.lock().await;
+                    let config = cm.get().await;
+                    config.find_server(server_id).cloned()
+                        .ok_or_else(|| IpcError::new(ErrorCode::ServerNotFound, format!("server {} not found in config", server_id)))?
+                };
+                let auth = build_auth_method(
+                    state,
+                    server_id,
+                    &srv_config.ssh.auth_method,
+                    srv_config.ssh.key_path.as_str(),
+                )?;
+                server.connect(&auth).await?;
+                server.start_connection_monitor().await;
+                state.broadcast("server:status_changed", serde_json::json!({
+                    "server_id": server_id,
+                    "status": "connected",
+                    "client_ip": server.client_ip().await,
+                })).await;
+                // Retry start
+                mgr.start_rule(&rule).await?;
+            } else {
+                return Err(e.into());
+            }
+        }
+    }
+
+    // Broadcast with full status
+    let status = mgr.get_status(rule_id).await;
+    let payload = if let Some(ref s) = status {
+        serde_json::json!({
+            "server_id": server_id,
+            "rule_id": rule_id,
+            "running": s.running,
+            "active_connections": s.active_connections,
+            "bytes_in": s.bytes_in,
+            "bytes_out": s.bytes_out,
+        })
+    } else {
+        serde_json::json!({
+            "server_id": server_id,
+            "rule_id": rule_id,
+            "running": true,
+            "active_connections": 0,
+            "bytes_in": 0,
+            "bytes_out": 0,
+        })
+    };
+    state.broadcast("port_forward:status_changed", payload).await;
+
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// Stop a port forward rule (PF-5.6)
+async fn handle_stop_port_forward(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params["server_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let rule_id = params["rule_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule_id"))?;
+
+    let server = state.server_manager.get_server(server_id).await?;
+    let mgr = server.port_forward_manager();
+    mgr.stop_rule(rule_id).await?;
+
+    state
+        .broadcast(
+            "port_forward:status_changed",
+            serde_json::json!({
+                "server_id": server_id,
+                "rule_id": rule_id,
+                "running": false,
+                "active_connections": 0,
+                "bytes_in": 0,
+                "bytes_out": 0,
+            }),
+        )
+        .await;
+
+    // If no more port forward rules are running and no terminal sessions
+    // and proxy is not running, disconnect SSH to free resources.
+    let should_disconnect = !mgr.has_running().await
+        && !state.terminal_manager.has_sessions_for_server(server_id).await
+        && !server.is_proxy_running().await;
+    if should_disconnect {
+        let _ = server.disconnect().await;
+        state.broadcast("server:status_changed", serde_json::json!({
+            "server_id": server_id,
+            "status": "disconnected",
+        })).await;
+    }
+
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// Get port forward status (PF-5.7)
+async fn handle_get_port_forward_status(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params["server_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let rule_id = params["rule_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing rule_id"))?;
+
+    let server = state.server_manager.get_server(server_id).await?;
+    let mgr = server.port_forward_manager();
+
+    let status = mgr.get_status(rule_id).await;
+    match status {
+        Some(s) => Ok(serde_json::json!({
+            "rule_id": s.rule_id,
+            "running": s.running,
+            "error": s.error,
+            "active_connections": s.active_connections,
+            "bytes_in": s.bytes_in,
+            "bytes_out": s.bytes_out,
+        })),
+        None => Ok(serde_json::json!({
+            "rule_id": rule_id,
+            "running": false,
+            "error": null,
+            "active_connections": 0,
+            "bytes_in": 0,
+            "bytes_out": 0,
+        })),
+    }
 }

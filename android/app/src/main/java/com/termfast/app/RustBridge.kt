@@ -100,4 +100,12 @@ object RustBridge {
     external fun nativeCloudSyncDownload(paramsJson: String): String
     external fun nativeCloudSyncStatus(provider: String): String
     external fun nativeCloudSyncDisconnect(provider: String): Boolean
+
+    // Port forwarding (PF-7)
+    external fun nativeListPortForwards(serverId: String): String
+    external fun nativeAddPortForward(serverId: String, ruleJson: String): String
+    external fun nativeUpdatePortForward(serverId: String, ruleId: String, ruleJson: String): String
+    external fun nativeDeletePortForward(serverId: String, ruleId: String): String
+    external fun nativeStartPortForward(serverId: String, ruleId: String): String
+    external fun nativeStopPortForward(serverId: String, ruleId: String): String
 }

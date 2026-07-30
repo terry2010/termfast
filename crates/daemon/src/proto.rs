@@ -167,6 +167,29 @@ pub enum Action {
     /// Wait for the OAuth callback to complete (after CloudSyncAuthWithCallback).
     /// Returns: { ok, access_token, refresh_token, expires_at } or error on timeout.
     CloudSyncWaitCallback,
+
+    // Port forwarding (PF-5)
+    /// List port forward rules for a server. Params: { server_id }
+    /// Returns: { rules: [{ id, name, type, local_host, local_port, remote_host, remote_port, enabled, auto_start, running, active_connections, bytes_in, bytes_out }] }
+    ListPortForwards,
+    /// Add a port forward rule. Params: { server_id, rule: { name, type, local_host, local_port, remote_host, remote_port, enabled, auto_start } }
+    /// Returns: { rule_id }
+    AddPortForward,
+    /// Update a port forward rule. Params: { server_id, rule_id, rule: {...} }
+    /// Returns: { ok: true }
+    UpdatePortForward,
+    /// Delete a port forward rule. Params: { server_id, rule_id }
+    /// Returns: { ok: true }
+    DeletePortForward,
+    /// Start a port forward rule. Params: { server_id, rule_id }
+    /// Returns: { ok: true }
+    StartPortForward,
+    /// Stop a port forward rule. Params: { server_id, rule_id }
+    /// Returns: { ok: true }
+    StopPortForward,
+    /// Get port forward status. Params: { server_id, rule_id }
+    /// Returns: { rule_id, running, active_connections, bytes_in, bytes_out }
+    GetPortForwardStatus,
 }
 
 /// Event types (daemon → all clients broadcast, §10.6)
@@ -185,6 +208,8 @@ pub enum EventType {
     TriggerCompleted,
     /// { server_id, level, kind, message, timestamp, data? }
     LogEntry,
+    /// { server_id, rule_id, running, active_connections, bytes_in, bytes_out }
+    PortForwardStatusChanged,
 }
 
 impl EventType {
@@ -197,6 +222,7 @@ impl EventType {
             EventType::TriggerCommandExecuted => "trigger:command_executed",
             EventType::TriggerCompleted => "trigger:completed",
             EventType::LogEntry => "log:entry",
+            EventType::PortForwardStatusChanged => "port_forward:status_changed",
         }
     }
 }

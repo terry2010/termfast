@@ -1,6 +1,6 @@
 # TermFast
 
-> SSH 终端 + 代理上网 + 服务器自动化，一个 App 搞定
+> 现代 SSH 客户端 + 运维 AI 助手，跨桌面和 Android
 
 支持 macOS、Windows、Linux 桌面和 Android，界面自动切换中英文。
 
@@ -28,12 +28,12 @@
 - 一个服务器可以同时开多个终端标签
 - 支持 `rz` / `sz` 传文件，带进度条
 
-### 2. 一键代理上网
+### 2. AI 助手（开发中）
 
-- 点一下「启动代理」，服务器就变成你的 SOCKS5 / HTTP 代理
-- 「设为系统代理」让整台电脑流量走 VPS
-- 内置测试按钮，一键看出口 IP 和延迟
-- Android 版通过 VpnService 全局代理，支持分应用代理
+- 自然语言转 shell 命令：输入 `#` + 描述，AI 生成可执行命令
+- 命令解释：选中命令，AI 解释每个参数的含义
+- 错误诊断：命令执行失败时，AI 自动分析错误并给出修复建议
+- 支持自带 API Key（BYOK）和本地模型（Ollama）
 
 ### 3. 自动触发器
 
@@ -51,6 +51,35 @@
 - 多设备间保持一致，换电脑不用重新配
 - 用主密码加密，云端只存密文
 
+### 5. 端口转发
+
+- 本地转发（-L）：把远程服务映射到本地，比如远程 MySQL 映射到 `localhost:13306`
+- 远程转发（-R）：把本地服务暴露到远程服务器
+- 内置 MySQL / Redis / PostgreSQL / Web 快捷模板
+- 支持自动启动：SSH 连接后自动启动规则
+- 无需先连接 SSH 或开终端，直接点「启动」即可（自动连接）
+
+**服务器 sshd 配置要求：** 端口转发需要服务器允许 TCP 转发。如果启动时报错 `AdministrativelyProhibited` 或 `rejected by the other party`，需要在服务器上修改 `sshd_config`：
+
+```bash
+sudo vi /etc/ssh/sshd_config
+```
+
+确保你的用户允许 TCP 转发（在文件末尾按用户覆盖）：
+
+```
+Match User your_username
+    AllowTcpForwarding yes
+```
+
+重启 sshd：
+
+```bash
+sudo systemctl restart sshd
+```
+
+> 注意：全局 `AllowTcpForwarding no` 会对所有未在 `Match` 块中显式允许的用户生效。如果你登录的用户不在任何 `Match` 块中，会继承全局设置而被拒绝。
+
 ---
 
 ## 快速开始
@@ -59,23 +88,22 @@
 
 1. 下载安装包，打开 App
 2. 点「添加服务器」，填入主机、用户名、密码或 SSH 密钥
-3. 点「连接终端」进入 SSH，或点「启动代理」开始上网
+3. 点「连接终端」进入 SSH
 
 **Android 版：**
 
 1. 下载 APK 安装
 2. 添加服务器
-3. 点击服务器，启动代理
-4. 系统弹出 VPN 请求，确认即可全局代理
+3. 点击服务器，连接终端
 
 ---
 
 ## 适合谁用
 
-- **买了 VPS 想代理上网** — 不用敲命令，点几下就能用
 - **有多台服务器** — 统一管理，一眼看到哪台在线、哪台异常
 - **服务器需要自动维护** — IP 变化更新防火墙、服务挂了自动重启
-- **手机也要代理** — Android 版全局代理，支持分应用
+- **记不住命令** — AI 助手帮你把自然语言转成 shell 命令
+- **多设备办公** — 云同步让配置在桌面和手机间保持一致
 
 ---
 
@@ -91,7 +119,7 @@ npm start
 **Android 版：**
 
 ```bash
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export JAVA_HOME="/Applications/Android Studio.app/jbr/Contents/Home"
 export ANDROID_HOME=~/Library/Android/sdk
 
 cargo build --target aarch64-linux-android -p termfast-android-ffi

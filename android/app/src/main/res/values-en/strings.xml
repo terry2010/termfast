@@ -114,4 +114,47 @@
     <string name="vpn_error_ssh">SSH connection failed</string>
     <string name="vpn_error_auth">Authentication failed</string>
     <string name="vpn_kill_switch_active">VPN error, kill switch active</string>
+
+    <!-- Port forwarding (PF-8) -->
+    <string name="pf_title">Port Forwarding</string>
+    <string name="pf_add_rule">Add Rule</string>
+    <string name="pf_edit_rule">Edit Rule</string>
+    <string name="pf_name">Name</string>
+    <string name="pf_name_required">Name is required</string>
+    <string name="pf_type">Type</string>
+    <string name="pf_local">-L Local</string>
+    <string name="pf_remote">-R Remote</string>
+    <string name="pf_local_host">Local Host</string>
+    <string name="pf_local_port">Local Port</string>
+    <string name="pf_remote_host">Remote Host</string>
+    <string name="pf_remote_port">Remote Port</string>
+    <string name="pf_remote_bind_host">Remote Bind Host</string>
+    <string name="pf_remote_bind_port">Remote Bind Port</string>
+    <string name="pf_local_target_host">Local Target Host</string>
+    <string name="pf_local_target_port">Local Target Port</string>
+    <string name="pf_enabled">Enabled</string>
+    <string name="pf_auto_start">Auto-start on connect</string>
+    <string name="pf_invalid_port">Port must be between 1 and 65535</string>
+    <string name="pf_empty">No port forwarding rules</string>
+    <string name="pf_start">Start</string>
+    <string name="pf_stop">Stop</string>
+    <string name="pf_edit">Edit</string>
+    <string name="pf_delete">Delete</string>
+    <string name="pf_save">Save</string>
+    <string name="pf_saving">Saving…</string>
+    <string name="pf_cancel">Cancel</string>
+    <string name="pf_connections">connections</string>
+    <string name="pf_error">Error</string>
+    <string name="pf_quick_templates">Quick Templates</string>
+    <string name="pf_delete_title">Delete Port Forward Rule</string>
+    <string name="pf_delete_confirm">Are you sure you want to delete \"%1$s\"?</string>
+    <string name="pf_delete_confirm_running">\"%1$s\" is running. Stop and delete it?</string>
+    <string name="pf_started">Port forward started</string>
+    <string name="pf_stopped">Port forward stopped</string>
+    <string name="pf_added">Rule added</string>
+    <string name="pf_updated">Rule updated</string>
+    <string name="pf_updated_need_restart">Rule updated. Restart it to apply changes.</string>
+    <string name="pf_deleted">Rule deleted</string>
+    <string name="pf_start_all">Start All</string>
+    <string name="pf_stop_all">Stop All</string>
 </resources>

@@ -247,6 +247,7 @@ mod tests {
             triggers: Vec::new(),
             suppress_firewall_badge: false,
             test_url: "https://google.com".into(),
+            port_forwards: Vec::new(),
         }
     }
 

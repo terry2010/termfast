@@ -104,17 +104,6 @@ export function ConfirmDialog({
           />
         </div>
       )}
-
-      {level === "low" && (
-        <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-          <input
-            type="checkbox"
-            checked={dontAskAgain}
-            onChange={(e) => setDontAskAgain(e.target.checked)}
-          />
-          {t("common.yes")}
-        </label>
-      )}
     </Modal>
   );
 }

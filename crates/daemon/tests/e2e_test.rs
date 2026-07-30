@@ -47,6 +47,7 @@ fn make_test_server(id: &str, name: &str) -> ServerConfig {
         triggers: Vec::new(),
         suppress_firewall_badge: false,
         test_url: String::new(),
+        port_forwards: Vec::new(),
     }
 }
 

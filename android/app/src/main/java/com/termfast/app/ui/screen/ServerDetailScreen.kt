@@ -37,8 +37,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.termfast.app.R
 import com.termfast.app.RustBridge
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.ServerConfig
@@ -248,6 +250,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("概览") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("代理") })
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("触发器") })
+                Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text(stringResource(R.string.pf_title)) })
             }
             when (tab) {
                 0 -> OverviewTab(
@@ -297,6 +300,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                         navController.navigate("trigger_edit/${serverId}/${t.id}")
                     }
                 )
+                3 -> PortForwardTab(serverId = serverId)
             }
         }
 

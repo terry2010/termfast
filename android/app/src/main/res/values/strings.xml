@@ -114,4 +114,47 @@
     <string name="vpn_error_ssh">SSH 连接失败</string>
     <string name="vpn_error_auth">认证失败</string>
     <string name="vpn_kill_switch_active">VPN 异常，Kill switch 已阻止流量</string>
+
+    <!-- Port forwarding (PF-8) -->
+    <string name="pf_title">端口转发</string>
+    <string name="pf_add_rule">添加规则</string>
+    <string name="pf_edit_rule">编辑规则</string>
+    <string name="pf_name">名称</string>
+    <string name="pf_name_required">名称不能为空</string>
+    <string name="pf_type">类型</string>
+    <string name="pf_local">-L 本地</string>
+    <string name="pf_remote">-R 远程</string>
+    <string name="pf_local_host">本地地址</string>
+    <string name="pf_local_port">本地端口</string>
+    <string name="pf_remote_host">远程地址</string>
+    <string name="pf_remote_port">远程端口</string>
+    <string name="pf_remote_bind_host">远程绑定地址</string>
+    <string name="pf_remote_bind_port">远程绑定端口</string>
+    <string name="pf_local_target_host">本地目标地址</string>
+    <string name="pf_local_target_port">本地目标端口</string>
+    <string name="pf_enabled">启用</string>
+    <string name="pf_auto_start">连接后自动启动</string>
+    <string name="pf_invalid_port">端口必须在 1-65535 之间</string>
+    <string name="pf_empty">暂无端口转发规则</string>
+    <string name="pf_start">启动</string>
+    <string name="pf_stop">停止</string>
+    <string name="pf_edit">编辑</string>
+    <string name="pf_delete">删除</string>
+    <string name="pf_save">保存</string>
+    <string name="pf_saving">保存中…</string>
+    <string name="pf_cancel">取消</string>
+    <string name="pf_connections">连接</string>
+    <string name="pf_error">错误</string>
+    <string name="pf_quick_templates">快捷模板</string>
+    <string name="pf_delete_title">删除端口转发规则</string>
+    <string name="pf_delete_confirm">确定要删除「%1$s」吗？</string>
+    <string name="pf_delete_confirm_running">「%1$s」正在运行中，确定要停止并删除吗？</string>
+    <string name="pf_started">端口转发已启动</string>
+    <string name="pf_stopped">端口转发已停止</string>
+    <string name="pf_added">规则已添加</string>
+    <string name="pf_updated">规则已更新</string>
+    <string name="pf_updated_need_restart">规则已更新，需重新启动以应用更改</string>
+    <string name="pf_deleted">规则已删除</string>
+    <string name="pf_start_all">全部启动</string>
+    <string name="pf_stop_all">全部停止</string>
 </resources>

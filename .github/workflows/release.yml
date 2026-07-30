@@ -90,6 +90,36 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      - name: Add README and fix-quarantine script to DMG
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          set -e
+          DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::warning::No DMG found, skipping README injection"
+            exit 0
+          fi
+          echo "Found DMG: $DMG"
+
+          # Mount DMG read-write
+          MOUNT_POINT=$(hdiutil attach "$DMG" -nobrowse -noautoopen | tail -1 | cut -f3)
+          echo "Mounted at: $MOUNT_POINT"
+
+          # Copy README and fix script to DMG root
+          cp src-tauri/dmg-extras/README.txt "$MOUNT_POINT/"
+          cp src-tauri/dmg-extras/fix-quarantine.command "$MOUNT_POINT/"
+          chmod +x "$MOUNT_POINT/fix-quarantine.command"
+
+          # Unmount
+          hdiutil detach "$MOUNT_POINT"
+
+          # Re-compress as read-only DMG (replace original)
+          TMP_DMG="${DMG%.dmg}-readonly.dmg"
+          hdiutil convert "$DMG" -format UDZO -imagekey zlib-level=9 -o "$TMP_DMG"
+          mv "$TMP_DMG" "$DMG"
+          echo "✅ README and fix-quarantine.command added to DMG"
+
   # === Build signed Android APK ===
   build-android:
     permissions:

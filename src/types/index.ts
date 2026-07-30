@@ -220,3 +220,38 @@ export interface LogEntry {
 }
 
 // === SECTION 2 END ===
+
+// === Port forwarding types (PF-6) ===
+
+export type PortForwardType = "local" | "remote";
+
+export interface PortForwardRule {
+  id: string;
+  name: string;
+  type: PortForwardType;
+  local_host: string;
+  local_port: number;
+  remote_host: string;
+  remote_port: number;
+  enabled: boolean;
+  auto_start: boolean;
+}
+
+export interface PortForwardStatus {
+  rule_id: string;
+  running: boolean;
+  error: string | null;
+  active_connections: number;
+  bytes_in: number;
+  bytes_out: number;
+}
+
+export interface PortForwardRuleWithStatus extends PortForwardRule {
+  running: boolean;
+  error: string | null;
+  active_connections: number;
+  bytes_in: number;
+  bytes_out: number;
+}
+
+// === Port forwarding types END ===

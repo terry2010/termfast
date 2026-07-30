@@ -1641,3 +1641,397 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCloudSyncDisconn
     let prov = jstring_to_string(&mut env, &provider);
     bool_to_jbool(crate::cloud_sync::disconnect(&prov).is_ok())
 }
+
+// === Port Forwarding (PF-7) ===
+
+/// List port forward rules for a server (with runtime status).
+/// Returns JSON: { rules: [{ id, name, type, local_host, local_port, remote_host, remote_port, enabled, auto_start, running, error, active_connections, bytes_in, bytes_out }] }
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeListPortForwards(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let st = state().lock().unwrap();
+
+    // Get config rules
+    let config_rules: Vec<termfast_core::config::PortForwardRule> = if let Some(ref cm) = st.config_manager {
+        let cfg = cm.get_blocking();
+        cfg.find_server(&sid).map(|s| s.port_forwards.clone()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Get runtime statuses
+    let statuses = if let Some(instance) = st.servers.get(&sid) {
+        let mgr = instance.port_forward_manager();
+        let rt = runtime();
+        rt.block_on(mgr.get_all_statuses())
+    } else {
+        Vec::new()
+    };
+
+    let status_map: std::collections::HashMap<String, termfast_core::proxy::PortForwardStatus> =
+        statuses.into_iter().map(|s| (s.rule_id.clone(), s)).collect();
+
+    // Merge config + status
+    let rules: Vec<serde_json::Value> = config_rules
+        .iter()
+        .map(|rule| {
+            let status = status_map.get(&rule.id);
+            serde_json::json!({
+                "id": rule.id,
+                "name": rule.name,
+                "type": rule.forward_type,
+                "local_host": rule.local_host,
+                "local_port": rule.local_port,
+                "remote_host": rule.remote_host,
+                "remote_port": rule.remote_port,
+                "enabled": rule.enabled,
+                "auto_start": rule.auto_start,
+                "running": status.map(|s| s.running).unwrap_or(false),
+                "error": status.and_then(|s| s.error.clone()),
+                "active_connections": status.map(|s| s.active_connections).unwrap_or(0),
+                "bytes_in": status.map(|s| s.bytes_in).unwrap_or(0),
+                "bytes_out": status.map(|s| s.bytes_out).unwrap_or(0),
+            })
+        })
+        .collect();
+
+    let json = serde_json::to_string(&serde_json::json!({ "rules": rules })).unwrap_or_default();
+    string_to_jstring(&mut env, &json).into_raw()
+}
+
+/// Add a port forward rule. Returns JSON: { rule_id } or { error: "..." }
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeAddPortForward(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+    rule_json: JString,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let rj = jstring_to_string(&mut env, &rule_json);
+
+    // Parse rule fields
+    let parsed: serde_json::Value = match serde_json::from_str(&rj) {
+        Ok(v) => v,
+        Err(e) => {
+            let err = serde_json::json!({ "error": format!("invalid rule: {}", e) });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+
+    let name = match parsed["name"].as_str() {
+        Some(n) => n.to_string(),
+        None => {
+            let err = serde_json::json!({ "error": "missing name" });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+    let forward_type: termfast_core::config::PortForwardType = match serde_json::from_value(parsed["type"].clone()) {
+        Ok(t) => t,
+        Err(e) => {
+            let err = serde_json::json!({ "error": format!("invalid type: {}", e) });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+    let local_host = parsed["local_host"].as_str().unwrap_or("127.0.0.1").to_string();
+    let local_port = match parsed["local_port"].as_u64() {
+        Some(p) if p <= 65535 => p as u16,
+        _ => {
+            let err = serde_json::json!({ "error": "invalid local_port" });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+    let remote_host = parsed["remote_host"].as_str().unwrap_or("127.0.0.1").to_string();
+    let remote_port = match parsed["remote_port"].as_u64() {
+        Some(p) if p <= 65535 => p as u16,
+        _ => {
+            let err = serde_json::json!({ "error": "invalid remote_port" });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+    let enabled = parsed["enabled"].as_bool().unwrap_or(true);
+    let auto_start = parsed["auto_start"].as_bool().unwrap_or(false);
+
+    let rule = termfast_core::config::PortForwardRule {
+        id: termfast_core::config::Config::generate_port_forward_id(),
+        name,
+        forward_type,
+        local_host,
+        local_port,
+        remote_host,
+        remote_port,
+        enabled,
+        auto_start,
+    };
+
+    let rule_id = rule.id.clone();
+
+    let st = state().lock().unwrap();
+    let cm_opt = st.config_manager.clone();
+    drop(st); // release lock before block_on
+
+    let mut server_found = false;
+    if let Some(ref cm) = cm_opt {
+        let rt = runtime();
+        let _ = rt.block_on(cm.modify(|cfg| {
+            if let Some(srv) = cfg.find_server_mut(&sid) {
+                srv.port_forwards.push(rule);
+                server_found = true;
+            }
+        }));
+    }
+
+    if !server_found {
+        let err = serde_json::json!({ "error": "server not found or config not initialized" });
+        return string_to_jstring(&mut env, &err.to_string()).into_raw();
+    }
+
+    let result = serde_json::json!({ "rule_id": rule_id });
+    string_to_jstring(&mut env, &result.to_string()).into_raw()
+}
+
+/// Update a port forward rule. Returns JSON: { ok: true, was_running: bool } or { error: "..." }
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeUpdatePortForward(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+    rule_id: JString,
+    rule_json: JString,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let rid = jstring_to_string(&mut env, &rule_id);
+    let rj = jstring_to_string(&mut env, &rule_json);
+
+    let parsed: serde_json::Value = match serde_json::from_str(&rj) {
+        Ok(v) => v,
+        Err(e) => {
+            let err = serde_json::json!({ "error": format!("invalid rule: {}", e) });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+
+    let name = match parsed["name"].as_str() {
+        Some(n) => n.to_string(),
+        None => {
+            let err = serde_json::json!({ "error": "missing name" });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+    let forward_type: termfast_core::config::PortForwardType = match serde_json::from_value(parsed["type"].clone()) {
+        Ok(t) => t,
+        Err(e) => {
+            let err = serde_json::json!({ "error": format!("invalid type: {}", e) });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+    let local_host = parsed["local_host"].as_str().unwrap_or("127.0.0.1").to_string();
+    let local_port = match parsed["local_port"].as_u64() {
+        Some(p) if p <= 65535 => p as u16,
+        _ => {
+            let err = serde_json::json!({ "error": "invalid local_port" });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+    let remote_host = parsed["remote_host"].as_str().unwrap_or("127.0.0.1").to_string();
+    let remote_port = match parsed["remote_port"].as_u64() {
+        Some(p) if p <= 65535 => p as u16,
+        _ => {
+            let err = serde_json::json!({ "error": "invalid remote_port" });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+    let enabled = parsed["enabled"].as_bool().unwrap_or(true);
+    let auto_start = parsed["auto_start"].as_bool().unwrap_or(false);
+
+    let updated_rule = termfast_core::config::PortForwardRule {
+        id: rid.clone(),
+        name,
+        forward_type,
+        local_host,
+        local_port,
+        remote_host,
+        remote_port,
+        enabled,
+        auto_start,
+    };
+
+    // Stop running forwarder if active
+    let st = state().lock().unwrap();
+    let was_running = if let Some(instance) = st.servers.get(&sid) {
+        let mgr = instance.port_forward_manager();
+        let rt = runtime();
+        let running = rt.block_on(mgr.get_status(&rid)).map(|s| s.running).unwrap_or(false);
+        if running {
+            let _ = rt.block_on(mgr.stop_rule(&rid));
+        }
+        running
+    } else {
+        false
+    };
+
+    let mut rule_found = false;
+    if let Some(ref cm) = st.config_manager {
+        let rt = runtime();
+        let _ = rt.block_on(cm.modify(|cfg| {
+            if let Some(srv) = cfg.find_server_mut(&sid) {
+                if let Some(existing) = srv.port_forwards.iter_mut().find(|r| r.id == rid) {
+                    *existing = updated_rule.clone();
+                    rule_found = true;
+                }
+            }
+        }));
+    }
+    drop(st);
+
+    if !rule_found {
+        let err = serde_json::json!({ "error": format!("rule {} not found", rid) });
+        return string_to_jstring(&mut env, &err.to_string()).into_raw();
+    }
+
+    let result = serde_json::json!({ "ok": true, "was_running": was_running });
+    string_to_jstring(&mut env, &result.to_string()).into_raw()
+}
+
+/// Delete a port forward rule. Returns JSON: { ok: true } or { error: "..." }
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeDeletePortForward(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+    rule_id: JString,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let rid = jstring_to_string(&mut env, &rule_id);
+
+    let st = state().lock().unwrap();
+
+    // Stop the forwarder if running
+    if let Some(instance) = st.servers.get(&sid) {
+        let mgr = instance.port_forward_manager();
+        let rt = runtime();
+        let _ = rt.block_on(mgr.stop_rule(&rid));
+    }
+
+    let mut rule_found = false;
+    if let Some(ref cm) = st.config_manager {
+        let rt = runtime();
+        let _ = rt.block_on(cm.modify(|cfg| {
+            if let Some(srv) = cfg.find_server_mut(&sid) {
+                let before = srv.port_forwards.len();
+                srv.port_forwards.retain(|r| r.id != rid);
+                rule_found = srv.port_forwards.len() < before;
+            }
+        }));
+    }
+    drop(st);
+
+    if !rule_found {
+        let err = serde_json::json!({ "error": format!("rule {} not found", rid) });
+        return string_to_jstring(&mut env, &err.to_string()).into_raw();
+    }
+
+    let result = serde_json::json!({ "ok": true });
+    string_to_jstring(&mut env, &result.to_string()).into_raw()
+}
+
+/// Start a port forward rule. Returns JSON: { ok: true } or { error: "..." }
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStartPortForward(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+    rule_id: JString,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let rid = jstring_to_string(&mut env, &rule_id);
+
+    let st = state().lock().unwrap();
+
+    // Find the rule in config
+    let rule: termfast_core::config::PortForwardRule = {
+        if let Some(ref cm) = st.config_manager {
+            let cfg = cm.get_blocking();
+            match cfg.find_server(&sid).and_then(|s| s.port_forwards.iter().find(|r| r.id == rid).cloned()) {
+                Some(r) => r,
+                None => {
+                    drop(st);
+                    let err = serde_json::json!({ "error": format!("rule {} not found", rid) });
+                    return string_to_jstring(&mut env, &err.to_string()).into_raw();
+                }
+            }
+        } else {
+            drop(st);
+            let err = serde_json::json!({ "error": "config not initialized" });
+            return string_to_jstring(&mut env, &err.to_string()).into_raw();
+        }
+    };
+
+    // Start via manager
+    if let Some(instance) = st.servers.get(&sid) {
+        let mgr = instance.port_forward_manager();
+        let rt = runtime();
+        match rt.block_on(mgr.start_rule(&rule)) {
+            Ok(()) => {
+                drop(st);
+                let result = serde_json::json!({ "ok": true });
+                string_to_jstring(&mut env, &result.to_string()).into_raw()
+            }
+            Err(e) => {
+                drop(st);
+                let err = serde_json::json!({ "error": e.to_string() });
+                string_to_jstring(&mut env, &err.to_string()).into_raw()
+            }
+        }
+    } else {
+        drop(st);
+        let err = serde_json::json!({ "error": "server not found" });
+        string_to_jstring(&mut env, &err.to_string()).into_raw()
+    }
+}
+
+/// Stop a port forward rule. Returns JSON: { ok: true } or { error: "..." }
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStopPortForward(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+    rule_id: JString,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let rid = jstring_to_string(&mut env, &rule_id);
+
+    let st = state().lock().unwrap();
+    if let Some(instance) = st.servers.get(&sid) {
+        let mgr = instance.port_forward_manager();
+        let rt = runtime();
+        match rt.block_on(mgr.stop_rule(&rid)) {
+            Ok(()) => {
+                drop(st);
+                let result = serde_json::json!({ "ok": true });
+                string_to_jstring(&mut env, &result.to_string()).into_raw()
+            }
+            Err(e) => {
+                drop(st);
+                let err = serde_json::json!({ "error": e.to_string() });
+                string_to_jstring(&mut env, &err.to_string()).into_raw()
+            }
+        }
+    } else {
+        drop(st);
+        let err = serde_json::json!({ "error": "server not found" });
+        string_to_jstring(&mut env, &err.to_string()).into_raw()
+    }
+}
+
+// === Port Forwarding END ===

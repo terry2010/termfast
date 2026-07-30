@@ -50,6 +50,7 @@ data class ServerConfig(
     val reconnect: ReconnectConfig = ReconnectConfig(),
     val ip_check: IpCheckConfig = IpCheckConfig(),
     val triggers: List<TriggerInstance> = emptyList(),
+    val port_forwards: List<PortForwardRule> = emptyList(),
     val suppress_firewall_badge: Boolean = false,
     val test_url: String = "https://google.com",
 )
@@ -194,3 +195,56 @@ data class AppSettings(
     val notify_trigger_success: Boolean = false,
     val notify_ip_change: Boolean = false,
 )
+
+// === Port Forwarding (PF-7) ===
+
+@Serializable
+data class PortForwardRule(
+    val id: String = "",
+    val name: String = "",
+    val type: String = "local", // "local" or "remote"
+    val local_host: String = "127.0.0.1",
+    val local_port: Int = 0,
+    val remote_host: String = "127.0.0.1",
+    val remote_port: Int = 0,
+    val enabled: Boolean = true,
+    val auto_start: Boolean = false,
+)
+
+@Serializable
+data class PortForwardRuleWithStatus(
+    val id: String = "",
+    val name: String = "",
+    val type: String = "local",
+    val local_host: String = "127.0.0.1",
+    val local_port: Int = 0,
+    val remote_host: String = "127.0.0.1",
+    val remote_port: Int = 0,
+    val enabled: Boolean = true,
+    val auto_start: Boolean = false,
+    val running: Boolean = false,
+    val error: String? = null,
+    val active_connections: Int = 0,
+    val bytes_in: Long = 0,
+    val bytes_out: Long = 0,
+)
+
+@Serializable
+data class PortForwardListResponse(
+    val rules: List<PortForwardRuleWithStatus> = emptyList(),
+)
+
+@Serializable
+data class PortForwardAddResponse(
+    val rule_id: String? = null,
+    val error: String? = null,
+)
+
+@Serializable
+data class PortForwardOpResponse(
+    val ok: Boolean? = null,
+    val was_running: Boolean? = null,
+    val error: String? = null,
+)
+
+// === Port Forwarding END ===

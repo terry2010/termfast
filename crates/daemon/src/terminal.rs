@@ -500,6 +500,12 @@ impl TerminalManager {
             }
         }
     }
+
+    /// Check if there are any active terminal sessions for a given server
+    pub async fn has_sessions_for_server(&self, server_id: &str) -> bool {
+        let sessions = self.sessions.lock().await;
+        sessions.values().any(|s| s.server_id == server_id)
+    }
 }
 
 // === SECTION 2 END ===

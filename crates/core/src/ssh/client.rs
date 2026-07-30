@@ -69,6 +69,9 @@ pub struct SshHandler {
     /// Auth banner received from the server during authentication (RFC4252 §5.4).
     /// Captured here so the caller can retrieve it after `connect()` returns.
     pub auth_banner: Arc<tokio::sync::Mutex<Option<String>>>,
+    /// Dispatcher for forwarded-tcpip channels (remote port forwarding -R).
+    /// Key: (connected_address, connected_port) → channel sender.
+    pub forwarded_dispatch: Arc<crate::ssh::forwarded_dispatch::ForwardedDispatch>,
 }
 
 impl client::Handler for SshHandler {
@@ -121,6 +124,40 @@ impl client::Handler for SshHandler {
             Ok(true)
         }
     }
+
+    fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        originator_address: &str,
+        originator_port: u32,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> impl std::future::Future<Output = std::result::Result<(), Self::Error>> + Send {
+        let dispatch = self.forwarded_dispatch.clone();
+        let connected_addr = connected_address.to_string();
+        let connected_p = connected_port;
+        let originator_addr = originator_address.to_string();
+        let originator_p = originator_port;
+        async move {
+            let key = (connected_addr.clone(), connected_p as u16);
+            tracing::debug!(
+                "forwarded-tcpip channel from {}:{} (originator {}:{})",
+                connected_addr, connected_p, originator_addr, originator_p
+            );
+            // Accept the channel first
+            reply.accept().await;
+            // Dispatch to the registered receiver
+            if !dispatch.dispatch(&key, channel).await {
+                tracing::warn!(
+                    "no registered receiver for forwarded-tcpip {}:{}",
+                    connected_addr, connected_p
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Compute SHA256 fingerprint of a public key
@@ -141,6 +178,8 @@ pub struct SshClientHandle {
     /// On mismatch: the actual (new) key from the server.
     /// On matching reconnect: None (no change needed).
     recorded_host_key: Arc<tokio::sync::Mutex<Option<String>>>,
+    /// Dispatcher for forwarded-tcpip channels (remote port forwarding -R).
+    forwarded_dispatch: Arc<crate::ssh::forwarded_dispatch::ForwardedDispatch>,
 }
 
 impl SshClientHandle {
@@ -152,6 +191,7 @@ impl SshClientHandle {
             state: Mutex::new(ConnectionState::Disconnected),
             auth_banner: Arc::new(tokio::sync::Mutex::new(None)),
             recorded_host_key: Arc::new(tokio::sync::Mutex::new(None)),
+            forwarded_dispatch: Arc::new(crate::ssh::forwarded_dispatch::ForwardedDispatch::new()),
         }
     }
 
@@ -189,6 +229,7 @@ impl SshClientHandle {
             host_key_recorded: Arc::new(tokio::sync::Mutex::new(None)),
             hostkey_mismatch_callback: config.hostkey_mismatch_callback.clone(),
             auth_banner: self.auth_banner.clone(),
+            forwarded_dispatch: self.forwarded_dispatch.clone(),
         };
         // Clone the recorded-key Arc so we can read it after connect_stream
         // consumes the handler.
@@ -370,6 +411,11 @@ impl SshClientHandle {
     /// Get a reference to the handle (for sharing with channel opener)
     pub async fn get_handle(&self) -> Option<Arc<client::Handle<SshHandler>>> {
         self.handle.lock().await.clone()
+    }
+
+    /// Get the forwarded-tcpip dispatcher (for remote port forwarding -R)
+    pub fn get_forwarded_dispatch(&self) -> Arc<crate::ssh::forwarded_dispatch::ForwardedDispatch> {
+        self.forwarded_dispatch.clone()
     }
 
     /// Get the current connection state

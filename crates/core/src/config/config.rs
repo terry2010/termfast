@@ -342,6 +342,51 @@ fn default_channel_idle_timeout() -> u64 {
     300
 }
 
+/// Port forward type — local (-L) or remote (-R)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PortForwardType {
+    /// Local forward (-L): local port → remote target
+    Local,
+    /// Remote forward (-R): remote port → local target
+    Remote,
+}
+
+/// Port forward rule — a single port forwarding configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PortForwardRule {
+    /// Unique ID (pf_<uuid>)
+    pub id: String,
+    /// User-defined name (e.g. "MySQL 隧道")
+    pub name: String,
+    /// Forward type: local or remote
+    pub forward_type: PortForwardType,
+    /// For local: local listen address. For remote: remote bind address.
+    #[serde(default = "default_forward_host")]
+    pub local_host: String,
+    /// For local: local listen port. For remote: remote listen port.
+    pub local_port: u16,
+    /// For local: remote target address. For remote: local target address.
+    #[serde(default = "default_forward_host")]
+    pub remote_host: String,
+    /// For local: remote target port. For remote: local target port.
+    pub remote_port: u16,
+    /// Whether this rule is enabled
+    #[serde(default = "default_forward_enabled")]
+    pub enabled: bool,
+    /// Whether to auto-start when SSH connects
+    #[serde(default)]
+    pub auto_start: bool,
+}
+
+fn default_forward_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_forward_enabled() -> bool {
+    true
+}
+
 /// Reconnection configuration (§7.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReconnectConfig {
@@ -482,6 +527,9 @@ pub struct ServerConfig {
     /// URL used by the test button in the server list / detail screen.
     #[serde(default = "default_server_test_url")]
     pub test_url: String,
+    /// Port forwarding rules
+    #[serde(default)]
+    pub port_forwards: Vec<PortForwardRule>,
 }
 
 fn default_server_test_url() -> String {
@@ -548,6 +596,68 @@ impl Config {
             .any(|s| s.proxy.mixed_port == port)
     }
 
+    /// Check if a local port is already used by any port forward rule across all servers.
+    /// Only checks local-type rules (they listen on local_port).
+    /// Also checks against SOCKS5/HTTP/mixed proxy ports.
+    pub fn is_port_forward_local_port_in_use(
+        &self,
+        port: u16,
+        exclude_server_id: Option<&str>,
+        exclude_rule_id: Option<&str>,
+    ) -> bool {
+        // Check against proxy ports (SOCKS5, HTTP, mixed)
+        for s in &self.servers {
+            if Some(s.id.as_str()) == exclude_server_id {
+                continue;
+            }
+            if (s.proxy.socks5_port != 0 && s.proxy.socks5_port == port)
+                || (s.proxy.http_port != 0 && s.proxy.http_port == port)
+                || (s.proxy.mixed_port != 0 && s.proxy.mixed_port == port)
+            {
+                return true;
+            }
+        }
+        // Check against other port forward rules (local type only — they listen locally)
+        for s in &self.servers {
+            for r in &s.port_forwards {
+                if r.forward_type != PortForwardType::Local {
+                    continue;
+                }
+                if Some(s.id.as_str()) == exclude_server_id && Some(r.id.as_str()) == exclude_rule_id
+                {
+                    continue;
+                }
+                if r.local_port == port {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a local port is already used within the same server's port forward rules
+    pub fn is_port_forward_local_port_in_server(
+        &self,
+        server_id: &str,
+        port: u16,
+        exclude_rule_id: Option<&str>,
+    ) -> bool {
+        if let Some(server) = self.find_server(server_id) {
+            for r in &server.port_forwards {
+                if r.forward_type != PortForwardType::Local {
+                    continue;
+                }
+                if Some(r.id.as_str()) == exclude_rule_id {
+                    continue;
+                }
+                if r.local_port == port {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Generate a new unique server ID
     pub fn generate_server_id() -> String {
         format!("srv_{}", uuid::Uuid::new_v4().simple())
@@ -556,6 +666,11 @@ impl Config {
     /// Generate a new unique trigger ID
     pub fn generate_trigger_id() -> String {
         format!("trg_{}", uuid::Uuid::new_v4().simple())
+    }
+
+    /// Generate a new unique port forward ID
+    pub fn generate_port_forward_id() -> String {
+        format!("pf_{}", uuid::Uuid::new_v4().simple())
     }
 }
 
@@ -652,6 +767,7 @@ mod tests {
             triggers: Vec::new(),
             suppress_firewall_badge: false,
             test_url: default_server_test_url(),
+            port_forwards: Vec::new(),
         };
         config.servers.push(server);
 
@@ -716,12 +832,222 @@ mod tests {
             triggers: Vec::new(),
             suppress_firewall_badge: false,
             test_url: default_server_test_url(),
+            port_forwards: Vec::new(),
         };
         let json = serde_json::to_string(&server).unwrap();
         let de: ServerConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(de.id, server.id);
         assert_eq!(de.ssh.host, server.ssh.host);
         assert_eq!(de.proxy.socks5_port, server.proxy.socks5_port);
+    }
+
+    fn make_test_server(id: &str, socks5_port: u16) -> ServerConfig {
+        ServerConfig {
+            id: id.into(),
+            name: format!("Server {}", id),
+            ssh: SshConfig {
+                host: "1.2.3.4".into(),
+                port: 22,
+                user: "root".into(),
+                auth_method: "key".into(),
+                key_path: "".into(),
+                key_auto_generated: false,
+                connection_mode: "single".into(),
+                skip_hostkey_verify: false,
+                host_key_fingerprint: None,
+            },
+            proxy: ProxyConfig {
+                enabled: true,
+                socks5_port,
+                http_port: 0,
+                mixed_port: 0,
+                max_channels: 64,
+                channel_idle_timeout: 300,
+            },
+            reconnect: ReconnectConfig::default(),
+            ip_check: IpCheckConfig::default(),
+            last_known_ip: None,
+            triggers: Vec::new(),
+            suppress_firewall_badge: false,
+            test_url: default_server_test_url(),
+            port_forwards: Vec::new(),
+        }
+    }
+
+    fn make_test_rule(id: &str, forward_type: PortForwardType, local_port: u16) -> PortForwardRule {
+        PortForwardRule {
+            id: id.into(),
+            name: format!("Rule {}", id),
+            forward_type,
+            local_host: "127.0.0.1".into(),
+            local_port,
+            remote_host: "127.0.0.1".into(),
+            remote_port: local_port,
+            enabled: true,
+            auto_start: false,
+        }
+    }
+
+    #[test]
+    fn test_port_forward_type_serialization() {
+        let local = PortForwardType::Local;
+        let json = serde_json::to_string(&local).unwrap();
+        assert_eq!(json, "\"local\"");
+        let de: PortForwardType = serde_json::from_str(&json).unwrap();
+        assert_eq!(de, local);
+
+        let remote = PortForwardType::Remote;
+        let json = serde_json::to_string(&remote).unwrap();
+        assert_eq!(json, "\"remote\"");
+        let de: PortForwardType = serde_json::from_str(&json).unwrap();
+        assert_eq!(de, remote);
+    }
+
+    #[test]
+    fn test_port_forward_rule_serialization_round_trip() {
+        let rule = PortForwardRule {
+            id: "pf_test".into(),
+            name: "MySQL 隧道".into(),
+            forward_type: PortForwardType::Local,
+            local_host: "127.0.0.1".into(),
+            local_port: 3306,
+            remote_host: "127.0.0.1".into(),
+            remote_port: 3306,
+            enabled: true,
+            auto_start: true,
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        let de: PortForwardRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(de, rule);
+    }
+
+    #[test]
+    fn test_port_forward_rule_defaults() {
+        let json = r#"{"id":"pf_1","name":"test","forward_type":"local","local_port":3306,"remote_port":3306}"#;
+        let rule: PortForwardRule = serde_json::from_str(json).unwrap();
+        assert_eq!(rule.local_host, "127.0.0.1");
+        assert_eq!(rule.remote_host, "127.0.0.1");
+        assert!(rule.enabled);
+        assert!(!rule.auto_start);
+    }
+
+    #[test]
+    fn test_old_config_without_port_forwards_loads() {
+        let json = r#"{
+            "version": 2,
+            "servers": [{
+                "id": "srv_1",
+                "name": "Test",
+                "ssh": {"host": "1.2.3.4", "port": 22, "user": "root", "auth_method": "password"},
+                "proxy": {"enabled": false, "socks5_port": 1080, "http_port": 0, "mixed_port": 0, "max_channels": 64, "channel_idle_timeout": 300}
+            }]
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.servers.len(), 1);
+        assert!(config.servers[0].port_forwards.is_empty());
+    }
+
+    #[test]
+    fn test_server_config_with_port_forwards_round_trip() {
+        let mut server = make_test_server("srv_1", 1080);
+        server.port_forwards.push(make_test_rule("pf_1", PortForwardType::Local, 3306));
+        server.port_forwards.push(make_test_rule("pf_2", PortForwardType::Remote, 8080));
+
+        let json = serde_json::to_string(&server).unwrap();
+        let de: ServerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.port_forwards.len(), 2);
+        assert_eq!(de.port_forwards[0].id, "pf_1");
+        assert_eq!(de.port_forwards[0].forward_type, PortForwardType::Local);
+        assert_eq!(de.port_forwards[1].id, "pf_2");
+        assert_eq!(de.port_forwards[1].forward_type, PortForwardType::Remote);
+    }
+
+    #[test]
+    fn test_port_forward_local_port_conflict_across_servers() {
+        let mut config = Config::default();
+        let mut s1 = make_test_server("srv_1", 1080);
+        s1.port_forwards.push(make_test_rule("pf_1", PortForwardType::Local, 3306));
+        config.servers.push(s1);
+        let mut s2 = make_test_server("srv_2", 1081);
+        s2.port_forwards.push(make_test_rule("pf_2", PortForwardType::Local, 3306));
+        config.servers.push(s2);
+
+        // 3306 is used by srv_1's pf_1 — conflict for srv_2's new rule
+        assert!(config.is_port_forward_local_port_in_use(3306, Some("srv_2"), Some("pf_2")));
+        // 3306 is used by srv_2's pf_2 — conflict for srv_1's new rule
+        assert!(config.is_port_forward_local_port_in_use(3306, Some("srv_1"), Some("pf_1")));
+        // Excluding both srv_1+pf_1 and srv_2+pf_2 (e.g. only 2 rules, both excluded) → no conflict
+        // But we can only exclude one at a time, so check with a third server
+        assert!(config.is_port_forward_local_port_in_use(3306, None, None));
+        // No conflict for unused port
+        assert!(!config.is_port_forward_local_port_in_use(9999, None, None));
+    }
+
+    #[test]
+    fn test_port_forward_local_port_conflict_with_proxy_port() {
+        let mut config = Config::default();
+        let mut s1 = make_test_server("srv_1", 1080);
+        s1.port_forwards.push(make_test_rule("pf_1", PortForwardType::Local, 1080));
+        config.servers.push(s1);
+        let s2 = make_test_server("srv_2", 1081);
+        config.servers.push(s2);
+
+        // 1080 is used by srv_1's SOCKS5 proxy — conflict for srv_2
+        assert!(config.is_port_forward_local_port_in_use(1080, Some("srv_2"), None));
+    }
+
+    #[test]
+    fn test_port_forward_local_port_conflict_with_http_and_mixed_proxy() {
+        let mut config = Config::default();
+        // srv_1 has HTTP proxy on 8080 and mixed proxy on 9090
+        let mut s1 = make_test_server("srv_1", 1080);
+        s1.proxy.http_port = 8080;
+        s1.proxy.mixed_port = 9090;
+        config.servers.push(s1);
+        let s2 = make_test_server("srv_2", 1081);
+        config.servers.push(s2);
+
+        // 8080 is used by srv_1's HTTP proxy — conflict for srv_2
+        assert!(config.is_port_forward_local_port_in_use(8080, Some("srv_2"), None));
+        // 9090 is used by srv_1's mixed proxy — conflict for srv_2
+        assert!(config.is_port_forward_local_port_in_use(9090, Some("srv_2"), None));
+        // Port 0 should not conflict (http_port=0 means disabled)
+        assert!(!config.is_port_forward_local_port_in_use(0, Some("srv_2"), None));
+    }
+
+    #[test]
+    fn test_port_forward_local_port_conflict_in_same_server() {
+        let mut config = Config::default();
+        let mut s1 = make_test_server("srv_1", 1080);
+        s1.port_forwards.push(make_test_rule("pf_1", PortForwardType::Local, 3306));
+        config.servers.push(s1);
+
+        // 3306 already used by pf_1 in same server
+        assert!(config.is_port_forward_local_port_in_server("srv_1", 3306, None));
+        // Excluding pf_1 itself
+        assert!(!config.is_port_forward_local_port_in_server("srv_1", 3306, Some("pf_1")));
+        // Different port
+        assert!(!config.is_port_forward_local_port_in_server("srv_1", 9999, None));
+    }
+
+    #[test]
+    fn test_port_forward_remote_type_not_checked_for_local_conflict() {
+        let mut config = Config::default();
+        let mut s1 = make_test_server("srv_1", 1080);
+        // Remote forward — does NOT listen locally, should not conflict
+        s1.port_forwards.push(make_test_rule("pf_1", PortForwardType::Remote, 3306));
+        config.servers.push(s1);
+
+        // Remote rule's local_port (3306) should not be treated as a local listen port
+        assert!(!config.is_port_forward_local_port_in_use(3306, None, None));
+        assert!(!config.is_port_forward_local_port_in_server("srv_1", 3306, None));
+    }
+
+    #[test]
+    fn test_generate_port_forward_id_format() {
+        let id = Config::generate_port_forward_id();
+        assert!(id.starts_with("pf_"));
+        assert!(id.len() > 10);
     }
 }
 

@@ -10,6 +10,7 @@ import { useLogStore } from "@/stores/logStore";
 import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
 import { TriggerList } from "@/components/shared/TriggerList";
+import { PortForwardPanel } from "@/components/shared/PortForwardPanel";
 import { TerminalView } from "@/components/shared/TerminalView";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
@@ -1378,6 +1379,18 @@ export function ServerDetail() {
                 </div>
                 <div className="p-4">
                   <TriggerList serverId={server.id} />
+                </div>
+              </div>
+
+              {/* Port forwarding panel — full width (PF-6) */}
+              <div className="bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-[16px] border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
+                <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    {t("port_forward.title")}
+                  </h3>
+                </div>
+                <div className="p-4">
+                  <PortForwardPanel serverId={server.id} />
                 </div>
               </div>
             </div>

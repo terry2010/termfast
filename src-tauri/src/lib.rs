@@ -205,6 +205,14 @@ pub fn run() {
             credential_manager::ipc_export_credentials,
             credential_manager::ipc_import_credentials,
             ipc_get_system_locale,
+            // Port forwarding (PF-6)
+            ipc_list_port_forwards,
+            ipc_add_port_forward,
+            ipc_update_port_forward,
+            ipc_delete_port_forward,
+            ipc_start_port_forward,
+            ipc_stop_port_forward,
+            ipc_get_port_forward_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -1463,3 +1471,105 @@ fn ipc_get_system_locale() -> String {
     // On Linux: reads LANG/LC_ALL env.
     sys_locale::get_locales().next().unwrap_or_else(|| "en-US".to_string())
 }
+
+// === SECTION: Port forwarding IPC commands (PF-6) ===
+
+#[tauri::command]
+async fn ipc_list_port_forwards(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::ListPortForwards,
+        serde_json::json!({ "server_id": server_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_add_port_forward(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    rule: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::AddPortForward,
+        serde_json::json!({ "server_id": server_id, "rule": rule }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_update_port_forward(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    rule_id: String,
+    rule: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::UpdatePortForward,
+        serde_json::json!({ "server_id": server_id, "rule_id": rule_id, "rule": rule }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_delete_port_forward(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    rule_id: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::DeletePortForward,
+        serde_json::json!({ "server_id": server_id, "rule_id": rule_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_start_port_forward(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    rule_id: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::StartPortForward,
+        serde_json::json!({ "server_id": server_id, "rule_id": rule_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_stop_port_forward(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    rule_id: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::StopPortForward,
+        serde_json::json!({ "server_id": server_id, "rule_id": rule_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_get_port_forward_status(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    rule_id: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::GetPortForwardStatus,
+        serde_json::json!({ "server_id": server_id, "rule_id": rule_id }),
+    )
+    .await
+}
+
+// === SECTION: Port forwarding IPC commands END ===

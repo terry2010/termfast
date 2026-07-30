@@ -7,7 +7,7 @@ use crate::config::TriggerInstance;
 use crate::config::TriggerTemplate;
 use crate::config::TriggerType;
 use crate::error::{Error, Result};
-use crate::proxy::{ChannelManager, HttpProxyServer, MixedProxyServer, Socks5Server};
+use crate::proxy::{ChannelManager, HttpProxyServer, MixedProxyServer, PortForwardManager, Socks5Server};
 use crate::ssh::auth::AuthMethod;
 use crate::ssh::channel_opener::SshChannelOpener;
 use crate::ssh::client::{ConnectionState, SshClientConfig, SshClientHandle};
@@ -88,6 +88,8 @@ pub struct ServerInstance {
     client_ip: Mutex<Option<String>>,
     /// Last auth method used (for auto-reconnect)
     last_auth: Mutex<Option<AuthMethod>>,
+    /// Port forward manager (PF-4)
+    port_forward_manager: Arc<PortForwardManager>,
 }
 
 // === SECTION 1 END ===
@@ -111,11 +113,18 @@ impl ServerInstance {
 
         let host_key_fp = config.ssh.host_key_fingerprint.clone();
         let triggers = config.triggers.clone();
+        let ssh_client = Arc::new(SshClientHandle::new(ssh_config));
+        let channel_opener = Arc::new(SshChannelOpener::empty());
+        let forwarded_dispatch = ssh_client.get_forwarded_dispatch();
+        let port_forward_manager = Arc::new(PortForwardManager::new(
+            channel_opener.clone(),
+            forwarded_dispatch,
+        ));
 
         Self {
-            ssh_client: Arc::new(SshClientHandle::new(ssh_config)),
+            ssh_client,
             trigger_engine: Arc::new(TriggerEngine::new()),
-            channel_opener: Arc::new(SshChannelOpener::empty()),
+            channel_opener,
             triggers: Arc::new(Mutex::new(triggers)),
             config,
             status: Mutex::new(ServerStatus::Disconnected),
@@ -134,6 +143,7 @@ impl ServerInstance {
             status_change_callback: Mutex::new(None),
             client_ip: Mutex::new(None),
             last_auth: Mutex::new(None),
+            port_forward_manager,
         }
     }
 
@@ -143,6 +153,11 @@ impl ServerInstance {
 
     pub fn name(&self) -> &str {
         &self.config.name
+    }
+
+    /// Get the port forward manager (PF-4)
+    pub fn port_forward_manager(&self) -> &Arc<PortForwardManager> {
+        &self.port_forward_manager
     }
 
     pub async fn status(&self) -> ServerStatus {
@@ -252,6 +267,8 @@ impl ServerInstance {
                 let handle = self.ssh_client.get_handle().await;
                 if let Some(h) = handle {
                     self.channel_opener.set_handle(h.clone()).await;
+                    // Set SSH handle for port forwarding (PF-4)
+                    self.port_forward_manager.set_ssh_handle(h.clone()).await;
                     // Detect client IP from SSH connection (§5.2)
                     match crate::ssh::exec::detect_client_ip(&h).await {
                         Ok(ip) => {
@@ -285,6 +302,10 @@ impl ServerInstance {
                 }
                 self.start_health_checks().await;
                 self.fire_on_connect_triggers().await;
+                // Auto-start port forward rules (PF-4)
+                let _ = self.port_forward_manager
+                    .start_auto_rules(&self.config.port_forwards)
+                    .await;
                 Ok(())
             }
             Err(e) => {
@@ -306,6 +327,8 @@ impl ServerInstance {
         let handle = self.ssh_client.get_handle().await;
         if let Some(h) = handle {
             self.channel_opener.set_handle(h.clone()).await;
+            // Set SSH handle for port forwarding (PF-4)
+            self.port_forward_manager.set_ssh_handle(h.clone()).await;
         }
         *self.status.lock().await = ServerStatus::Connected;
 
@@ -317,6 +340,10 @@ impl ServerInstance {
         }
         self.start_health_checks().await;
         self.fire_on_reconnect_triggers().await;
+        // Auto-start port forward rules (PF-4)
+        let _ = self.port_forward_manager
+            .start_auto_rules(&self.config.port_forwards)
+            .await;
         Ok(())
     }
 
@@ -325,6 +352,9 @@ impl ServerInstance {
         // Stop connection monitor first so it doesn't trigger auto-reconnect
         self.stop_connection_monitor().await;
         let _ = self.stop_proxy().await;
+        // Stop all port forward rules (PF-4)
+        let _ = self.port_forward_manager.stop_all().await;
+        self.port_forward_manager.clear_ssh_handle().await;
         if let Some(task) = self.ip_check_task.lock().await.take() {
             task.abort();
         }
@@ -443,7 +473,9 @@ impl ServerInstance {
                             );
                             // Restore channel opener handle
                             if let Some(h) = instance.ssh_client.get_handle().await {
-                                instance.channel_opener.set_handle(h).await;
+                                instance.channel_opener.set_handle(h.clone()).await;
+                                // Update SSH handle for port forwarding (PF-4)
+                                instance.port_forward_manager.set_ssh_handle(h).await;
                             }
                             *instance.status.lock().await = ServerStatus::Connected;
                             instance.broadcast_status(&ServerStatus::Connected).await;
@@ -462,6 +494,12 @@ impl ServerInstance {
                                     );
                                 }
                             }
+
+                            // Restart port forwarding: stop stale forwarders, then auto-start (PF-4)
+                            let _ = instance.port_forward_manager.stop_all().await;
+                            let _ = instance.port_forward_manager
+                                .start_auto_rules(&instance.config.port_forwards)
+                                .await;
 
                             // Restart IP detection and health checks
                             if instance.config.ip_check.enabled {
@@ -965,6 +1003,7 @@ mod tests {
             triggers: Vec::new(),
             suppress_firewall_badge: false,
             test_url: "https://google.com".into(),
+            port_forwards: Vec::new(),
         }
     }
 
@@ -1004,5 +1043,61 @@ mod tests {
         let result = instance.disconnect().await;
         assert!(result.is_ok());
         assert_eq!(instance.status().await, ServerStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn test_port_forward_manager_exists() {
+        let instance = ServerInstance::new(test_config());
+        // The port forward manager should exist and be accessible
+        let mgr = instance.port_forward_manager();
+        // No rules running initially
+        let statuses = mgr.get_all_statuses().await;
+        assert!(statuses.is_empty(), "no forwarders should be running initially");
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_stops_all_port_forwards() {
+        // Verify that disconnect() calls stop_all on the port forward manager
+        let mut config = test_config();
+        // Add a port forward rule (won't auto-start since not connected)
+        config.port_forwards.push(PortForwardRule {
+            id: "pf_test_1".into(),
+            name: "Test Forward".into(),
+            forward_type: PortForwardType::Local,
+            local_host: "127.0.0.1".into(),
+            local_port: 13701,
+            remote_host: "127.0.0.1".into(),
+            remote_port: 80,
+            enabled: true,
+            auto_start: false,
+        });
+        let instance = ServerInstance::new(config);
+
+        // Manually start a local forward rule (doesn't need SSH connection)
+        let mgr = instance.port_forward_manager();
+        let rule = &instance.config.port_forwards[0];
+        mgr.start_rule(rule).await.unwrap();
+
+        // Verify it's running
+        let statuses = mgr.get_all_statuses().await;
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].running);
+
+        // Disconnect should stop all forwards
+        instance.disconnect().await.unwrap();
+
+        // All forwards should be stopped
+        let statuses_after = mgr.get_all_statuses().await;
+        assert_eq!(statuses_after.len(), 0, "all forwards should be stopped after disconnect");
+    }
+
+    #[tokio::test]
+    async fn test_port_forward_manager_accessible() {
+        let instance = ServerInstance::new(test_config());
+        // Verify the manager is accessible via the public method
+        let mgr = instance.port_forward_manager();
+        // Verify it can get status for a non-existent rule
+        let status = mgr.get_status("nonexistent").await;
+        assert!(status.is_none());
     }
 }

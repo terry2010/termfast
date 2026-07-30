@@ -48,6 +48,9 @@ server/config.local.php
 # 文档目录（设计稿/项目文档不纳入版本管理）
 docs/
 
+# 官网项目（单独的私有仓库管理）
+website/
+
 # 临时备份和实验目录
 bak/
 spikes/

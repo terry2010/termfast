@@ -208,6 +208,7 @@ mod tests {
             triggers: vec![],
             suppress_firewall_badge: false,
             test_url: String::new(),
+            port_forwards: vec![],
         }
     }
 
@@ -409,4 +410,551 @@ mod tests {
     }
 
     // === SECTION 2 END ===
+
+    // === SECTION 3: Port forwarding IPC tests (PF-5) ===
+
+    #[tokio::test]
+    async fn test_ipc_list_port_forwards_empty() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add a server first
+        let cfg = make_test_server_config("srv_pf_1", "PF Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // List port forwards — should be empty
+        let request = Request::new(
+            Action::ListPortForwards,
+            serde_json::json!({"server_id": "srv_pf_1"}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                let rules = data["rules"].as_array().unwrap();
+                assert!(rules.is_empty(), "should have no port forwards initially");
+            }
+            _ => panic!("expected Ok response"),
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_add_port_forward() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add a server
+        let cfg = make_test_server_config("srv_pf_2", "PF Add Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Add a port forward rule
+        let rule = serde_json::json!({
+            "name": "MySQL Tunnel",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 13306,
+            "remote_host": "127.0.0.1",
+            "remote_port": 3306,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::AddPortForward,
+            serde_json::json!({"server_id": "srv_pf_2", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                let rule_id = data["rule_id"].as_str().expect("should have rule_id");
+                assert!(rule_id.starts_with("pf_"), "rule_id should start with pf_");
+            }
+            _ => panic!("expected Ok response, got {:?}", response),
+        }
+
+        // List should now contain 1 rule
+        let request = Request::new(
+            Action::ListPortForwards,
+            serde_json::json!({"server_id": "srv_pf_2"}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                let rules = data["rules"].as_array().unwrap();
+                assert_eq!(rules.len(), 1);
+                assert_eq!(rules[0]["name"], "MySQL Tunnel");
+                assert_eq!(rules[0]["local_port"], 13306);
+            }
+            _ => panic!("expected Ok response"),
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_delete_port_forward() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add server
+        let cfg = make_test_server_config("srv_pf_3", "PF Delete Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Add a rule
+        let rule = serde_json::json!({
+            "name": "Redis Tunnel",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 16379,
+            "remote_host": "127.0.0.1",
+            "remote_port": 6379,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::AddPortForward,
+            serde_json::json!({"server_id": "srv_pf_3", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        let rule_id = match response {
+            Response::Ok { data, .. } => data["rule_id"].as_str().unwrap().to_string(),
+            _ => panic!("expected Ok"),
+        };
+
+        // Delete the rule
+        let request = Request::new(
+            Action::DeletePortForward,
+            serde_json::json!({"server_id": "srv_pf_3", "rule_id": rule_id}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Ok { .. }));
+
+        // List should be empty
+        let request = Request::new(
+            Action::ListPortForwards,
+            serde_json::json!({"server_id": "srv_pf_3"}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                let rules = data["rules"].as_array().unwrap();
+                assert!(rules.is_empty(), "rule should be deleted");
+            }
+            _ => panic!("expected Ok"),
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_get_port_forward_status_not_running() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add server
+        let cfg = make_test_server_config("srv_pf_4", "PF Status Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Add a rule
+        let rule = serde_json::json!({
+            "name": "Web Tunnel",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 18080,
+            "remote_host": "127.0.0.1",
+            "remote_port": 80,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::AddPortForward,
+            serde_json::json!({"server_id": "srv_pf_4", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        let rule_id = match response {
+            Response::Ok { data, .. } => data["rule_id"].as_str().unwrap().to_string(),
+            _ => panic!("expected Ok"),
+        };
+
+        // Get status — should show running=false
+        let request = Request::new(
+            Action::GetPortForwardStatus,
+            serde_json::json!({"server_id": "srv_pf_4", "rule_id": rule_id}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                assert_eq!(data["running"], false);
+                assert_eq!(data["active_connections"], 0);
+            }
+            _ => panic!("expected Ok"),
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_start_port_forward_local() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add server
+        let cfg = make_test_server_config("srv_pf_5", "PF Start Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Add a local forward rule
+        let rule = serde_json::json!({
+            "name": "Local Forward",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 13801,
+            "remote_host": "127.0.0.1",
+            "remote_port": 80,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::AddPortForward,
+            serde_json::json!({"server_id": "srv_pf_5", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        let rule_id = match response {
+            Response::Ok { data, .. } => data["rule_id"].as_str().unwrap().to_string(),
+            _ => panic!("expected Ok"),
+        };
+
+        // Start the rule — local forward doesn't need SSH connection
+        let request = Request::new(
+            Action::StartPortForward,
+            serde_json::json!({"server_id": "srv_pf_5", "rule_id": rule_id}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Ok { .. }), "start should succeed");
+
+        // Get status — should show running=true
+        let request = Request::new(
+            Action::GetPortForwardStatus,
+            serde_json::json!({"server_id": "srv_pf_5", "rule_id": rule_id}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                assert_eq!(data["running"], true);
+            }
+            _ => panic!("expected Ok"),
+        }
+
+        // Stop the rule
+        let request = Request::new(
+            Action::StopPortForward,
+            serde_json::json!({"server_id": "srv_pf_5", "rule_id": rule_id}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Ok { .. }));
+
+        // Get status — should show running=false
+        let request = Request::new(
+            Action::GetPortForwardStatus,
+            serde_json::json!({"server_id": "srv_pf_5", "rule_id": rule_id}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                assert_eq!(data["running"], false);
+            }
+            _ => panic!("expected Ok"),
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_update_port_forward() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add server
+        let cfg = make_test_server_config("srv_pf_6", "PF Update Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Add a rule
+        let rule = serde_json::json!({
+            "name": "Original",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 13802,
+            "remote_host": "127.0.0.1",
+            "remote_port": 80,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::AddPortForward,
+            serde_json::json!({"server_id": "srv_pf_6", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        let rule_id = match response {
+            Response::Ok { data, .. } => data["rule_id"].as_str().unwrap().to_string(),
+            _ => panic!("expected Ok"),
+        };
+
+        // Update the rule
+        let updated_rule = serde_json::json!({
+            "name": "Updated Name",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 13803,
+            "remote_host": "127.0.0.1",
+            "remote_port": 8080,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::UpdatePortForward,
+            serde_json::json!({"server_id": "srv_pf_6", "rule_id": rule_id, "rule": updated_rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Ok { .. }));
+
+        // List should show updated name and port
+        let request = Request::new(
+            Action::ListPortForwards,
+            serde_json::json!({"server_id": "srv_pf_6"}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                let rules = data["rules"].as_array().unwrap();
+                assert_eq!(rules.len(), 1);
+                assert_eq!(rules[0]["name"], "Updated Name");
+                assert_eq!(rules[0]["local_port"], 13803);
+                assert_eq!(rules[0]["remote_port"], 8080);
+            }
+            _ => panic!("expected Ok"),
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_update_port_forward_was_running() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add server
+        let cfg = make_test_server_config("srv_pf_wr", "PF WasRunning Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Add a local forward rule
+        let rule = serde_json::json!({
+            "name": "Running Rule",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 13810,
+            "remote_host": "127.0.0.1",
+            "remote_port": 80,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::AddPortForward,
+            serde_json::json!({"server_id": "srv_pf_wr", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        let rule_id = match response {
+            Response::Ok { data, .. } => data["rule_id"].as_str().unwrap().to_string(),
+            _ => panic!("expected Ok"),
+        };
+
+        // Start the rule (local forward doesn't need SSH)
+        let request = Request::new(
+            Action::StartPortForward,
+            serde_json::json!({"server_id": "srv_pf_wr", "rule_id": rule_id}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Ok { .. }));
+
+        // Update the rule — should return was_running=true
+        let updated_rule = serde_json::json!({
+            "name": "Updated Running",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 13811,
+            "remote_host": "127.0.0.1",
+            "remote_port": 8080,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::UpdatePortForward,
+            serde_json::json!({"server_id": "srv_pf_wr", "rule_id": rule_id, "rule": updated_rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                assert_eq!(data["was_running"], true, "was_running should be true when updating a running rule");
+            }
+            _ => panic!("expected Ok"),
+        }
+
+        // Verify the rule was stopped (running=false after update)
+        let request = Request::new(
+            Action::GetPortForwardStatus,
+            serde_json::json!({"server_id": "srv_pf_wr", "rule_id": rule_id}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        match response {
+            Response::Ok { data, .. } => {
+                assert_eq!(data["running"], false, "rule should be stopped after update");
+            }
+            _ => panic!("expected Ok"),
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_list_port_forwards_server_not_found() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // List port forwards for non-existent server
+        let request = Request::new(
+            Action::ListPortForwards,
+            serde_json::json!({"server_id": "nonexistent"}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Err { .. }));
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_add_port_forward_server_not_found() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        let rule = serde_json::json!({
+            "name": "Test",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 13901,
+            "remote_host": "127.0.0.1",
+            "remote_port": 80,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::AddPortForward,
+            serde_json::json!({"server_id": "nonexistent", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Err { .. }));
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_delete_port_forward_not_found() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add server
+        let cfg = make_test_server_config("srv_pf_err", "PF Error Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Delete non-existent rule
+        let request = Request::new(
+            Action::DeletePortForward,
+            serde_json::json!({"server_id": "srv_pf_err", "rule_id": "pf_nonexistent"}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Err { .. }));
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_update_port_forward_not_found() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add server
+        let cfg = make_test_server_config("srv_pf_upd", "PF Update Err");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Update non-existent rule
+        let rule = serde_json::json!({
+            "name": "Test",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 13902,
+            "remote_host": "127.0.0.1",
+            "remote_port": 80,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::UpdatePortForward,
+            serde_json::json!({"server_id": "srv_pf_upd", "rule_id": "pf_nonexistent", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Err { .. }));
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_add_port_forward_invalid_port() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Add server
+        let cfg = make_test_server_config("srv_pf_port", "PF Port Test");
+        let request = Request::new(Action::AddServer, serde_json::to_value(&cfg).unwrap());
+        let _ = send_request(&mut stream, &request).await;
+
+        // Add rule with port > 65535
+        let rule = serde_json::json!({
+            "name": "Invalid Port",
+            "type": "local",
+            "local_host": "127.0.0.1",
+            "local_port": 70000,
+            "remote_host": "127.0.0.1",
+            "remote_port": 80,
+            "enabled": true,
+            "auto_start": false
+        });
+        let request = Request::new(
+            Action::AddPortForward,
+            serde_json::json!({"server_id": "srv_pf_port", "rule": rule}),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Err { .. }));
+
+        server.shutdown().await;
+    }
+
+    // === SECTION 3 END ===
 }

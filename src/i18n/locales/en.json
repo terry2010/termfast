@@ -34,7 +34,9 @@
     "testing": "Testing...",
     "required": "is required",
     "processing": "Processing...",
-    "built_in": "Built-in"
+    "built_in": "Built-in",
+    "start": "Start",
+    "stop": "Stop"
   },
   "hostkey": {
     "mismatch_title": "Host Key Changed",
@@ -457,7 +459,8 @@
       "credential_not_found": "No saved credentials found. Please re-enter your password",
       "port_in_use": "Port {{detail}} is already in use by another program",
       "needs_privilege": "Administrator privilege is required to change system proxy settings",
-      "disconnected": "Connection has been closed"
+      "disconnected": "Connection has been closed",
+      "ssh_not_connected": "SSH not connected. Please connect to the server first before starting remote forwarding."
     }
   },
   "tab": {
@@ -515,5 +518,43 @@
     "import_button": "Import Encrypted Backup",
     "import_password_hint": "Enter the master password for this backup file. The current credentials will only be overwritten after the password is verified.",
     "settings_section": "Credential Security"
+  },
+  "port_forward": {
+    "title": "Port Forwarding",
+    "add_rule": "Add Rule",
+    "edit_rule": "Edit Rule",
+    "name": "Name",
+    "name_placeholder": "e.g. MySQL Tunnel",
+    "name_required": "Rule name is required",
+    "type": "Type",
+    "local": "Local",
+    "remote": "Remote",
+    "local_desc": "Forward local port to remote server",
+    "remote_desc": "Forward remote port to local machine",
+    "local_host": "Local Host",
+    "local_port": "Local Port",
+    "remote_host": "Remote Host",
+    "remote_port": "Remote Port",
+    "remote_bind_host": "Remote Bind Host",
+    "remote_bind_port": "Remote Bind Port",
+    "local_target_host": "Local Target Host",
+    "local_target_port": "Local Target Port",
+    "enabled": "Enabled",
+    "auto_start": "Auto-start on connect",
+    "invalid_port": "Port must be between 1 and 65535",
+    "empty": "No port forwarding rules. Click \"Add Rule\" or use a quick template above.",
+    "started": "Port forward started",
+    "stopped": "Port forward stopped",
+    "added": "Port forward rule added",
+    "updated": "Port forward rule updated",
+    "updated_need_restart": "Rule updated. It was running — restart it to apply changes.",
+    "deleted": "Port forward rule deleted",
+    "start_all": "Start All",
+    "stop_all": "Stop All",
+    "connections": "connections",
+    "delete_title": "Delete Port Forward Rule",
+    "delete_confirm": "Are you sure you want to delete \"{{name}}\"?",
+    "delete_confirm_running": "\"{{name}}\" is currently running. Stop and delete it?",
+    "error": "Error"
   }
 }

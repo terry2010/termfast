@@ -134,6 +134,8 @@ function localizeDetail(code: string, detail: string): string | undefined {
 
   // --- SshDisconnected ---
   if (code === "SshDisconnected") {
+    if (d.includes("not connected") || d.includes("please connect"))
+      return i18n.t("errors.detail.ssh_not_connected");
     if (d.includes("reset") || d.includes("broken pipe"))
       return i18n.t("errors.detail.connection_reset");
     if (d.includes("timeout") || d.includes("timed out"))
