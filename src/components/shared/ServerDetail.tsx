@@ -75,9 +75,12 @@ export function ServerDetail() {
   const [renameText, setRenameText] = useState("");
   // Disconnect confirmation: shown when user clicks disconnect with active terminals
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
-  // Ref to detect right-click on macOS "bottom-right corner" click mode
-  // (where click fires before contextmenu with button=0, ctrlKey=false)
-  const rightClickRef = useRef(false);
+  // Timestamp of last contextmenu event — macOS fires click BEFORE contextmenu
+  // on right-click, so we can't use a simple boolean flag. Instead we record
+  // when contextmenu fires, and in onClick we check if a contextmenu happened
+  // very recently (within 500ms). We also set a flag on mousedown for button=2.
+  const rightClickTimeRef = useRef(0);
+  const rightClickButtonRef = useRef(false);
   // Drag-to-reorder state for terminal tabs (overview tab is not draggable)
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
@@ -895,9 +898,20 @@ export function ServerDetail() {
               } ${dragOverTabId === tab.key && draggedTabId && draggedTabId !== tab.key ? "ring-1 ring-[#007AFF]" : ""} ${
                 draggedTabId === tab.key ? "opacity-40" : ""
               }`}
-              onClick={() => {
-                rightClickRef.current = false;
+              onClick={(e) => {
+                // Skip if this click was triggered by a right-click sequence
+                if (rightClickButtonRef.current) {
+                  rightClickButtonRef.current = false;
+                  return;
+                }
                 setActiveTerminalTab(server.id, tab.key);
+              }}
+              onMouseDown={(e) => {
+                // Detect right-click on mousedown (before click fires).
+                // macOS: real right-click = button=2, Ctrl+click = button=0+ctrlKey
+                if (e.button === 2 || e.ctrlKey) {
+                  rightClickButtonRef.current = true;
+                }
               }}
               onDoubleClick={(e) => {
                 if (tab.key !== "overview") {
@@ -906,8 +920,7 @@ export function ServerDetail() {
                 }
               }}
               onContextMenu={(e) => {
-                // Set flag so the ✕ button's delayed onClick can detect right-click
-                rightClickRef.current = true;
+                rightClickButtonRef.current = true;
                 if (tab.key === "overview") {
                   handleOverviewContextMenu(e);
                 } else {
@@ -939,20 +952,22 @@ export function ServerDetail() {
               {tab.key !== "overview" && renamingTabId !== tab.key && (
                 <button
                   className="ml-1 text-gray-400 hover:text-red-500 transition-colors text-xs leading-none"
+                  onMouseDown={(e) => {
+                    if (e.button === 2 || e.ctrlKey) {
+                      rightClickButtonRef.current = true;
+                    }
+                  }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    // Ignore Ctrl+click (macOS right-click)
-                    if (e.ctrlKey || e.metaKey) return;
-                    // Delay to check if contextmenu fires after click
-                    // (macOS "bottom-right corner" right-click generates a regular
-                    //  click event with button=0, ctrlKey=false before contextmenu)
-                    setTimeout(() => {
-                      if (rightClickRef.current) {
-                        rightClickRef.current = false;
-                        return;
-                      }
-                      closeTab(tab.key);
-                    }, 100);
+                    if (rightClickButtonRef.current) {
+                      rightClickButtonRef.current = false;
+                      return;
+                    }
+                    closeTab(tab.key);
+                  }}
+                  onContextMenu={(e) => {
+                    e.stopPropagation();
+                    rightClickButtonRef.current = true;
                   }}
                   title={t("common.close")}
                 >

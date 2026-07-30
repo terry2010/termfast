@@ -5,7 +5,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -243,6 +242,10 @@ interface TerminalViewProps {
   initialOutput?: string;
 }
 
+// Module-level snapshot cache: key = serverId, value = serialized terminal
+// Preserved across unmount/remount (e.g. reconnect) so history isn't lost.
+const snapshotCache = new Map<string, string>();
+
 // Encode bytes to base64
 function bytesToBase64(bytes: Uint8Array | number[]): string {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -338,16 +341,15 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     term.open(containerRef.current);
     fitAddon.fit();
 
-    // P0: WebGL2 rendering acceleration with graceful fallback to DOM
-    try {
-      const webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        webglAddon.dispose();
-      });
-      term.loadAddon(webglAddon);
-    } catch {
-      // WebGL not available — fall back to DOM renderer (v6 DOM is fast)
-    }
+    // P0: WebGL2 rendering acceleration — disabled for now due to context leak
+    // with multiple terminals + HMR. xterm v6 DOM renderer is already fast.
+    // TODO: re-enable with lazy WebGL (only for active tab) when needed.
+    // let webglAddon: WebglAddon | null = null;
+    // try {
+    //   webglAddon = new WebglAddon();
+    //   webglAddon.onContextLoss(() => { webglAddon?.dispose(); });
+    //   term.loadAddon(webglAddon);
+    // } catch { /* WebGL not available */ }
 
     // P2: Unicode 11 for correct CJK/emoji wide character handling
     try {
@@ -374,9 +376,13 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     searchRef.current = searchAddon;
     serializeRef.current = serializeAddon;
 
-    // Write initial output (MOTD/prompt) captured at terminal open time.
-    // The backend sends this as base64 to preserve binary data.
-    if (initialOutput) {
+    // Restore saved snapshot (from previous unmount, e.g. reconnect) if available.
+    // Falls back to initialOutput (MOTD/prompt from backend) for new sessions.
+    const savedSnapshot = snapshotCache.get(serverId);
+    if (savedSnapshot) {
+      term.write(savedSnapshot);
+      snapshotCache.delete(serverId);
+    } else if (initialOutput) {
       const bytes = base64ToBytes(initialOutput);
       term.write(bytes);
     }
@@ -986,8 +992,11 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       }
     }).then((fn) => { unlistenClosed = fn; });
 
-    // Window resize handler
+    // Window resize handler — skip when container is hidden (0 dimensions)
     const handleResize = () => {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
       try { fitAddon.fit(); } catch { /* container not visible */ }
     };
     window.addEventListener("resize", handleResize);
@@ -999,6 +1008,17 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     return () => {
       // Flush any pending chunks before disposing
       flushPending();
+      // Save terminal snapshot for reconnect history restore
+      if (serializeRef.current) {
+        try {
+          const snapshot = serializeRef.current.serialize();
+          if (snapshot && snapshot.length > 0) {
+            snapshotCache.set(serverId, snapshot);
+          }
+        } catch { /* serialize failure is non-fatal */ }
+      }
+      // Dispose WebGL addon explicitly to release GPU context
+      // (currently disabled — see TODO above)
       inputDisposable.dispose();
       resizeDisposable.dispose();
       if (unlistenOutput) unlistenOutput();
@@ -1016,16 +1036,23 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
 
   // Re-fit and focus when tab becomes active
   useEffect(() => {
-    if (!active || !termRef.current || !fitRef.current) return;
-    try {
-      fitRef.current.fit();
-      ipcInvoke("ipc_terminal_resize", {
-        session_id: sessionIdRef.current,
-        cols: termRef.current.cols,
-        rows: termRef.current.rows,
-      }).catch(() => {});
-      termRef.current.focus();
-    } catch { /* ignore */ }
+    if (!active || !termRef.current || !fitRef.current || !containerRef.current) return;
+    // Delay fit() to next frame so the container has correct dimensions
+    requestAnimationFrame(() => {
+      if (!containerRef.current || !termRef.current || !fitRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      try {
+        fitRef.current.fit();
+        if (termRef.current.cols === 0 || termRef.current.rows === 0) return;
+        ipcInvoke("ipc_terminal_resize", {
+          session_id: sessionIdRef.current,
+          cols: termRef.current.cols,
+          rows: termRef.current.rows,
+        }).catch(() => {});
+        termRef.current.focus();
+      } catch { /* ignore */ }
+    });
   }, [active]);
 
   // Focus search input when shown

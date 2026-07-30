@@ -48,7 +48,6 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!menu) return;
-    const close = () => setMenu(null);
     const handleClick = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setMenu(null);
@@ -57,65 +56,70 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") setMenu(null);
     };
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleEsc);
+    // Delay registration to next tick so the current mousedown/contextmenu
+    // event doesn't immediately close the newly-opened menu.
+    const timer = setTimeout(() => {
+      document.addEventListener("mousedown", handleClick);
+      document.addEventListener("keydown", handleEsc);
+    }, 0);
     return () => {
+      clearTimeout(timer);
       document.removeEventListener("mousedown", handleClick);
       document.removeEventListener("keydown", handleEsc);
     };
   }, [menu]);
 
-  if (!menu) return <>{children}</>;
-
   // Adjust position to keep menu on screen
   const menuWidth = 200;
-  const menuHeight = menu.items.length * 32 + 8;
-  const x = Math.min(menu.x, window.innerWidth - menuWidth - 8);
-  const y = Math.min(menu.y, window.innerHeight - menuHeight - 8);
+  const menuHeight = menu ? menu.items.length * 32 + 8 : 0;
+  const x = menu ? Math.min(menu.x, window.innerWidth - menuWidth - 8) : 0;
+  const y = menu ? Math.min(menu.y, window.innerHeight - menuHeight - 8) : 0;
 
   return (
     <>
       {children}
-      <div
-        ref={ref}
-        className="fixed z-[100] min-w-[180px] py-1 bg-white dark:bg-[#1E1E1E] rounded-lg shadow-lg border border-gray-200/80 dark:border-white/[0.06]"
-        style={{ left: x, top: y }}
-      >
-        {menu.items.map((item, i) => {
-          if ("separator" in item) {
+      {menu && (
+        <div
+          ref={ref}
+          className="fixed z-[100] min-w-[180px] py-1 bg-white dark:bg-[#1E1E1E] rounded-lg shadow-lg border border-gray-200/80 dark:border-white/[0.06]"
+          style={{ left: x, top: y }}
+        >
+          {menu.items.map((item, i) => {
+            if ("separator" in item) {
+              return (
+                <div
+                  key={i}
+                  className="h-px my-1 bg-gray-100 dark:bg-white/[0.06]"
+                />
+              );
+            }
             return (
-              <div
+              <button
                 key={i}
-                className="h-px my-1 bg-gray-100 dark:bg-white/[0.06]"
-              />
+                className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 ${
+                  item.disabled
+                    ? "text-gray-400 cursor-not-allowed"
+                    : item.danger
+                      ? "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
+                      : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E]"
+                }`}
+                disabled={item.disabled}
+                onClick={() => {
+                  if (!item.disabled) {
+                    item.onClick();
+                    setMenu(null);
+                  }
+                }}
+              >
+                {item.icon && (
+                  <span className="w-4 text-center">{item.icon}</span>
+                )}
+                <span>{item.label}</span>
+              </button>
             );
-          }
-          return (
-            <button
-              key={i}
-              className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 ${
-                item.disabled
-                  ? "text-gray-400 cursor-not-allowed"
-                  : item.danger
-                    ? "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
-                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E]"
-              }`}
-              disabled={item.disabled}
-              onClick={() => {
-                if (!item.disabled) {
-                  item.onClick();
-                  setMenu(null);
-                }
-              }}
-            >
-              {item.icon && (
-                <span className="w-4 text-center">{item.icon}</span>
-              )}
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
-      </div>
+          })}
+        </div>
+      )}
     </>
   );
 }

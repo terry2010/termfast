@@ -15,6 +15,9 @@ use tauri::Manager;
 /// Shared embedded daemon — None until async startup completes
 pub struct AppState {
     pub daemon: tokio::sync::Mutex<Option<Arc<EmbeddedDaemon>>>,
+    /// Flag: true when user requested quit (tray menu / Cmd+Q).
+    /// CloseRequested checks this to decide hide-vs-exit.
+    pub is_quitting: std::sync::atomic::AtomicBool,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -51,13 +54,33 @@ pub fn run() {
             // app menu. This matches macOS HIG and standard tray-app
             // behavior on Windows.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let app_handle = window.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Some(win) = app_handle.get_webview_window("main") {
-                        let _ = win.hide();
-                    }
-                });
+                let state = window.app_handle().try_state::<AppState>();
+                let quitting = state
+                    .map(|s| s.is_quitting.load(std::sync::atomic::Ordering::SeqCst))
+                    .unwrap_or(false);
+                if quitting {
+                    // User requested quit (tray/Cmd+Q) — allow close, do graceful shutdown
+                    let app_handle = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(state) = app_handle.try_state::<AppState>() {
+                            let guard = state.daemon.lock().await;
+                            if let Some(ref daemon) = *guard {
+                                daemon.server.shutdown().await;
+                            }
+                        }
+                        tracing::info!("graceful shutdown complete, exiting");
+                        app_handle.exit(0);
+                    });
+                } else {
+                    // Window close button — hide instead of exit
+                    api.prevent_close();
+                    let app_handle = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(win) = app_handle.get_webview_window("main") {
+                            let _ = win.hide();
+                        }
+                    });
+                }
             }
         })
         .setup(|app| {
@@ -65,6 +88,42 @@ pub fn run() {
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
                 window.open_devtools();
+            }
+
+            // macOS: set up app menu with custom Quit that sets is_quitting flag
+            // so CloseRequested allows the window to close (instead of hiding).
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{Menu, MenuItem, Submenu, MenuEvent};
+                let app_handle = app.handle();
+                let quit_item = MenuItem::with_id(app_handle, "quit", "Quit TermFast", true, Some("CmdOrCtrl+Q"))?;
+                let app_menu = Submenu::with_items(app_handle, "TermFast", true, &[
+                    &MenuItem::with_id(app_handle, "about", "About TermFast", true, None::<&str>)?,
+                    &quit_item,
+                ])?;
+                let edit_menu = Submenu::with_items(app_handle, "Edit", true, &[
+                    &MenuItem::with_id(app_handle, "undo", "Undo", true, Some("CmdOrCtrl+Z"))?,
+                    &MenuItem::with_id(app_handle, "redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?,
+                    &MenuItem::with_id(app_handle, "cut", "Cut", true, Some("CmdOrCtrl+X"))?,
+                    &MenuItem::with_id(app_handle, "copy", "Copy", true, Some("CmdOrCtrl+C"))?,
+                    &MenuItem::with_id(app_handle, "paste", "Paste", true, Some("CmdOrCtrl+V"))?,
+                    &MenuItem::with_id(app_handle, "select_all", "Select All", true, Some("CmdOrCtrl+A"))?,
+                ])?;
+                let menu = Menu::with_items(app_handle, &[&app_menu, &edit_menu])?;
+                app.set_menu(menu)?;
+
+                let app_handle2 = app.handle().clone();
+                app_handle2.on_menu_event(move |_handle, event: MenuEvent| {
+                    if event.id() == "quit" {
+                        tracing::info!("Cmd+Q quit from app menu");
+                        if let Some(state) = _handle.try_state::<AppState>() {
+                            state.is_quitting.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        if let Some(win) = _handle.get_webview_window("main") {
+                            let _ = win.close();
+                        }
+                    }
+                });
             }
 
             // Apply window vibrancy effect (FP-6.10)
@@ -109,6 +168,7 @@ pub fn run() {
 
                         let state = AppState {
                             daemon: tokio::sync::Mutex::new(Some(Arc::new(daemon))),
+                            is_quitting: std::sync::atomic::AtomicBool::new(false),
                         };
                         handle.manage(state);
                         tracing::info!("Tauri app state initialized with event forwarding");
@@ -673,6 +733,8 @@ async fn ipc_quit_app(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     tracing::info!("quit requested from tray menu");
+    // Set quitting flag so CloseRequested handler allows the window to close
+    state.is_quitting.store(true, std::sync::atomic::Ordering::SeqCst);
     // Graceful daemon shutdown
     let guard = state.daemon.lock().await;
     if let Some(ref daemon) = *guard {
