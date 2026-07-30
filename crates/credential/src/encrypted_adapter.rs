@@ -38,7 +38,7 @@ impl Drop for Inner {
         // Zeroize sensitive data when the Inner struct is dropped.
         self.key.zeroize();
         if let Some(ref mut map) = self.map {
-            for (_, v) in map.iter_mut() {
+            for v in map.values_mut() {
                 v.zeroize();
             }
             map.clear();
@@ -174,7 +174,7 @@ impl EncryptedFileCredentialStore {
         let mut inner = self.inner.lock().unwrap();
         inner.key.zeroize();
         if let Some(ref mut map) = inner.map {
-            for (_, v) in map.iter_mut() {
+            for v in map.values_mut() {
                 v.zeroize();
             }
         }
@@ -220,7 +220,7 @@ impl EncryptedFileCredentialStore {
         let mut inner = self.inner.lock().unwrap();
         inner.key.zeroize();
         if let Some(ref mut map) = inner.map {
-            for (_, v) in map.iter_mut() {
+            for v in map.values_mut() {
                 v.zeroize();
             }
         }
