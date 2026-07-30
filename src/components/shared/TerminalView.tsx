@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -246,6 +247,11 @@ interface TerminalViewProps {
 // Preserved across unmount/remount (e.g. reconnect) so history isn't lost.
 const snapshotCache = new Map<string, string>();
 
+// Module-level WebGL context counter — browsers limit ~16 concurrent contexts.
+// We only create a WebGL context if we're under the limit; otherwise DOM render.
+const MAX_WEBGL_CONTEXTS = 8;
+let activeWebglCount = 0;
+
 // Encode bytes to base64
 function bytesToBase64(bytes: Uint8Array | number[]): string {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -306,6 +312,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const serializeRef = useRef<SerializeAddon | null>(null);
+  const webglRef = useRef<WebglAddon | null>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
@@ -341,15 +348,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     term.open(containerRef.current);
     fitAddon.fit();
 
-    // P0: WebGL2 rendering acceleration — disabled for now due to context leak
-    // with multiple terminals + HMR. xterm v6 DOM renderer is already fast.
-    // TODO: re-enable with lazy WebGL (only for active tab) when needed.
-    // let webglAddon: WebglAddon | null = null;
-    // try {
-    //   webglAddon = new WebglAddon();
-    //   webglAddon.onContextLoss(() => { webglAddon?.dispose(); });
-    //   term.loadAddon(webglAddon);
-    // } catch { /* WebGL not available */ }
+    // P0: WebGL2 is lazy-loaded only for the active tab (see useEffect [active]).
+    // This prevents WebGL context exhaustion when many terminals are open.
 
     // P2: Unicode 11 for correct CJK/emoji wide character handling
     try {
@@ -1018,7 +1018,11 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
         } catch { /* serialize failure is non-fatal */ }
       }
       // Dispose WebGL addon explicitly to release GPU context
-      // (currently disabled — see TODO above)
+      if (webglRef.current) {
+        try { webglRef.current.dispose(); } catch { /* already disposed */ }
+        webglRef.current = null;
+        activeWebglCount--;
+      }
       inputDisposable.dispose();
       resizeDisposable.dispose();
       if (unlistenOutput) unlistenOutput();
@@ -1030,29 +1034,66 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       fitRef.current = null;
       searchRef.current = null;
       serializeRef.current = null;
+      webglRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Re-fit and focus when tab becomes active
+  // Re-fit, focus, and manage WebGL when tab becomes active/inactive
   useEffect(() => {
-    if (!active || !termRef.current || !fitRef.current || !containerRef.current) return;
-    // Delay fit() to next frame so the container has correct dimensions
-    requestAnimationFrame(() => {
-      if (!containerRef.current || !termRef.current || !fitRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
-      try {
-        fitRef.current.fit();
-        if (termRef.current.cols === 0 || termRef.current.rows === 0) return;
-        ipcInvoke("ipc_terminal_resize", {
-          session_id: sessionIdRef.current,
-          cols: termRef.current.cols,
-          rows: termRef.current.rows,
-        }).catch(() => {});
-        termRef.current.focus();
-      } catch { /* ignore */ }
-    });
+    if (!termRef.current || !fitRef.current || !containerRef.current) return;
+
+    if (active) {
+      // Tab became active: lazy-load WebGL renderer for acceleration
+      // Only create if under the global context limit
+      if (!webglRef.current && activeWebglCount < MAX_WEBGL_CONTEXTS) {
+        try {
+          const webglAddon = new WebglAddon();
+          webglAddon.onContextLoss(() => {
+            webglAddon.dispose();
+            if (webglRef.current === webglAddon) {
+              webglRef.current = null;
+              activeWebglCount--;
+            }
+          });
+          termRef.current.loadAddon(webglAddon);
+          webglRef.current = webglAddon;
+          activeWebglCount++;
+        } catch { /* WebGL not available — DOM renderer is fine */ }
+      }
+      // Delay fit() to next frame so the container has correct dimensions
+      requestAnimationFrame(() => {
+        if (!containerRef.current || !termRef.current || !fitRef.current) return;
+        const rect = containerRef.current.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        try {
+          fitRef.current.fit();
+          if (termRef.current.cols === 0 || termRef.current.rows === 0) return;
+          ipcInvoke("ipc_terminal_resize", {
+            session_id: sessionIdRef.current,
+            cols: termRef.current.cols,
+            rows: termRef.current.rows,
+          }).catch(() => {});
+          termRef.current.focus();
+        } catch { /* ignore */ }
+      });
+    } else {
+      // Tab became inactive: dispose WebGL to free GPU context
+      if (webglRef.current) {
+        try { webglRef.current.dispose(); } catch { /* already disposed */ }
+        webglRef.current = null;
+        activeWebglCount--;
+      }
+    }
+
+    // Cleanup: dispose WebGL when this effect re-runs or component unmounts
+    return () => {
+      if (webglRef.current) {
+        try { webglRef.current.dispose(); } catch { /* already disposed */ }
+        webglRef.current = null;
+        activeWebglCount--;
+      }
+    };
   }, [active]);
 
   // Focus search input when shown

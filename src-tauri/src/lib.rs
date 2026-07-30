@@ -94,20 +94,22 @@ pub fn run() {
             // so CloseRequested allows the window to close (instead of hiding).
             #[cfg(target_os = "macos")]
             {
-                use tauri::menu::{Menu, MenuItem, Submenu, MenuEvent};
+                use tauri::menu::{Menu, MenuItem, Submenu, PredefinedMenuItem, MenuEvent, AboutMetadata};
                 let app_handle = app.handle();
                 let quit_item = MenuItem::with_id(app_handle, "quit", "Quit TermFast", true, Some("CmdOrCtrl+Q"))?;
+                let about_item = PredefinedMenuItem::about(app_handle, None, Some(AboutMetadata::default()))?;
                 let app_menu = Submenu::with_items(app_handle, "TermFast", true, &[
-                    &MenuItem::with_id(app_handle, "about", "About TermFast", true, None::<&str>)?,
+                    &about_item,
                     &quit_item,
                 ])?;
                 let edit_menu = Submenu::with_items(app_handle, "Edit", true, &[
-                    &MenuItem::with_id(app_handle, "undo", "Undo", true, Some("CmdOrCtrl+Z"))?,
-                    &MenuItem::with_id(app_handle, "redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?,
-                    &MenuItem::with_id(app_handle, "cut", "Cut", true, Some("CmdOrCtrl+X"))?,
-                    &MenuItem::with_id(app_handle, "copy", "Copy", true, Some("CmdOrCtrl+C"))?,
-                    &MenuItem::with_id(app_handle, "paste", "Paste", true, Some("CmdOrCtrl+V"))?,
-                    &MenuItem::with_id(app_handle, "select_all", "Select All", true, Some("CmdOrCtrl+A"))?,
+                    &PredefinedMenuItem::undo(app_handle, None)?,
+                    &PredefinedMenuItem::redo(app_handle, None)?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::cut(app_handle, None)?,
+                    &PredefinedMenuItem::copy(app_handle, None)?,
+                    &PredefinedMenuItem::paste(app_handle, None)?,
+                    &PredefinedMenuItem::select_all(app_handle, None)?,
                 ])?;
                 let menu = Menu::with_items(app_handle, &[&app_menu, &edit_menu])?;
                 app.set_menu(menu)?;

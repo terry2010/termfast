@@ -75,6 +75,7 @@ export function ServerDetail() {
   const [renameText, setRenameText] = useState("");
   // Disconnect confirmation: shown when user clicks disconnect with active terminals
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [pendingCloseTab, setPendingCloseTab] = useState<string | null>(null);
   // Timestamp of last contextmenu event — macOS fires click BEFORE contextmenu
   // on right-click, so we can't use a simple boolean flag. Instead we record
   // when contextmenu fires, and in onClick we check if a contextmenu happened
@@ -125,92 +126,104 @@ export function ServerDetail() {
 
   // Open a new terminal session and add a tab for it.
   // Flow: click → connecting → SSH connect + terminal open → tab created → connected
+  // Requests are queued and processed serially to avoid SSH channel conflicts.
+  const openQueueRef = useRef<Promise<void>>(Promise.resolve());
   const handleOpenTerminal = useCallback(async () => {
     if (!server?.id) return;
     const serverId = server.id;
 
-    // If not connected, connect first (status stays "connecting" until terminal is ready)
-    if (!isConnected) {
-      updateServerStatus(serverId, "connecting");
-      try {
-        await ipcInvoke("ipc_connect_server", { serverId });
-        // Don't set "connected" yet — wait until terminal is ready
-      } catch (e: any) {
-        const errMsg = formatIpcError(e);
-        updateServerStatus(serverId, "offline");
-        useLogStore.getState().addEntry({
-          id: `conn-err-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          timestamp: new Date().toISOString(),
-          server_id: serverId,
-          level: "error",
-          category: "Connection",
-          message: `Connection failed: ${errMsg}`,
-          execution_id: null,
-          command: null,
-          exit_code: null,
-          stdout: null,
-          stderr: null,
-        });
-        toast.error(t("server.connect_failed"), { description: errMsg });
-        if (e instanceof IpcErrorImpl && e.code === "CredentialNotFound") {
-          window.dispatchEvent(
-            new CustomEvent("edit-server", { detail: { serverId } }),
-          );
+    // Chain onto the queue — each open waits for the previous to finish
+    openQueueRef.current = openQueueRef.current.then(async () => {
+      // Read live connection state from store (may have changed since queueing)
+      const liveServer = useServerStore.getState().servers.find(
+        (s) => s.id === serverId,
+      );
+      const liveConnected = liveServer?.current_status === "connected";
+
+      // If not connected, connect first
+      if (!liveConnected) {
+        updateServerStatus(serverId, "connecting");
+        try {
+          await ipcInvoke("ipc_connect_server", { serverId });
+        } catch (e: any) {
+          const errMsg = formatIpcError(e);
+          updateServerStatus(serverId, "offline");
+          useLogStore.getState().addEntry({
+            id: `conn-err-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            timestamp: new Date().toISOString(),
+            server_id: serverId,
+            level: "error",
+            category: "Connection",
+            message: `Connection failed: ${errMsg}`,
+            execution_id: null,
+            command: null,
+            exit_code: null,
+            stdout: null,
+            stderr: null,
+          });
+          toast.error(t("server.connect_failed"), { description: errMsg });
+          if (e instanceof IpcErrorImpl && e.code === "CredentialNotFound") {
+            window.dispatchEvent(
+              new CustomEvent("edit-server", { detail: { serverId } }),
+            );
+          }
+          if (e instanceof IpcErrorImpl && e.code === "HostKeyMismatch") {
+            const detail = e.detail || "";
+            const expectedMatch = detail.match(/expected:\s*(SHA256:\S+)/);
+            const actualMatch = detail.match(/got:\s*(SHA256:\S+)/);
+            window.dispatchEvent(
+              new CustomEvent("hostkey-mismatch", {
+                detail: {
+                  serverId,
+                  serverName: server?.name || serverId,
+                  expected: expectedMatch?.[1] || "unknown",
+                  actual: actualMatch?.[1] || "unknown",
+                },
+              }),
+            );
+          }
+          return;
         }
-        if (e instanceof IpcErrorImpl && e.code === "HostKeyMismatch") {
-          // Parse "expected: SHA256:xxx, got: SHA256:yyy" from detail
-          const detail = e.detail || "";
-          const expectedMatch = detail.match(/expected:\s*(SHA256:\S+)/);
-          const actualMatch = detail.match(/got:\s*(SHA256:\S+)/);
-          window.dispatchEvent(
-            new CustomEvent("hostkey-mismatch", {
-              detail: {
-                serverId,
-                serverName: server?.name || serverId,
-                expected: expectedMatch?.[1] || "unknown",
-                actual: actualMatch?.[1] || "unknown",
-              },
-            }),
-          );
-        }
-        return;
       }
-    }
-    // SSH connected — now open terminal session
-    try {
-      const result = await ipcInvoke<{
-        session_id: string;
-        initial_output: string;
-      }>("ipc_terminal_open", { server_id: serverId, cols: 80, rows: 24 });
-      const sessionId = result.session_id;
-      const initialOutput = result.initial_output || "";
-      const tabId: Tab = `term:${sessionId}`;
-      const currentTabs =
-        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
-      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
-      // Terminal ready — create tab and switch to it first
-      addTerminalTab(serverId, {
-        id: tabId,
-        sessionId,
-        label: defaultLabel,
-        defaultLabel,
-        initialOutput,
-        disconnected: false,
-      });
-      setActiveTerminalTab(serverId, tabId);
-      // Wait for the tab to render before changing button status
-      requestAnimationFrame(() => {
-        updateServerStatus(
-          serverId,
-          "connected",
-          server.last_known_ip || undefined,
-        );
-      });
-    } catch (e) {
-      const msg = formatIpcError(e);
-      updateServerStatus(serverId, "offline");
-      toast.error(t("server.terminal_open_failed"), { description: msg });
-    }
+      // SSH connected — now open terminal session
+      try {
+        const result = await ipcInvoke<{
+          session_id: string;
+          initial_output: string;
+        }>("ipc_terminal_open", { server_id: serverId, cols: 80, rows: 24 });
+        const sessionId = result.session_id;
+        const initialOutput = result.initial_output || "";
+        const tabId: Tab = `term:${sessionId}`;
+        const currentTabs =
+          useServerStore.getState().terminal_tabs_by_server[serverId] || [];
+        const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+        addTerminalTab(serverId, {
+          id: tabId,
+          sessionId,
+          label: defaultLabel,
+          defaultLabel,
+          initialOutput,
+          disconnected: false,
+        });
+        setActiveTerminalTab(serverId, tabId);
+        requestAnimationFrame(() => {
+          updateServerStatus(
+            serverId,
+            "connected",
+            server.last_known_ip || undefined,
+          );
+        });
+      } catch (e) {
+        const msg = formatIpcError(e);
+        updateServerStatus(serverId, "offline");
+        toast.error(t("server.terminal_open_failed"), { description: msg });
+      }
+    }).catch(() => {
+      // Swallow rejections so the chain keeps going for subsequent clicks
+    });
+
+    // Await so the caller (button) sees completion
+    await openQueueRef.current;
   }, [
     server?.id,
     server?.last_known_ip,
@@ -222,80 +235,81 @@ export function ServerDetail() {
   ]);
 
   // Open a terminal from the context menu. Uses the same logic as the login button.
+  // Shares the same serial queue as handleOpenTerminal to avoid SSH channel conflicts.
   const openTerminalFromMenu = useCallback(async () => {
-    const store = useServerStore.getState();
-    const serverId = store.selected_server_id;
-    if (!serverId) return;
-    const currentServer = store.servers.find((s) => s.id === serverId);
-    if (!currentServer) return;
-    const alreadyConnected = currentServer.current_status === "connected";
+    openQueueRef.current = openQueueRef.current.then(async () => {
+      const store = useServerStore.getState();
+      const serverId = store.selected_server_id;
+      if (!serverId) return;
+      const currentServer = store.servers.find((s) => s.id === serverId);
+      if (!currentServer) return;
+      const alreadyConnected = currentServer.current_status === "connected";
 
-    // If not connected, connect first (status stays "connecting" until terminal is ready)
-    if (!alreadyConnected) {
-      store.updateServerStatus(serverId, "connecting");
-      try {
-        await ipcInvoke("ipc_connect_server", { serverId });
-        // Don't set "connected" yet — wait until terminal is ready
-      } catch (e: any) {
-        const errMsg = formatIpcError(e);
-        store.updateServerStatus(serverId, "offline");
-        useLogStore.getState().addEntry({
-          id: `conn-err-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          timestamp: new Date().toISOString(),
-          server_id: serverId,
-          level: "error",
-          category: "Connection",
-          message: `Connection failed: ${errMsg}`,
-          execution_id: null,
-          command: null,
-          exit_code: null,
-          stdout: null,
-          stderr: null,
-        });
-        toast.error(t("server.connect_failed"), { description: errMsg });
-        if (e instanceof IpcErrorImpl && e.code === "CredentialNotFound") {
-          window.dispatchEvent(
-            new CustomEvent("edit-server", { detail: { serverId } }),
-          );
+      if (!alreadyConnected) {
+        store.updateServerStatus(serverId, "connecting");
+        try {
+          await ipcInvoke("ipc_connect_server", { serverId });
+        } catch (e: any) {
+          const errMsg = formatIpcError(e);
+          store.updateServerStatus(serverId, "offline");
+          useLogStore.getState().addEntry({
+            id: `conn-err-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            timestamp: new Date().toISOString(),
+            server_id: serverId,
+            level: "error",
+            category: "Connection",
+            message: `Connection failed: ${errMsg}`,
+            execution_id: null,
+            command: null,
+            exit_code: null,
+            stdout: null,
+            stderr: null,
+          });
+          toast.error(t("server.connect_failed"), { description: errMsg });
+          if (e instanceof IpcErrorImpl && e.code === "CredentialNotFound") {
+            window.dispatchEvent(
+              new CustomEvent("edit-server", { detail: { serverId } }),
+            );
+          }
+          return;
         }
-        return;
       }
-    }
 
-    // SSH connected — now open terminal session
-    try {
-      const result = await ipcInvoke<{
-        session_id: string;
-        initial_output: string;
-      }>("ipc_terminal_open", { server_id: serverId, cols: 80, rows: 24 });
-      const sessionId = result.session_id;
-      const initialOutput = result.initial_output || "";
-      const tabId: Tab = `term:${sessionId}`;
-      const currentTabs = store.terminal_tabs_by_server[serverId] || [];
-      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
-      // Terminal ready — create tab and switch to it first
-      store.addTerminalTab(serverId, {
-        id: tabId,
-        sessionId,
-        label: defaultLabel,
-        defaultLabel,
-        initialOutput,
-        disconnected: false,
-      });
-      store.setActiveTerminalTab(serverId, tabId);
-      // Wait for the tab to render before changing button status
-      requestAnimationFrame(() => {
-        store.updateServerStatus(
-          serverId,
-          "connected",
-          currentServer.last_known_ip || undefined,
-        );
-      });
-    } catch (e) {
-      const msg = formatIpcError(e);
-      store.updateServerStatus(serverId, "offline");
-      toast.error(t("server.terminal_open_failed"), { description: msg });
-    }
+      try {
+        const result = await ipcInvoke<{
+          session_id: string;
+          initial_output: string;
+        }>("ipc_terminal_open", { server_id: serverId, cols: 80, rows: 24 });
+        const sessionId = result.session_id;
+        const initialOutput = result.initial_output || "";
+        const tabId: Tab = `term:${sessionId}`;
+        const currentTabs = store.terminal_tabs_by_server[serverId] || [];
+        const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+        store.addTerminalTab(serverId, {
+          id: tabId,
+          sessionId,
+          label: defaultLabel,
+          defaultLabel,
+          initialOutput,
+          disconnected: false,
+        });
+        store.setActiveTerminalTab(serverId, tabId);
+        requestAnimationFrame(() => {
+          store.updateServerStatus(
+            serverId,
+            "connected",
+            currentServer.last_known_ip || undefined,
+          );
+        });
+      } catch (e) {
+        const msg = formatIpcError(e);
+        store.updateServerStatus(serverId, "offline");
+        toast.error(t("server.terminal_open_failed"), { description: msg });
+      }
+    }).catch(() => {
+      // Swallow rejections so the chain keeps going for subsequent calls
+    });
+    await openQueueRef.current;
   }, [t]);
 
   // After closing terminal tabs, check if the server has no remaining tabs
@@ -391,6 +405,20 @@ export function ServerDetail() {
       return;
     }
     doDisconnect();
+  };
+
+  // Disconnect a single terminal tab's session (closes PTY, keeps SSH alive)
+  const handleDisconnectTerminal = async (tabId: string) => {
+    const serverId = server.id;
+    const currentTabs = useServerStore.getState().terminal_tabs_by_server[serverId] || [];
+    const tab = currentTabs.find((tt) => tt.id === tabId);
+    if (!tab || !tab.sessionId) return;
+    if (tab.disconnected) return; // already disconnected
+    // Close the PTY session — mark tab as disconnected (SSH stays alive)
+    ipcInvoke("ipc_terminal_close", { session_id: tab.sessionId }).catch(
+      () => {},
+    );
+    setTerminalTabDisconnected(serverId, tab.sessionId);
   };
 
   const doDisconnect = async () => {
@@ -534,7 +562,7 @@ export function ServerDetail() {
       ...(isConnected
         ? [
             {
-              label: t("tab.disconnect"),
+              label: t("server.disconnect"),
               onClick: () => handleDisconnect(),
               danger: true,
             } as ContextMenuEntry,
@@ -612,8 +640,8 @@ export function ServerDetail() {
       },
       {
         label: t("tab.disconnect"),
-        onClick: () => handleDisconnect(),
-        disabled: !isConnected,
+        onClick: () => handleDisconnectTerminal(tabId),
+        disabled: !isConnected || tab.disconnected,
         danger: true,
       },
       { separator: true },
@@ -889,7 +917,7 @@ export function ServerDetail() {
                 setDraggedTabId(null);
                 setDragOverTabId(null);
               }}
-              className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors cursor-pointer rounded-b-lg flex-shrink-0 bg-white dark:bg-[#1E1E1E] border border-gray-200/80 dark:border-white/[0.06] border-t-0 ${
+              className={`flex items-center gap-1 pl-4 ${isOverview ? "pr-4" : "pr-0"} py-2 text-sm font-medium transition-colors cursor-pointer rounded-b-lg flex-shrink-0 bg-white dark:bg-[#1E1E1E] border border-gray-200/80 dark:border-white/[0.06] border-t-0 ${
                 isActive
                   ? "text-[#007AFF] dark:text-[#0A84FF] shadow-[0_3px_12px_rgba(0,0,0,0.1)] dark:shadow-[0_3px_12px_rgba(0,0,0,0.5)] z-10"
                   : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
@@ -950,8 +978,8 @@ export function ServerDetail() {
                 <span>{tab.label}</span>
               )}
               {tab.key !== "overview" && renamingTabId !== tab.key && (
-                <button
-                  className="ml-1 text-gray-400 hover:text-red-500 transition-colors text-xs leading-none"
+                <span
+                  className="flex items-center justify-center pl-1 pr-2.5 h-full text-gray-400 hover:text-red-500 transition-colors text-xs leading-none cursor-pointer"
                   onMouseDown={(e) => {
                     if (e.button === 2 || e.ctrlKey) {
                       rightClickButtonRef.current = true;
@@ -963,7 +991,7 @@ export function ServerDetail() {
                       rightClickButtonRef.current = false;
                       return;
                     }
-                    closeTab(tab.key);
+                    setPendingCloseTab(tab.key);
                   }}
                   onContextMenu={(e) => {
                     e.stopPropagation();
@@ -972,7 +1000,7 @@ export function ServerDetail() {
                   title={t("common.close")}
                 >
                   ✕
-                </button>
+                </span>
               )}
             </div>
           );
@@ -995,6 +1023,20 @@ export function ServerDetail() {
               doDisconnect();
             }}
             onCancel={() => setShowDisconnectConfirm(false)}
+          />
+        )}
+
+        {pendingCloseTab && (
+          <ConfirmDialog
+            level="low"
+            title={t("tab.close_session")}
+            message={t("tab.close_confirm")}
+            confirmLabel={t("common.close")}
+            onConfirm={() => {
+              closeTab(pendingCloseTab);
+              setPendingCloseTab(null);
+            }}
+            onCancel={() => setPendingCloseTab(null)}
           />
         )}
 
