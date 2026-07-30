@@ -102,8 +102,10 @@ jobs:
           fi
           echo "Found DMG: $DMG"
 
-          # Mount DMG read-write
-          MOUNT_POINT=$(hdiutil attach "$DMG" -nobrowse -noautoopen | tail -1 | cut -f3)
+          # Convert read-only DMG to read-write DMG, then mount
+          RW_DMG="${DMG%.dmg}-rw.dmg"
+          hdiutil convert "$DMG" -format UDRW -o "$RW_DMG"
+          MOUNT_POINT=$(hdiutil attach "$RW_DMG" -nobrowse -noautoopen | tail -1 | cut -f3)
           echo "Mounted at: $MOUNT_POINT"
 
           # Copy README and fix script to DMG root
@@ -115,9 +117,8 @@ jobs:
           hdiutil detach "$MOUNT_POINT"
 
           # Re-compress as read-only DMG (replace original)
-          TMP_DMG="${DMG%.dmg}-readonly.dmg"
-          hdiutil convert "$DMG" -format UDZO -imagekey zlib-level=9 -o "$TMP_DMG"
-          mv "$TMP_DMG" "$DMG"
+          hdiutil convert "$RW_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG"
+          rm -f "$RW_DMG"
           echo "✅ README and fix-quarantine.command added to DMG"
 
   # === Build signed Android APK ===
