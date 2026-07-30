@@ -107,5 +107,21 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
+      - name: Install Android NDK
+        if: matrix.label == 'Android'
+        run: |
+          ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager "ndk;27.3.13750724"
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
       - name: Check ${{ matrix.label }}
+        if: matrix.label != 'Android'
+        run: cargo check -p termfast-core --target ${{ matrix.target }}
+      - name: Check ${{ matrix.label }}
+        if: matrix.label == 'Android'
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.3.13750724
+          ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/27.3.13750724
+          CC_aarch64_linux_android: /usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang
+          AR_aarch64_linux_android: /usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: /usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang
         run: cargo check -p termfast-core --target ${{ matrix.target }}
