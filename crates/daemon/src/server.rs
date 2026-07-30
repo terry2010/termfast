@@ -13,6 +13,10 @@ use tokio::sync::Mutex;
 /// Type alias for event forwarder callback (FP-6.2)
 pub type EventForwarder = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
+/// Binary event forwarder — for high-throughput binary events like terminal:output.
+/// Passes raw bytes directly, avoiding base64 encode/decode overhead.
+pub type BinaryEventForwarder = Box<dyn Fn(&str, &[u8], bool) + Send + Sync>;
+
 /// Daemon runtime state — shared across all client connections
 pub struct DaemonState {
     /// Server manager
@@ -31,6 +35,8 @@ pub struct DaemonState {
     pub shutdown_tx: Arc<tokio::sync::Notify>,
     /// Event forwarder — called on every broadcast to forward events to the GUI (FP-6.2)
     event_forwarder: Arc<std::sync::Mutex<Option<EventForwarder>>>,
+    /// Binary event forwarder — for terminal:output (raw bytes, no base64)
+    binary_event_forwarder: Arc<std::sync::Mutex<Option<BinaryEventForwarder>>>,
     /// Runtime state manager for last_known_ip persistence (FP-1.3b)
     pub runtime_state: Arc<termfast_core::config::RuntimeStateManager>,
     /// Terminal session manager — interactive SSH terminals
@@ -82,6 +88,8 @@ impl DaemonState {
     ) -> Self {
         let event_forwarder: Arc<std::sync::Mutex<Option<EventForwarder>>> =
             Arc::new(std::sync::Mutex::new(None));
+        let binary_event_forwarder: Arc<std::sync::Mutex<Option<BinaryEventForwarder>>> =
+            Arc::new(std::sync::Mutex::new(None));
         Self {
             server_manager: Arc::new(termfast_core::server::ServerManager::new()),
             log_buffer: Arc::new(termfast_core::log::LogBuffer::new(10000)),
@@ -91,7 +99,8 @@ impl DaemonState {
             clients: Arc::new(Mutex::new(Vec::new())),
             shutdown_tx: Arc::new(tokio::sync::Notify::new()),
             event_forwarder: event_forwarder.clone(),
-            terminal_manager: Arc::new(crate::terminal::TerminalManager::new(event_forwarder)),
+            binary_event_forwarder: binary_event_forwarder.clone(),
+            terminal_manager: Arc::new(crate::terminal::TerminalManager::new(event_forwarder, binary_event_forwarder)),
             runtime_state: Arc::new(
                 termfast_core::config::RuntimeStateManager::with_default_path().unwrap_or_else(
                     |e| {
@@ -117,6 +126,11 @@ impl DaemonState {
     /// Set an event forwarder callback (used by Tauri to forward events to the GUI)
     pub fn set_event_forwarder(&self, forwarder: EventForwarder) {
         *self.event_forwarder.lock().unwrap() = Some(forwarder);
+    }
+
+    /// Set a binary event forwarder callback (for terminal:output raw bytes)
+    pub fn set_binary_event_forwarder(&self, forwarder: BinaryEventForwarder) {
+        *self.binary_event_forwarder.lock().unwrap() = Some(forwarder);
     }
 
     /// Synchronously forward an event to the GUI (for use in non-async callbacks like hostkey mismatch)

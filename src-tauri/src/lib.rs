@@ -18,6 +18,9 @@ pub struct AppState {
     /// Flag: true when user requested quit (tray menu / Cmd+Q).
     /// CloseRequested checks this to decide hide-vs-exit.
     pub is_quitting: std::sync::atomic::AtomicBool,
+    /// Terminal output channels — key = session_id, value = Channel for raw bytes.
+    /// Set by ipc_terminal_open, consumed by the binary event forwarder.
+    pub terminal_channels: std::sync::Mutex<std::collections::HashMap<String, tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -168,9 +171,26 @@ pub fn run() {
                             },
                         ));
 
+                        // Set up binary event forwarder: terminal:output raw bytes → Channel
+                        let handle_for_bin = handle.clone();
+                        daemon.server.state().set_binary_event_forwarder(Box::new(
+                            move |session_id: &str, data: &[u8], _is_stderr: bool| {
+                                use tauri::ipc::InvokeResponseBody;
+                                use tauri::Manager;
+                                if let Some(app_state) = handle_for_bin.try_state::<AppState>() {
+                                    if let Ok(channels) = app_state.terminal_channels.lock() {
+                                        if let Some(channel) = channels.get(session_id) {
+                                            let _ = channel.send(InvokeResponseBody::Raw(data.to_vec()));
+                                        }
+                                    }
+                                }
+                            },
+                        ));
+
                         let state = AppState {
                             daemon: tokio::sync::Mutex::new(Some(Arc::new(daemon))),
                             is_quitting: std::sync::atomic::AtomicBool::new(false),
+                            terminal_channels: std::sync::Mutex::new(std::collections::HashMap::new()),
                         };
                         handle.manage(state);
                         tracing::info!("Tauri app state initialized with event forwarding");
@@ -1158,25 +1178,33 @@ async fn ipc_terminal_open(
     server_id: String,
     cols: Option<u64>,
     rows: Option<u64>,
+    on_output: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "server_id": server_id,
         "cols": cols.unwrap_or(80),
         "rows": rows.unwrap_or(24),
     });
-    forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalOpen, params).await
+    let result = forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalOpen, params).await?;
+    // Register the channel for this session so the binary event forwarder can send raw bytes
+    if let Some(session_id) = result.get("session_id").and_then(|v| v.as_str()) {
+        state.terminal_channels.lock().unwrap().insert(session_id.to_string(), on_output);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 async fn ipc_terminal_input(
     state: tauri::State<'_, AppState>,
     session_id: String,
-    data: String,
+    data: Vec<u8>,
     wait_for_send: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    // Pass raw bytes as JSON array — daemon handler decodes from array
+    let data_arr: Vec<serde_json::Value> = data.iter().map(|b| serde_json::json!(b)).collect();
     let params = serde_json::json!({
         "session_id": session_id,
-        "data": data,
+        "data": data_arr,
         "wait_for_send": wait_for_send.unwrap_or(false),
     });
     forward_to_daemon(
@@ -1192,6 +1220,8 @@ async fn ipc_terminal_close(
     state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
+    // Remove the channel from the registry
+    state.terminal_channels.lock().unwrap().remove(&session_id);
     let params = serde_json::json!({
         "session_id": session_id,
     });

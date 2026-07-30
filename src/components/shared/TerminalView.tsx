@@ -14,6 +14,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { open, remove, copyFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
 import { ipcInvoke } from "@/hooks/useIpc";
+import { Channel } from "@tauri-apps/api/core";
 import { Sentry as ZmodemSentry, type ZmodemDetection, type ZmodemSession, type ZmodemTransfer } from "zmodem.js-ex";
 import * as ZmodemLib from "zmodem.js-ex";
 import "@xterm/xterm/css/xterm.css";
@@ -252,17 +253,28 @@ const snapshotCache = new Map<string, string>();
 const MAX_WEBGL_CONTEXTS = 8;
 let activeWebglCount = 0;
 
-// Encode bytes to base64
-function bytesToBase64(bytes: Uint8Array | number[]): string {
-  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  let binary = "";
-  for (let i = 0; i < arr.length; i++) {
-    binary += String.fromCharCode(arr[i]);
-  }
-  return btoa(binary);
+// Module-level callback registry for binary terminal output.
+// Key = session_id, value = callback that receives raw Uint8Array.
+// TerminalView registers on mount; ServerDetail's Channel.onmessage dispatches here.
+const terminalOutputCallbacks = new Map<string, (data: Uint8Array, isStderr: boolean) => void>();
+
+/** Register a callback for binary terminal output (called by TerminalView on mount) */
+export function registerTerminalOutput(sessionId: string, cb: (data: Uint8Array, isStderr: boolean) => void) {
+  terminalOutputCallbacks.set(sessionId, cb);
 }
 
-// Decode base64 to Uint8Array
+/** Unregister a callback (called by TerminalView on unmount) */
+export function unregisterTerminalOutput(sessionId: string) {
+  terminalOutputCallbacks.delete(sessionId);
+}
+
+/** Dispatch raw binary terminal output to the registered callback (called by Channel.onmessage) */
+export function dispatchTerminalOutput(sessionId: string, data: Uint8Array, isStderr: boolean) {
+  const cb = terminalOutputCallbacks.get(sessionId);
+  if (cb) cb(data, isStderr);
+}
+
+// Decode base64 to Uint8Array (used for initial_output only — small one-time payload)
 function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);
   const arr = new Uint8Array(binary.length);
@@ -394,14 +406,15 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       rows: term.rows,
     }).catch(() => {});
 
-    // Helper: send raw bytes to backend (base64-encoded for binary safety).
+    // Helper: send raw bytes to backend (binary, no base64).
     // For ZMODEM uploads, wait_for_send=true provides backpressure by blocking
     // until SSH write is confirmed. For normal keystrokes, wait_for_send is
     // omitted (defaults to false) so typing stays responsive.
     const sendToBackend = (bytes: Uint8Array | number[], waitForSend = false): Promise<void> => {
+      const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
       return ipcInvoke("ipc_terminal_input", {
         session_id: sessionIdRef.current,
-        data: bytesToBase64(bytes),
+        data: arr,
         wait_for_send: waitForSend,
       }).then(() => {}).catch(() => {});
     };
@@ -793,7 +806,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
 
     const zsentry = new ZmodemSentry({
       // to_terminal: only write during active ZMODEM session.
-      // When no session is active, the terminal:output listener writes
+      // When no session is active, the binary output callback writes
       // raw data directly (avoiding double-write). During a session,
       // to_terminal handles non-ZMODEM "garbage" data (e.g. trailing
       // shell output after transfer), filtering out ZMODEM protocol bytes.
@@ -936,53 +949,49 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       pendingChunks = [];
     };
 
-    let unlistenOutput: UnlistenFn | undefined;
-    listen<{ sessionId: string; data: string; stderr: boolean }>(
-      "terminal:output",
-      (event) => {
-        if (event.payload.sessionId === sessionIdRef.current) {
-          const rawBytes = base64ToBytes(event.payload.data);
-          const hadSession = !!zmodemSession;
-          const inCooldown = Date.now() < zmodemCooldownUntil;
+    // Binary terminal output: register a callback for raw bytes from the Channel.
+    // The Channel is created in ServerDetail.tsx and dispatches via dispatchTerminalOutput.
+    const handleBinaryOutput = (rawBytes: Uint8Array, _isStderr: boolean) => {
+      const hadSession = !!zmodemSession;
+      const inCooldown = Date.now() < zmodemCooldownUntil;
 
-          if (inCooldown && !zmodemSession) {
-            // Cooldown after session end: write raw data, skip Sentry
-            // to prevent spurious session creation from echoed ZMODEM bytes.
-            // Strip any leading ZMODEM headers (e.g. echoed ZFIN) so they
-            // don't appear as shell commands on the terminal.
-            const clean = stripLeadingZmodemHeaders(Array.from(rawBytes));
-            const cleanBytes = clean.length ? new Uint8Array(clean) : new Uint8Array(0);
-            pendingChunks.push(cleanBytes);
-            if (!flushScheduled) {
-              flushScheduled = true;
-              requestAnimationFrame(flushPending);
-            }
-            return;
-          }
+      if (inCooldown && !zmodemSession) {
+        // Cooldown after session end: write raw data, skip Sentry
+        // to prevent spurious session creation from echoed ZMODEM bytes.
+        // Strip any leading ZMODEM headers (e.g. echoed ZFIN) so they
+        // don't appear as shell commands on the terminal.
+        const clean = stripLeadingZmodemHeaders(Array.from(rawBytes));
+        const cleanBytes = clean.length ? new Uint8Array(clean) : new Uint8Array(0);
+        pendingChunks.push(cleanBytes);
+        if (!flushScheduled) {
+          flushScheduled = true;
+          requestAnimationFrame(flushPending);
+        }
+        return;
+      }
 
-          try {
-            zsentry.consume(rawBytes);
-          } catch (e) {
-            console.error("[ZMODEM] sentry consume error:", e);
-          }
-          // No session before or after → normal shell output, batch via rAF
-          if (!hadSession && !zmodemSession) {
-            pendingChunks.push(rawBytes);
-            if (!flushScheduled) {
-              flushScheduled = true;
-              requestAnimationFrame(flushPending);
-            }
-          }
-          // Session ended during this chunk — clear Sentry, set cooldown, and
-          // let to_terminal handle the trailing bytes. Do NOT write rawBytes
-          // here because it may contain ZMODEM protocol frames (ZFIN, etc.).
-          if (hadSession && !zmodemSession) {
-            zmodemCooldownUntil = Date.now() + 10000;
-            clearSentryState();
-          }
+      try {
+        zsentry.consume(rawBytes);
+      } catch (e) {
+        console.error("[ZMODEM] sentry consume error:", e);
+      }
+      // No session before or after → normal shell output, batch via rAF
+      if (!hadSession && !zmodemSession) {
+        pendingChunks.push(rawBytes);
+        if (!flushScheduled) {
+          flushScheduled = true;
+          requestAnimationFrame(flushPending);
         }
       }
-    ).then((fn) => { unlistenOutput = fn; });
+      // Session ended during this chunk — clear Sentry, set cooldown, and
+      // let to_terminal handle the trailing bytes. Do NOT write rawBytes
+      // here because it may contain ZMODEM protocol frames (ZFIN, etc.).
+      if (hadSession && !zmodemSession) {
+        zmodemCooldownUntil = Date.now() + 10000;
+        clearSentryState();
+      }
+    };
+    registerTerminalOutput(sessionId, handleBinaryOutput);
 
     // Listen for terminal closed event
     let unlistenClosed: UnlistenFn | undefined;
@@ -1025,7 +1034,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       }
       inputDisposable.dispose();
       resizeDisposable.dispose();
-      if (unlistenOutput) unlistenOutput();
+      unregisterTerminalOutput(sessionId);
       if (unlistenClosed) unlistenClosed();
       window.removeEventListener("resize", handleResize);
       resizeObserver.disconnect();

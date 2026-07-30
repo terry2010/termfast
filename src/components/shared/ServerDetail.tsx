@@ -11,7 +11,8 @@ import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
 import { TriggerList } from "@/components/shared/TriggerList";
 import { PortForwardPanel } from "@/components/shared/PortForwardPanel";
-import { TerminalView } from "@/components/shared/TerminalView";
+import { TerminalView, dispatchTerminalOutput } from "@/components/shared/TerminalView";
+import { Channel } from "@tauri-apps/api/core";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
   showContextMenu,
@@ -128,6 +129,28 @@ export function ServerDetail() {
   // Flow: click → connecting → SSH connect + terminal open → tab created → connected
   // Requests are queued and processed serially to avoid SSH channel conflicts.
   const openQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  // Helper: create a Channel for binary terminal output and call ipc_terminal_open.
+  // The Channel receives raw ArrayBuffer from the Rust backend; we convert to Uint8Array
+  // and dispatch to the registered TerminalView callback.
+  const openTerminalWithChannel = useCallback(async (serverId: string) => {
+    // session_id is assigned after ipc_terminal_open returns; the closure
+    // captures it by reference so onmessage can dispatch once set.
+    let sessionId = "";
+    const onOutput = new Channel<ArrayBuffer>();
+    onOutput.onmessage = (data: ArrayBuffer) => {
+      if (sessionId) {
+        dispatchTerminalOutput(sessionId, new Uint8Array(data), false);
+      }
+    };
+    const result = await ipcInvoke<{
+      session_id: string;
+      initial_output: string;
+    }>("ipc_terminal_open", { server_id: serverId, cols: 80, rows: 24, on_output: onOutput });
+    sessionId = result.session_id;
+    return result;
+  }, []);
+
   const handleOpenTerminal = useCallback(async () => {
     if (!server?.id) return;
     const serverId = server.id;
@@ -187,10 +210,7 @@ export function ServerDetail() {
       }
       // SSH connected — now open terminal session
       try {
-        const result = await ipcInvoke<{
-          session_id: string;
-          initial_output: string;
-        }>("ipc_terminal_open", { server_id: serverId, cols: 80, rows: 24 });
+        const result = await openTerminalWithChannel(serverId);
         const sessionId = result.session_id;
         const initialOutput = result.initial_output || "";
         const tabId: Tab = `term:${sessionId}`;
@@ -276,10 +296,7 @@ export function ServerDetail() {
       }
 
       try {
-        const result = await ipcInvoke<{
-          session_id: string;
-          initial_output: string;
-        }>("ipc_terminal_open", { server_id: serverId, cols: 80, rows: 24 });
+        const result = await openTerminalWithChannel(serverId);
         const sessionId = result.session_id;
         const initialOutput = result.initial_output || "";
         const tabId: Tab = `term:${sessionId}`;
@@ -1520,14 +1537,7 @@ export function ServerDetail() {
                     }
                     // Open a new terminal session to replace the disconnected one
                     try {
-                      const result = await ipcInvoke<{
-                        session_id: string;
-                        initial_output: string;
-                      }>("ipc_terminal_open", {
-                        server_id: serverId,
-                        cols: 80,
-                        rows: 24,
-                      });
+                      const result = await openTerminalWithChannel(serverId);
                       const newSessionId = result.session_id;
                       const newInitialOutput = result.initial_output || "";
                       const newTabId: Tab = `term:${newSessionId}`;

@@ -3,8 +3,7 @@
 //! Manages PTY shell sessions on top of existing SSH connections.
 //! Each session has a unique ID; output is streamed via the event forwarder.
 
-use crate::server::EventForwarder;
-use base64::Engine;
+use crate::server::{BinaryEventForwarder, EventForwarder};
 use russh::client;
 use russh::ChannelMsg;
 use std::collections::HashMap;
@@ -36,13 +35,18 @@ struct TerminalSession {
 pub struct TerminalManager {
     sessions: Mutex<HashMap<String, TerminalSession>>,
     forwarder: Arc<std::sync::Mutex<Option<EventForwarder>>>,
+    binary_forwarder: Arc<std::sync::Mutex<Option<BinaryEventForwarder>>>,
 }
 
 impl TerminalManager {
-    pub fn new(forwarder: Arc<std::sync::Mutex<Option<EventForwarder>>>) -> Self {
+    pub fn new(
+        forwarder: Arc<std::sync::Mutex<Option<EventForwarder>>>,
+        binary_forwarder: Arc<std::sync::Mutex<Option<BinaryEventForwarder>>>,
+    ) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             forwarder,
+            binary_forwarder,
         }
     }
 
@@ -54,10 +58,11 @@ impl TerminalManager {
         server_id: &str,
         cols: u32,
         rows: u32,
-    ) -> Result<(String, String), String> {
+    ) -> Result<(String, Vec<u8>), String> {
         let session_id = Uuid::new_v4().to_string();
         let sid = session_id.clone();
         let fwd = self.forwarder.clone();
+        let bin_fwd = self.binary_forwarder.clone();
 
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<TerminalCmd>();
 
@@ -107,20 +112,19 @@ impl TerminalManager {
                 }
             }
         }
-        // Encode initial output as base64 so binary data (e.g. ZMODEM) is preserved
-        let initial_output =
-            base64::engine::general_purpose::STANDARD.encode(&initial_output_bytes);
+        // Return raw bytes — binary data (e.g. ZMODEM) is preserved without base64 overhead
+        let initial_output = initial_output_bytes.clone();
         if !initial_output_bytes.is_empty() {
             tracing::info!(
-                "terminal collected initial output: {} bytes (base64 len={}) for session {}",
+                "terminal collected initial output: {} bytes for session {}",
                 initial_output_bytes.len(),
-                initial_output.len(),
                 sid
             );
         }
 
         let task_sid = sid.clone();
         let task_fwd = fwd.clone();
+        let task_bin_fwd = bin_fwd.clone();
         let main_task = tokio::spawn(async move {
             tracing::info!("terminal main task started for {}", task_sid);
             // Buffer for merging small Data packets within a short time window.
@@ -131,25 +135,21 @@ impl TerminalManager {
             macro_rules! flush_buffers {
                 () => {{
                     if !data_buf.is_empty() {
-                        let output = base64::engine::general_purpose::STANDARD.encode(&data_buf);
                         tracing::info!(
-                            "terminal flush data len={} (base64={}) for session {}",
+                            "terminal flush data len={} for session {}",
                             data_buf.len(),
-                            output.len(),
                             task_sid
                         );
-                        forward_terminal_output(&task_fwd, &task_sid, &output, false);
+                        forward_terminal_output(&task_bin_fwd, &task_sid, &data_buf, false);
                         data_buf.clear();
                     }
                     if !stderr_buf.is_empty() {
-                        let output = base64::engine::general_purpose::STANDARD.encode(&stderr_buf);
                         tracing::info!(
-                            "terminal flush ext data len={} (base64={}) for session {}",
+                            "terminal flush ext data len={} for session {}",
                             stderr_buf.len(),
-                            output.len(),
                             task_sid
                         );
-                        forward_terminal_output(&task_fwd, &task_sid, &output, true);
+                        forward_terminal_output(&task_bin_fwd, &task_sid, &stderr_buf, true);
                         stderr_buf.clear();
                     }
                     has_pending = false;
@@ -407,7 +407,7 @@ impl TerminalManager {
     /// task has actually sent the bytes over the channel (or timed out).  This
     /// provides backpressure for large ZMODEM transfers so the caller doesn't
     /// queue data faster than SSH can transmit it.
-    pub async fn input(&self, session_id: &str, data: &str) -> Result<(), String> {
+    pub async fn input(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
         self.input_with_ack(session_id, data, true).await
     }
 
@@ -415,7 +415,7 @@ impl TerminalManager {
     pub async fn input_with_ack(
         &self,
         session_id: &str,
-        data: &str,
+        data: &[u8],
         wait_for_send: bool,
     ) -> Result<(), String> {
         let (ack_tx, ack_rx) = if wait_for_send {
@@ -430,20 +430,16 @@ impl TerminalManager {
             let session = sessions
                 .get(session_id)
                 .ok_or_else(|| format!("terminal session not found: {}", session_id))?;
-            // Data is base64-encoded to support binary input (e.g. ZMODEM file transfers)
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(data)
-                .map_err(|e| format!("failed to decode base64 input: {}", e))?;
-            if decoded.len() <= 64 {
+            if data.len() <= 64 {
                 tracing::info!(
                     "TerminalManager::input sending {} bytes to session {}",
-                    decoded.len(),
+                    data.len(),
                     session_id,
                 );
             }
             session
                 .cmd_tx
-                .send(TerminalCmd::Input(decoded, ack_tx))
+                .send(TerminalCmd::Input(data.to_vec(), ack_tx))
                 .map_err(|e| format!("failed to send terminal input: {}", e))?;
         }
 
@@ -583,31 +579,24 @@ async fn try_open_pty_or_fallback(
 
 // === SECTION 3 END ===
 
-/// Forward terminal output to the GUI via the event forwarder
+/// Forward terminal output to the GUI via the binary event forwarder (raw bytes, no base64)
 fn forward_terminal_output(
-    forwarder: &Arc<std::sync::Mutex<Option<EventForwarder>>>,
+    forwarder: &Arc<std::sync::Mutex<Option<BinaryEventForwarder>>>,
     session_id: &str,
-    data: &str,
+    data: &[u8],
     is_stderr: bool,
 ) {
     if let Ok(fwd) = forwarder.lock() {
         if let Some(ref f) = *fwd {
-            f(
-                "terminal:output",
-                serde_json::json!({
-                    "sessionId": session_id,
-                    "data": data,
-                    "stderr": is_stderr,
-                }),
-            );
+            f(session_id, data, is_stderr);
         } else {
             tracing::warn!(
-                "terminal output: event forwarder is None, dropping {} bytes",
+                "terminal output: binary event forwarder is None, dropping {} bytes",
                 data.len()
             );
         }
     } else {
-        tracing::warn!("terminal output: failed to lock event forwarder");
+        tracing::warn!("terminal output: failed to lock binary event forwarder");
     }
 }
 

@@ -2743,7 +2743,12 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         initial_output.len()
     );
 
-    Ok(serde_json::json!({ "session_id": session_id, "initial_output": initial_output }))
+    // Encode initial_output as base64 for the JSON response (small one-time payload).
+    // The high-throughput streaming output uses the binary event forwarder (no base64).
+    use base64::Engine;
+    let initial_b64 = base64::engine::general_purpose::STANDARD.encode(&initial_output);
+
+    Ok(serde_json::json!({ "session_id": session_id, "initial_output": initial_b64 }))
 }
 
 /// Send user input to a terminal session
@@ -2752,10 +2757,14 @@ async fn handle_terminal_input(state: &DaemonState, params: &serde_json::Value) 
         .get("session_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing session_id"))?;
+    // Data is now raw bytes (Vec<u8>) — no more base64 encoding
     let data = params
         .get("data")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing data"))?;
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing data"))?
+        .iter()
+        .map(|v| v.as_u64().unwrap_or(0) as u8)
+        .collect::<Vec<u8>>();
     // wait_for_send=true blocks until SSH write is confirmed (needed for ZMODEM
     // backpressure). Default false — normal keystrokes return immediately.
     let wait_for_send = params
@@ -2774,7 +2783,7 @@ async fn handle_terminal_input(state: &DaemonState, params: &serde_json::Value) 
 
     state
         .terminal_manager
-        .input_with_ack(session_id, data, wait_for_send)
+        .input_with_ack(session_id, &data, wait_for_send)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
 
