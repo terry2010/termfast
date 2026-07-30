@@ -5,6 +5,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
+import { SearchAddon } from "@xterm/addon-search";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { open, remove, copyFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
@@ -296,6 +301,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  const serializeRef = useRef<SerializeAddon | null>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
@@ -308,6 +315,9 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     percent: number;
   } | null>(null);
   const zmodemCancelRef = useRef<() => void>(() => {});
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -328,8 +338,41 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     term.open(containerRef.current);
     fitAddon.fit();
 
+    // P0: WebGL2 rendering acceleration with graceful fallback to DOM
+    try {
+      const webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddon.dispose();
+      });
+      term.loadAddon(webglAddon);
+    } catch {
+      // WebGL not available — fall back to DOM renderer (v6 DOM is fast)
+    }
+
+    // P2: Unicode 11 for correct CJK/emoji wide character handling
+    try {
+      const unicode11Addon = new Unicode11Addon();
+      term.loadAddon(unicode11Addon);
+      term.unicode.activeVersion = "11";
+    } catch { /* addon load failure is non-fatal */ }
+
+    // P2: Clickable URLs in terminal output
+    try {
+      term.loadAddon(new WebLinksAddon());
+    } catch { /* addon load failure is non-fatal */ }
+
+    // P2: Search (Ctrl+F)
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+
+    // P2: Serialize (for tab switch / reconnect buffer restore)
+    const serializeAddon = new SerializeAddon();
+    term.loadAddon(serializeAddon);
+
     termRef.current = term;
     fitRef.current = fitAddon;
+    searchRef.current = searchAddon;
+    serializeRef.current = serializeAddon;
 
     // Write initial output (MOTD/prompt) captured at terminal open time.
     // The backend sends this as base64 to preserve binary data.
@@ -831,6 +874,15 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       on_retract: () => {},
     });
 
+    // Ctrl+Shift+F → search in terminal (avoids Cmd+F intercepted by macOS WebKit)
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keydown" && e.ctrlKey && e.shiftKey && (e.key === "f" || e.key === "F" || e.code === "KeyF")) {
+        setShowSearch(true);
+        return false;
+      }
+      return true;
+    });
+
     // User input → backend (base64 encoded for binary safety)
     const inputDisposable = term.onData((data) => {
       const bytes = new Uint8Array(data.length);
@@ -956,6 +1008,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
+      searchRef.current = null;
+      serializeRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
@@ -974,6 +1028,38 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     } catch { /* ignore */ }
   }, [active]);
 
+  // Focus search input when shown
+  useEffect(() => {
+    if (showSearch && searchInputRef.current) {
+      searchInputRef.current.focus();
+      searchInputRef.current.select();
+    }
+  }, [showSearch]);
+
+  // Run search when query changes
+  useEffect(() => {
+    if (!showSearch || !searchRef.current) return;
+    if (searchQuery.length > 0) {
+      searchRef.current.findNext(searchQuery, { caseSensitive: false, wholeWord: false });
+    }
+  }, [searchQuery, showSearch]);
+
+  const handleSearchKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      setShowSearch(false);
+      setSearchQuery("");
+      termRef.current?.focus();
+    } else if (e.key === "Enter") {
+      if (searchRef.current && searchQuery.length > 0) {
+        if (e.shiftKey) {
+          searchRef.current.findPrevious(searchQuery, { caseSensitive: false, wholeWord: false });
+        } else {
+          searchRef.current.findNext(searchQuery, { caseSensitive: false, wholeWord: false });
+        }
+      }
+    }
+  };
+
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 B";
     const k = 1024;
@@ -988,6 +1074,27 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
         ref={containerRef}
         className="w-full h-full"
       />
+      {showSearch && (
+        <div className="absolute top-2 right-2 z-50 bg-slate-800/95 border border-slate-600 rounded-lg shadow-lg flex items-center gap-1 px-2 py-1.5">
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleSearchKey}
+            placeholder="搜索..."
+            className="bg-transparent text-white text-sm outline-none w-40 placeholder-slate-500"
+          />
+          <kbd className="text-xs text-slate-500 px-1">↵下一个 ⇧↵上一个</kbd>
+          <button
+            type="button"
+            onClick={() => { setShowSearch(false); setSearchQuery(""); termRef.current?.focus(); }}
+            className="text-slate-400 hover:text-white px-1 text-sm"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {zmodemProgress && zmodemProgress.active && (
         <div className="absolute top-4 left-4 right-4 z-50 bg-slate-800/95 border border-slate-600 text-white p-3 rounded-lg shadow-lg">
           <div className="flex justify-between text-sm mb-2">
