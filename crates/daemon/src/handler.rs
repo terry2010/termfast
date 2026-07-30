@@ -4880,8 +4880,10 @@ async fn handle_start_port_forward(state: &DaemonState, params: &serde_json::Val
             .ok_or_else(|| IpcError::new(ErrorCode::Internal, format!("port forward rule {} not found", rule_id)))?
     };
 
-    // Auto-connect SSH if not already connected (PF: no prerequisite to start port forward)
-    if server.status().await != termfast_core::server::instance::ServerStatus::Connected {
+    // Auto-connect SSH if not already connected.
+    // Local forward doesn't need SSH — skip connection for local type.
+    let needs_ssh = rule.forward_type != termfast_core::config::PortForwardType::Local;
+    if needs_ssh && server.status().await != termfast_core::server::instance::ServerStatus::Connected {
         // Build auth method from config + credential store
         let srv_config = {
             let cm = state.config_manager.lock().await;
