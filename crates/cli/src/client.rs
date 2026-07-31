@@ -3,6 +3,7 @@
 //! Connects to the daemon via Unix socket and sends/receives IPC messages.
 
 use anyhow::{bail, Result};
+#[cfg(unix)]
 use termfast_daemon::frame;
 use termfast_daemon::{Action, Request, Response};
 
@@ -24,6 +25,8 @@ impl DaemonClient {
                 bail!("daemon is not running. Start it with `termfast --daemon` or launch the GUI")
             }
         };
+        #[cfg(not(unix))]
+        let _ = socket_path;
 
         #[cfg(unix)]
         {
@@ -52,7 +55,9 @@ impl DaemonClient {
         } else {
             params = serde_json::json!({ "_cli": true, "_data": params });
         }
+        #[cfg(unix)]
         let request = Request::new(action, params);
+        #[cfg(unix)]
         let request_data = serde_json::to_vec(&request)?;
 
         #[cfg(unix)]
@@ -141,6 +146,8 @@ impl DaemonClient {
 
     /// Continuously read events from the socket (for --follow mode)
     pub async fn follow_events(&mut self, json: bool) -> Result<()> {
+        #[cfg(not(unix))]
+        let _ = json;
         #[cfg(unix)]
         {
             let (mut read_half, _write_half) = self.stream.split();
