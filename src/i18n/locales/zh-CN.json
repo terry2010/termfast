@@ -305,7 +305,8 @@
       "color_scheme": "配色方案",
       "font_size": "字号",
       "font_family": "字体",
-      "font_family_hint": "CSS font-family 值，多个字体用逗号分隔"
+      "font_family_hint": "CSS font-family 值，多个字体用逗号分隔",
+      "preview": "预览"
     },
     "proxy": {
       "title": "代理默认值",

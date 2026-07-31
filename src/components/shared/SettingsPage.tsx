@@ -16,7 +16,10 @@ import {
   installUpdate,
   type UpdateResult,
 } from "@/hooks/useUpdater";
-import { TERMINAL_THEMES } from "@/lib/terminalThemes";
+import { TERMINAL_THEMES, getTerminalTheme } from "@/lib/terminalThemes";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 type TabId =
   "general" | "logs" | "terminal" | "proxy" | "trigger" | "notification" | "credentials" | "cloud_sync" | "data" | "about";
@@ -419,6 +422,10 @@ function TerminalSection() {
   const config = useConfigStore((s) => s.config);
   const updateGeneral = useConfigStore((s) => s.updateGeneral);
 
+  const previewRef = useRef<HTMLDivElement>(null);
+  const previewTermRef = useRef<Terminal | null>(null);
+  const previewFitRef = useRef<FitAddon | null>(null);
+
   if (!config) return null;
 
   const updateAndSave = (patch: Record<string, unknown>) => {
@@ -428,11 +435,61 @@ function TerminalSection() {
     );
   };
 
+  const themeId = config.general.terminal_theme;
+  const fontSize = config.general.terminal_font_size;
+  const fontFamily = config.general.terminal_font_family;
+
+  // Create the preview terminal once on mount
+  useEffect(() => {
+    if (!previewRef.current) return;
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize,
+      fontFamily,
+      theme: getTerminalTheme(themeId).theme,
+      allowProposedApi: true,
+      disableStdin: true,
+      scrollback: 0,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(previewRef.current);
+    fit.fit();
+    previewTermRef.current = term;
+    previewFitRef.current = fit;
+
+    return () => {
+      term.dispose();
+      previewTermRef.current = null;
+      previewFitRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Write sample content whenever theme changes (to show fresh preview)
+  useEffect(() => {
+    const term = previewTermRef.current;
+    if (!term) return;
+    term.reset();
+    writeSampleOutput(term);
+  }, [themeId]);
+
+  // Live-update appearance when any config changes
+  useEffect(() => {
+    const term = previewTermRef.current;
+    if (!term) return;
+    term.options.fontSize = fontSize;
+    term.options.fontFamily = fontFamily;
+    term.options.theme = getTerminalTheme(themeId).theme;
+    previewFitRef.current?.fit();
+  }, [themeId, fontSize, fontFamily]);
+
   return (
     <SettingGroup title={t("settings.terminal.title")}>
       <SettingItem label={t("settings.terminal.color_scheme")}>
         <select
-          value={config.general.terminal_theme}
+          value={themeId}
           onChange={(e) => updateAndSave({ terminal_theme: e.target.value })}
           className="input w-44"
         >
@@ -448,7 +505,7 @@ function TerminalSection() {
           type="number"
           min={8}
           max={32}
-          value={config.general.terminal_font_size}
+          value={fontSize}
           onChange={(e) =>
             updateAndSave({ terminal_font_size: parseInt(e.target.value) || 13 })
           }
@@ -458,13 +515,56 @@ function TerminalSection() {
       <SettingItem label={t("settings.terminal.font_family")} hint={t("settings.terminal.font_family_hint")}>
         <input
           type="text"
-          value={config.general.terminal_font_family}
+          value={fontFamily}
           onChange={(e) => updateAndSave({ terminal_font_family: e.target.value })}
           className="input w-64"
         />
       </SettingItem>
+      {/* Live preview terminal */}
+      <div className="px-4 py-3 border-t border-gray-100 dark:border-white/[0.06]">
+        <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+          {t("settings.terminal.preview")}
+        </div>
+        <div
+          ref={previewRef}
+          className="w-full h-44 rounded-lg overflow-hidden border border-gray-200 dark:border-white/[0.06]"
+        />
+      </div>
     </SettingGroup>
   );
+}
+
+/** Write sample ANSI-colored output to a terminal for preview */
+function writeSampleOutput(term: Terminal) {
+  // Prompt
+  term.writeln("\x1b[1;32muser@server\x1b[0m:\x1b[1;34m~/projects\x1b[0m$ \x1b[0mls --color=always");
+  term.writeln("");
+
+  // ls output with ANSI colors (file types)
+  term.writeln("\x1b[1;34msrc\x1b[0m       \x1b[1;34mtests\x1b[0m      \x1b[0mCargo.toml\x1b[0m");
+  term.writeln("\x1b[1;34mcrates\x1b[0m    \x1b[1;32mREADME.md\x1b[0m  \x1b[0mCargo.lock\x1b[0m");
+  term.writeln("\x1b[33mconfig.json\x1b[0m  \x1b[1;34mandroid\x1b[0m    \x1b[36m.gitignore\x1b[0m");
+  term.writeln("");
+
+  // git diff output
+  term.writeln("\x1b[1;32muser@server\x1b[0m:\x1b[1;34m~/projects\x1b[0m$ \x1b[0mgit diff");
+  term.writeln("");
+  term.writeln("\x1b[31m-  let theme = \"dark\";\x1b[0m");
+  term.writeln("\x1b[32m+  let theme = \"catppuccin-mocha\";\x1b[0m");
+  term.writeln("\x1b[32m+  let font_size = 14;\x1b[0m");
+  term.writeln("");
+
+  // Error message
+  term.writeln("\x1b[1;31merror\x1b[0m: cannot find function `foo` in scope");
+  term.writeln("  \x1b[90m--> src/main.rs:42:15\x1b[0m");
+  term.writeln("");
+
+  // Warning
+  term.writeln("\x1b[33mwarning\x1b[0m: unused variable: `config`");
+  term.writeln("");
+
+  // Final prompt
+  term.write("\x1b[1;32muser@server\x1b[0m:\x1b[1;34m~/projects\x1b[0m$ \x1b[0m");
 }
 
 // === SECTION 3 END ===
