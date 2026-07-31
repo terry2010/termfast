@@ -15,6 +15,8 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { open, remove, copyFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { Channel } from "@tauri-apps/api/core";
+import { useConfigStore } from "@/stores/configStore";
+import { getTerminalTheme } from "@/lib/terminalThemes";
 import { Sentry as ZmodemSentry, type ZmodemDetection, type ZmodemSession, type ZmodemTransfer } from "zmodem.js-ex";
 import * as ZmodemLib from "zmodem.js-ex";
 import "@xterm/xterm/css/xterm.css";
@@ -328,6 +330,12 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
+  // Terminal appearance from config
+  const config = useConfigStore((s) => s.config);
+  const terminalTheme = config?.general.terminal_theme ?? "catppuccin-mocha";
+  const terminalFontSize = config?.general.terminal_font_size ?? 13;
+  const terminalFontFamily = config?.general.terminal_font_family ?? "'Menlo', 'Monaco', 'Courier New', monospace";
+
   const [zmodemProgress, setZmodemProgress] = useState<{
     active: boolean;
     isUpload: boolean;
@@ -346,13 +354,9 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
 
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
-      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
-      theme: {
-        background: "#1e1e2e",
-        foreground: "#cdd6f4",
-        cursor: "#f5e0dc",
-      },
+      fontSize: terminalFontSize,
+      fontFamily: terminalFontFamily,
+      theme: getTerminalTheme(terminalTheme).theme,
       allowProposedApi: true,
     });
     const fitAddon = new FitAddon();
@@ -1047,6 +1051,17 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  // Live-update terminal appearance when config changes (no remount needed)
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontSize = terminalFontSize;
+    term.options.fontFamily = terminalFontFamily;
+    term.options.theme = getTerminalTheme(terminalTheme).theme;
+    // Re-fit in case font size changed the cell dimensions
+    fitRef.current?.fit();
+  }, [terminalTheme, terminalFontSize, terminalFontFamily]);
 
   // Re-fit, focus, and manage WebGL when tab becomes active/inactive
   useEffect(() => {

@@ -298,6 +298,13 @@
       "max_days": "Retention (days)",
       "max_size": "Max file size (MB)"
     },
+    "terminal": {
+      "title": "Terminal",
+      "color_scheme": "Color scheme",
+      "font_size": "Font size",
+      "font_family": "Font family",
+      "font_family_hint": "CSS font-family value, comma-separated for fallbacks"
+    },
     "proxy": {
       "title": "Proxy defaults",
       "desc": "Default ports and test URL for new servers."

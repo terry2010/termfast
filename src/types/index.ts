@@ -180,6 +180,12 @@ export interface GeneralConfig {
   http_proxy_mode: string;
   /// Custom proxy URL (used when http_proxy_mode == "custom")
   http_proxy_url: string;
+  /// Terminal color scheme preset name
+  terminal_theme: string;
+  /// Terminal font size in pixels
+  terminal_font_size: number;
+  /// Terminal font family CSS string
+  terminal_font_family: string;
 }
 
 /// User-defined custom variable for trigger templates

@@ -5,7 +5,7 @@ import { SettingsPage } from "@/components/shared/SettingsPage";
 
 const mockConfig = {
   version: 1,
-  general: { language: "en", theme: "light", auto_start: false, minimize_to_tray: true, log_level: "info" },
+  general: { language: "en", theme: "light", auto_start: false, minimize_to_tray: true, log_level: "info", terminal_theme: "catppuccin-mocha", terminal_font_size: 13, terminal_font_family: "'Menlo', monospace" },
   trigger_templates: [],
   servers: [],
 };

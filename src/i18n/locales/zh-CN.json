@@ -300,6 +300,13 @@
       "max_days": "保留天数",
       "max_size": "最大文件大小 (MB)"
     },
+    "terminal": {
+      "title": "终端",
+      "color_scheme": "配色方案",
+      "font_size": "字号",
+      "font_family": "字体",
+      "font_family_hint": "CSS font-family 值，多个字体用逗号分隔"
+    },
     "proxy": {
       "title": "代理默认值",
       "desc": "新服务器的默认端口和测试 URL。"

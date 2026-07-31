@@ -16,9 +16,10 @@ import {
   installUpdate,
   type UpdateResult,
 } from "@/hooks/useUpdater";
+import { TERMINAL_THEMES } from "@/lib/terminalThemes";
 
 type TabId =
-  "general" | "logs" | "proxy" | "trigger" | "notification" | "credentials" | "cloud_sync" | "data" | "about";
+  "general" | "logs" | "terminal" | "proxy" | "trigger" | "notification" | "credentials" | "cloud_sync" | "data" | "about";
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -32,6 +33,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
   const tabs: { id: TabId; label: string }[] = [
     { id: "general", label: t("settings.general.title") },
     { id: "logs", label: t("settings.logs.title") },
+    { id: "terminal", label: t("settings.terminal.title") },
     { id: "proxy", label: t("settings.proxy.title") },
     { id: "trigger", label: t("settings.trigger.title") },
     { id: "notification", label: t("settings.notification.title") },
@@ -128,6 +130,13 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               }}
             >
               <LogSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.terminal = el;
+              }}
+            >
+              <TerminalSection />
             </div>
             <div
               ref={(el) => {
@@ -399,6 +408,59 @@ function LogSection() {
             updateAndSave({ log_max_size_mb: parseInt(e.target.value) || 10 })
           }
           className="input w-24"
+        />
+      </SettingItem>
+    </SettingGroup>
+  );
+}
+
+function TerminalSection() {
+  const { t } = useTranslation();
+  const config = useConfigStore((s) => s.config);
+  const updateGeneral = useConfigStore((s) => s.updateGeneral);
+
+  if (!config) return null;
+
+  const updateAndSave = (patch: Record<string, unknown>) => {
+    updateGeneral(patch as any);
+    ipcInvoke("ipc_update_general_config", patch).catch((e) =>
+      console.error("save terminal config failed:", e),
+    );
+  };
+
+  return (
+    <SettingGroup title={t("settings.terminal.title")}>
+      <SettingItem label={t("settings.terminal.color_scheme")}>
+        <select
+          value={config.general.terminal_theme}
+          onChange={(e) => updateAndSave({ terminal_theme: e.target.value })}
+          className="input w-44"
+        >
+          {TERMINAL_THEMES.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.name}
+            </option>
+          ))}
+        </select>
+      </SettingItem>
+      <SettingItem label={t("settings.terminal.font_size")}>
+        <input
+          type="number"
+          min={8}
+          max={32}
+          value={config.general.terminal_font_size}
+          onChange={(e) =>
+            updateAndSave({ terminal_font_size: parseInt(e.target.value) || 13 })
+          }
+          className="input w-20"
+        />
+      </SettingItem>
+      <SettingItem label={t("settings.terminal.font_family")} hint={t("settings.terminal.font_family_hint")}>
+        <input
+          type="text"
+          value={config.general.terminal_font_family}
+          onChange={(e) => updateAndSave({ terminal_font_family: e.target.value })}
+          className="input w-64"
         />
       </SettingItem>
     </SettingGroup>

@@ -115,6 +115,15 @@ pub struct GeneralConfig {
     /// e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:7891"
     #[serde(default)]
     pub http_proxy_url: String,
+    /// Terminal color scheme preset name
+    #[serde(default = "default_terminal_theme")]
+    pub terminal_theme: String,
+    /// Terminal font size in pixels
+    #[serde(default = "default_terminal_font_size")]
+    pub terminal_font_size: u16,
+    /// Terminal font family CSS string
+    #[serde(default = "default_terminal_font_family")]
+    pub terminal_font_family: String,
 }
 
 /// User-defined custom variable for trigger templates
@@ -153,6 +162,15 @@ fn default_proxy_test_url() -> String {
 }
 fn default_proxy_mode() -> String {
     "auto".into()
+}
+fn default_terminal_theme() -> String {
+    "catppuccin-mocha".into()
+}
+fn default_terminal_font_size() -> u16 {
+    13
+}
+fn default_terminal_font_family() -> String {
+    "'Menlo', 'Monaco', 'Courier New', monospace".into()
 }
 fn default_socks5_port() -> u16 {
     1080
@@ -200,6 +218,9 @@ impl Default for GeneralConfig {
             cloud_sync_provider: String::new(),
             http_proxy_mode: default_proxy_mode(),
             http_proxy_url: String::new(),
+            terminal_theme: default_terminal_theme(),
+            terminal_font_size: default_terminal_font_size(),
+            terminal_font_family: default_terminal_font_family(),
         }
     }
 }
@@ -733,6 +754,8 @@ mod tests {
         assert_eq!(config.general.theme, "system");
         assert_eq!(config.general.log_level, "info");
         assert_eq!(config.general.max_log_entries, 1000);
+        assert_eq!(config.general.terminal_theme, "catppuccin-mocha");
+        assert_eq!(config.general.terminal_font_size, 13);
         assert!(config.servers.is_empty());
     }
 
