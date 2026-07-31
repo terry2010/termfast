@@ -150,6 +150,19 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         }
     }
 
+    // Resize terminal when orientation changes or keyboard shows/hides.
+    // We approximate cols/rows from the screen dimensions and a fixed cell
+    // size. The exact values aren't critical — the remote shell just needs
+    // to know roughly how many columns/rows fit so it can redraw.
+    LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp, connected) {
+        if (connected) {
+            // Approximate cell size: 8dp wide x 16dp tall (monospace)
+            val approxCols = (configuration.screenWidthDp / 8).coerceAtLeast(20)
+            val approxRows = (configuration.screenHeightDp / 16).coerceAtLeast(10)
+            repo.resizeTerminal(sessionId, approxCols, approxRows)
+        }
+    }
+
     // Open terminal session on screen entry (only if not already connected)
     LaunchedEffect(serverId, sessionId) {
         if (connected) return@LaunchedEffect

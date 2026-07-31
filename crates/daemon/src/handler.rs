@@ -1964,16 +1964,31 @@ async fn handle_cleanup_authorized_keys(
         .await
         .ok_or_else(|| IpcError::new(ErrorCode::Internal, "no SSH connection"))?;
 
-    // Remove our key from authorized_keys
+    // Remove our key from authorized_keys.
+    // push_public_key writes a "# termfast: <name>" comment line followed by
+    // the key line. We delete both the comment and the next line (the key).
+    // Using sed "N" to pair the comment line with the following line, then
+    // delete the pair. Falls back to deleting just the comment if N fails.
     let key_path = &server.config.ssh.key_path;
     if !key_path.is_empty() {
         let key_name = std::path::Path::new(key_path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("termfast");
+        // Sanitize key_name for sed regex — only alphanumerics + - _ .
+        let safe_name: String = key_name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+            .collect();
+        let safe_name = if safe_name.is_empty() { "termfast".to_string() } else { safe_name };
+        // Delete the "# termfast: <name>" comment line AND the key line that
+        // follows it. GNU sed: `/pattern/{N;d}` pairs the matching line with
+        // the next line and deletes both. The `|| true` ensures no error if
+        // the pattern is not found (e.g., key was pushed by an older version
+        // without the comment marker).
         let cmd = format!(
-            "sed -i '/# termfast: {}/d' ~/.ssh/authorized_keys 2>/dev/null || true",
-            key_name
+            "sed -i '/# termfast: {}/{{N;d}}' ~/.ssh/authorized_keys 2>/dev/null || true",
+            safe_name
         );
         let _ = server.ssh_client.exec(&cmd, 10).await;
     }

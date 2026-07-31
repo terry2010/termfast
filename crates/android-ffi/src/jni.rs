@@ -1508,9 +1508,15 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeResizeTerminal(
     let session = jstring_to_string(&mut env, &session_id);
     let cols = if cols > 0 { cols as u32 } else { 80 };
     let rows = if rows > 0 { rows as u32 } else { 24 };
-    let rt = runtime();
-    let _ = rt.block_on(crate::pty_api::resize_session(&session, cols, rows));
-    bool_to_jbool(true)
+    // resize_session is now synchronous — it sends a command to the reader
+    // task via an unbounded channel, which is non-blocking.
+    match crate::pty_api::resize_session(&session, cols, rows) {
+        Ok(()) => bool_to_jbool(true),
+        Err(e) => {
+            log_to_kotlin("error", &format!("Terminal resize error: {}", e));
+            bool_to_jbool(false)
+        }
+    }
 }
 
 // === Cloud Sync ===

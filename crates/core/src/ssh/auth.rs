@@ -185,10 +185,16 @@ pub fn generate_keypair_bytes(
     Ok((key_pair, passphrase))
 }
 
-/// Push a public key to the remote server's authorized_keys via SSH exec
+/// Push a public key to the remote server's authorized_keys via SSH exec.
+///
+/// The key is written with a `# termfast: <key_name>` comment marker on the
+/// preceding line so that `cleanup_authorized_keys` can reliably find and
+/// remove it. Without this marker, the cleanup sed pattern would never match
+/// and the key would persist after the server is deleted (D-2).
 pub async fn push_public_key(
     handle: &client::Handle<super::client::SshHandler>,
     public_key: &str,
+    key_name: &str,
 ) -> Result<()> {
     // Validate that the public key is a single line — multi-line input
     // would break authorized_keys format.
@@ -199,9 +205,16 @@ pub async fn push_public_key(
         )));
     }
     let escaped_key = public_key.replace('\'', "'\\''");
+    // Escape key_name for safe shell embedding (used in a comment line).
+    // Only allow alphanumerics, dash, underscore, dot — reject anything else.
+    let safe_name: String = key_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect();
+    let safe_name = if safe_name.is_empty() { "termfast".to_string() } else { safe_name };
     let command = format!(
-        "mkdir -p ~/.ssh && echo '{}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys",
-        escaped_key
+        "mkdir -p ~/.ssh && echo '# termfast: {}' >> ~/.ssh/authorized_keys && echo '{}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys",
+        safe_name, escaped_key
     );
 
     let result = super::exec::exec(handle, &command, 30).await?;

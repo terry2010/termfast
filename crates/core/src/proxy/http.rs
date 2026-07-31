@@ -70,16 +70,44 @@ pub async fn handle_connection(
     mgr: Arc<ChannelManager>,
     peeked: Vec<u8>,
 ) -> Result<()> {
-    // Read the request — combine peeked data with new data
+    // Read the request — combine peeked data with new data.
+    // Loop until we have the full request headers (terminated by \r\n\r\n)
+    // or hit the buffer limit. A single socket.read() may return a partial
+    // request if the client sends headers across multiple TCP segments
+    // (D-15: previously only read once, causing plain-HTTP requests to hang
+    // when the full header wasn't delivered in a single read).
     let mut buf = vec![0u8; 8192];
-    let n = if !peeked.is_empty() {
+    let mut n = if !peeked.is_empty() {
         let len = peeked.len().min(buf.len());
         buf[..len].copy_from_slice(&peeked[..len]);
-        let extra = socket.read(&mut buf[len..]).await?;
-        len + extra
+        len
     } else {
-        socket.read(&mut buf).await?
+        0
     };
+
+    // Loop reading until we see \r\n\r\n (end of headers) or buffer is full.
+    // For CONNECT, we only need the first line + Host, but reading the full
+    // header block is harmless and simpler than special-casing.
+    let header_end = b"\r\n\r\n";
+    loop {
+        // Check if we already have the full header block
+        if n >= header_end.len() && buf[..n].windows(header_end.len()).any(|w| w == header_end) {
+            break;
+        }
+        if n >= buf.len() {
+            // Buffer full without finding header terminator — proceed with
+            // what we have (the request may be malformed, but let the
+            // downstream parser deal with it rather than hanging forever).
+            break;
+        }
+        let read_n = socket.read(&mut buf[n..]).await?;
+        if read_n == 0 {
+            // Connection closed before full headers — process what we have
+            break;
+        }
+        n += read_n;
+    }
+
     if n == 0 {
         return Ok(());
     }

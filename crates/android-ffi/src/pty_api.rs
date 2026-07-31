@@ -16,6 +16,8 @@ use std::sync::{Mutex, OnceLock};
 enum PtyCommand {
     /// Write input data to the remote shell.
     Write(Vec<u8>),
+    /// Resize the PTY window (sends SIGWINCH on the remote side).
+    Resize(u32, u32),
     /// Close the session.
     Close,
 }
@@ -124,13 +126,22 @@ pub async fn open_session(
                         Some(_) => {}
                     }
                 }
-                // Receive commands (write input or close)
+                // Receive commands (write input, resize, or close)
                 cmd = cmd_rx.recv() => {
                     match cmd {
                         Some(PtyCommand::Write(data)) => {
                             if let Err(e) = channel.data_bytes(data.clone()).await {
                                 log_to_kotlin("error", &format!("PTY write error: {:?}", e));
                                 break;
+                            }
+                        }
+                        Some(PtyCommand::Resize(cols, rows)) => {
+                            // window_change sends SSH_MSG_CHANNEL_REQUEST with
+                            // "pty-req" type update, which triggers SIGWINCH on
+                            // the remote side. This is how the terminal learns
+                            // about orientation changes / keyboard show-hide.
+                            if let Err(e) = channel.window_change(cols, rows, None, None).await {
+                                log_to_kotlin("warn", &format!("PTY resize failed: {:?}", e));
                             }
                         }
                         Some(PtyCommand::Close) | None => {
@@ -175,10 +186,16 @@ pub fn close_session(session_id: &str) {
 }
 
 /// Resize a PTY session.
-pub async fn resize_session(session_id: &str, _cols: u32, _rows: u32) -> Result<(), String> {
-    // Resize requires access to the channel, which is owned by the reader task.
-    // For now, we skip resize support — it can be added later by storing
-    // a separate resize command channel.
-    log_to_kotlin("info", &format!("PTY resize requested for {} (not yet implemented)", session_id));
-    Ok(())
+///
+/// Sends a window-change request to the remote shell via the reader task's
+/// command channel. The reader task calls `channel.window_change()` which
+/// triggers SIGWINCH on the remote side, allowing full-screen programs
+/// (vim/tmux/htop) to redraw at the new dimensions.
+pub fn resize_session(session_id: &str, cols: u32, rows: u32) -> Result<(), String> {
+    let st = sessions().lock().unwrap();
+    let session = st.get(session_id).ok_or_else(|| format!("session {} not found", session_id))?;
+    session
+        .command_tx
+        .send(PtyCommand::Resize(cols, rows))
+        .map_err(|e| format!("failed to send resize: {}", e))
 }
