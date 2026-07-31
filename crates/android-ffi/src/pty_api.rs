@@ -140,7 +140,7 @@ pub async fn open_session(
                             // "pty-req" type update, which triggers SIGWINCH on
                             // the remote side. This is how the terminal learns
                             // about orientation changes / keyboard show-hide.
-                            if let Err(e) = channel.window_change(cols, rows, None, None).await {
+                            if let Err(e) = channel.window_change(cols, rows, 0, 0).await {
                                 log_to_kotlin("warn", &format!("PTY resize failed: {:?}", e));
                             }
                         }

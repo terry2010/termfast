@@ -466,7 +466,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
         let key_dir = std::path::PathBuf::from(&data_dir).join("keys").join(&id_str);
         let key_path = key_dir.join("id_ed25519");
         // Crash-safe atomic write with fsync, 0600 for private key
-        let _ = termfast_core::fs::write_atomic(&key_path, &key_content, true);
+        let _ = termfast_core::fs::write_atomic(&key_path, key_content.as_bytes(), true);
         AuthMethod::Key {
             key_path: key_path.to_string_lossy().to_string(),
             passphrase,

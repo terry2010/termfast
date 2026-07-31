@@ -154,6 +154,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     // We approximate cols/rows from the screen dimensions and a fixed cell
     // size. The exact values aren't critical — the remote shell just needs
     // to know roughly how many columns/rows fit so it can redraw.
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp, connected) {
         if (connected) {
             // Approximate cell size: 8dp wide x 16dp tall (monospace)
@@ -235,7 +236,6 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     val terminalBg = Color(0xFF1E1E2E)
     val terminalFg = Color(0xFFCDD6F4)
     val terminalGreen = Color(0xFFA6E3A1)
-    val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     // Landscape: which side is the keyboard on? false = right (default), true = left
     var keyboardOnLeft by remember { mutableStateOf(false) }
