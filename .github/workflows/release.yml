@@ -117,6 +117,7 @@ jobs:
           hdiutil detach "$MOUNT_POINT"
 
           # Re-compress as read-only DMG (replace original)
+          rm -f "$DMG"
           hdiutil convert "$RW_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG"
           rm -f "$RW_DMG"
           echo "✅ README and fix-quarantine.command added to DMG"
