@@ -66,6 +66,23 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: ${{ matrix.platform }}-release-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.platform }}-release-cargo-registry-
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ matrix.platform }}-release-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.platform }}-release-cargo-target-
+
       - name: Install macOS dependencies
         if: matrix.platform == 'macos-latest'
         run: |
@@ -155,6 +172,23 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-linux-android
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: android-release-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            android-release-cargo-registry-
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target/aarch64-linux-android/
+          key: android-release-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            android-release-cargo-target-
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4

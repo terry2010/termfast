@@ -33,6 +33,22 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
           components: clippy
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: ${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-cargo-registry-
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ matrix.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-cargo-target-
       - name: Install dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -107,6 +123,22 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: ${{ matrix.label }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.label }}-cargo-registry-
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ matrix.label }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.label }}-cargo-target-
       - name: Install Android NDK
         if: matrix.label == 'Android'
         run: |
