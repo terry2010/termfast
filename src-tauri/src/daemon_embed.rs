@@ -6,7 +6,7 @@
 //! Starts NetworkMonitor for offline detection (FP-6.9).
 
 use std::sync::Arc;
-use termfast_core::config::migration::load_config_with_migration;
+use termfast_core::config::migration::load_config_with_migration_fallback;
 use termfast_core::config::{Config, ConfigManager, FileConfigStorage};
 use termfast_core::platform::{SetProxyResult, SystemProxyAdapter, SystemProxyConfig};
 use termfast_credential::{CredentialStore, EncryptedFileCredentialStore};
@@ -35,26 +35,22 @@ impl EmbeddedDaemon {
             }
         };
 
-        // Use load_config_with_migration instead of storage.load() so that a
-        // corrupt config file is backed up (config.json.corrupt.<ts>) before
-        // falling back to defaults. The previous storage.load().unwrap_or_default()
-        // path silently returned an empty Config (servers: []) on any parse error,
-        // and a subsequent save would overwrite the user's real config with the
-        // empty one — permanently destroying all configured servers.
-        let config = match load_config_with_migration(storage.path()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(
-                    "failed to load config from {}: {} — starting with empty config \
-                     (existing file was backed up if it was corrupt)",
-                    storage.path().display(),
-                    e
-                );
-                Config::default()
-            }
-        };
+        // Use load_config_with_migration_fallback so that we know whether
+        // the config was loaded from a valid file or fell back to defaults
+        // (corrupt JSON, missing file, migration failure). The is_fallback
+        // flag is passed to ConfigManager to prevent an empty config from
+        // overwriting the backed-up original until the user explicitly
+        // adds data.
+        let (config, is_fallback) = load_config_with_migration_fallback(storage.path());
+        if is_fallback {
+            tracing::warn!(
+                "config loaded as fallback (empty or corrupt) from {} — \
+                 corrupt_load flag set, will not overwrite file until user adds data",
+                storage.path().display()
+            );
+        }
 
-        Self::start_with_config_and_storage(config, storage).await
+        Self::start_with_config_and_storage_fallback(config, storage, is_fallback).await
     }
 
     /// Start with a specific config (uses FileConfigStorage for persistence)
@@ -81,18 +77,15 @@ impl EmbeddedDaemon {
                 FileConfigStorage::new("config.json")
             }
         };
-        let config = match load_config_with_migration(storage.path()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(
-                    "failed to load config from {}: {} — starting with empty config",
-                    storage.path().display(),
-                    e
-                );
-                Config::default()
-            }
-        };
-        Self::start_with_config_storage_and_credential_store(config, storage, cred_store).await
+        let (config, is_fallback) = load_config_with_migration_fallback(storage.path());
+        if is_fallback {
+            tracing::warn!(
+                "config loaded as fallback (empty or corrupt) from {} — \
+                 corrupt_load flag set",
+                storage.path().display()
+            );
+        }
+        Self::start_with_config_storage_credential_and_fallback(config, storage, cred_store, is_fallback).await
     }
 
     /// Start with a specific config and storage (ensures read/write path consistency)
@@ -100,9 +93,24 @@ impl EmbeddedDaemon {
         config: Config,
         storage: FileConfigStorage,
     ) -> anyhow::Result<Self> {
+        Self::start_with_config_and_storage_fallback(config, storage, false).await
+    }
+
+    /// Start with a specific config, storage, and corrupt_load flag.
+    /// When is_fallback=true, the ConfigManager will refuse to save an empty
+    /// config over the (backed-up) original until the user explicitly adds data.
+    pub async fn start_with_config_and_storage_fallback(
+        config: Config,
+        storage: FileConfigStorage,
+        is_fallback: bool,
+    ) -> anyhow::Result<Self> {
         // Load servers from config into server_manager before starting daemon
         let servers_from_config = config.servers.clone();
-        let mgr = ConfigManager::with_storage(config, Arc::new(storage));
+        let mgr = ConfigManager::with_storage_and_corrupt(
+            config,
+            Arc::new(storage),
+            is_fallback,
+        );
         let cred_store: Arc<dyn CredentialStore> =
             Arc::new(termfast_credential::KeychainCredentialStore::new());
         let proxy_adapter: Arc<dyn SystemProxyAdapter> = Arc::new(DesktopProxyAdapter);
@@ -193,8 +201,22 @@ impl EmbeddedDaemon {
         storage: FileConfigStorage,
         cred_store: Arc<EncryptedFileCredentialStore>,
     ) -> anyhow::Result<Self> {
+        Self::start_with_config_storage_credential_and_fallback(config, storage, cred_store, false).await
+    }
+
+    /// Start with config, storage, credential store, and corrupt_load flag.
+    pub async fn start_with_config_storage_credential_and_fallback(
+        config: Config,
+        storage: FileConfigStorage,
+        cred_store: Arc<EncryptedFileCredentialStore>,
+        is_fallback: bool,
+    ) -> anyhow::Result<Self> {
         let servers_from_config = config.servers.clone();
-        let mgr = ConfigManager::with_storage(config, Arc::new(storage));
+        let mgr = ConfigManager::with_storage_and_corrupt(
+            config,
+            Arc::new(storage),
+            is_fallback,
+        );
         let cred_store_dyn: Arc<dyn CredentialStore> = cred_store;
         let proxy_adapter: Arc<dyn SystemProxyAdapter> = Arc::new(DesktopProxyAdapter);
         let state = DaemonState::with_adapter(mgr, cred_store_dyn, proxy_adapter);

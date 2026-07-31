@@ -309,10 +309,12 @@ async fn handle_remove_server(state: &DaemonState, params: &serde_json::Value) -
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
 
-    // Remove from config file (persist)
+    // Remove from config file (persist).
+    // Uses modify_unchecked because deleting the last server is a legitimate
+    // user action — modify() would refuse to save if servers goes from 1 to 0.
     {
         let mgr = state.config_manager.lock().await;
-        mgr.modify(|c| {
+        mgr.modify_unchecked(|c| {
             c.servers.retain(|s| s.id != server_id);
         })
         .await

@@ -112,6 +112,40 @@ pub fn backup_corrupt_config(config_path: &std::path::Path) -> Result<PathBuf> {
 
 /// Load config with migration support.
 /// Handles: missing file → default, corrupt JSON → backup + default, version mismatch → migrate.
+/// Returns (Config, is_fallback). is_fallback=true means the config was not
+/// loaded from a valid file (missing, corrupt, or migration failed) — the
+/// caller should set the corrupt_load flag to prevent overwriting the
+/// backed-up original.
+pub fn load_config_with_migration_fallback(
+    config_path: &std::path::Path,
+) -> (crate::config::Config, bool) {
+    match load_config_with_migration(config_path) {
+        Ok(c) => {
+            // If the file existed and loaded successfully, is_fallback = false.
+            // If the file was missing (returned Ok(Config::default())), we
+            // can't tell here — but a missing file is not "corrupt", it's
+            // just empty. The corrupt case is handled inside load_config_with_migration
+            // which returns Ok(Config::default()) for corrupt JSON too.
+            // We check: if the file exists and has servers, it's a real load.
+            // If servers is empty AND the file exists, it might be a corrupt
+            // fallback (the corrupt file was backed up and replaced with default).
+            // If the file doesn't exist, it's a fresh start (not corrupt).
+            let file_exists = config_path.exists();
+            let is_fallback = c.servers.is_empty() && file_exists;
+            (c, is_fallback)
+        }
+        Err(e) => {
+            tracing::error!(
+                "load_config_with_migration failed: {} — starting with empty config",
+                e
+            );
+            (crate::config::Config::default(), true)
+        }
+    }
+}
+
+/// Load config with migration support.
+/// Handles: missing file → default, corrupt JSON → backup + default, version mismatch → migrate.
 pub fn load_config_with_migration(config_path: &std::path::Path) -> Result<crate::config::Config> {
     use crate::config::Config;
 

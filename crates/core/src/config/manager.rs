@@ -33,10 +33,23 @@ impl ConfigManager {
 
     /// Create a ConfigManager with a custom storage backend (for testing)
     pub fn with_storage(config: Config, storage: Arc<dyn ConfigStorage>) -> Self {
+        Self::with_storage_and_corrupt(config, storage, false)
+    }
+
+    /// Create a ConfigManager with a custom storage backend and explicit
+    /// corrupt_load flag. Use this when the config was loaded from a corrupt
+    /// or missing file — it prevents `modify()` from overwriting the
+    /// (backed-up) original with an empty config until the user explicitly
+    /// adds data.
+    pub fn with_storage_and_corrupt(
+        config: Config,
+        storage: Arc<dyn ConfigStorage>,
+        corrupt: bool,
+    ) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
             storage,
-            corrupt_load: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            corrupt_load: Arc::new(std::sync::atomic::AtomicBool::new(corrupt)),
         }
     }
 
@@ -79,13 +92,59 @@ impl ConfigManager {
     /// Modify the config (with write lock) and save.
     /// This is a user-initiated action, so it clears the corrupt_load flag
     /// and always saves (even if the result is an empty config).
+    ///
+    /// **Safety guard**: if the config had servers before the modification
+    /// and the result has zero servers, the save is skipped and a warning
+    /// is logged. This prevents a bug or corrupt state from permanently
+    /// deleting all server configurations. The in-memory config IS updated
+    /// (so the caller's return value is correct), but the file is not
+    /// overwritten. The user can then fix the issue and retry.
     pub async fn modify<F, R>(&self, f: F) -> anyhow::Result<R>
     where
         F: FnOnce(&mut Config) -> R,
     {
         let mut config = self.config.write().await;
+        let server_count_before = config.servers.len();
         let result = f(&mut config);
+        let server_count_after = config.servers.len();
+
+        // Safety guard: refuse to save if servers went from non-empty to empty.
+        // This is almost always a bug (e.g., apply_full_export with an empty
+        // download, or a corrupt load that returned Config::default()).
+        // The user's servers are too valuable to silently destroy.
+        if server_count_before > 0 && server_count_after == 0 {
+            tracing::error!(
+                "modify() refused to save: servers went from {} to 0 — \
+                 this is likely a bug, not a user action. In-memory config \
+                 updated but file NOT overwritten.",
+                server_count_before
+            );
+            // Still clear corrupt_load and return the result — the caller
+            // gets the correct return value, just the file isn't saved.
+            self.corrupt_load
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            return Ok(result);
+        }
+
         // User explicitly modified the config — clear corrupt_load flag.
+        self.corrupt_load
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.storage
+            .save(&config)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        Ok(result)
+    }
+
+    /// Modify the config without the "servers non-empty → empty" safety guard.
+    /// Use this ONLY for explicit user-initiated server deletion
+    /// (handle_remove_server). All other modifications should go through
+    /// `modify()` which has the safety guard.
+    pub async fn modify_unchecked<F, R>(&self, f: F) -> anyhow::Result<R>
+    where
+        F: FnOnce(&mut Config) -> R,
+    {
+        let mut config = self.config.write().await;
+        let result = f(&mut config);
         self.corrupt_load
             .store(false, std::sync::atomic::Ordering::Relaxed);
         self.storage
