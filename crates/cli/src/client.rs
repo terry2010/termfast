@@ -5,7 +5,9 @@
 use anyhow::{bail, Result};
 #[cfg(unix)]
 use termfast_daemon::frame;
-use termfast_daemon::{Action, Request, Response};
+#[cfg(unix)]
+use termfast_daemon::Request;
+use termfast_daemon::{Action, Response};
 
 /// CLI daemon client
 pub struct DaemonClient {
@@ -48,20 +50,24 @@ impl DaemonClient {
         action: Action,
         params: serde_json::Value,
     ) -> Result<Response> {
-        // Tag CLI requests so daemon can broadcast focus events to GUI
-        let mut params = params;
-        if let Some(obj) = params.as_object_mut() {
-            obj.insert("_cli".to_string(), serde_json::Value::Bool(true));
-        } else {
-            params = serde_json::json!({ "_cli": true, "_data": params });
+        #[cfg(not(unix))]
+        {
+            let _ = action;
+            let _ = params;
+            bail!("not supported on this platform")
         }
         #[cfg(unix)]
-        let request = Request::new(action, params);
-        #[cfg(unix)]
-        let request_data = serde_json::to_vec(&request)?;
-
-        #[cfg(unix)]
         {
+            // Tag CLI requests so daemon can broadcast focus events to GUI
+            let mut params = params;
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("_cli".to_string(), serde_json::Value::Bool(true));
+            } else {
+                params = serde_json::json!({ "_cli": true, "_data": params });
+            }
+            let request = Request::new(action, params);
+            let request_data = serde_json::to_vec(&request)?;
+
             let (mut read_half, mut write_half) = self.stream.split();
 
             // Send request
@@ -72,9 +78,6 @@ impl DaemonClient {
             let response: Response = serde_json::from_slice(&response_data)?;
             Ok(response)
         }
-
-        #[cfg(not(unix))]
-        bail!("not supported on this platform")
     }
 
     /// Send a simple request (no params)
