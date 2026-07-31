@@ -4258,66 +4258,10 @@ fn encrypt_key_if_needed(content: &str, passphrase: Option<&str>) -> String {
     }
 }
 
-/// Snapshot of local data files taken before apply_full_export,
-/// used for rollback if any step fails.
-#[allow(dead_code)]
-struct LocalDataBackup {
-    config_bak: Option<std::path::PathBuf>,
-}
-
-/// Back up config.json → config.json.bak before overwriting.
-/// Returns a handle that can be used to roll back on failure.
-fn backup_local_data(state: &DaemonState) -> LocalDataBackup {
-    let config_path = local_config_path(state);
-    let config_bak = config_path.with_extension("json.bak");
-    let config_bak = if config_path.exists() {
-        match std::fs::copy(&config_path, &config_bak) {
-            Ok(_) => {
-                tracing::info!("apply: backed up config.json → {:?}", config_bak);
-                Some(config_bak)
-            }
-            Err(e) => {
-                tracing::warn!("apply: failed to back up config.json: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-    LocalDataBackup { config_bak }
-}
-
-impl LocalDataBackup {
-    /// Roll back: restore .bak files to their original locations.
-    /// Called when apply_full_export fails at any step.
-    #[allow(dead_code)]
-    fn rollback(&self, state: &DaemonState) {
-        if let Some(ref bak) = self.config_bak {
-            let config_path = local_config_path(state);
-            if bak.exists() {
-                match std::fs::rename(bak, &config_path) {
-                    Ok(_) => tracing::info!("apply: rolled back config.json from .bak"),
-                    Err(e) => tracing::error!("apply: failed to roll back config.json: {}", e),
-                }
-            }
-        }
-    }
-
-    /// Clean up .bak files after successful apply.
-    /// We keep the .bak for one more session as a safety net —
-    /// it will be overwritten on the next apply.
-    #[allow(dead_code)]
-    fn cleanup(&self) {
-        // Keep .bak files — they'll be overwritten on next apply.
-        // This provides a one-version-back safety net.
-    }
-}
-
 /// Apply a FullExportData to the local config + credentials.
 /// Extracted from handle_import_full for reuse by cloud sync download.
 ///
-/// Crash safety + rollback strategy (H4 fix):
-///   0. Back up config.json → config.json.bak
+/// Crash safety + write order strategy (H4):
 ///   1. Write config.json (atomic) — FIRST, so user sees new node list
 ///   2. Write key files (atomic per-file, encrypted with passphrase)
 ///   3. Write credentials (atomic per-key) — LAST
@@ -4332,15 +4276,12 @@ impl LocalDataBackup {
 /// Missing passwords → user can re-enter; stale node list → silent data loss.
 ///
 /// If step 1 fails, no changes were made (config.json write is atomic).
-/// If steps 2-3 fail, roll back config.json from .bak.
-/// .bak is kept after success as a one-version safety net.
+/// If steps 2-3 fail, config is already updated; user sees new nodes
+/// and can re-enter missing passwords. This is the intended degradation.
 async fn apply_full_export(
     state: &DaemonState,
     export_data: &termfast_core::migration::FullExportData,
 ) -> Result<(), IpcError> {
-    // 0. Back up current config.json for rollback
-    let _backup = backup_local_data(state);
-
     // 1. Apply config — FIRST, so config.json updates before credentials.
     //    mgr.modify() updates in-memory config AND atomically writes
     //    config.json (tmp + rename).

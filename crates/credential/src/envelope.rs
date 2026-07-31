@@ -197,7 +197,7 @@ pub fn encrypt(
     let mut kek = derive_kek(password, &kek_salt, params)?;
 
     // Generate DEK
-    let dek = generate_dek();
+    let mut dek = generate_dek();
 
     // Generate nonces
     let mut nonce_kek = [0u8; NONCE_LEN];
@@ -242,7 +242,7 @@ pub fn encrypt(
 
     // Zeroize keys
     kek.zeroize();
-    // dek is Copy, can't zeroize directly, but it goes out of scope
+    dek.zeroize();
 
     Ok(blob)
 }
@@ -295,15 +295,17 @@ pub fn decrypt(
 
     // Unwrap DEK
     let kek_cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&kek));
-    let dek = kek_cipher
+    let mut dek = kek_cipher
         .decrypt(Nonce::from_slice(nonce_kek), Payload { msg: wrapped_dek, aad: &header_aad })
         .map_err(|_| EnvelopeError::DecryptFailed)?;
 
     if dek.len() != DEK_LEN {
+        dek.zeroize();
         return Err(EnvelopeError::DecryptFailed);
     }
     let mut dek_arr = [0u8; DEK_LEN];
     dek_arr.copy_from_slice(&dek);
+    dek.zeroize();
     kek.zeroize();
 
     // Reconstruct data AAD = magic + version + nonce_data
@@ -377,12 +379,13 @@ pub fn change_password(
     old_header_aad.extend_from_slice(old_nonce_kek);
 
     let kek_cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&old_kek));
-    let dek = kek_cipher
+    let mut dek = kek_cipher
         .decrypt(Nonce::from_slice(old_nonce_kek), Payload { msg: wrapped_dek, aad: &old_header_aad })
         .map_err(|_| EnvelopeError::DecryptFailed)?;
     old_kek.zeroize();
 
     if dek.len() != DEK_LEN {
+        dek.zeroize();
         return Err(EnvelopeError::DecryptFailed);
     }
 
@@ -418,6 +421,7 @@ pub fn change_password(
         .encrypt(Nonce::from_slice(&new_nonce_kek), Payload { msg: &dek, aad: &new_header })
         .map_err(|e| EnvelopeError::Crypto(format!("aes-gcm re-wrap DEK failed: {}", e)))?;
     new_kek.zeroize();
+    dek.zeroize();
 
     // Assemble new blob: new header + new wrapped_dek + SAME nonce_data + SAME ciphertext
     // Data doesn't need re-encryption because:
@@ -564,16 +568,18 @@ pub fn unwrap_dek(
     header_aad.extend_from_slice(parsed.nonce_kek);
 
     let kek_cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&kek));
-    let dek = kek_cipher
+    let mut dek = kek_cipher
         .decrypt(Nonce::from_slice(parsed.nonce_kek), Payload { msg: parsed.wrapped_dek, aad: &header_aad })
         .map_err(|_| EnvelopeError::DecryptFailed)?;
     kek.zeroize();
 
     if dek.len() != DEK_LEN {
+        dek.zeroize();
         return Err(EnvelopeError::DecryptFailed);
     }
     let mut dek_arr = [0u8; DEK_LEN];
     dek_arr.copy_from_slice(&dek);
+    dek.zeroize();
     Ok(dek_arr)
 }
 

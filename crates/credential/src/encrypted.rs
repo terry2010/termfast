@@ -72,7 +72,10 @@ const ARGON2_P_COST: u32 = 1;
 const KEY_LEN: usize = 32;
 
 /// Argon2id-derived 32-byte key. Cached in Keystore / OS keychain after unlock.
-#[derive(Clone, Zeroize)]
+/// `ZeroizeOnDrop` ensures the key bytes are wiped from memory when any
+/// `DerivedKey` instance is dropped — including clones returned by
+/// `derived_key()` and cached in `CACHED_KEYCHAIN_KEY`.
+#[derive(Clone, Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct DerivedKey([u8; KEY_LEN]);
 
 impl DerivedKey {
@@ -210,7 +213,9 @@ impl EncryptedCredentialStore {
                 // v1: derive KEK, verify by decryption
                 let header = read_header_v1(&data)?;
                 let key = derive_key(master_password, &header.salt)?;
-                let _ = decrypt_with_key(&key, &header, &data[HEADER_LEN..])?;
+                // Verify password by decrypting — Zeroizing so the plaintext
+                // is wiped after the verification (we only care about success/failure).
+                let _ = zeroize::Zeroizing::new(decrypt_with_key(&key, &header, &data[HEADER_LEN..])?);
                 Ok(key)
             }
             FORMAT_VERSION_V2 => {
@@ -218,17 +223,20 @@ impl EncryptedCredentialStore {
                 let hw_id = hw_id::get_hw_id();
                 let parsed = envelope::parse_blob(MAGIC, &data)
                     .map_err(|e| anyhow!("parse envelope failed: {}", e))?;
-                let dek = envelope::unwrap_dek(master_password, hw_id.as_bytes(), &parsed)
+                let mut dek = envelope::unwrap_dek(master_password, hw_id.as_bytes(), &parsed)
                     .map_err(|e| anyhow!("unlock failed: {}", e))?;
-                // Read sync_version from decrypted payload
-                let plaintext = envelope::decrypt_data_with_dek(
+                // Read sync_version from decrypted payload.
+                // Zeroizing so the plaintext is wiped after reading sync_version.
+                let plaintext = zeroize::Zeroizing::new(envelope::decrypt_data_with_dek(
                     MAGIC, &dek, parsed.nonce_data, parsed.ciphertext,
-                ).map_err(|e| anyhow!("decrypt failed: {}", e))?;
+                ).map_err(|e| anyhow!("decrypt failed: {}", e))?);
                 if plaintext.len() >= 8 {
                     let sv = u64::from_le_bytes(plaintext[..8].try_into().unwrap());
                     self.state.lock().unwrap().sync_version = sv;
                 }
-                Ok(DerivedKey::from_slice(&dek))
+                let key = DerivedKey::from_slice(&dek);
+                dek.zeroize();
+                Ok(key)
             }
             v => bail!("unsupported credential file version: {}", v),
         }
@@ -255,9 +263,11 @@ impl EncryptedCredentialStore {
                     .map_err(|e| anyhow!("parse envelope failed: {}", e))?;
                 let mut dek = [0u8; KEY_LEN];
                 dek.copy_from_slice(key.as_bytes());
-                let plaintext = envelope::decrypt_data_with_dek(
+                // Zeroizing so the full plaintext (sync_version + credentials)
+                // is wiped after slicing, not just the returned slice.
+                let plaintext = zeroize::Zeroizing::new(envelope::decrypt_data_with_dek(
                     MAGIC, &dek, parsed.nonce_data, parsed.ciphertext,
-                ).map_err(|e| anyhow!("decrypt failed: {}", e))?;
+                ).map_err(|e| anyhow!("decrypt failed: {}", e))?);
                 dek.zeroize();
                 // Strip sync_version prefix (first 8 bytes)
                 if plaintext.len() < 8 {
@@ -303,8 +313,9 @@ impl EncryptedCredentialStore {
                 let mut dek = [0u8; KEY_LEN];
                 dek.copy_from_slice(key.as_bytes());
                 let next_sync = self.state.lock().unwrap().sync_version.wrapping_add(1);
-                // Prepend sync_version to plaintext
-                let mut plaintext = Vec::with_capacity(8 + credentials_json.len());
+                // Prepend sync_version to plaintext.
+                // Zeroizing so the plaintext credentials are wiped after encryption.
+                let mut plaintext = zeroize::Zeroizing::new(Vec::with_capacity(8 + credentials_json.len()));
                 plaintext.extend_from_slice(&next_sync.to_le_bytes());
                 plaintext.extend_from_slice(credentials_json);
                 let (new_nonce_data, new_ciphertext) = envelope::encrypt_data_with_dek(

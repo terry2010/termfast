@@ -1083,7 +1083,25 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialGetKey
     match store.derived_key() {
         Some(key) => {
             let encoded = base64_encode(key.as_bytes());
-            string_to_jstring(&mut env, &encoded).into_raw()
+            string_to_jstring(&mut env, encoded.as_str()).into_raw()
+        }
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Get the derived key (base64-encoded 32 bytes) for caching in Android Keystore.
+/// Returns null if the store is locked.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialGetKey(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let store = crate::credential::android_credential_store();
+    match store.derived_key() {
+        Some(key) => {
+            let encoded = base64_encode(key.as_bytes());
+            string_to_jstring(&mut env, encoded.as_str()).into_raw()
         }
         None => std::ptr::null_mut(),
     }
@@ -1195,7 +1213,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialIsUnlo
 
 // --- base64 helpers (no external dep on Android) ---
 
-fn base64_encode(bytes: &[u8]) -> String {
+fn base64_encode(bytes: &[u8]) -> zeroize::Zeroizing<String> {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut s = String::with_capacity(bytes.len() * 4 / 3 + 4);
     let mut i = 0;
@@ -1220,10 +1238,10 @@ fn base64_encode(bytes: &[u8]) -> String {
         s.push(TABLE[((n >> 6) & 63) as usize] as char);
         s.push('=');
     }
-    s
+    zeroize::Zeroizing::new(s)
 }
 
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
+fn base64_decode(s: &str) -> Option<zeroize::Zeroizing<Vec<u8>>> {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut buf = Vec::with_capacity(s.len() * 3 / 4);
     let bytes = s.as_bytes();
@@ -1253,7 +1271,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
         i += 4;
     }
-    Some(buf)
+    Some(zeroize::Zeroizing::new(buf))
 }
 
 // === Key generation ===

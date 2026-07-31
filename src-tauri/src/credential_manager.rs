@@ -27,14 +27,18 @@ static CACHED_KEYCHAIN_KEY: Mutex<Option<Option<termfast_credential::DerivedKey>
 /// In-memory cache of the master password (plaintext), so that cloud sync
 /// can reuse it without asking the user to type it again. The password is
 /// cleared on lock / reset. This is safe because it never touches disk.
-static CACHED_MASTER_PASSWORD: Mutex<Option<String>> = Mutex::new(None);
+/// `Zeroizing<String>` ensures the password bytes are wiped from memory
+/// when the cache is cleared or the value is replaced.
+static CACHED_MASTER_PASSWORD: Mutex<Option<zeroize::Zeroizing<String>>> = Mutex::new(None);
 
 /// Get the cached master password, if the credential store is currently unlocked.
-pub fn cached_master_password() -> Option<String> {
-    CACHED_MASTER_PASSWORD.lock().ok().and_then(|g| g.clone())
+/// Returns a `Zeroizing<String>` so the caller's copy is also wiped on drop.
+pub fn cached_master_password() -> Option<zeroize::Zeroizing<String>> {
+    CACHED_MASTER_PASSWORD.lock().ok().and_then(|g| g.as_ref().map(|s| s.clone()))
 }
 
 /// Clear the cached master password (called on lock / reset).
+/// The old value is dropped, which triggers `Zeroizing::drop` to wipe the bytes.
 fn clear_cached_master_password() {
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
         *g = None;
@@ -119,15 +123,16 @@ fn load_cached_key() -> Option<termfast_credential::DerivedKey> {
 /// Actually query the OS keychain (triggers Touch ID on macOS).
 fn load_cached_key_from_keychain() -> Option<termfast_credential::DerivedKey> {
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ENTRY).ok()?;
-    let encoded: String = match entry.get_password() {
-        Ok(s) => s,
+    // Zeroizing so the base64-encoded key string is wiped after decoding.
+    let encoded: zeroize::Zeroizing<String> = match entry.get_password() {
+        Ok(s) => zeroize::Zeroizing::new(s),
         Err(keyring::Error::NoEntry) => return None,
         Err(e) => {
             tracing::warn!("failed to read cached key from keychain: {}", e);
             return None;
         }
     };
-    let bytes = base64_decode(&encoded)?;
+    let bytes = base64_decode(encoded.as_str())?;
     if bytes.len() != 32 {
         tracing::warn!("cached key has wrong length: {}", bytes.len());
         return None;
@@ -140,10 +145,11 @@ fn load_cached_key_from_keychain() -> Option<termfast_credential::DerivedKey> {
 fn save_cached_key(key: &termfast_credential::DerivedKey) {
     // Update in-memory cache first.
     *CACHED_KEYCHAIN_KEY.lock().unwrap() = Some(Some(key.clone()));
+    // Zeroizing so the base64-encoded key string is wiped after storing.
     let encoded = base64_encode(key.as_bytes());
     match keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ENTRY) {
         Ok(entry) => {
-            if let Err(e) = entry.set_password(&encoded) {
+            if let Err(e) = entry.set_password(encoded.as_str()) {
                 tracing::warn!("failed to cache derived key in keychain: {}", e);
             }
         }
@@ -162,7 +168,7 @@ fn delete_cached_key() {
     }
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
+fn base64_encode(bytes: &[u8]) -> zeroize::Zeroizing<String> {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut s = String::with_capacity(bytes.len() * 4 / 3 + 4);
     let mut i = 0;
@@ -187,10 +193,10 @@ fn base64_encode(bytes: &[u8]) -> String {
         s.push(TABLE[((n >> 6) & 63) as usize] as char);
         s.push('=');
     }
-    s
+    zeroize::Zeroizing::new(s)
 }
 
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
+fn base64_decode(s: &str) -> Option<zeroize::Zeroizing<Vec<u8>>> {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut buf = Vec::with_capacity(s.len() * 3 / 4);
     let bytes = s.as_bytes();
@@ -220,7 +226,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
         i += 4;
     }
-    Some(buf)
+    Some(zeroize::Zeroizing::new(buf))
 }
 
 // === SECTION 1 END ===
@@ -261,7 +267,7 @@ pub async fn ipc_initialize_credentials(
     }
     // Cache the master password in memory for cloud sync reuse.
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
-        *g = Some(pw_for_cache);
+        *g = Some(zeroize::Zeroizing::new(pw_for_cache));
     }
     // Clear stale sync password hash — new master password means
     // the old cloud sync password hash is no longer relevant.
@@ -287,7 +293,7 @@ pub async fn ipc_unlock_credentials(
     }
     // Cache the master password in memory for cloud sync reuse.
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
-        *g = Some(pw_for_cache);
+        *g = Some(zeroize::Zeroizing::new(pw_for_cache));
     }
     Ok(())
 }
@@ -349,7 +355,7 @@ pub async fn ipc_migrate_credentials(
         save_cached_key(&key);
     }
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
-        *g = Some(pw_for_cache);
+        *g = Some(zeroize::Zeroizing::new(pw_for_cache));
     }
     Ok(())
 }
@@ -375,7 +381,7 @@ pub async fn ipc_change_credential_password(
     }
     // Update the cached master password for cloud sync reuse.
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
-        *g = Some(pw_for_cache);
+        *g = Some(zeroize::Zeroizing::new(pw_for_cache));
     }
     // Clear stale sync password hash — password changed.
     clear_sync_password_hash();

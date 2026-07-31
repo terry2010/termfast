@@ -1105,12 +1105,13 @@ async fn ipc_import_full(
     blob: String,
 ) -> Result<serde_json::Value, String> {
     let master_password = master_password
+        .map(zeroize::Zeroizing::new)
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::ImportFull,
-        serde_json::json!({ "master_password": master_password, "blob": blob }),
+        serde_json::json!({ "master_password": master_password.as_str(), "blob": blob }),
     )
     .await
 }
@@ -1363,12 +1364,13 @@ async fn ipc_cloud_sync_upload(
     // Use provided password, or fall back to cached master password from
     // credential store unlock (so user doesn't need to type it again).
     let master_password = master_password
+        .map(zeroize::Zeroizing::new)
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
     // Verify the password can unlock the local credential store.
     let cred_path = credential_manager::credential_file_path();
     if cred_path.exists() {
-        if let Err(e) = cred_state.store.unlock(&master_password) {
+        if let Err(e) = cred_state.store.unlock(master_password.as_str()) {
             tracing::warn!("upload pre-check: unlock failed: {:?}", e);
             return Ok(serde_json::json!({
                 "ok": false,
@@ -1379,7 +1381,7 @@ async fn ipc_cloud_sync_upload(
     }
     let mut params = serde_json::json!({
         "provider": provider,
-        "master_password": master_password,
+        "master_password": master_password.as_str(),
     });
     if let Some(sp) = sync_path {
         params["sync_path"] = serde_json::json!(sp);
@@ -1406,6 +1408,7 @@ async fn ipc_cloud_sync_download(
 ) -> Result<serde_json::Value, String> {
     // Resolve the master password: use provided or cached.
     let master_password = master_password
+        .map(zeroize::Zeroizing::new)
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
     // Verify the password can unlock the local credential store.
@@ -1423,7 +1426,7 @@ async fn ipc_cloud_sync_download(
             "message": "请先设置主密码后再从云端下载",
         }));
     }
-    match cred_state.store.unlock(&master_password) {
+    match cred_state.store.unlock(master_password.as_str()) {
         Ok(_) => tracing::info!("download pre-check: unlock OK"),
         Err(e) => {
             tracing::warn!("download pre-check: unlock failed: {:?}", e);
@@ -1436,7 +1439,7 @@ async fn ipc_cloud_sync_download(
     }
     let mut params = serde_json::json!({
         "provider": provider,
-        "master_password": master_password,
+        "master_password": master_password.as_str(),
     });
     if let Some(sp) = sync_path {
         params["sync_path"] = serde_json::json!(sp);

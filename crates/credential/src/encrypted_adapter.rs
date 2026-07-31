@@ -75,8 +75,17 @@ impl EncryptedFileCredentialStore {
             }
         } else {
             // Encrypted file exists — start locked (map loaded on unlock).
-            // But check if there's also a plaintext file from before the
-            // master password was set; we'll migrate on initialize().
+            // Clean up any residual plaintext fallback file from a crash
+            // during initialize() (encrypted file was written but plaintext
+            // file wasn't deleted yet). The plaintext file contains sensitive
+            // credentials and should not linger on disk.
+            if plaintext_path.exists() {
+                tracing::warn!(
+                    "found residual plaintext fallback file {:?}, removing (encrypted file exists)",
+                    plaintext_path
+                );
+                let _ = std::fs::remove_file(&plaintext_path);
+            }
             HashMap::new()
         };
         Self {
