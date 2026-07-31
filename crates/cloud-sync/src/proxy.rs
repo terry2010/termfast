@@ -187,7 +187,7 @@ mod windows_proxy {
             let mut hkey = windows::Win32::System::Registry::HKEY::default();
             let result = RegOpenKeyExA(
                 HKEY_CURRENT_USER,
-                PCSTR(subkey.as_ptr()),
+                PCSTR(subkey.as_ptr() as *const u8),
                 0,
                 KEY_READ,
                 &mut hkey,
@@ -202,7 +202,7 @@ mod windows_proxy {
             let mut reg_type = REG_VALUE_TYPE::default();
             let _ = RegQueryValueExA(
                 hkey,
-                PCSTR(c"ProxyEnable".as_ptr()),
+                PCSTR(c"ProxyEnable".as_ptr() as *const u8),
                 None,
                 Some(&mut reg_type),
                 Some(&mut enabled as *mut u32 as *mut u8),
@@ -221,7 +221,7 @@ mod windows_proxy {
             let mut reg_type2 = REG_VALUE_TYPE::default();
             let _ = RegQueryValueExA(
                 hkey,
-                PCSTR(c"ProxyServer".as_ptr()),
+                PCSTR(c"ProxyServer".as_ptr() as *const u8),
                 None,
                 Some(&mut reg_type2),
                 Some(buf.as_mut_ptr()),
