@@ -254,7 +254,6 @@ impl DaemonServer {
 
         #[cfg(windows)]
         {
-            use tokio::net::windows::named_pipe::ServerOptions;
             let pipe_name = r"\\.\pipe\termfast-daemon".to_string();
 
             tracing::info!("daemon listening on {}", pipe_name);
@@ -616,7 +615,6 @@ async fn handle_named_pipe_client(
     client_id: u64,
     event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Response>,
 ) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let stream = std::pin::pin!(stream);
 
     // We need a duplex stream — tokio named pipe supports AsyncRead + AsyncWrite
@@ -675,7 +673,7 @@ async fn handle_named_pipe_client(
 /// Set Windows named pipe security descriptor to restrict access (FP-1.7)
 /// Only Admins (BA), System (SY), and Authenticated Users (AU) get full access.
 #[cfg(windows)]
-fn set_pipe_security(pipe_name: &str) {
+fn set_pipe_security(_pipe_name: &str) {
     use std::ffi::CString;
     use std::os::raw::c_void;
 
