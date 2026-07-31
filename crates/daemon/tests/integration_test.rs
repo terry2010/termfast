@@ -2,8 +2,11 @@
 //!
 //! Tests the daemon socket server with a real client connection.
 
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use termfast_core::config::{Config, ConfigManager, InMemoryConfigStorage};
+#[cfg(unix)]
 use termfast_daemon::{Action, DaemonServer, DaemonState, Request, Response};
 
 #[cfg(unix)]
