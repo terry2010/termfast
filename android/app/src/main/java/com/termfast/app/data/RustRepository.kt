@@ -146,6 +146,13 @@ object RustRepository {
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         return RustBridge.nativeWriteTerminal(sessionId, encoded)
     }
+    fun writeTerminalBytes(sessionId: String, data: ByteArray): Boolean {
+        // Same as writeTerminal but accepts raw bytes — avoids String→ByteArray
+        // round-trip that would corrupt non-UTF-8 sequences (e.g. from termlib
+        // onKeyboardInput callback).
+        val encoded = Base64.encodeToString(data, Base64.NO_WRAP)
+        return RustBridge.nativeWriteTerminal(sessionId, encoded)
+    }
     fun closeTerminal(sessionId: String): Boolean =
         RustBridge.nativeCloseTerminal(sessionId)
     fun resizeTerminal(sessionId: String, cols: Int, rows: Int): Boolean =

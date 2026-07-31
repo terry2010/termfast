@@ -1,17 +1,12 @@
 package com.termfast.app.ui.screen
 
+import android.graphics.Typeface
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -25,9 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.blur
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
@@ -38,9 +33,11 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
+import com.termfast.app.ui.TerminalThemes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.connectbot.terminal.Terminal
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -76,8 +73,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
             TerminalSessionManager.getOrCreateSession(serverId)
         }
     }
-    val listState = rememberLazyListState()
-
+    val listState = null  // unused — termlib handles scrolling internally
     // Resolve title: server name + session name
     var sessionState by remember { mutableStateOf(TerminalSessionManager.getSessions(serverId).firstOrNull { it.sessionId == sessionId }) }
     val title = sessionState?.name?.ifBlank { null } ?: "SSH 终端"
@@ -102,37 +98,37 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         }
     }
 
-    // Terminal output lines — restore from cache if available
-    var outputLines by remember(sessionId) { mutableStateOf(TerminalSessionManager.getOutputBySession(sessionId)) }
-    var cursorCol by remember(sessionId) { mutableStateOf(TerminalSessionManager.getCursorColBySession(sessionId)) }
+    // Terminal config from Rust settings
+    val config = remember { RustRepository.getConfig() }
+    val themeId = config?.general?.terminal_theme ?: "catppuccin-mocha"
+    var baseFontSize by remember(sessionId) { mutableStateOf(config?.general?.terminal_font_size ?: 10) }
+    // Float-precision accumulator for smooth pinch-zoom (Int truncation
+    // loses small zoom deltas like 10 * 1.04 = 10.4 → 10)
+    var floatFontSize by remember(sessionId) { mutableStateOf(baseFontSize.toFloat()) }
+    val theme = TerminalThemes.byId(themeId)
+
+    // Get the termlib emulator for this session
+    val emulator = remember(sessionId) { TerminalSessionManager.getEmulatorBySession(sessionId) }
+
     var connected by remember(sessionId) {
         val s = TerminalSessionManager.getSessions(serverId).firstOrNull { it.sessionId == sessionId }
         mutableStateOf(s?.connected ?: false)
     }
     var connecting by remember(sessionId) { mutableStateOf(!(connected)) }
+    // Was this terminal already connected when the screen was entered?
+    // Used to suppress the "new terminal" hint when switching between sessions.
+    val wasAlreadyConnected by remember(sessionId) { mutableStateOf(connected) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
-    // Collect terminal events
+    // Collect terminal events — only for connection state, not rendering.
     LaunchedEffect(sessionId) {
         RustRepository.events.collect { event ->
             when (event) {
-                is RustEvent.TerminalData -> {
-                    if (event.session_id == sessionId) {
-                        // Global collector already processes data; just read updated state
-                        outputLines = TerminalSessionManager.getOutputBySession(sessionId)
-                        cursorCol = TerminalSessionManager.getCursorColBySession(sessionId)
-                        if (outputLines.isNotEmpty()) {
-                            listState.animateScrollToItem(outputLines.size - 1)
-                        }
-                    }
-                }
                 is RustEvent.TerminalClosed -> {
                     if (event.session_id == sessionId) {
                         connected = false
                         connecting = false
                         TerminalSessionManager.setConnectedBySession(sessionId, false)
-                        outputLines = outputLines + "\n[连接已关闭]"
-                        TerminalSessionManager.updateOutputBySession(sessionId, outputLines)
                     }
                 }
                 is RustEvent.TerminalError -> {
@@ -141,8 +137,6 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                         connecting = false
                         connected = false
                         TerminalSessionManager.setConnectedBySession(sessionId, false)
-                        outputLines = outputLines + "\n[错误: ${event.error}]"
-                        TerminalSessionManager.updateOutputBySession(sessionId, outputLines)
                     }
                 }
                 else -> {}
@@ -150,17 +144,21 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         }
     }
 
-    // Resize terminal when orientation changes or keyboard shows/hides.
-    // We approximate cols/rows from the screen dimensions and a fixed cell
-    // size. The exact values aren't critical — the remote shell just needs
-    // to know roughly how many columns/rows fit so it can redraw.
-    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-    LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp, connected) {
-        if (connected) {
-            // Approximate cell size: 8dp wide x 16dp tall (monospace)
-            val approxCols = (configuration.screenWidthDp / 8).coerceAtLeast(20)
-            val approxRows = (configuration.screenHeightDp / 16).coerceAtLeast(10)
-            repo.resizeTerminal(sessionId, approxCols, approxRows)
+    // Apply theme colors to emulator when it's first available or theme changes.
+    LaunchedEffect(emulator, themeId) {
+        emulator?.applyColorScheme(theme.ansiColors, theme.foreground, theme.background)
+    }
+
+    // After connection is established or font size changes, send the
+    // emulator's actual dimensions to the remote shell so TUI apps
+    // (top, htop, vim) render correctly. Debounce 500ms to avoid
+    // flooding resize commands during continuous pinch-zoom.
+    LaunchedEffect(connected, baseFontSize) {
+        if (connected && emulator != null) {
+            kotlinx.coroutines.delay(500)
+            val dims = emulator.dimensions
+            repo.resizeTerminal(sessionId, dims.columns, dims.rows)
+            android.util.Log.d("termfast", "resize sent: ${dims.columns}x${dims.rows} fontSize=$baseFontSize")
         }
     }
 
@@ -205,11 +203,11 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
 
     // Don't close terminal on dispose — keep it running in background for reuse
 
-    // Detect when this server has >1 active terminals (set hintShown flag).
-    //   Separate from the snackbar display effect so the snackbar coroutine
-    //   isn't cancelled when hintShown flips to true.
+    // Detect when a NEW terminal was just created (connecting → connected
+    //   transition) and there are >1 terminals. Only show the hint on the
+    //   initial connection, not when switching to an already-connected session.
     LaunchedEffect(connected) {
-        if (connected && !hintShown) {
+        if (connected && !wasAlreadyConnected && !hintShown) {
             val count = TerminalSessionManager.getSessions(serverId).size
             if (count > 1) {
                 hintShown = true
@@ -233,9 +231,10 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         }
     }
 
-    val terminalBg = Color(0xFF1E1E2E)
-    val terminalFg = Color(0xFFCDD6F4)
+    val terminalBg = Color(theme.background)
+    val terminalFg = Color(theme.foreground)
     val terminalGreen = Color(0xFFA6E3A1)
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     // Landscape: which side is the keyboard on? false = right (default), true = left
     var keyboardOnLeft by remember { mutableStateOf(false) }
@@ -278,8 +277,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .background(terminalBg)
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                    .background(terminalBg),
             ) {
             if (connecting) {
                 Row(
@@ -298,7 +296,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                         fontSize = 14.sp,
                     )
                 }
-            } else if (errorMsg != null && outputLines.isEmpty()) {
+            } else if (errorMsg != null && emulator == null) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -315,30 +313,60 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                         fontSize = 12.sp,
                     )
                 }
-            } else {
-                SelectionContainer {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        itemsIndexed(outputLines) { index, line ->
-                            val isLast = index == outputLines.lastIndex
-                            // Append \n to non-last lines so copy preserves
-                            //   line breaks across the selection.
-                            val text = if (isLast) line else line + "\n"
-                            if (isLast && connected) {
-                                TerminalLineWithCursor(text, terminalFg, cursorCol)
-                            } else {
-                                Text(
-                                    text,
-                                    color = terminalFg,
-                                    fontSize = 13.sp,
-                                    lineHeight = 18.sp,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
+            } else if (emulator != null) {
+                // Interceptor Box — Terminal is a CHILD of this Box.
+                // PointerEventPass.Initial dispatches parent → child, so this
+                // Box sees 2+ finger events BEFORE Terminal. Consuming them
+                // blocks termlib's built-in graphicsLayer zoom (which snaps
+                // back). We change font size instead. Single-finger events
+                // pass through to Terminal for selection/scroll/menu.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(sessionId) {
+                            awaitPointerEventScope {
+                                var wasZooming = false
+                                while (true) {
+                                    val event = awaitPointerEvent(
+                                        PointerEventPass.Initial
+                                    )
+                                    val pressedCount =
+                                        event.changes.count { it.pressed }
+                                    if (pressedCount >= 2) {
+                                        // Consume to block termlib's zoom
+                                        event.changes.forEach { it.consume() }
+                                        val zoom = event.calculateZoom()
+                                        if (zoom != 1f) {
+                                            // Accumulate in float only — don't
+                                            // update baseFontSize mid-gesture
+                                            // to avoid termlib relayout thrash
+                                            floatFontSize *= zoom
+                                            floatFontSize = floatFontSize.coerceIn(4f, 32f)
+                                        }
+                                        wasZooming = true
+                                    } else if (pressedCount == 0 && wasZooming) {
+                                        // Gesture ended: apply final font size
+                                        val newInt = floatFontSize.toInt()
+                                        if (newInt != baseFontSize) {
+                                            baseFontSize = newInt
+                                        }
+                                        wasZooming = false
+                                    }
+                                }
                             }
-                        }
-                    }
+                        },
+                ) {
+                    Terminal(
+                        terminalEmulator = emulator,
+                        modifier = Modifier.fillMaxSize(),
+                        typeface = Typeface.MONOSPACE,
+                        initialFontSize = baseFontSize.sp,
+                        minFontSize = 4.sp,
+                        maxFontSize = 32.sp,
+                        backgroundColor = terminalBg,
+                        foregroundColor = terminalFg,
+                        keyboardEnabled = useSystemKeyboard,
+                    )
                 }
             }
 
@@ -349,6 +377,32 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                     .align(Alignment.TopEnd)
                     .padding(top = 4.dp, end = 4.dp)
                     .clickable { showSheet = true },
+                textColor = terminalFg,
+            )
+
+            // Font size +/- buttons below the session name chip
+            FontSizeButtons(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 44.dp, end = 4.dp),
+                onIncrease = { baseFontSize = (baseFontSize + 1).coerceIn(4, 32); floatFontSize = baseFontSize.toFloat() },
+                onDecrease = { baseFontSize = (baseFontSize - 1).coerceIn(4, 32); floatFontSize = baseFontSize.toFloat() },
+                textColor = terminalFg,
+            )
+
+            // Paste button — reads system clipboard and sends to terminal
+            PasteButton(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 116.dp, end = 4.dp),
+                onPaste = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
+                    if (text.isNotEmpty() && connected) {
+                        repo.writeTerminal(sessionId, text)
+                    }
+                },
                 textColor = terminalFg,
             )
 
@@ -376,7 +430,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
             }
 
             // Disconnected banner — overlaid at bottom of terminal area
-            if (!connected && !connecting && outputLines.isNotEmpty()) {
+            if (!connected && !connecting && emulator != null) {
                 Row(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -457,8 +511,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .background(terminalBg)
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+                .background(terminalBg),
         ) {
             if (connecting) {
                 Row(
@@ -477,7 +530,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                         fontSize = 14.sp,
                     )
                 }
-            } else if (errorMsg != null && outputLines.isEmpty()) {
+            } else if (errorMsg != null && emulator == null) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -494,30 +547,60 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                         fontSize = 12.sp,
                     )
                 }
-            } else {
-                SelectionContainer {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        itemsIndexed(outputLines) { index, line ->
-                            val isLast = index == outputLines.lastIndex
-                            // Append \n to non-last lines so copy preserves
-                            //   line breaks across the selection.
-                            val text = if (isLast) line else line + "\n"
-                            if (isLast && connected) {
-                                TerminalLineWithCursor(text, terminalFg, cursorCol)
-                            } else {
-                                Text(
-                                    text,
-                                    color = terminalFg,
-                                    fontSize = 13.sp,
-                                    lineHeight = 18.sp,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
+            } else if (emulator != null) {
+                // Interceptor Box — Terminal is a CHILD of this Box.
+                // PointerEventPass.Initial dispatches parent → child, so this
+                // Box sees 2+ finger events BEFORE Terminal. Consuming them
+                // blocks termlib's built-in graphicsLayer zoom (which snaps
+                // back). We change font size instead. Single-finger events
+                // pass through to Terminal for selection/scroll/menu.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(sessionId) {
+                            awaitPointerEventScope {
+                                var wasZooming = false
+                                while (true) {
+                                    val event = awaitPointerEvent(
+                                        PointerEventPass.Initial
+                                    )
+                                    val pressedCount =
+                                        event.changes.count { it.pressed }
+                                    if (pressedCount >= 2) {
+                                        // Consume to block termlib's zoom
+                                        event.changes.forEach { it.consume() }
+                                        val zoom = event.calculateZoom()
+                                        if (zoom != 1f) {
+                                            // Accumulate in float only — don't
+                                            // update baseFontSize mid-gesture
+                                            // to avoid termlib relayout thrash
+                                            floatFontSize *= zoom
+                                            floatFontSize = floatFontSize.coerceIn(4f, 32f)
+                                        }
+                                        wasZooming = true
+                                    } else if (pressedCount == 0 && wasZooming) {
+                                        // Gesture ended: apply final font size
+                                        val newInt = floatFontSize.toInt()
+                                        if (newInt != baseFontSize) {
+                                            baseFontSize = newInt
+                                        }
+                                        wasZooming = false
+                                    }
+                                }
                             }
-                        }
-                    }
+                        },
+                ) {
+                    Terminal(
+                        terminalEmulator = emulator,
+                        modifier = Modifier.fillMaxSize(),
+                        typeface = Typeface.MONOSPACE,
+                        initialFontSize = baseFontSize.sp,
+                        minFontSize = 4.sp,
+                        maxFontSize = 32.sp,
+                        backgroundColor = terminalBg,
+                        foregroundColor = terminalFg,
+                        keyboardEnabled = useSystemKeyboard,
+                    )
                 }
             }
 
@@ -528,6 +611,32 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                     .align(Alignment.TopEnd)
                     .padding(top = 4.dp, end = 4.dp)
                     .clickable { showSheet = true },
+                textColor = terminalFg,
+            )
+
+            // Font size +/- buttons below the session name chip
+            FontSizeButtons(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 44.dp, end = 4.dp),
+                onIncrease = { baseFontSize = (baseFontSize + 1).coerceIn(4, 32); floatFontSize = baseFontSize.toFloat() },
+                onDecrease = { baseFontSize = (baseFontSize - 1).coerceIn(4, 32); floatFontSize = baseFontSize.toFloat() },
+                textColor = terminalFg,
+            )
+
+            // Paste button — reads system clipboard and sends to terminal
+            PasteButton(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 116.dp, end = 4.dp),
+                onPaste = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
+                    if (text.isNotEmpty() && connected) {
+                        repo.writeTerminal(sessionId, text)
+                    }
+                },
                 textColor = terminalFg,
             )
 
@@ -555,7 +664,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
             }
 
             // Disconnected banner — overlaid at bottom of terminal area
-            if (!connected && !connecting && outputLines.isNotEmpty()) {
+            if (!connected && !connecting && emulator != null) {
                 Row(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -635,30 +744,10 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     } // end Box
 
     // === System IME mode ===
-    // Hidden BasicTextField that triggers the system IME. Always present so
-    //   focus state survives mode toggles. In system-IME mode it requests
-    //   focus; in custom-keyboard mode it clears focus.
-    val systemInput = remember { mutableStateOf("") }
-    val focusRequester = remember { FocusRequester() }
-    if (useSystemKeyboard) {
-        BasicTextField(
-            value = systemInput.value,
-            onValueChange = { newValue ->
-                val added = newValue.substring(systemInput.value.length)
-                if (added.isNotEmpty() && connected) {
-                    repo.writeTerminal(sessionId, added)
-                }
-                systemInput.value = ""
-            },
-            modifier = Modifier
-                .size(1.dp)
-                .focusRequester(focusRequester),
-            keyboardOptions = KeyboardOptions(),
-        )
-        LaunchedEffect(Unit) {
-            focusRequester.requestFocus()
-        }
-    }
+    // termlib's Terminal composable with keyboardEnabled=true handles IME
+    // input directly. The old hidden BasicTextField is no longer needed.
+    // When useSystemKeyboard is true, Terminal's keyboardEnabled is set to
+    // true (see the Terminal() calls above), and termlib manages focus + IME.
 
     // === Session action bottom sheet ===
     if (showSheet) {
@@ -811,44 +900,69 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     }
 }
 
-// === SECTION 1: Terminal line with blinking cursor ===
+// === SECTION 1: Legacy cursor renderer — removed, termlib handles cursor ===
+// TerminalLineWithCursor was here; termlib's Terminal composable has built-in
+// blinking cursor support.
+
+// === SECTION 2: Glassmorphism chip ===
 
 @Composable
-private fun TerminalLineWithCursor(line: String, terminalFg: Color, cursorCol: Int) {
-    var cursorVisible by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            cursorVisible = !cursorVisible
-            kotlinx.coroutines.delay(530)
-        }
-    }
-    // Split the line at cursorCol and insert a blinking block cursor.
-    //   line may have a trailing "\n" (added for copy); keep it after cursor.
-    val before = line.take(cursorCol)
-    val after = line.drop(cursorCol)
-    Row(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            before,
-            color = terminalFg,
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-        )
-        Text(
-            "▋",
-            color = if (cursorVisible) terminalFg else Color.Transparent,
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-        )
-        Text(
-            after,
-            color = terminalFg,
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-        )
+private fun PasteButton(
+    modifier: Modifier = Modifier,
+    onPaste: () -> Unit,
+    textColor: Color,
+) {
+    Box(
+        modifier = modifier
+            .size(30.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0x33FFFFFF))
+            .border(0.5.dp, Color(0x44FFFFFF), RoundedCornerShape(10.dp))
+            .clickable { onPaste() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("📋", color = textColor.copy(alpha = 0.7f), fontSize = 14.sp)
     }
 }
 
-// === SECTION 2: Glassmorphism chip ===
+@Composable
+private fun FontSizeButtons(
+    modifier: Modifier = Modifier,
+    onIncrease: () -> Unit,
+    onDecrease: () -> Unit,
+    textColor: Color,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        // Increase button (top)
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0x33FFFFFF))
+                .border(0.5.dp, Color(0x44FFFFFF), RoundedCornerShape(10.dp))
+                .clickable { onIncrease() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("+", color = textColor.copy(alpha = 0.7f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        }
+        // Decrease button (bottom)
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0x33FFFFFF))
+                .border(0.5.dp, Color(0x44FFFFFF), RoundedCornerShape(10.dp))
+                .clickable { onDecrease() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("−", color = textColor.copy(alpha = 0.7f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
 
 @Composable
 private fun GlassChip(

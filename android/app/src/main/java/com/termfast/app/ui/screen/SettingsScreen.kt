@@ -1,5 +1,6 @@
 package com.termfast.app.ui.screen
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -16,6 +17,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.sp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
@@ -27,7 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.termfast.app.data.AppSettings
 import com.termfast.app.data.CredentialManager
+import com.termfast.app.data.RustRepository
 import com.termfast.app.data.SettingsRepository
+import com.termfast.app.ui.TerminalThemes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -118,6 +123,9 @@ fun SettingsScreen(navController: NavController) {
 
             // Cloud sync section
             CloudSyncSection()
+
+            // Terminal section
+            TerminalSettingsSection()
 
             // Notifications section
             SettingsSectionCard(title = "通知", icon = Icons.Filled.Notifications) {
@@ -626,4 +634,119 @@ private fun InfoRow(label: String, value: String) {
         Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
     }
+}
+
+// === SECTION: Terminal settings ===
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TerminalSettingsSection() {
+    val config = remember { RustRepository.getConfig() }
+    var themeId by remember { mutableStateOf(config?.general?.terminal_theme ?: "catppuccin-mocha") }
+    var fontSize by remember { mutableStateOf(config?.general?.terminal_font_size ?: 10) }
+    var themeExpanded by remember { mutableStateOf(false) }
+    val theme = TerminalThemes.byId(themeId)
+
+    // Preview emulator — created once, fed sample ANSI text.
+    val previewEmulator = remember {
+        org.connectbot.terminal.TerminalEmulatorFactory.create(
+            initialRows = 6,
+            initialCols = 40,
+            defaultForeground = androidx.compose.ui.graphics.Color(theme.foreground),
+            defaultBackground = androidx.compose.ui.graphics.Color(theme.background),
+            onKeyboardInput = { /* no-op for preview */ },
+        )
+    }
+
+    // Apply theme + feed sample text whenever theme or fontSize changes.
+    LaunchedEffect(themeId, fontSize) {
+        previewEmulator.applyColorScheme(theme.ansiColors, theme.foreground, theme.background)
+        previewEmulator.clearScreen()
+        val sample = buildString {
+            append("\u001b[1m\u001b[32mroot@server\u001b[0m:\u001b[34m~\u001b[0m# ")
+            append("\u001b[33mls\u001b[0m --color=auto\r\n")
+            append("\u001b[34mdir1  \u001b[0m\u001b[32mscript.sh  \u001b[0m\u001b[36mlink.txt\u001b[0m  readme.md\r\n")
+            append("\u001b[1m\u001b[32mroot@server\u001b[0m:\u001b[34m~\u001b[0m# ")
+            append("\u001b[31mhtop\u001b[0m\r\n")
+            append("  CPU\u001b[32m[||||||||||    ]\u001b[0m  68%  Mem\u001b[33m[||||        ]\u001b[0m  40%\r\n")
+            append("\u001b[1m\u001b[32mroot@server\u001b[0m:\u001b[34m~\u001b[0m# \u001b[5m\u258b\u001b[0m")
+        }
+        previewEmulator.writeInput(sample.toByteArray())
+    }
+
+    SettingsSectionCard(title = "终端", icon = Icons.Filled.Article) {
+        // Live preview — shows what the terminal looks like with current theme
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(androidx.compose.ui.graphics.Color(theme.background)),
+        ) {
+            org.connectbot.terminal.Terminal(
+                terminalEmulator = previewEmulator,
+                modifier = Modifier.fillMaxSize(),
+                typeface = android.graphics.Typeface.MONOSPACE,
+                initialFontSize = fontSize.sp,
+                minFontSize = 6.sp,
+                maxFontSize = 24.sp,
+                backgroundColor = androidx.compose.ui.graphics.Color(theme.background),
+                foregroundColor = androidx.compose.ui.graphics.Color(theme.foreground),
+                keyboardEnabled = false,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // Theme picker
+        ExposedDropdownMenuBox(
+            expanded = themeExpanded,
+            onExpandedChange = { themeExpanded = it }
+        ) {
+            OutlinedTextField(
+                value = theme.name,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("配色方案") },
+                modifier = Modifier.menuAnchor().fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true,
+            )
+            ExposedDropdownMenu(expanded = themeExpanded, onDismissRequest = { themeExpanded = false }) {
+                TerminalThemes.all.forEach { t ->
+                    DropdownMenuItem(
+                        text = { Text(t.name) },
+                        onClick = {
+                            themeId = t.id
+                            themeExpanded = false
+                            saveTerminalConfig(themeId, fontSize)
+                            TerminalSessionManager.applyThemeToAll(t)
+                        }
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        // Font size slider
+        Text(
+            "字号: $fontSize",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Slider(
+            value = fontSize.toFloat(),
+            onValueChange = { fontSize = it.toInt() },
+            valueRange = 8f..24f,
+            steps = 15,
+            onValueChangeFinished = { saveTerminalConfig(themeId, fontSize) },
+        )
+    }
+}
+
+private fun saveTerminalConfig(themeId: String, fontSize: Int) {
+    val config = RustRepository.getConfig() ?: return
+    val newGeneral = config.general.copy(
+        terminal_theme = themeId,
+        terminal_font_size = fontSize,
+    )
+    RustRepository.saveConfig(config.copy(general = newGeneral))
 }

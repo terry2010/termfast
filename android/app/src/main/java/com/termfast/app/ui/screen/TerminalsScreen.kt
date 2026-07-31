@@ -206,9 +206,9 @@ private fun TerminalCard(
     val bgColor = if (isFocused) MaterialTheme.colorScheme.primaryContainer
                   else MaterialTheme.colorScheme.surface
 
-    // Preview: last 2 non-empty output lines
-    val previewLines = session.output.takeLast(3).filter { it.isNotBlank() }
-    val preview = if (previewLines.isNotEmpty()) previewLines.joinToString(" ⏎ ")
+    // Preview: last few non-empty lines from preview cache
+    val previewLines = session.previewCache.lines().filter { it.isNotBlank() }.takeLast(3)
+    val preview = if (previewLines.isNotEmpty()) previewLines.joinToString(" ⏵ ")
                   else "（无输出）"
     val timeStr = remember(session.createdAt) {
         val diff = System.currentTimeMillis() - session.createdAt

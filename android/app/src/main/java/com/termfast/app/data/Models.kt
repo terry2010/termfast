@@ -39,6 +39,8 @@ data class GeneralConfig(
     val cloud_sync_provider: String = "",
     val http_proxy_mode: String = "auto",
     val http_proxy_url: String = "",
+    val terminal_theme: String = "catppuccin-mocha",
+    val terminal_font_size: Int = 10,
 )
 
 @Serializable

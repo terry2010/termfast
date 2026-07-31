@@ -88,8 +88,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
 
     buildFeatures {
@@ -105,7 +107,7 @@ android {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
     implementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.15.0")
@@ -127,6 +129,9 @@ dependencies {
 
     // Encrypted credential key caching (Android Keystore-backed)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Terminal emulator (ConnectBot termlib — libvterm via JNI + Compose Canvas)
+    implementation("org.connectbot:termlib:0.1.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

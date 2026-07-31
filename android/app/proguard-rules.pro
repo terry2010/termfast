@@ -46,3 +46,8 @@
 -dontwarn org.joda.time.**
 -keep class com.google.crypto.tink.** { *; }
 -keep class androidx.security.crypto.** { *; }
+
+# ConnectBot termlib (libvterm JNI wrapper + Compose Terminal composable)
+-keep class org.connectbot.terminal.** { *; }
+-keepclassmembers class org.connectbot.terminal.** { *; }
+-dontwarn org.connectbot.terminal.**
