@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+termfast-core = { workspace = true }
 termfast-credential = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

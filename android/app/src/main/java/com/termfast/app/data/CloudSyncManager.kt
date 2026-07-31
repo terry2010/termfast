@@ -220,21 +220,22 @@ object CloudSyncManager {
         return Pair(null, null)
     }
 
-    /** Write sync info to SharedPreferences after successful upload/download. */
+    /** Write sync info to SharedPreferences after successful upload/download.
+     *  Uses commit() (synchronous) to avoid losing sync state on crash. */
     private fun writeCache(provider: String, updatedAt: String?, deviceName: String?) {
         val ctx = appContext ?: return
         val prefs = ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
-        prefs.edit().apply {
-            if (updatedAt != null) putString("${provider}_last_synced", updatedAt)
-            if (deviceName != null) putString("${provider}_last_device", deviceName)
-        }.apply()
+        val editor = prefs.edit()
+        if (updatedAt != null) editor.putString("${provider}_last_synced", updatedAt)
+        if (deviceName != null) editor.putString("${provider}_last_device", deviceName)
+        editor.commit()
     }
 
     /** Clear cached sync info for a provider (on disconnect). */
     private fun clearCache(provider: String) {
         val ctx = appContext ?: return
         val prefs = ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
-        prefs.edit().remove("${provider}_last_synced").remove("${provider}_last_device").apply()
+        prefs.edit().remove("${provider}_last_synced").remove("${provider}_last_device").commit()
     }
 
     /** App context for SharedPreferences (set from Application.onCreate). */

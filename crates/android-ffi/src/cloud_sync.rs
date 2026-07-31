@@ -368,13 +368,9 @@ fn apply_full_export(export_data: &FullExportData) -> Result<(), String> {
             if !is_safe {
                 continue;
             }
-            if let Err(e) = std::fs::write(key_path, content) {
+            // Crash-safe atomic write with fsync, 0600 for private key
+            if let Err(e) = termfast_core::fs::write_atomic(key_path, content.as_bytes(), true) {
                 log::warn!("apply_full_export: failed to write key file {}: {}", key_path.display(), e);
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600));
             }
         }
     }

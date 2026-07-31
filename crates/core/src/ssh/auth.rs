@@ -138,9 +138,10 @@ pub fn generate_keypair_at(
     let private_key_str = encrypted_key
         .to_openssh(russh::keys::ssh_key::LineEnding::LF)
         .map_err(|e| Error::Crypto(format!("key encode failed: {}", e)))?;
-    std::fs::write(&key_path, private_key_str.as_bytes()).map_err(Error::Io)?;
+    // Crash-safe atomic write with fsync, 0600 for private key
+    crate::fs::write_atomic(&key_path, private_key_str.as_bytes(), true).map_err(Error::Io)?;
 
-    // Write public key
+    // Write public key (644, not sensitive)
     let public_key = key_pair.public_key();
     let pub_key_str = format!(
         "{} termfast@{}",
@@ -149,17 +150,7 @@ pub fn generate_keypair_at(
             .map_err(|e| Error::Crypto(format!("pubkey encode failed: {}", e)))?,
         server_id
     );
-    std::fs::write(&pub_key_path, &pub_key_str).map_err(Error::Io)?;
-
-    // Set permissions: private 600, public 644
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-            .map_err(Error::Io)?;
-        std::fs::set_permissions(&pub_key_path, std::fs::Permissions::from_mode(0o644))
-            .map_err(Error::Io)?;
-    }
+    crate::fs::write_atomic(&pub_key_path, pub_key_str.as_bytes(), false).map_err(Error::Io)?;
 
     Ok((key_path, pub_key_str, passphrase))
 }

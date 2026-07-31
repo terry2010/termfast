@@ -38,10 +38,8 @@ impl FileCredentialStore {
     fn save_file(&self) -> Result<()> {
         let store = self.store.lock().unwrap();
         let data = serde_json::to_string_pretty(&*store)?;
-        // Write to temp file then rename for atomicity
-        let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, data)?;
-        std::fs::rename(&tmp, &self.path)?;
+        // Crash-safe atomic write with fsync
+        termfast_core::fs::write_atomic(&self.path, data.as_bytes(), true)?;
         Ok(())
     }
 }

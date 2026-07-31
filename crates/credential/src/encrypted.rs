@@ -555,23 +555,12 @@ fn decrypt_with_key(key: &DerivedKey, header: &Header, ciphertext: &[u8]) -> Res
         .map_err(|_| anyhow!("wrong master password or corrupted credential file"))
 }
 
-/// Write data to a file atomically (write to temp, then rename).
+/// Write data to a file atomically with fsync (crash-safe).
 /// Sets 0600 permissions on Unix to prevent other users from reading
 /// the encrypted credential file.
 fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, data).with_context(|| format!("write tmp {:?}", tmp))?;
-
-    // Set file permissions to 0600 on Unix (credential file is sensitive)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("set permissions {:?}", tmp))?;
-    }
-
-    std::fs::rename(&tmp, path).with_context(|| format!("rename {:?} -> {:?}", tmp, path))?;
-    Ok(())
+    termfast_core::fs::write_atomic(path, data, true)
+        .with_context(|| format!("write_atomic {:?}", path))
 }
 
 // === SECTION 2 END ===

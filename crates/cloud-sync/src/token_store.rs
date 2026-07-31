@@ -35,20 +35,8 @@ pub fn save_tokens(
     let json = serde_json::to_vec_pretty(data)
         .map_err(|e| crate::CloudSyncError::Api(format!("serialize error: {}", e)))?;
 
-    // Write atomically: write to temp file, then rename
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &json)
-        .map_err(|e| crate::CloudSyncError::Io(e.to_string()))?;
-
-    // Set permissions on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| crate::CloudSyncError::Io(e.to_string()))?;
-    }
-
-    std::fs::rename(&tmp, path)
+    // Crash-safe atomic write with fsync, 0600 permissions (token is sensitive)
+    termfast_core::fs::write_atomic(path, &json, true)
         .map_err(|e| crate::CloudSyncError::Io(e.to_string()))?;
 
     Ok(())

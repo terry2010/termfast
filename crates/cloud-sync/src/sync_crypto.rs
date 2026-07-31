@@ -70,12 +70,7 @@ pub fn password_hash(password: &str) -> [u8; 32] {
 
 /// Save the password hash to a file (plaintext, 32 bytes).
 pub fn save_password_hash(path: &std::path::Path, hash: &[u8; 32]) {
-    let _ = std::fs::write(path, hash);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
+    let _ = termfast_core::fs::write_atomic(path, hash, true);
 }
 
 /// Load the password hash from a file. Returns None if file doesn't exist.

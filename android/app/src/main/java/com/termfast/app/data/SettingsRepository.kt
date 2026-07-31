@@ -1,7 +1,6 @@
 package com.termfast.app.data
 
 import android.content.Context
-import androidx.core.content.edit
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -22,6 +21,7 @@ class SettingsRepository(context: Context) {
     }
 
     fun save(settings: AppSettings) {
-        prefs.edit { putString(KEY_SETTINGS, json.encodeToString(settings)) }
+        // commit() = synchronous write. apply() = async, can lose data on crash.
+        prefs.edit().putString(KEY_SETTINGS, json.encodeToString(settings)).commit()
     }
 }

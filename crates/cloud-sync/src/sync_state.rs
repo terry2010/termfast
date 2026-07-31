@@ -151,20 +151,11 @@ pub fn save_state(path: &Path, password: &str, state: &SyncState) -> Result<(), 
     Ok(())
 }
 
-/// Write data to a file atomically (write to temp, then rename).
+/// Write data to a file atomically with fsync (crash-safe).
 /// Sets 0600 permissions on Unix.
 fn write_atomic(path: &Path, data: &[u8]) -> Result<(), SyncStateError> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, data).map_err(|e| SyncStateError::Io(e.to_string()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-
-    std::fs::rename(&tmp, path).map_err(|e| SyncStateError::Io(e.to_string()))?;
-    Ok(())
+    termfast_core::fs::write_atomic(path, data, true)
+        .map_err(|e| SyncStateError::Io(e.to_string()))
 }
 
 /// Errors from sync state operations.

@@ -6,7 +6,7 @@
 use super::config::Config;
 use super::migration::load_config_with_migration;
 use crate::error::{Error, ErrorCode, IpcError, Result};
-use std::io::Write;
+use crate::fs;
 use std::path::{Path, PathBuf};
 
 /// Trait for config storage backends.
@@ -75,56 +75,8 @@ impl ConfigStorage for FileConfigStorage {
         let json = serde_json::to_string_pretty(config)?;
         let json = json + "\n"; // trailing newline
 
-        // Crash-safe atomic write: write to temp file, fsync, rename, fsync dir.
-        // Without fsync, a crash after rename can lose data because the OS
-        // may not have flushed page cache to disk yet.
-        let tmp_path = self.config_path.with_extension("json.tmp");
-
-        // 1. Write data to temp file
-        let mut file = std::fs::File::create(&tmp_path).map_err(Error::Io)?;
-        file.write_all(json.as_bytes()).map_err(Error::Io)?;
-
-        // 2. fsync the temp file — ensures file content is on disk before rename
-        file.sync_all().map_err(Error::Io)?;
-        // Close the file handle before rename (Windows requires it)
-        drop(file);
-
-        // Set file permissions to 600 on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            let _ = std::fs::set_permissions(&tmp_path, perms);
-        }
-
-        // 3. Atomic rename
-        std::fs::rename(&tmp_path, &self.config_path).map_err(|e| {
-            // Clean up temp file on rename failure
-            let _ = std::fs::remove_file(&tmp_path);
-            Error::Io(e)
-        })?;
-
-        // 4. fsync the parent directory — ensures the rename is persisted
-        //    Without this, a crash can leave the old file name pointing to
-        //    stale data (the new content was fsync'd but the directory entry
-        //    update was not).
-        #[cfg(unix)]
-        {
-            if let Some(parent) = self.config_path.parent() {
-                if let Ok(dir) = std::fs::File::open(parent) {
-                    let _ = dir.sync_all();
-                    // macOS: sync_all only flushes to disk cache, not to platter.
-                    // F_FULLFSYNC forces a physical write to the storage device.
-                    #[cfg(target_os = "macos")]
-                    {
-                        use std::os::fd::AsRawFd;
-                        unsafe {
-                            libc::fcntl(dir.as_raw_fd(), libc::F_FULLFSYNC);
-                        }
-                    }
-                }
-            }
-        }
+        // Crash-safe atomic write: write temp, fsync, rename, fsync dir.
+        fs::write_atomic(&self.config_path, json.as_bytes(), false).map_err(Error::Io)?;
 
         Ok(())
     }

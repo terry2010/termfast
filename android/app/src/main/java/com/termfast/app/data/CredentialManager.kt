@@ -68,7 +68,7 @@ object CredentialManager {
         }
         if (!ok) {
             // Cached key is stale — delete it so user is prompted next time.
-            prefs(context).edit().remove(KEY_CACHED).apply()
+            prefs(context).edit().remove(KEY_CACHED).commit()
         }
         return ok
     }
@@ -76,7 +76,7 @@ object CredentialManager {
     /** Lock the store and clear the cached key. */
     fun lock(context: Context) {
         RustBridge.nativeCredentialLock()
-        prefs(context).edit().remove(KEY_CACHED).apply()
+        prefs(context).edit().remove(KEY_CACHED).commit()
     }
 
     /** Migrate a legacy plaintext file to encrypted format. */
@@ -94,16 +94,18 @@ object CredentialManager {
     /** Reset (delete) the encrypted file and clear cache. */
     fun reset(context: Context): Boolean {
         val ok = RustBridge.nativeCredentialReset()
-        prefs(context).edit().remove(KEY_CACHED).apply()
+        prefs(context).edit().remove(KEY_CACHED).commit()
         return ok
     }
 
     fun export(destPath: String): Boolean = RustBridge.nativeCredentialExport(destPath)
     fun import(srcPath: String, masterPassword: String): Boolean = RustBridge.nativeCredentialImport(srcPath, masterPassword)
 
-    /** Cache the current derived key into EncryptedSharedPreferences. */
+    /** Cache the current derived key into EncryptedSharedPreferences.
+     *  Uses commit() (synchronous) instead of apply() (async) because losing
+     *  the cached key on crash forces the user to re-enter the master password. */
     fun cacheKey(context: Context) {
         val key = RustBridge.nativeCredentialGetKey() ?: return
-        prefs(context).edit().putString(KEY_CACHED, key).apply()
+        prefs(context).edit().putString(KEY_CACHED, key).commit()
     }
 }

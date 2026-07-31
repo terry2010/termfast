@@ -4397,20 +4397,9 @@ async fn apply_full_export(
                 tracing::warn!("apply_full_export: refusing to write key to {}", canonical.display());
                 continue;
             }
-            // Atomic write: tmp file + rename
-            let tmp_path = canonical.with_extension("tmp");
-            if let Err(e) = std::fs::write(&tmp_path, key_content.as_bytes()) {
-                tracing::warn!("apply_full_export: failed to write key tmp {}: {}", tmp_path.display(), e);
-                continue;
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
-            }
-            if let Err(e) = std::fs::rename(&tmp_path, &canonical) {
-                tracing::warn!("apply_full_export: failed to rename key file {}: {}", canonical.display(), e);
-                let _ = std::fs::remove_file(&tmp_path);
+            // Crash-safe atomic write with fsync, 0600 permissions
+            if let Err(e) = termfast_core::fs::write_atomic(&canonical, key_content.as_bytes(), true) {
+                tracing::warn!("apply_full_export: failed to write key file {}: {}", canonical.display(), e);
             }
         }
     }

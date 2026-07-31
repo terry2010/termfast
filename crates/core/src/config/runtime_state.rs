@@ -100,21 +100,9 @@ impl RuntimeStateManager {
         }
 
         let json = serde_json::to_string_pretty(state)?;
-        let tmp_path = self.path.with_extension("json.tmp");
 
-        std::fs::write(&tmp_path, &json).map_err(Error::Io)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            let _ = std::fs::set_permissions(&tmp_path, perms);
-        }
-
-        std::fs::rename(&tmp_path, &self.path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            Error::Io(e)
-        })?;
+        // Crash-safe atomic write with fsync
+        crate::fs::write_atomic(&self.path, json.as_bytes(), true).map_err(Error::Io)?;
 
         Ok(())
     }

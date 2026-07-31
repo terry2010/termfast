@@ -67,7 +67,7 @@ class SshVpnTileService : TileService() {
 
         fun setLastServerId(context: Context, serverId: String?) {
             context.getSharedPreferences(PREFS_TILE, Context.MODE_PRIVATE)
-                .edit().putString(KEY_LAST_SERVER, serverId).apply()
+                .edit().putString(KEY_LAST_SERVER, serverId).commit()
         }
 
         private fun getLastServerId(context: Context): String? {

@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod fs;
 pub mod log;
 pub mod migration;
 pub mod platform;
