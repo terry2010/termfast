@@ -2757,14 +2757,24 @@ async fn handle_terminal_input(state: &DaemonState, params: &serde_json::Value) 
         .get("session_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing session_id"))?;
-    // Data is now raw bytes (Vec<u8>) — no more base64 encoding
-    let data = params
-        .get("data")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing data"))?
-        .iter()
-        .map(|v| v.as_u64().unwrap_or(0) as u8)
-        .collect::<Vec<u8>>();
+    // Data is base64-encoded raw bytes — efficient binary transport via JSON.
+    // Supports both string (base64) and array (legacy JSON number array) for
+    // backward compatibility.
+    let data = match params.get("data") {
+        Some(serde_json::Value::String(s)) => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(s)
+                .map_err(|e| IpcError::new(ErrorCode::InvalidParams, format!("invalid base64 data: {}", e)))?
+        }
+        Some(serde_json::Value::Array(arr)) => {
+            // Legacy path: JSON array of numbers (kept for backward compat)
+            arr.iter()
+                .map(|v| v.as_u64().unwrap_or(0) as u8)
+                .collect::<Vec<u8>>()
+        }
+        _ => return Err(IpcError::new(ErrorCode::InvalidParams, "missing data")),
+    };
     // wait_for_send=true blocks until SSH write is confirmed (needed for ZMODEM
     // backpressure). Default false — normal keystrokes return immediately.
     let wait_for_send = params

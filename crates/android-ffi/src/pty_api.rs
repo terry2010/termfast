@@ -86,18 +86,29 @@ pub async fn open_session(
                 msg = channel.wait() => {
                     match msg {
                         Some(ChannelMsg::Data { data }) => {
+                            // Base64-encode raw bytes to preserve binary data
+                            // (ZMODEM, non-UTF-8 encodings, etc.) — using
+                            // String::from_utf8_lossy here would corrupt any
+                            // byte that isn't valid UTF-8.
+                            use base64::Engine;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                             let json = serde_json::json!({
                                 "type": "TerminalData",
                                 "session_id": sid,
-                                "data": String::from_utf8_lossy(&data).to_string(),
+                                "data": b64,
+                                "encoding": "base64",
                             });
                             dispatch_event_to_kotlin(&json.to_string());
                         }
                         Some(ChannelMsg::ExtendedData { data, .. }) => {
+                            use base64::Engine;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                             let json = serde_json::json!({
                                 "type": "TerminalData",
                                 "session_id": sid,
-                                "data": String::from_utf8_lossy(&data).to_string(),
+                                "data": b64,
+                                "encoding": "base64",
+                                "is_stderr": true,
                             });
                             dispatch_event_to_kotlin(&json.to_string());
                         }

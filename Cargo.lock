@@ -6876,6 +6876,7 @@ version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "keyring",
  "serde",

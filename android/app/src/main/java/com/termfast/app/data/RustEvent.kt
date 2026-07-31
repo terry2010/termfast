@@ -50,6 +50,8 @@ sealed class RustEvent {
     data class TerminalData(
         val session_id: String,
         val data: String,
+        val encoding: String? = null,
+        val is_stderr: Boolean? = null,
     ) : RustEvent()
 
     @Serializable

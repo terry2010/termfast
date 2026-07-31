@@ -1463,11 +1463,22 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeWriteTerminal(
     data: JString,
 ) -> jboolean {
     let session = jstring_to_string(&mut env, &session_id);
-    let input = jstring_to_string(&mut env, &data);
-    match crate::pty_api::write_session(&session, input.as_bytes()) {
-        Ok(()) => bool_to_jbool(true),
+    let data_str = jstring_to_string(&mut env, &data);
+    // Decode base64 to raw bytes — preserves binary data (null bytes,
+    // non-UTF-8 sequences, etc.) that can't be represented in a Java String.
+    use base64::Engine;
+    match base64::engine::general_purpose::STANDARD.decode(&data_str) {
+        Ok(bytes) => {
+            match crate::pty_api::write_session(&session, &bytes) {
+                Ok(()) => bool_to_jbool(true),
+                Err(e) => {
+                    log_to_kotlin("error", &format!("Terminal write error: {}", e));
+                    bool_to_jbool(false)
+                }
+            }
+        }
         Err(e) => {
-            log_to_kotlin("error", &format!("Terminal write error: {}", e));
+            log_to_kotlin("error", &format!("Terminal write base64 decode error: {}", e));
             bool_to_jbool(false)
         }
     }

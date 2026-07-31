@@ -1,5 +1,6 @@
 package com.termfast.app.ui.screen
 
+import android.util.Base64
 import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
 import kotlinx.coroutines.CoroutineScope
@@ -326,7 +327,20 @@ object TerminalSessionManager {
             RustRepository.events.collect { event ->
                 when (event) {
                     is RustEvent.TerminalData -> {
-                        appendTerminalData(event.session_id, event.data)
+                        // Decode base64 to raw bytes, then convert to UTF-8 string.
+                        // The backend sends base64 to preserve binary data; we
+                        // decode it here so the terminal renderer gets the original
+                        // bytes (not lossy-converted by the Rust side).
+                        val raw = if (event.encoding == "base64") {
+                            try {
+                                String(Base64.decode(event.data, Base64.DEFAULT), Charsets.UTF_8)
+                            } catch (e: Exception) {
+                                event.data  // fallback: treat as plain string
+                            }
+                        } else {
+                            event.data
+                        }
+                        appendTerminalData(event.session_id, raw)
                     }
                     is RustEvent.TerminalClosed -> {
                         setConnectedBySession(event.session_id, false)

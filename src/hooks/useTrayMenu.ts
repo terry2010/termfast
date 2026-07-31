@@ -25,6 +25,7 @@ import { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/men
 import { TrayIcon } from "@tauri-apps/api/tray";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
+import { openTerminalWithChannel } from "@/lib/terminal";
 import { useServerStore } from "@/stores/serverStore";
 import type { ServerState } from "@/stores/serverStore";
 import i18n from "@/i18n/config";
@@ -45,6 +46,8 @@ export function useTrayMenu() {
   const { t } = useTranslation();
   const servers = useServerStore((s) => s.servers);
   const selectServer = useServerStore((s) => s.selectServer);
+  const addTerminalTab = useServerStore((s) => s.addTerminalTab);
+  const setActiveTerminalTab = useServerStore((s) => s.setActiveTerminalTab);
   const rebuildRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -70,11 +73,21 @@ export function useTrayMenu() {
               if (!isConnected) {
                 await ipcInvoke("ipc_connect_server", { serverId: server.id });
               }
-              await ipcInvoke("ipc_terminal_open", {
-                server_id: server.id,
-                cols: 80,
-                rows: 24,
+              // Open terminal with a binary Channel so output is not dropped
+              const result = await openTerminalWithChannel(server.id);
+              const sessionId = result.session_id;
+              const tabId = `term:${sessionId}`;
+              const currentTabs = useServerStore.getState().terminal_tabs_by_server[server.id] || [];
+              const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+              addTerminalTab(server.id, {
+                id: tabId,
+                sessionId,
+                label: defaultLabel,
+                defaultLabel,
+                initialOutput: result.initial_output || "",
+                disconnected: false,
               });
+              setActiveTerminalTab(server.id, tabId);
               // Show main window so user can see terminal
               const win = getCurrentWindow();
               await win.show();

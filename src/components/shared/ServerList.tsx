@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { useServerStore } from "@/stores/serverStore";
 import { useLogStore } from "@/stores/logStore";
 import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
+import { openTerminalWithChannel } from "@/lib/terminal";
 import { AddServerDialog } from "@/components/shared/AddServerDialog";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import {
@@ -216,10 +217,7 @@ export function ServerList({
 
         // SSH connected — now open terminal session
         try {
-          const result = await ipcInvoke<{
-            session_id: string;
-            initial_output: string;
-          }>("ipc_terminal_open", { server_id: serverId, cols: 80, rows: 24 });
+          const result = await openTerminalWithChannel(serverId);
           const sessionId = result.session_id;
           const initialOutput = result.initial_output || "";
           const tabId = `term:${sessionId}`;

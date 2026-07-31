@@ -1200,11 +1200,13 @@ async fn ipc_terminal_input(
     data: Vec<u8>,
     wait_for_send: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    // Pass raw bytes as JSON array — daemon handler decodes from array
-    let data_arr: Vec<serde_json::Value> = data.iter().map(|b| serde_json::json!(b)).collect();
+    // Encode raw bytes as base64 string — 33% overhead vs 200-300% for JSON
+    // number array. The daemon handler decodes base64 back to Vec<u8>.
+    use base64::Engine;
+    let data_b64 = base64::engine::general_purpose::STANDARD.encode(&data);
     let params = serde_json::json!({
         "session_id": session_id,
-        "data": data_arr,
+        "data": data_b64,
         "wait_for_send": wait_for_send.unwrap_or(false),
     });
     forward_to_daemon(

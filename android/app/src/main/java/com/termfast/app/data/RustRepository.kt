@@ -1,5 +1,6 @@
 package com.termfast.app.data
 
+import android.util.Base64
 import android.util.Log
 import com.termfast.app.RustBridge
 import com.termfast.app.RustEventListener
@@ -139,8 +140,12 @@ object RustRepository {
     // --- SSH Terminal (PTY) ---
     fun openTerminal(serverId: String, sessionId: String, cols: Int, rows: Int): Boolean =
         RustBridge.nativeOpenTerminal(serverId, sessionId, cols, rows)
-    fun writeTerminal(sessionId: String, data: String): Boolean =
-        RustBridge.nativeWriteTerminal(sessionId, data)
+    fun writeTerminal(sessionId: String, data: String): Boolean {
+        // Encode to base64 so binary data (null bytes, non-UTF-8, etc.) can
+        // be transported via JNI JString without corruption.
+        val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        return RustBridge.nativeWriteTerminal(sessionId, encoded)
+    }
     fun closeTerminal(sessionId: String): Boolean =
         RustBridge.nativeCloseTerminal(sessionId)
     fun resizeTerminal(sessionId: String, cols: Int, rows: Int): Boolean =
