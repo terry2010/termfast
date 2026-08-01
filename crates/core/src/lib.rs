@@ -6,6 +6,7 @@
 pub mod config;
 pub mod error;
 pub mod fs;
+#[cfg(not(target_os = "android"))]
 pub mod local;
 pub mod log;
 pub mod migration;
