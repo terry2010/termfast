@@ -15,6 +15,7 @@ use crate::ssh::exec;
 use crate::trigger::engine::{TriggerEngine, TriggerEvent};
 use crate::trigger::ipcheck::IpChangeDetector;
 use std::sync::Arc;
+use std::str::FromStr;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -63,6 +64,8 @@ pub struct ServerInstance {
     ip_check_task: Mutex<Option<JoinHandle<()>>>,
     /// Health check tasks for OnProcessDead/OnPortClosed triggers (FP-4.4)
     health_check_tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// Interval timer tasks for OnInterval triggers
+    interval_timer_tasks: Mutex<Vec<JoinHandle<()>>>,
     /// Connection monitor task — watches SSH connection and auto-reconnects
     connection_monitor_task: Mutex<Option<JoinHandle<()>>>,
     /// Whether proxy was running before disconnect (for auto-reconnect proxy restart)
@@ -90,6 +93,8 @@ pub struct ServerInstance {
     last_auth: Mutex<Option<AuthMethod>>,
     /// Port forward manager (PF-4)
     port_forward_manager: Arc<PortForwardManager>,
+    /// Optional callback to persist a trigger update (e.g. disable after once-fire)
+    trigger_persist_callback: Mutex<Option<Arc<dyn Fn(&str, &TriggerInstance) + Send + Sync>>>,
 }
 
 // === SECTION 1 END ===
@@ -134,6 +139,7 @@ impl ServerInstance {
             proxy_tasks: Mutex::new(Vec::new()),
             ip_check_task: Mutex::new(None),
             health_check_tasks: Mutex::new(Vec::new()),
+            interval_timer_tasks: Mutex::new(Vec::new()),
             connection_monitor_task: Mutex::new(None),
             proxy_was_running: Mutex::new(false),
             proxy_running: Mutex::new(false),
@@ -144,6 +150,7 @@ impl ServerInstance {
             client_ip: Mutex::new(None),
             last_auth: Mutex::new(None),
             port_forward_manager,
+            trigger_persist_callback: Mutex::new(None),
         }
     }
 
@@ -249,6 +256,14 @@ impl ServerInstance {
         *self.status_change_callback.lock().await = Some(cb);
     }
 
+    /// Set callback to persist trigger updates (e.g. disable after once-fire)
+    pub async fn set_trigger_persist_callback(
+        &self,
+        cb: Arc<dyn Fn(&str, &TriggerInstance) + Send + Sync>,
+    ) {
+        *self.trigger_persist_callback.lock().await = Some(cb);
+    }
+
     /// Broadcast status change to frontend if callback is set
     async fn broadcast_status(&self, status: &ServerStatus) {
         let cb = self.status_change_callback.lock().await;
@@ -301,6 +316,7 @@ impl ServerInstance {
                     self.start_ip_detection().await;
                 }
                 self.start_health_checks().await;
+                self.start_interval_timers().await;
                 self.fire_on_connect_triggers().await;
                 // Auto-start port forward rules (PF-4)
                 let _ = self.port_forward_manager
@@ -339,6 +355,7 @@ impl ServerInstance {
             self.start_ip_detection().await;
         }
         self.start_health_checks().await;
+        self.start_interval_timers().await;
         self.fire_on_reconnect_triggers().await;
         // Auto-start port forward rules (PF-4)
         let _ = self.port_forward_manager
@@ -361,6 +378,11 @@ impl ServerInstance {
         // Abort all health check tasks
         let mut health_tasks = self.health_check_tasks.lock().await;
         for task in health_tasks.drain(..) {
+            task.abort();
+        }
+        // Abort all interval timer tasks
+        let mut interval_tasks = self.interval_timer_tasks.lock().await;
+        for task in interval_tasks.drain(..) {
             task.abort();
         }
         self.channel_opener.clear_handle().await;
@@ -631,6 +653,180 @@ impl ServerInstance {
         }
     }
 
+    /// Start timer tasks for OnInterval and OnSchedule triggers.
+    /// Each enabled trigger gets its own tokio task.
+    pub async fn start_interval_timers(&self) {
+        // Abort existing timer tasks first
+        let mut tasks = self.interval_timer_tasks.lock().await;
+        for task in tasks.drain(..) {
+            task.abort();
+        }
+
+        let triggers = self.triggers.lock().await.clone();
+        let scheduled: Vec<_> = triggers
+            .iter()
+            .filter(|t| {
+                if !t.enabled {
+                    return false;
+                }
+                match t.trigger_type {
+                    TriggerType::OnInterval => t.interval_secs > 0,
+                    TriggerType::OnSchedule => {
+                        t.schedule_mode == "cron" && !t.cron_expr.is_empty()
+                            || t.schedule_mode == "once" && !t.scheduled_at.is_empty()
+                    }
+                    _ => false,
+                }
+            })
+            .cloned()
+            .collect();
+
+        if scheduled.is_empty() {
+            return;
+        }
+
+        let ssh = self.ssh_client.clone();
+        let server_id = self.config.id.clone();
+        let server_name = self.config.name.clone();
+        let trigger_engine = self.trigger_engine.clone();
+        let templates = self.trigger_templates.lock().await.clone();
+        let triggers_arc = self.triggers.clone();
+        let persist_cb = self.trigger_persist_callback.lock().await.clone();
+
+        for trigger in scheduled {
+            let ssh = ssh.clone();
+            let server_id = server_id.clone();
+            let server_name = server_name.clone();
+            let trigger_engine = trigger_engine.clone();
+            let templates = templates.clone();
+            let triggers_arc = triggers_arc.clone();
+            let persist_cb = persist_cb.clone();
+            let trigger_id = trigger.id.clone();
+            let trigger_name = trigger.name.clone();
+            let trigger_type = trigger.trigger_type.clone();
+
+            match &trigger_type {
+                TriggerType::OnInterval => {
+                    let interval = std::time::Duration::from_secs(trigger.interval_secs);
+                    let task = tokio::spawn(async move {
+                        let mut timer = tokio::time::interval(interval);
+                        timer.tick().await; // skip first immediate tick
+                        loop {
+                            timer.tick().await;
+                            tracing::info!(
+                                "[OnInterval] firing trigger '{}' ({}) for server {}",
+                                trigger_name, trigger_id, server_name
+                            );
+                            let event = TriggerEvent {
+                                server_id: server_id.clone(),
+                                server_name: server_name.clone(),
+                                trigger_type: TriggerType::OnInterval,
+                                new_ip: None, old_ip: None,
+                                new_ips: None, old_ips: None,
+                                session_id: None,
+                            };
+                            let current_triggers = triggers_arc.lock().await.clone();
+                            let _ = trigger_engine
+                                .fire_event(Some(&ssh), &current_triggers, &templates, &event)
+                                .await;
+                        }
+                    });
+                    tasks.push(task);
+                }
+                TriggerType::OnSchedule => {
+                    let mode = trigger.schedule_mode.clone();
+                    let cron_expr = trigger.cron_expr.clone();
+                    let scheduled_at = trigger.scheduled_at.clone();
+
+                    if mode == "once" {
+                        // One-time task: sleep until scheduled_at, fire once, then disable
+                        let target = chrono::DateTime::parse_from_rfc3339(&scheduled_at).ok();
+                        if let Some(target) = target {
+                            let target = target.with_timezone(&chrono::Utc);
+                            let now = chrono::Utc::now();
+                            let delay = (target - now).to_std().unwrap_or(std::time::Duration::ZERO);
+                            if delay == std::time::Duration::ZERO {
+                                // Already past the scheduled time — skip
+                                continue;
+                            }
+                            let task = tokio::spawn(async move {
+                                tokio::time::sleep(delay).await;
+                                tracing::info!(
+                                    "[OnSchedule/once] firing trigger '{}' ({}) for server {}",
+                                    trigger_name, trigger_id, server_name
+                                );
+                                let event = TriggerEvent {
+                                    server_id: server_id.clone(),
+                                    server_name: server_name.clone(),
+                                    trigger_type: TriggerType::OnSchedule,
+                                    new_ip: None, old_ip: None,
+                                    new_ips: None, old_ips: None,
+                                    session_id: None,
+                                };
+                                let current_triggers = triggers_arc.lock().await.clone();
+                                let _ = trigger_engine
+                                    .fire_event(Some(&ssh), &current_triggers, &templates, &event)
+                                    .await;
+                                // Disable the trigger after firing
+                                let mut current = triggers_arc.lock().await;
+                                if let Some(t) = current.iter_mut().find(|t| t.id == trigger_id) {
+                                    t.enabled = false;
+                                    let updated = t.clone();
+                                    if let Some(ref cb) = persist_cb {
+                                        cb(&server_id, &updated);
+                                    }
+                                }
+                            });
+                            tasks.push(task);
+                        }
+                    } else if mode == "cron" {
+                        // Repeatable cron task
+                        let cron = cron::Schedule::from_str(&cron_expr);
+                        if let Ok(cron) = cron {
+                            let task = tokio::spawn(async move {
+                                loop {
+                                    let now = chrono::Utc::now();
+                                    let next = match cron.upcoming(chrono::Utc).next() {
+                                        Some(t) => t,
+                                        None => break,
+                                    };
+                                    let delay = (next - now).to_std().unwrap_or(std::time::Duration::ZERO);
+                                    if delay > std::time::Duration::ZERO {
+                                        tokio::time::sleep(delay).await;
+                                    }
+                                    tracing::info!(
+                                        "[OnSchedule/cron] firing trigger '{}' ({}) for server {}",
+                                        trigger_name, trigger_id, server_name
+                                    );
+                                    let event = TriggerEvent {
+                                        server_id: server_id.clone(),
+                                        server_name: server_name.clone(),
+                                        trigger_type: TriggerType::OnSchedule,
+                                        new_ip: None, old_ip: None,
+                                        new_ips: None, old_ips: None,
+                                        session_id: None,
+                                    };
+                                    let current_triggers = triggers_arc.lock().await.clone();
+                                    let _ = trigger_engine
+                                        .fire_event(Some(&ssh), &current_triggers, &templates, &event)
+                                        .await;
+                                }
+                            });
+                            tasks.push(task);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        tracing::info!(
+            "started {} timer tasks for {}",
+            tasks.len(),
+            self.config.name
+        );
+    }
+
     /// Start SOCKS5 + HTTP proxy servers
     pub async fn start_proxy(&self) -> Result<()> {
         let mut running = self.proxy_running.lock().await;
@@ -855,10 +1051,13 @@ impl ServerInstance {
                                 trigger_type: TriggerType::OnIpChange,
                                 new_ip: Some(new_ip),
                                 old_ip,
+                                new_ips: None,
+                                old_ips: None,
+                                session_id: None,
                             };
                             let templates = trigger_templates.lock().await.clone();
                             let _ = trigger_engine
-                                .fire_event(&ssh_client, &server_triggers, &templates, &event)
+                                .fire_event(Some(&ssh_client), &server_triggers, &templates, &event)
                                 .await;
                         }
                     }
@@ -879,24 +1078,28 @@ impl ServerInstance {
             trigger_type: TriggerType::OnConnect,
             new_ip: None,
             old_ip: None,
+            new_ips: None,
+            old_ips: None,
+            session_id: None,
         };
         let templates = self.trigger_templates.lock().await.clone();
-        let triggers = self.triggers.lock().await.clone();
+        let all_triggers = self.triggers.lock().await.clone();
+        // Filter out exec_in_terminal triggers — they will be injected into
+        // the terminal PTY when the user opens a terminal (handle_terminal_open).
+        let triggers: Vec<_> = all_triggers
+            .iter()
+            .filter(|t| !(t.trigger_type == TriggerType::OnConnect && t.exec_in_terminal))
+            .cloned()
+            .collect();
         tracing::info!(
-            "fire_on_connect_triggers: {} triggers in instance",
-            triggers.len()
+            "fire_on_connect_triggers: {} triggers ({} background, {} in-terminal deferred)",
+            all_triggers.len(),
+            triggers.len(),
+            all_triggers.len() - triggers.len()
         );
-        for t in &triggers {
-            tracing::info!(
-                "  trigger: {} type={:?} enabled={}",
-                t.name,
-                t.trigger_type,
-                t.enabled
-            );
-        }
         let results = self
             .trigger_engine
-            .fire_event(&self.ssh_client, &triggers, &templates, &event)
+            .fire_event(Some(&self.ssh_client), &triggers, &templates, &event)
             .await;
         if let Ok(ref results) = results {
             for r in results {
@@ -922,12 +1125,20 @@ impl ServerInstance {
             trigger_type: TriggerType::OnReconnect,
             new_ip: None,
             old_ip: None,
+            new_ips: None,
+            old_ips: None,
+            session_id: None,
         };
         let templates = self.trigger_templates.lock().await.clone();
-        let triggers = self.triggers.lock().await.clone();
+        let all_triggers = self.triggers.lock().await.clone();
+        let triggers: Vec<_> = all_triggers
+            .iter()
+            .filter(|t| !(t.trigger_type == TriggerType::OnReconnect && t.exec_in_terminal))
+            .cloned()
+            .collect();
         let results = self
             .trigger_engine
-            .fire_event(&self.ssh_client, &triggers, &templates, &event)
+            .fire_event(Some(&self.ssh_client), &triggers, &templates, &event)
             .await;
         if let Ok(ref results) = results {
             for r in results {
@@ -957,7 +1168,7 @@ impl ServerInstance {
                 &self.config.id,
                 &self.config.name,
                 trigger_id,
-                &self.ssh_client,
+                Some(&self.ssh_client),
                 &triggers,
             )
             .await

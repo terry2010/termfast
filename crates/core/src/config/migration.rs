@@ -121,17 +121,15 @@ pub fn load_config_with_migration_fallback(
 ) -> (crate::config::Config, bool) {
     match load_config_with_migration(config_path) {
         Ok(c) => {
-            // If the file existed and loaded successfully, is_fallback = false.
-            // If the file was missing (returned Ok(Config::default())), we
-            // can't tell here — but a missing file is not "corrupt", it's
-            // just empty. The corrupt case is handled inside load_config_with_migration
-            // which returns Ok(Config::default()) for corrupt JSON too.
-            // We check: if the file exists and has servers, it's a real load.
-            // If servers is empty AND the file exists, it might be a corrupt
-            // fallback (the corrupt file was backed up and replaced with default).
-            // If the file doesn't exist, it's a fresh start (not corrupt).
+            // Distinguish "corrupt JSON → replaced with Config::default()" from
+            // "valid config that legitimately has 0 servers" by comparing the
+            // loaded config against Config::default(). If the config is exactly
+            // the default AND the file exists, it's likely a corrupt fallback
+            // (the corrupt file was backed up and replaced with default).
+            // A real config with 0 servers would have non-default general
+            // settings (theme, language, etc.), so it won't match default.
             let file_exists = config_path.exists();
-            let is_fallback = c.servers.is_empty() && file_exists;
+            let is_fallback = c == crate::config::Config::default() && file_exists;
             (c, is_fallback)
         }
         Err(e) => {
@@ -278,5 +276,26 @@ mod tests {
             .filter_map(|e| e.ok())
             .any(|e| e.file_name().to_string_lossy().contains("corrupt"));
         assert!(has_backup);
+    }
+
+    #[test]
+    fn test_load_old_config_without_local_triggers() {
+        // 模拟旧配置文件（没有 local_triggers 字段）——验证 serde(default) 生效
+        // 用一个完整的真实 config.json（从 config.json.bak 格式简化）
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        // 读取真实备份文件
+        let bak_path = "/Users/terry/Library/Application Support/termfast/config.json.bak";
+        if !std::path::Path::new(bak_path).exists() {
+            eprintln!("skipping test: config.json.bak not found");
+            return;
+        }
+        let content = std::fs::read_to_string(bak_path).unwrap();
+        std::fs::write(&path, &content).unwrap();
+
+        let config = load_config_with_migration(&path).unwrap();
+        assert!(config.servers.len() > 0, "should load servers from old config");
+        assert_eq!(config.local_triggers.len(), 0, "local_triggers should default to empty");
+        assert_ne!(config, crate::config::Config::default(), "should not equal default (has servers)");
     }
 }

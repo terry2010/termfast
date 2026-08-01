@@ -149,9 +149,12 @@ impl HealthChecker {
                                 server_name: server_name.clone(),
                                 new_ip: None,
                                 old_ip: None,
+                                new_ips: None,
+                                old_ips: None,
+                                session_id: None,
                             };
                             if let Err(e) = trigger_engine
-                                .fire_event(&ssh, &triggers, &templates, &event)
+                                .fire_event(Some(&ssh), &triggers, &templates, &event)
                                 .await
                             {
                                 tracing::error!("failed to fire health event: {}", e);

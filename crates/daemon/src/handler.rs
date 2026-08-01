@@ -87,6 +87,8 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::TerminalInput => handle_terminal_input(state, &request.params).await,
         Action::TerminalClose => handle_terminal_close(state, &request.params).await,
         Action::TerminalResize => handle_terminal_resize(state, &request.params).await,
+        Action::SetTriggerOverrides => handle_set_trigger_overrides(state, &request.params).await,
+        Action::GetTriggerOverrides => handle_get_trigger_overrides(state, &request.params).await,
 
         // Cloud sync
         Action::CloudSyncGetAuthUrl => handle_cloud_sync_auth_url(state, &request.params).await,
@@ -111,6 +113,9 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::StartPortForward => handle_start_port_forward(state, &request.params).await,
         Action::StopPortForward => handle_stop_port_forward(state, &request.params).await,
         Action::GetPortForwardStatus => handle_get_port_forward_status(state, &request.params).await,
+        Action::SaveLocalTrigger => handle_save_local_trigger(state, &request.params).await,
+        Action::RemoveLocalTrigger => handle_remove_local_trigger(state, &request.params).await,
+        Action::ManualFireLocalTrigger => handle_manual_fire_local_trigger(state, &request.params).await,
     };
 
     match result {
@@ -467,6 +472,14 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
                             TriggerType::OnIpChange => "OnIpChange",
                             TriggerType::OnProcessDead => "OnProcessDead",
                             TriggerType::OnPortClosed => "OnPortClosed",
+                            TriggerType::OnTerminalOpen => "OnTerminalOpen",
+                            TriggerType::BeforeTerminalClose => "BeforeTerminalClose",
+                            TriggerType::OnNetworkDisconnect => "OnNetworkDisconnect",
+                            TriggerType::OnNetworkConnect => "OnNetworkConnect",
+                            TriggerType::OnLanIpChange => "OnLanIpChange",
+                            TriggerType::OnPublicIpChange => "OnPublicIpChange",
+                            TriggerType::OnInterval => "OnInterval",
+                            TriggerType::OnSchedule => "OnSchedule",
                             TriggerType::ManualFire => "ManualFire",
                         };
                         let msg = format!(
@@ -578,6 +591,32 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
                         );
                     }
                 }
+            }))
+            .await;
+    }
+
+    // Set trigger persist callback (for once-fire auto-disable)
+    {
+        let config_manager = state.config_manager.clone();
+        server
+            .set_trigger_persist_callback(Arc::new(move |server_id, trigger| {
+                let config_manager = config_manager.clone();
+                let server_id = server_id.to_string();
+                let trigger = trigger.clone();
+                tokio::spawn(async move {
+                    let mgr = config_manager.lock().await;
+                    let _ = mgr
+                        .modify(|config| {
+                            if let Some(srv) = config.find_server_mut(&server_id) {
+                                if let Some(t) =
+                                    srv.triggers.iter_mut().find(|t| t.id == trigger.id)
+                                {
+                                    t.enabled = false;
+                                }
+                            }
+                        })
+                        .await;
+                });
             }))
             .await;
     }
@@ -1717,6 +1756,179 @@ async fn handle_manual_fire_trigger(
     }))
 }
 
+/// Save (add or update) a local trigger
+async fn handle_save_local_trigger(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
+    let trigger: termfast_core::config::TriggerInstance =
+        serde_json::from_value(params["trigger"].clone())
+            .map_err(|e| IpcError::new(ErrorCode::InvalidParams, e.to_string()))?;
+    let mgr = state.config_manager.lock().await;
+    mgr.modify(|config| {
+        if let Some(idx) = config.local_triggers.iter().position(|t| t.id == trigger.id) {
+            config.local_triggers[idx] = trigger.clone();
+        } else {
+            config.local_triggers.push(trigger.clone());
+        }
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    drop(mgr);
+    // Restart local interval timers in case OnInterval triggers changed
+    crate::server::start_local_interval_timers(state).await;
+    Ok(serde_json::json!({}))
+}
+
+/// Remove a local trigger by ID
+async fn handle_remove_local_trigger(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
+    let trigger_id = params["trigger_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing trigger_id"))?;
+    let mgr = state.config_manager.lock().await;
+    mgr.modify(|config| {
+        config.local_triggers.retain(|t| t.id != trigger_id);
+    })
+    .await
+    .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    drop(mgr);
+    // Restart local interval timers in case OnInterval triggers changed
+    crate::server::start_local_interval_timers(state).await;
+    Ok(serde_json::json!({}))
+}
+
+/// Manually fire a local trigger by ID
+async fn handle_manual_fire_local_trigger(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
+    let trigger_id = params["trigger_id"]
+        .as_str()
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing trigger_id"))?;
+
+    let config = state.config_manager.lock().await.get().await;
+    let triggers = config.local_triggers.clone();
+
+    let trigger_name = triggers
+        .iter()
+        .find(|t| t.id == trigger_id)
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| trigger_id.to_string());
+    let total_commands = triggers
+        .iter()
+        .find(|t| t.id == trigger_id)
+        .map(|t| t.commands.len())
+        .unwrap_or(0);
+
+    state
+        .broadcast(
+            "trigger:fired",
+            serde_json::json!({
+                "server_id": "__local__",
+                "trigger_id": trigger_id,
+                "trigger_name": trigger_name,
+                "total_commands": total_commands,
+            }),
+        )
+        .await;
+
+    let result = state
+        .local_trigger_engine
+        .manual_fire(
+            "__local__",
+            "My Computer",
+            trigger_id,
+            None,
+            &triggers,
+        )
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+
+    state
+        .broadcast(
+            "trigger:completed",
+            serde_json::json!({
+                "server_id": "__local__",
+                "trigger_id": trigger_id,
+                "success": result.success,
+                "executed_commands": result.executed_commands,
+                "total_commands": result.total_commands,
+            }),
+        )
+        .await;
+
+    // Log the trigger execution result
+    let (level, msg) = if result.success {
+        (
+            LogLevel::Info,
+            format!(
+                "Local trigger '{}' executed successfully ({}/{})",
+                trigger_name, result.executed_commands, result.total_commands
+            ),
+        )
+    } else {
+        (
+            LogLevel::Error,
+            format!(
+                "Local trigger '{}' execution failed ({}/{})",
+                trigger_name, result.executed_commands, result.total_commands
+            ),
+        )
+    };
+    log_and_broadcast(state, Some("__local__"), level, LogKind::Trigger, msg).await;
+
+    // Broadcast each command's output as log entries
+    for cmd_result in &result.results {
+        let cmd_msg = format!("$ {}", cmd_result.command);
+        log_and_broadcast(
+            state,
+            Some("__local__"),
+            LogLevel::Info,
+            LogKind::Trigger,
+            cmd_msg,
+        )
+        .await;
+        if !cmd_result.stdout.is_empty() {
+            log_and_broadcast(
+                state,
+                Some("__local__"),
+                LogLevel::Info,
+                LogKind::Trigger,
+                cmd_result.stdout.trim().to_string(),
+            )
+            .await;
+        }
+        if !cmd_result.stderr.is_empty() {
+            log_and_broadcast(
+                state,
+                Some("__local__"),
+                LogLevel::Warn,
+                LogKind::Trigger,
+                cmd_result.stderr.trim().to_string(),
+            )
+            .await;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "server_id": "__local__",
+        "trigger_id": trigger_id,
+        "success": result.success,
+        "executed_commands": result.executed_commands,
+        "total_commands": result.total_commands,
+        "results": result.results.iter().map(|r| serde_json::json!({
+            "command": r.command,
+            "exit_code": r.exit_code,
+            "stdout": r.stdout,
+            "stderr": r.stderr,
+            "success": r.success,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
 /// Pause triggers for a specific server
 async fn handle_pause_server_triggers(
     state: &DaemonState,
@@ -2152,6 +2364,9 @@ async fn handle_add_trigger(state: &DaemonState, params: &serde_json::Value) -> 
         }
     }
 
+    // Restart interval timers in case OnInterval triggers changed
+    server.start_interval_timers().await;
+
     state
         .broadcast(
             "trigger:added",
@@ -2188,6 +2403,8 @@ async fn handle_remove_trigger(state: &DaemonState, params: &serde_json::Value) 
         if let Some(srv) = config.find_server(server_id) {
             server.set_triggers(srv.triggers.clone()).await;
         }
+        // Restart interval timers in case OnInterval triggers changed
+        server.start_interval_timers().await;
     }
 
     state
@@ -2253,6 +2470,21 @@ async fn handle_update_trigger(state: &DaemonState, params: &serde_json::Value) 
                         .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
                         .collect();
                 }
+                if let Some(exec_in_terminal) = params["exec_in_terminal"].as_bool() {
+                    trigger.exec_in_terminal = exec_in_terminal;
+                }
+                if let Some(interval_secs) = params["interval_secs"].as_u64() {
+                    trigger.interval_secs = interval_secs;
+                }
+                if let Some(mode) = params["schedule_mode"].as_str() {
+                    trigger.schedule_mode = mode.to_string();
+                }
+                if let Some(expr) = params["cron_expr"].as_str() {
+                    trigger.cron_expr = expr.to_string();
+                }
+                if let Some(at) = params["scheduled_at"].as_str() {
+                    trigger.scheduled_at = at.to_string();
+                }
             }
         }
     })
@@ -2267,6 +2499,8 @@ async fn handle_update_trigger(state: &DaemonState, params: &serde_json::Value) 
         if let Some(srv) = config.find_server(server_id) {
             server.set_triggers(srv.triggers.clone()).await;
         }
+        // Restart interval timers in case OnInterval triggers changed
+        server.start_interval_timers().await;
     }
 
     state
@@ -2717,16 +2951,41 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         .get("server_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let backend = params
+        .get("backend")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ssh");
     let cols = params.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
     let rows = params.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u32;
+    let shell = params
+        .get("shell")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     tracing::info!(
-        "handle_terminal_open: server_id={}, cols={}, rows={}",
+        "handle_terminal_open: server_id={}, backend={}, cols={}, rows={}",
         server_id,
+        backend,
         cols,
         rows
     );
 
+    // Local terminal branch — no SSH connection needed
+    if backend == "local" {
+        let (session_id, initial_output) = state
+            .terminal_manager
+            .open_local(cols, rows, shell)
+            .await
+            .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
+        use base64::Engine;
+        let initial_b64 =
+            base64::engine::general_purpose::STANDARD.encode(&initial_output);
+        return Ok(
+            serde_json::json!({ "session_id": session_id, "initial_output": initial_b64 }),
+        );
+    }
+
+    // SSH terminal (backend == "ssh" or unspecified)
     let server = state
         .server_manager
         .get_server(server_id)
@@ -2759,6 +3018,71 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         session_id,
         initial_output.len()
     );
+
+    // Inject exec_in_terminal=true OnConnect/OnReconnect triggers into the
+    // newly opened terminal PTY. These triggers were skipped during
+    // fire_on_connect_triggers (instance.rs) and are deferred to here.
+    {
+        let triggers = server.triggers.lock().await.clone();
+        // For OnConnect/OnReconnect: trigger is "in-terminal" if either the
+        // per-session override says so, or the trigger config has exec_in_terminal=true.
+        // Overrides are checked at fire time, but here we need to decide whether
+        // to skip background execution. We use the config value for the skip decision
+        // (instance.rs already skipped exec_in_terminal=true triggers from background).
+        // For overrides that turn ON exec_in_terminal for a trigger that's configured
+        // as false: the background execution already happened at connect time, so
+        // we can't "un-execute" it. This is acceptable — overrides are meant for
+        // toggling in-terminal ON, not OFF, for OnConnect. For BeforeTerminalClose
+        // and OnTerminalOpen, overrides work fully (see handle_terminal_close and
+        // the terminal event consumer).
+        let in_terminal_triggers: Vec<_> = triggers
+            .iter()
+            .filter(|t| {
+                t.enabled
+                    && t.exec_in_terminal
+                    && matches!(t.trigger_type, TriggerType::OnConnect | TriggerType::OnReconnect)
+            })
+            .cloned()
+            .collect();
+
+        if !in_terminal_triggers.is_empty() {
+            let event = termfast_core::trigger::TriggerEvent {
+                server_id: server_id.to_string(),
+                server_name: server.config.name.clone(),
+                trigger_type: TriggerType::OnConnect, // generic, used for vars
+                new_ip: None,
+                old_ip: None,
+                new_ips: None,
+                old_ips: None,
+                session_id: Some(session_id.to_string()),
+            };
+            for trigger in &in_terminal_triggers {
+                let rendered_cmds = server
+                    .trigger_engine
+                    .render_commands(&event, trigger);
+                tracing::info!(
+                    "[handle_terminal_open] injecting {} commands into SSH terminal {} for trigger '{}'",
+                    rendered_cmds.len(),
+                    session_id,
+                    trigger.name
+                );
+                for cmd in &rendered_cmds {
+                    let mut data = cmd.as_bytes().to_vec();
+                    data.push(b'\n');
+                    if let Err(e) = state
+                        .terminal_manager
+                        .input_with_ack(&session_id, &data, true)
+                        .await
+                    {
+                        tracing::warn!(
+                            "[handle_terminal_open] failed to inject command: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     // Encode initial_output as base64 for the JSON response (small one-time payload).
     // The high-throughput streaming output uses the binary event forwarder (no base64).
@@ -2824,6 +3148,118 @@ async fn handle_terminal_close(state: &DaemonState, params: &serde_json::Value) 
         .and_then(|v| v.as_str())
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing session_id"))?;
 
+    // For local terminals: fire BeforeTerminalClose BEFORE closing the terminal,
+    // so triggers can execute while the terminal is still alive.
+    if state.terminal_manager.is_local_session(session_id).await {
+        // Mark session as closed to prevent the terminal event consumer task
+        // from also firing BeforeTerminalClose (we fire it directly here).
+        state.terminal_manager.mark_closed(session_id).await;
+
+        let config = state.config_manager.lock().await.get().await;
+        let triggers = config.local_triggers.clone();
+        let templates = config.trigger_templates.clone();
+        let close_triggers: Vec<_> = triggers
+            .iter()
+            .filter(|t| t.trigger_type == TriggerType::BeforeTerminalClose && t.enabled)
+            .cloned()
+            .collect();
+
+        if !close_triggers.is_empty() {
+            let trigger_event = termfast_core::trigger::TriggerEvent {
+                server_id: "__local__".to_string(),
+                server_name: "My Computer".to_string(),
+                trigger_type: TriggerType::BeforeTerminalClose,
+                new_ip: None,
+                old_ip: None,
+                new_ips: None,
+                old_ips: None,
+                session_id: Some(session_id.to_string()),
+            };
+
+            // Split triggers: exec_in_terminal=true → inject into PTY,
+            // exec_in_terminal=false → background fire_event.
+            // Check per-session overrides first, fall back to trigger config.
+            let sid = session_id.to_string();
+            let (in_terminal, background): (Vec<_>, Vec<_>) = {
+                let mut in_t = Vec::new();
+                let mut bg = Vec::new();
+                for t in close_triggers {
+                    let override_val = state
+                        .terminal_manager
+                        .get_trigger_override(&sid, &t.id)
+                        .await;
+                    let use_in_terminal = override_val.unwrap_or(t.exec_in_terminal);
+                    if use_in_terminal {
+                        in_t.push(t);
+                    } else {
+                        bg.push(t);
+                    }
+                }
+                (in_t, bg)
+            };
+
+            // Inject commands into the terminal PTY
+            for trigger in &in_terminal {
+                let rendered_cmds = state
+                    .local_trigger_engine
+                    .render_commands(&trigger_event, trigger);
+                tracing::info!(
+                    "[handle_terminal_close] injecting {} commands into terminal {} for trigger '{}'",
+                    rendered_cmds.len(),
+                    session_id,
+                    trigger.name
+                );
+                for cmd in &rendered_cmds {
+                    // Send command + newline to the terminal PTY
+                    let mut data = cmd.as_bytes().to_vec();
+                    data.push(b'\n');
+                    if let Err(e) = state
+                        .terminal_manager
+                        .input_with_ack(session_id, &data, true)
+                        .await
+                    {
+                        tracing::warn!(
+                            "[handle_terminal_close] failed to inject command into terminal: {}",
+                            e
+                        );
+                    }
+                }
+            }
+
+            // Background execution for non-terminal triggers
+            if !background.is_empty() {
+                tracing::info!(
+                    "[handle_terminal_close] firing {} background BeforeTerminalClose triggers, session={}",
+                    background.len(),
+                    session_id
+                );
+                let result = state
+                    .local_trigger_engine
+                    .fire_event(None, &background, &templates, &trigger_event)
+                    .await;
+                if let Ok(results) = &result {
+                    broadcast_local_trigger_results(state, &trigger_event, results);
+                }
+            }
+
+            // Broadcast results for in-terminal triggers (success, no per-command output)
+            if !in_terminal.is_empty() {
+                let results: Vec<termfast_core::trigger::engine::TriggerExecutionResult> = in_terminal
+                    .iter()
+                    .map(|t| termfast_core::trigger::engine::TriggerExecutionResult {
+                        trigger_id: t.id.clone(),
+                        trigger_name: t.name.clone(),
+                        success: true,
+                        executed_commands: t.commands.len(),
+                        total_commands: t.commands.len(),
+                        results: vec![],
+                    })
+                    .collect();
+                broadcast_local_trigger_results(state, &trigger_event, &results);
+            }
+        }
+    }
+
     state
         .terminal_manager
         .close(session_id)
@@ -2857,6 +3293,46 @@ async fn handle_terminal_resize(state: &DaemonState, params: &serde_json::Value)
         .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
 
     Ok(serde_json::json!({ "ok": true }))
+}
+
+/// Set per-session exec_in_terminal overrides (runtime, not persisted)
+async fn handle_set_trigger_overrides(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
+    let session_id = params
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing session_id"))?;
+    let overrides = params
+        .get("overrides")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing overrides"))?;
+    let map: std::collections::HashMap<String, bool> = overrides
+        .iter()
+        .filter_map(|(k, v)| v.as_bool().map(|b| (k.clone(), b)))
+        .collect();
+    state
+        .terminal_manager
+        .set_trigger_overrides(session_id, map)
+        .await;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// Get per-session exec_in_terminal overrides
+async fn handle_get_trigger_overrides(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> HandlerResult {
+    let session_id = params
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing session_id"))?;
+    let overrides = state
+        .terminal_manager
+        .get_all_trigger_overrides(session_id)
+        .await;
+    Ok(serde_json::json!({ "overrides": overrides }))
 }
 
 #[cfg(test)]
@@ -3265,6 +3741,105 @@ async fn maybe_broadcast_cli_focus(
             data["tab"] = serde_json::json!(t);
         }
         state.broadcast("cli:focus", data).await;
+    }
+}
+
+/// Broadcast local trigger execution results to frontend (log panel + trigger:completed event).
+/// Used by handle_terminal_close when firing BeforeTerminalClose before closing the terminal.
+fn broadcast_local_trigger_results(
+    state: &DaemonState,
+    event: &termfast_core::trigger::TriggerEvent,
+    results: &[termfast_core::trigger::engine::TriggerExecutionResult],
+) {
+    let log_buffer = state.log_buffer.clone();
+    let forwarder = state.event_forwarder_handle();
+    let kind_str = match event.trigger_type {
+        TriggerType::OnTerminalOpen => "OnTerminalOpen",
+        TriggerType::BeforeTerminalClose => "BeforeTerminalClose",
+        TriggerType::OnNetworkDisconnect => "OnNetworkDisconnect",
+        TriggerType::OnNetworkConnect => "OnNetworkConnect",
+        TriggerType::OnLanIpChange => "OnLanIpChange",
+        TriggerType::OnPublicIpChange => "OnPublicIpChange",
+        _ => "LocalEvent",
+    };
+    for r in results {
+        let level = if r.success {
+            LogLevel::Info
+        } else {
+            LogLevel::Error
+        };
+        let level_str = match level {
+            LogLevel::Info => "info",
+            LogLevel::Error => "error",
+            _ => "info",
+        };
+        let msg = format!(
+            "[{}] Trigger '{}' {} ({}/{})",
+            kind_str,
+            r.trigger_name,
+            if r.success { "succeeded" } else { "failed" },
+            r.executed_commands,
+            r.total_commands
+        );
+        let entry = LogEntry {
+            timestamp: chrono::Utc::now(),
+            server_id: Some("__local__".to_string()),
+            level,
+            kind: LogKind::Trigger,
+            message: msg.clone(),
+            data: None,
+            execution_id: None,
+        };
+        let buffer = log_buffer.clone();
+        let fwd = forwarder.clone();
+        let entry_clone = entry.clone();
+        let msg_clone = msg.clone();
+        let trigger_id = r.trigger_id.clone();
+        let trigger_name = r.trigger_name.clone();
+        let success = r.success;
+        let executed_commands = r.executed_commands;
+        let total_commands = r.total_commands;
+        let cmd_results: Vec<serde_json::Value> = r
+            .results
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "command": c.command,
+                    "exit_code": c.exit_code,
+                    "stdout": c.stdout,
+                    "stderr": c.stderr,
+                })
+            })
+            .collect();
+        tokio::spawn(async move {
+            buffer.add(entry_clone).await;
+            if let Ok(f) = fwd.lock() {
+                if let Some(ref fwd) = *f {
+                    fwd(
+                        "log:entry",
+                        serde_json::json!({
+                            "server_id": "__local__",
+                            "level": level_str,
+                            "kind": "Trigger",
+                            "message": msg_clone,
+                            "timestamp": entry.timestamp,
+                        }),
+                    );
+                    fwd(
+                        "trigger:completed",
+                        serde_json::json!({
+                            "server_id": "__local__",
+                            "trigger_id": trigger_id,
+                            "trigger_name": trigger_name,
+                            "success": success,
+                            "executed_commands": executed_commands,
+                            "total_commands": total_commands,
+                            "results": cmd_results,
+                        }),
+                    );
+                }
+            }
+        });
     }
 }
 

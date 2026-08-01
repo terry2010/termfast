@@ -11,6 +11,10 @@ interface TriggerStore {
   serverTriggers: Record<string, TriggerInstance[]>;
   /** Currently executing triggers (for progress display) */
   executing: Record<string, TriggerExecution>;
+  /** Per-server runtime overrides for exec_in_terminal (NOT persisted).
+   * Keyed by serverId, then triggerId → override value.
+   * When a new terminal opens, these are sent to the daemon as session overrides. */
+  serverExecInTerminalOverrides: Record<string, Record<string, boolean>>;
 
   setTemplates: (templates: TriggerTemplate[]) => void;
   loadTemplates: () => Promise<void>;
@@ -21,6 +25,10 @@ interface TriggerStore {
     update: Partial<TriggerExecution>,
   ) => void;
   finishExecution: (executionId: string) => void;
+  /** Set a runtime override for exec_in_terminal (not persisted). */
+  setExecInTerminalOverride: (serverId: string, triggerId: string, value: boolean) => void;
+  /** Get the effective exec_in_terminal value (override or config). */
+  getEffectiveExecInTerminal: (serverId: string, trigger: TriggerInstance) => boolean;
 }
 
 export interface CommandResult {
@@ -43,10 +51,11 @@ export interface TriggerExecution {
   results?: CommandResult[];
 }
 
-export const useTriggerStore = create<TriggerStore>((set) => ({
+export const useTriggerStore = create<TriggerStore>((set, get) => ({
   templates: [],
   serverTriggers: {},
   executing: {},
+  serverExecInTerminalOverrides: {},
 
   setTemplates: (templates) => set({ templates }),
 
@@ -84,4 +93,23 @@ export const useTriggerStore = create<TriggerStore>((set) => ({
       const { [executionId]: _, ...rest } = state.executing;
       return { executing: rest };
     }),
+
+  setExecInTerminalOverride: (serverId, triggerId, value) =>
+    set((state) => ({
+      serverExecInTerminalOverrides: {
+        ...state.serverExecInTerminalOverrides,
+        [serverId]: {
+          ...(state.serverExecInTerminalOverrides[serverId] || {}),
+          [triggerId]: value,
+        },
+      },
+    })),
+
+  getEffectiveExecInTerminal: (serverId, trigger) => {
+    const overrides = get().serverExecInTerminalOverrides[serverId];
+    if (overrides && trigger.id in overrides) {
+      return overrides[trigger.id];
+    }
+    return trigger.exec_in_terminal;
+  },
 }));

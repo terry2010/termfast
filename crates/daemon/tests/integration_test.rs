@@ -324,6 +324,214 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ipc_save_and_list_local_trigger() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Save a local trigger
+        let trigger_json = serde_json::json!({
+            "id": "local_trig_1",
+            "template_id": "",
+            "name": "Test Local Trigger",
+            "trigger_type": "ManualFire",
+            "enabled": true,
+            "continue_on_error": false,
+            "commands": ["echo hello"],
+            "parameters": {},
+            "timeout_secs": 30,
+            "cooldown_secs": 60,
+            "notify_on_success": false,
+            "notify_on_failure": true,
+            "last_fired_at": null,
+            "template_hash_at_addition": "",
+        });
+        let request = Request::new(
+            Action::SaveLocalTrigger,
+            serde_json::json!({ "trigger": trigger_json }),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Ok { .. }));
+
+        // List via GetConfig — local_triggers should contain our trigger
+        let request = Request::new(Action::GetConfig, serde_json::json!({}));
+        let response = send_request(&mut stream, &request).await;
+        if let Response::Ok { data, .. } = response {
+            let local_triggers = data["local_triggers"].as_array();
+            assert!(local_triggers.is_some());
+            assert_eq!(local_triggers.unwrap().len(), 1);
+            assert_eq!(local_triggers.unwrap()[0]["id"], "local_trig_1");
+        } else {
+            panic!("expected Ok response");
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_remove_local_trigger() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Save a local trigger first
+        let trigger_json = serde_json::json!({
+            "id": "local_trig_2",
+            "template_id": "",
+            "name": "To Be Removed",
+            "trigger_type": "ManualFire",
+            "enabled": true,
+            "continue_on_error": false,
+            "commands": ["echo bye"],
+            "parameters": {},
+            "timeout_secs": 30,
+            "cooldown_secs": 60,
+            "notify_on_success": false,
+            "notify_on_failure": true,
+            "last_fired_at": null,
+            "template_hash_at_addition": "",
+        });
+        let request = Request::new(
+            Action::SaveLocalTrigger,
+            serde_json::json!({ "trigger": trigger_json }),
+        );
+        let _ = send_request(&mut stream, &request).await;
+
+        // Remove it
+        let request = Request::new(
+            Action::RemoveLocalTrigger,
+            serde_json::json!({ "trigger_id": "local_trig_2" }),
+        );
+        let response = send_request(&mut stream, &request).await;
+        assert!(matches!(response, Response::Ok { .. }));
+
+        // Verify it's gone via GetConfig
+        let request = Request::new(Action::GetConfig, serde_json::json!({}));
+        let response = send_request(&mut stream, &request).await;
+        if let Response::Ok { data, .. } = response {
+            let local_triggers = data["local_triggers"].as_array().unwrap();
+            assert_eq!(local_triggers.len(), 0);
+        } else {
+            panic!("expected Ok response");
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_manual_fire_local_trigger() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Save a local trigger with a simple echo command
+        let trigger_json = serde_json::json!({
+            "id": "local_trig_3",
+            "template_id": "",
+            "name": "Echo Test",
+            "trigger_type": "ManualFire",
+            "enabled": true,
+            "continue_on_error": false,
+            "commands": ["echo fired"],
+            "parameters": {},
+            "timeout_secs": 10,
+            "cooldown_secs": 0,
+            "notify_on_success": false,
+            "notify_on_failure": true,
+            "last_fired_at": null,
+            "template_hash_at_addition": "",
+        });
+        let request = Request::new(
+            Action::SaveLocalTrigger,
+            serde_json::json!({ "trigger": trigger_json }),
+        );
+        let _ = send_request(&mut stream, &request).await;
+
+        // Manually fire it — should succeed (echo is a no-op on any shell)
+        let request = Request::new(
+            Action::ManualFireLocalTrigger,
+            serde_json::json!({ "trigger_id": "local_trig_3" }),
+        );
+        let response = send_request(&mut stream, &request).await;
+        if let Response::Ok { data, .. } = response {
+            assert_eq!(data["success"], true);
+            assert_eq!(data["total_commands"], 1);
+            assert_eq!(data["executed_commands"], 1);
+        } else {
+            panic!("expected Ok response, got: {:?}", response);
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_update_local_trigger() {
+        let (server, _dir) = start_test_daemon().await;
+        let socket_path = server.socket_path().clone();
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        // Save a local trigger
+        let trigger_json = serde_json::json!({
+            "id": "local_trig_4",
+            "template_id": "",
+            "name": "Original Name",
+            "trigger_type": "ManualFire",
+            "enabled": true,
+            "continue_on_error": false,
+            "commands": ["echo original"],
+            "parameters": {},
+            "timeout_secs": 30,
+            "cooldown_secs": 60,
+            "notify_on_success": false,
+            "notify_on_failure": true,
+            "last_fired_at": null,
+            "template_hash_at_addition": "",
+        });
+        let request = Request::new(
+            Action::SaveLocalTrigger,
+            serde_json::json!({ "trigger": trigger_json }),
+        );
+        let _ = send_request(&mut stream, &request).await;
+
+        // Update it (same ID, new name)
+        let updated_json = serde_json::json!({
+            "id": "local_trig_4",
+            "template_id": "",
+            "name": "Updated Name",
+            "trigger_type": "OnTerminalOpen",
+            "enabled": true,
+            "continue_on_error": false,
+            "commands": ["echo updated"],
+            "parameters": {},
+            "timeout_secs": 30,
+            "cooldown_secs": 60,
+            "notify_on_success": false,
+            "notify_on_failure": true,
+            "last_fired_at": null,
+            "template_hash_at_addition": "",
+        });
+        let request = Request::new(
+            Action::SaveLocalTrigger,
+            serde_json::json!({ "trigger": updated_json }),
+        );
+        let _ = send_request(&mut stream, &request).await;
+
+        // Verify it was updated (not duplicated)
+        let request = Request::new(Action::GetConfig, serde_json::json!({}));
+        let response = send_request(&mut stream, &request).await;
+        if let Response::Ok { data, .. } = response {
+            let local_triggers = data["local_triggers"].as_array().unwrap();
+            assert_eq!(local_triggers.len(), 1, "should not duplicate on update");
+            assert_eq!(local_triggers[0]["name"], "Updated Name");
+            assert_eq!(local_triggers[0]["trigger_type"], "OnTerminalOpen");
+        } else {
+            panic!("expected Ok response");
+        }
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_ipc_update_general_config() {
         let (server, _dir) = start_test_daemon().await;
         let socket_path = server.socket_path().clone();

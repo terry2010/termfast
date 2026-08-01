@@ -41,4 +41,19 @@ describe("ServerDetail", () => {
     render(<ServerDetail />);
     expect(screen.getByText("Test VPS")).toBeInTheDocument();
   });
+
+  it("renders My Computer overview when __local__ selected", () => {
+    useServerStore.setState({
+      servers: [],
+      selected_server_id: "__local__",
+    });
+    render(<ServerDetail />);
+    // Without i18n setup, t() returns the key itself.
+    // "server.my_computer" is the i18n key for the node name
+    expect(screen.getByText("server.my_computer")).toBeInTheDocument();
+    // "server.open_local_terminal" is the i18n key for the open button
+    expect(screen.getByText("server.open_local_terminal")).toBeInTheDocument();
+    // SSH-specific fields should NOT be present (server.host key)
+    expect(screen.queryByText("server.host")).not.toBeInTheDocument();
+  });
 });

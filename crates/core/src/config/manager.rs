@@ -176,6 +176,16 @@ impl ConfigManager {
     pub async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, Config> {
         self.config.read().await
     }
+
+    /// Check if the config was loaded from a corrupt/missing file
+    pub fn is_corrupt_load(&self) -> bool {
+        self.corrupt_load.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Get a reference to the storage (for safety checks)
+    pub fn storage(&self) -> Arc<dyn ConfigStorage> {
+        self.storage.clone()
+    }
 }
 
 impl Clone for ConfigManager {

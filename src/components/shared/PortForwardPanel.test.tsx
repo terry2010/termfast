@@ -159,14 +159,15 @@ describe("PortForwardPanel", () => {
     });
   });
 
-  it("shows quick template buttons", async () => {
-    mockIpcInvoke.mockResolvedValue({ rules: [] });
+  it("shows bulk action buttons when rules have running or startable rules", async () => {
+    mockIpcInvoke.mockResolvedValue({
+      rules: [
+        { id: "pf_1", name: "Test", type: "local", running: true, enabled: true },
+      ],
+    });
     render(<PortForwardPanel serverId="srv1" />);
     await waitFor(() => {
-      expect(screen.getByText("+ MySQL")).toBeInTheDocument();
-      expect(screen.getByText("+ Redis")).toBeInTheDocument();
-      expect(screen.getByText("+ PostgreSQL")).toBeInTheDocument();
-      expect(screen.getByText("+ Web")).toBeInTheDocument();
+      expect(screen.getByText("port_forward.stop_all")).toBeInTheDocument();
     });
   });
 });

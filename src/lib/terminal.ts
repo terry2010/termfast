@@ -13,6 +13,11 @@ export interface TerminalOpenResult {
   initial_output: string;
 }
 
+export interface TerminalOpenOptions {
+  backend?: "ssh" | "local";
+  shell?: string;
+}
+
 /**
  * Open a terminal session with a binary Channel for output.
  *
@@ -26,6 +31,7 @@ export async function openTerminalWithChannel(
   serverId: string,
   cols = 80,
   rows = 24,
+  options?: TerminalOpenOptions,
 ): Promise<TerminalOpenResult> {
   // session_id is assigned after ipc_terminal_open returns; the closure
   // captures it by reference so onmessage can dispatch once set.
@@ -41,6 +47,8 @@ export async function openTerminalWithChannel(
     cols,
     rows,
     on_output: onOutput,
+    backend: options?.backend ?? "ssh",
+    shell: options?.shell,
   });
   sessionId = result.session_id;
   return result;

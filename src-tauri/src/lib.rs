@@ -235,6 +235,10 @@ pub fn run() {
             ipc_update_trigger,
             ipc_remove_trigger,
             ipc_add_trigger_from_template,
+            ipc_list_local_triggers,
+            ipc_save_local_trigger,
+            ipc_remove_local_trigger,
+            ipc_manual_fire_local_trigger,
             // System proxy (FP-6.6)
             ipc_set_system_proxy,
             ipc_clear_system_proxy,
@@ -260,6 +264,8 @@ pub fn run() {
             ipc_terminal_input,
             ipc_terminal_close,
             ipc_terminal_resize,
+            ipc_set_trigger_overrides,
+            ipc_get_trigger_overrides,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
             ipc_quit_app,
             // Cloud sync
@@ -287,6 +293,7 @@ pub fn run() {
             credential_manager::ipc_export_credentials,
             credential_manager::ipc_import_credentials,
             ipc_get_system_locale,
+            ipc_get_local_info,
             // Port forwarding (PF-6)
             ipc_list_port_forwards,
             ipc_add_port_forward,
@@ -830,6 +837,61 @@ async fn ipc_remove_trigger(
     .await
 }
 
+// === Local trigger IPC commands ===
+
+#[tauri::command]
+async fn ipc_list_local_triggers(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    // 复用 GetConfig，在 Tauri 侧取 local_triggers（与 ipc_list_triggers 模式一致）
+    let config = forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::GetConfig,
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok(config["local_triggers"].clone())
+}
+
+#[tauri::command]
+async fn ipc_save_local_trigger(
+    state: tauri::State<'_, AppState>,
+    trigger: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::SaveLocalTrigger,
+        serde_json::json!({ "trigger": trigger }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_remove_local_trigger(
+    state: tauri::State<'_, AppState>,
+    trigger_id: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::RemoveLocalTrigger,
+        serde_json::json!({ "trigger_id": trigger_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_manual_fire_local_trigger(
+    state: tauri::State<'_, AppState>,
+    trigger_id: String,
+) -> Result<serde_json::Value, String> {
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::ManualFireLocalTrigger,
+        serde_json::json!({ "trigger_id": trigger_id }),
+    )
+    .await
+}
+
 #[tauri::command]
 async fn ipc_add_trigger_from_template(
     state: tauri::State<'_, AppState>,
@@ -1180,11 +1242,15 @@ async fn ipc_terminal_open(
     cols: Option<u64>,
     rows: Option<u64>,
     on_output: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    backend: Option<String>,
+    shell: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "server_id": server_id,
         "cols": cols.unwrap_or(80),
         "rows": rows.unwrap_or(24),
+        "backend": backend.as_deref().unwrap_or("ssh"),
+        "shell": shell,
     });
     let result = forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalOpen, params).await?;
     // Register the channel for this session so the binary event forwarder can send raw bytes
@@ -1251,6 +1317,40 @@ async fn ipc_terminal_resize(
     forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::TerminalResize,
+        params,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_set_trigger_overrides(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    overrides: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "session_id": session_id,
+        "overrides": overrides,
+    });
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::SetTriggerOverrides,
+        params,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_get_trigger_overrides(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "session_id": session_id,
+    });
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::GetTriggerOverrides,
         params,
     )
     .await
@@ -1569,6 +1669,51 @@ fn ipc_get_system_locale() -> String {
     // On Windows: reads GetUserDefaultLocaleName / GetUserPreferredUILanguages.
     // On Linux: reads LANG/LC_ALL env.
     sys_locale::get_locales().next().unwrap_or_else(|| "en-US".to_string())
+}
+
+/// Returns local terminal info: default shell, OS details, hostname, username.
+/// Used by the "My Computer" overview to display real system data.
+#[tauri::command]
+fn ipc_get_local_info() -> serde_json::Value {
+    let default_shell = termfast_core::local::shell::detect_default_shell();
+    // Extract shell name from path (e.g. "/bin/zsh" → "zsh")
+    let shell_name = std::path::Path::new(&default_shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&default_shell)
+        .to_string();
+
+    // Detailed OS info via os_info crate
+    let os = os_info::get();
+    let os_version = os.version().to_string();
+    let os_arch = std::env::consts::ARCH;
+
+    // User + hostname (whoami 2.x returns Result)
+    let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
+    let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".to_string());
+    let real_name = whoami::realname().unwrap_or_else(|_| username.clone());
+
+    // OS display name (friendly)
+    let os_name = match os.os_type() {
+        os_info::Type::Macos => "macOS".to_string(),
+        os_info::Type::Windows => "Windows".to_string(),
+        os_info::Type::Linux => "Linux".to_string(),
+        other => format!("{:?}", other),
+    };
+
+    let available_shells = termfast_core::local::shell::list_available_shells();
+
+    serde_json::json!({
+        "default_shell": default_shell,
+        "shell_name": shell_name,
+        "os_name": os_name,
+        "os_version": os_version,
+        "os_arch": os_arch,
+        "hostname": hostname,
+        "username": username,
+        "real_name": real_name,
+        "available_shells": available_shells,
+    })
 }
 
 // === SECTION: Port forwarding IPC commands (PF-6) ===

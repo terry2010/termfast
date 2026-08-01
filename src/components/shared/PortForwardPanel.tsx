@@ -1,7 +1,7 @@
 // PortForwardPanel — port forwarding rules list + add/edit/start/stop (PF-6)
 // Shows rules with status, allows add/edit/delete/start/stop
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
 import { Modal } from "@/components/ui/Modal";
@@ -15,12 +15,19 @@ import type {
 
 interface PortForwardPanelProps {
   serverId: string;
+  onRulesChange?: (rules: PortForwardRuleWithStatus[]) => void;
+}
+
+export interface PortForwardPanelHandle {
+  getRules: () => PortForwardRuleWithStatus[];
+  startAll: () => Promise<void>;
+  stopAll: () => Promise<void>;
 }
 
 const EMPTY_RULES: PortForwardRuleWithStatus[] = [];
 
 // Quick templates for common services
-const QUICK_TEMPLATES = [
+export const QUICK_TEMPLATES = [
   { name: "MySQL", local_port: 13306, remote_port: 3306 },
   { name: "Redis", local_port: 16379, remote_port: 6379 },
   { name: "PostgreSQL", local_port: 15432, remote_port: 5432 },
@@ -36,9 +43,11 @@ function formatBytes(bytes: number): string {
 
 // === SECTION 1 END ===
 
-export function PortForwardPanel({ serverId }: PortForwardPanelProps) {
+export const PortForwardPanel = forwardRef<PortForwardPanelHandle, PortForwardPanelProps>(function PortForwardPanel({ serverId, onRulesChange }, ref) {
   const { t } = useTranslation();
   const [rules, setRules] = useState<PortForwardRuleWithStatus[]>(EMPTY_RULES);
+  const rulesRef = useRef(rules);
+  rulesRef.current = rules;
   const [loading, setLoading] = useState(true);
   const [editingRule, setEditingRule] = useState<PortForwardRule | null | undefined>(
     undefined,
@@ -54,7 +63,9 @@ export function PortForwardPanel({ serverId }: PortForwardPanelProps) {
         "ipc_list_port_forwards",
         { server_id: serverId },
       );
-      setRules(data.rules || []);
+      const r = data.rules || [];
+      setRules(r);
+      onRulesChange?.(r);
     } catch (e) {
       console.error("[PortForwardPanel] load failed:", e);
     } finally {
@@ -130,24 +141,30 @@ export function PortForwardPanel({ serverId }: PortForwardPanelProps) {
     }
   };
 
+  useImperativeHandle(ref, () => ({
+    getRules: () => rulesRef.current,
+    startAll: handleStartAll,
+    stopAll: handleStopAll,
+  }));
+
   const handleSaved = async () => {
     setEditingRule(undefined);
     await loadRules();
   };
 
-  const handleTemplateAdd = (tmpl: (typeof QUICK_TEMPLATES)[0]) => {
-    setEditingRule({
-      id: "",
-      name: tmpl.name,
-      type: "local",
-      local_host: "127.0.0.1",
-      local_port: tmpl.local_port,
-      remote_host: "127.0.0.1",
-      remote_port: tmpl.remote_port,
-      enabled: true,
-      auto_start: false,
-    });
-  };
+  // Listen for "port-forward-add" event from the panel header button in ServerDetail
+  useEffect(() => {
+    const addHandler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.serverId === serverId) {
+        setEditingRule(null);
+      }
+    };
+    window.addEventListener("port-forward-add", addHandler);
+    return () => {
+      window.removeEventListener("port-forward-add", addHandler);
+    };
+  }, [serverId]);
 
   // === SECTION 2 END ===
 
@@ -161,45 +178,6 @@ export function PortForwardPanel({ serverId }: PortForwardPanelProps) {
 
   return (
     <div className="space-y-3">
-      {/* Header with actions */}
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap">
-          {QUICK_TEMPLATES.map((tmpl) => (
-            <button
-              key={tmpl.name}
-              onClick={() => handleTemplateAdd(tmpl)}
-              className="px-2.5 py-1 text-xs rounded-md bg-gray-100 dark:bg-[#2C2C2E] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] transition-colors"
-            >
-              + {tmpl.name}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2">
-          {rules.some((r) => r.running) && (
-            <button
-              onClick={handleStopAll}
-              className="px-3 py-1.5 text-xs rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] font-medium transition-colors"
-            >
-              {t("port_forward.stop_all")}
-            </button>
-          )}
-          {rules.some((r) => !r.running && r.enabled) && (
-            <button
-              onClick={handleStartAll}
-              className="px-3 py-1.5 text-xs rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] font-medium transition-colors"
-            >
-              {t("port_forward.start_all")}
-            </button>
-          )}
-          <button
-            onClick={() => setEditingRule(null)}
-            className="px-3 py-1.5 text-xs rounded-lg bg-[#007AFF] text-white hover:bg-[#0066D6] font-medium transition-colors"
-          >
-            + {t("port_forward.add_rule")}
-          </button>
-        </div>
-      </div>
-
       {/* Rules list */}
       {rules.length === 0 ? (
         <div className="text-sm text-gray-400 py-8 text-center">
@@ -314,7 +292,7 @@ export function PortForwardPanel({ serverId }: PortForwardPanelProps) {
       )}
     </div>
   );
-}
+});
 
 // === SECTION 3 END ===
 
@@ -343,6 +321,15 @@ function PortForwardEditor({
   const [enabled, setEnabled] = useState(rule?.enabled ?? true);
   const [autoStart, setAutoStart] = useState(rule?.auto_start ?? false);
   const [saving, setSaving] = useState(false);
+
+  const applyTemplate = (tmpl: (typeof QUICK_TEMPLATES)[0]) => {
+    setName(tmpl.name);
+    setType("local");
+    setLocalHost("127.0.0.1");
+    setLocalPort(tmpl.local_port);
+    setRemoteHost("127.0.0.1");
+    setRemotePort(tmpl.remote_port);
+  };
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -420,6 +407,26 @@ function PortForwardEditor({
       }
     >
       <div className="space-y-4 py-2">
+        {/* Quick templates — only shown when creating a new rule */}
+        {!rule && (
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">
+              {t("port_forward.quick_add")}
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {QUICK_TEMPLATES.map((tmpl) => (
+                <button
+                  key={tmpl.name}
+                  onClick={() => applyTemplate(tmpl)}
+                  className="px-2.5 py-1 text-xs rounded-md bg-gray-100 dark:bg-[#2C2C2E] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] transition-colors"
+                >
+                  + {tmpl.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Name */}
         <div>
           <label className="block text-xs font-medium text-gray-500 mb-1">

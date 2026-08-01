@@ -39,6 +39,32 @@ const STATUS_SHAPES: Record<ServerStatus, string> = {
 
 // === SECTION 1 END ===
 
+// Open a local terminal from the ServerList sidebar.
+// Selects the "__local__" node, opens the terminal, creates a tab.
+async function openLocalTerminalFromList() {
+  const store = useServerStore.getState();
+  const serverId = "__local__";
+  store.selectServer(serverId);
+  try {
+    const result = await openTerminalWithChannel(serverId, 80, 24, { backend: "local" });
+    const sessionId = result.session_id;
+    const tabId = `term:${sessionId}`;
+    const currentTabs = store.terminal_tabs_by_server[serverId] || [];
+    const defaultLabel = `Terminal ${currentTabs.length + 1}`;
+    store.addTerminalTab(serverId, {
+      id: tabId,
+      sessionId,
+      label: defaultLabel,
+      defaultLabel,
+      initialOutput: result.initial_output || "",
+      disconnected: false,
+    });
+    store.setActiveTerminalTab(serverId, tabId);
+  } catch (e: any) {
+    toast.error("Failed to open local terminal", { description: formatIpcError(e) });
+  }
+}
+
 export function ServerList({
   onAddServer,
   onOpenTemplates,
@@ -425,6 +451,30 @@ export function ServerList({
               </button>
             </div>
           )}
+          {collapsed && hoverExpanded && (
+            <button
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-[#2C2C2E] text-gray-500 dark:text-gray-400 transition-colors flex-shrink-0"
+              onClick={() => {
+                setHoverExpanded(false);
+                onToggleCollapse?.();
+              }}
+              title={t("server.expand")}
+              aria-label={t("server.expand")}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="10 17 16 12 10 7" />
+              </svg>
+            </button>
+          )}
           {showFullContent ? (
             <button
               className="flex items-center justify-center rounded-lg bg-[#007AFF] text-white hover:bg-[#0063D1] transition-colors px-3 py-1.5 text-xs font-medium flex-1"
@@ -530,7 +580,42 @@ export function ServerList({
               {t("server.add")}
             </button>
           ) : (
-            sorted.map((server) => (
+            <>
+            {/* "我的电脑" virtual node — pinned at top, not draggable */}
+            <ServerListItem
+              key="__local__"
+              server={{
+                id: "__local__",
+                name: t("server.my_computer"),
+                current_status: "connected" as ServerStatus,
+                ssh: null as any,
+                proxy: { enabled: false, socks5_port: 0, http_port: 0, mixed_port: 0, max_channels: 0, channel_idle_timeout: 0 },
+                reconnect: { auto_reconnect: false, heartbeat_interval: 0, max_attempts: 0, reconnect_timeout_secs: 0, initial_backoff_secs: 0, max_backoff_secs: 0 },
+                ip_check: { enabled: false, interval_secs: 0 },
+                last_known_ip: null,
+                triggers: [],
+                suppress_firewall_badge: false,
+                current_ip: null,
+                client_ip: null,
+                connected_since: null,
+                reconnect_count: 0,
+                max_attempts: 0,
+                proxy_running: false,
+                active_channels: 0,
+                bytes_in: 0,
+                bytes_out: 0,
+                auth_banner: null,
+              } as ServerState}
+              selected={selectedId === "__local__"}
+              collapsed={!showFullContent}
+              onSelect={() => selectServer("__local__")}
+              onContextMenu={(e) => {
+                showContextMenu(e, [
+                  { label: t("server.open_local_terminal"), onClick: () => openLocalTerminalFromList() },
+                ]);
+              }}
+            />
+            {sorted.map((server) => (
               <ServerListItem
                 key={server.id}
                 server={server}
@@ -591,7 +676,8 @@ export function ServerList({
                   setDragOverId(null);
                 }}
               />
-            ))
+            ))}
+            </>
           )}
         </div>
       </div>

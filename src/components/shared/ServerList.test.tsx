@@ -81,6 +81,8 @@ describe("ServerList", () => {
     render(<ServerList />);
     await waitFor(() => expect(screen.getByText("Abnormal")).toBeInTheDocument());
     const items = screen.getAllByRole("listitem");
-    expect(items[0]).toHaveTextContent("Abnormal");
+    // items[0] is the "My Computer" virtual node (always pinned at top);
+    // the first real server is items[1], which should be the abnormal one.
+    expect(items[1]).toHaveTextContent("Abnormal");
   });
 });

@@ -6,6 +6,7 @@
 pub mod config;
 pub mod error;
 pub mod fs;
+pub mod local;
 pub mod log;
 pub mod migration;
 pub mod platform;

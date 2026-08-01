@@ -36,9 +36,9 @@ export function TriggerEditor({
   const [eventType, setEventType] = useState<TriggerType>(
     (trigger as any)?.trigger_type || "ManualFire",
   );
-  const [timeoutSecs, setTimeoutSecs] = useState(trigger?.timeout_secs || 30);
+  const [timeoutSecs, setTimeoutSecs] = useState(trigger?.timeout_secs || 1);
   const [cooldownSecs, setCooldownSecs] = useState(
-    trigger?.cooldown_secs || 60,
+    trigger?.cooldown_secs || 1,
   );
   const [continueOnError, setContinueOnError] = useState(
     trigger?.continue_on_error || false,
@@ -49,6 +49,75 @@ export function TriggerEditor({
   const [notifyOnFailure, setNotifyOnFailure] = useState<boolean>(
     trigger?.notify_on_failure ?? true,
   );
+  const [execInTerminal, setExecInTerminal] = useState<boolean>(
+    trigger?.exec_in_terminal ?? false,
+  );
+  // Interval: stored as seconds in config, displayed as days+hours+minutes+seconds
+  const rawInterval = trigger?.interval_secs || 300;
+  const [intervalDays, setIntervalDays] = useState<number>(() => Math.floor(rawInterval / 86400));
+  const [intervalHours, setIntervalHours] = useState<number>(() => Math.floor((rawInterval % 86400) / 3600));
+  const [intervalMinutes, setIntervalMinutes] = useState<number>(() => Math.floor((rawInterval % 3600) / 60));
+  const [intervalSeconds, setIntervalSeconds] = useState<number>(() => rawInterval % 60);
+  const intervalSecs =
+    intervalDays * 86400 +
+    intervalHours * 3600 +
+    intervalMinutes * 60 +
+    intervalSeconds;
+
+  // OnSchedule state
+  const [scheduleMode, setScheduleMode] = useState<string>(
+    trigger?.schedule_mode || "cron",
+  );
+  // Cron builder state: frequency + time + day-of-week + day-of-month
+  const [cronFreq, setCronFreq] = useState<string>(() => {
+    const expr = trigger?.cron_expr || "";
+    if (!expr) return "daily";
+    // Try to parse common patterns
+    if (/^0 \d+ \* \* \*$/.test(expr)) return "daily";
+    if (/^0 \d+ \* \* \d+$/.test(expr)) return "weekly";
+    if (/^0 \d+ \d+ \* \*$/.test(expr)) return "monthly";
+    return "custom";
+  });
+  const [cronHour, setCronHour] = useState<number>(() => {
+    const expr = trigger?.cron_expr || "";
+    const m = expr.match(/^\d+ (\d+) /);
+    return m ? parseInt(m[1]) : 3;
+  });
+  const [cronMinute, setCronMinute] = useState<number>(() => {
+    const expr = trigger?.cron_expr || "";
+    const m = expr.match(/^(\d+) /);
+    return m ? parseInt(m[1]) : 0;
+  });
+  const [cronDow, setCronDow] = useState<number>(() => {
+    const expr = trigger?.cron_expr || "";
+    const m = expr.match(/^0 \d+ \* \* (\d+)$/);
+    return m ? parseInt(m[1]) : 1;
+  });
+  const [cronDom, setCronDom] = useState<number>(() => {
+    const expr = trigger?.cron_expr || "";
+    const m = expr.match(/^0 \d+ (\d+) \* \*$/);
+    return m ? parseInt(m[1]) : 1;
+  });
+  const [cronCustom, setCronCustom] = useState<string>(() => {
+    const expr = trigger?.cron_expr || "";
+    if (/^0 \d+ \* \* \*$/.test(expr)) return "";
+    if (/^0 \d+ \* \* \d+$/.test(expr)) return "";
+    if (/^0 \d+ \d+ \* \*$/.test(expr)) return "";
+    return expr;
+  });
+  // Build cron expression from builder fields
+  const cronExpr = (() => {
+    if (cronFreq === "custom") return cronCustom;
+    if (cronFreq === "daily") return `${cronMinute} ${cronHour} * * *`;
+    if (cronFreq === "weekly") return `${cronMinute} ${cronHour} * * ${cronDow}`;
+    if (cronFreq === "monthly") return `${cronMinute} ${cronHour} ${cronDom} * *`;
+    return cronCustom;
+  })();
+  // One-time task
+  const [scheduledAt, setScheduledAt] = useState<string>(
+    trigger?.scheduled_at || "",
+  );
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
@@ -133,8 +202,34 @@ export function TriggerEditor({
     setSaving(true);
     setError(null);
 
+    const isLocal = serverId === "__local__";
     try {
-      if (isEditing && trigger) {
+      if (isLocal) {
+        // 本地触发器：使用 ipc_save_local_trigger（add + update 共用）
+        await ipcInvoke("ipc_save_local_trigger", {
+          trigger: {
+            id: isEditing && trigger ? trigger.id : `trig_${Date.now()}`,
+            template_id: "",
+            name,
+            trigger_type: eventType,
+            enabled: isEditing && trigger ? trigger.enabled : true,
+            continue_on_error: continueOnError,
+            commands,
+            parameters: {},
+            timeout_secs: timeoutSecs,
+            cooldown_secs: cooldownSecs,
+            notify_on_success: notifyOnSuccess,
+            notify_on_failure: notifyOnFailure,
+            last_fired_at: trigger?.last_fired_at ?? null,
+            template_hash_at_addition: "",
+            exec_in_terminal: execInTerminal,
+            interval_secs: intervalSecs,
+            schedule_mode: scheduleMode,
+            cron_expr: cronExpr,
+            scheduled_at: scheduledAt,
+          },
+        });
+      } else if (isEditing && trigger) {
         // Update existing trigger
         await ipcInvoke("ipc_update_trigger", {
           params: {
@@ -149,6 +244,11 @@ export function TriggerEditor({
             notify_on_success: notifyOnSuccess,
             notify_on_failure: notifyOnFailure,
             commands,
+            exec_in_terminal: execInTerminal,
+            interval_secs: intervalSecs,
+            schedule_mode: scheduleMode,
+            cron_expr: cronExpr,
+            scheduled_at: scheduledAt,
           },
         });
       } else {
@@ -170,6 +270,11 @@ export function TriggerEditor({
             notify_on_failure: notifyOnFailure,
             last_fired_at: null,
             template_hash_at_addition: "",
+            exec_in_terminal: execInTerminal,
+            interval_secs: intervalSecs,
+            schedule_mode: scheduleMode,
+            cron_expr: cronExpr,
+            scheduled_at: scheduledAt,
           },
         });
       }
@@ -182,14 +287,30 @@ export function TriggerEditor({
     }
   };
 
-  const eventTypes: TriggerType[] = [
+  // 本地触发器可选的事件类型（与 SSH 服务器触发器不同）
+  const localEventTypes: TriggerType[] = [
+    "OnTerminalOpen",
+    "BeforeTerminalClose",
+    "OnNetworkDisconnect",
+    "OnNetworkConnect",
+    "OnLanIpChange",
+    "OnPublicIpChange",
+    "OnInterval",
+    "OnSchedule",
+    "ManualFire",
+  ];
+  const sshEventTypes: TriggerType[] = [
     "OnConnect",
     "OnReconnect",
     "OnIpChange",
     "OnProcessDead",
     "OnPortClosed",
+    "OnInterval",
+    "OnSchedule",
     "ManualFire",
   ];
+  const eventTypes: TriggerType[] =
+    serverId === "__local__" ? localEventTypes : sshEventTypes;
 
   return (
     <>
@@ -241,6 +362,215 @@ export function TriggerEditor({
                 ))}
               </select>
             </SettingRow>
+            <div className="flex items-center justify-between px-4 py-3">
+              <div>
+                <span className="text-sm text-gray-700 dark:text-gray-200">
+                  {t("trigger.exec_in_terminal")}
+                </span>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                  {t("trigger.exec_in_terminal_hint")}
+                </p>
+              </div>
+              <Toggle
+                checked={execInTerminal}
+                onChange={setExecInTerminal}
+              />
+            </div>
+            {eventType === "OnInterval" && (
+              <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06]">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">
+                    {t("trigger.interval_label")}
+                  </span>
+                  <div className="flex items-center gap-1.5 whitespace-nowrap overflow-x-auto">
+                  <span className="text-xs text-gray-400 flex-shrink-0">{t("common.every")}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={intervalDays}
+                    onChange={(e) => setIntervalDays(Math.max(0, Number(e.target.value)))}
+                    className="input flex-shrink-0"
+                    style={{ width: "4rem" }}
+                  />
+                  <span className="text-xs text-gray-400 flex-shrink-0">{t("common.days")}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={23}
+                    value={intervalHours}
+                    onChange={(e) => setIntervalHours(Math.min(23, Math.max(0, Number(e.target.value))))}
+                    className="input flex-shrink-0"
+                    style={{ width: "3.5rem" }}
+                  />
+                  <span className="text-xs text-gray-400 flex-shrink-0">{t("common.hours")}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    value={intervalMinutes}
+                    onChange={(e) => setIntervalMinutes(Math.min(59, Math.max(0, Number(e.target.value))))}
+                    className="input flex-shrink-0"
+                    style={{ width: "3.5rem" }}
+                  />
+                  <span className="text-xs text-gray-400 flex-shrink-0">{t("common.minutes")}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    value={intervalSeconds}
+                    onChange={(e) => setIntervalSeconds(Math.min(59, Math.max(0, Number(e.target.value))))}
+                    className="input flex-shrink-0"
+                    style={{ width: "3.5rem" }}
+                  />
+                  <span className="text-xs text-gray-400 flex-shrink-0">{t("common.seconds")}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+            {eventType === "OnSchedule" && (
+              <>
+                <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06]">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm text-gray-700 dark:text-gray-200">
+                      {t("trigger.schedule_mode")}
+                    </span>
+                    <div className="inline-flex rounded-lg border border-gray-200 dark:border-white/[0.12] overflow-hidden">
+                      <button
+                        type="button"
+                        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                          scheduleMode === "cron"
+                            ? "bg-blue-500 text-white"
+                            : "bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E]"
+                        }`}
+                        onClick={() => setScheduleMode("cron")}
+                      >
+                        {t("trigger.schedule_mode_cron")}
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                          scheduleMode === "once"
+                            ? "bg-blue-500 text-white"
+                            : "bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#2C2C2E]"
+                        }`}
+                        onClick={() => setScheduleMode("once")}
+                      >
+                        {t("trigger.schedule_mode_once")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {scheduleMode === "cron" && (
+                  <>
+                    <SettingRow label={t("trigger.cron_frequency")}>
+                      <select
+                        className="input w-40"
+                        value={cronFreq}
+                        onChange={(e) => setCronFreq(e.target.value)}
+                      >
+                        <option value="daily">{t("trigger.cron_freq_daily")}</option>
+                        <option value="weekly">{t("trigger.cron_freq_weekly")}</option>
+                        <option value="monthly">{t("trigger.cron_freq_monthly")}</option>
+                        <option value="custom">{t("trigger.cron_freq_custom")}</option>
+                      </select>
+                    </SettingRow>
+                    {cronFreq !== "custom" && (
+                      <SettingRow label={t("trigger.cron_time")}>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min={0}
+                            max={23}
+                            value={cronHour}
+                            onChange={(e) => setCronHour(Math.min(23, Math.max(0, Number(e.target.value))))}
+                            className="input w-16"
+                          />
+                          <span className="text-gray-400">:</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={59}
+                            value={cronMinute}
+                            onChange={(e) => setCronMinute(Math.min(59, Math.max(0, Number(e.target.value))))}
+                            className="input w-16"
+                          />
+                        </div>
+                      </SettingRow>
+                    )}
+                    {cronFreq === "weekly" && (
+                      <SettingRow label={t("trigger.cron_day_of_week")}>
+                        <select
+                          className="input w-40"
+                          value={cronDow}
+                          onChange={(e) => setCronDow(Number(e.target.value))}
+                        >
+                          <option value={0}>{t("trigger.dow_sun")}</option>
+                          <option value={1}>{t("trigger.dow_mon")}</option>
+                          <option value={2}>{t("trigger.dow_tue")}</option>
+                          <option value={3}>{t("trigger.dow_wed")}</option>
+                          <option value={4}>{t("trigger.dow_thu")}</option>
+                          <option value={5}>{t("trigger.dow_fri")}</option>
+                          <option value={6}>{t("trigger.dow_sat")}</option>
+                        </select>
+                      </SettingRow>
+                    )}
+                    {cronFreq === "monthly" && (
+                      <SettingRow label={t("trigger.cron_day_of_month")}>
+                        <input
+                          type="number"
+                          min={1}
+                          max={28}
+                          value={cronDom}
+                          onChange={(e) => setCronDom(Math.min(28, Math.max(1, Number(e.target.value))))}
+                          className="input w-20"
+                        />
+                      </SettingRow>
+                    )}
+                    {cronFreq === "custom" && (
+                      <SettingRow label={t("trigger.cron_expr")}>
+                        <input
+                          type="text"
+                          value={cronCustom}
+                          onChange={(e) => setCronCustom(e.target.value)}
+                          placeholder="0 3 * * *"
+                          className="input w-full font-mono text-sm"
+                        />
+                      </SettingRow>
+                    )}
+                    {cronFreq !== "custom" && (
+                      <div className="px-4 py-2 text-xs text-gray-400 dark:text-gray-500">
+                        {t("trigger.cron_preview")}: <code className="font-mono">{cronExpr}</code>
+                      </div>
+                    )}
+                  </>
+                )}
+                {scheduleMode === "once" && (
+                  <SettingRow label={t("trigger.scheduled_at")}>
+                    <input
+                      type="datetime-local"
+                      value={scheduledAt ? scheduledAt.slice(0, 16) : ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v) {
+                          // Convert to RFC3339 with timezone
+                          setScheduledAt(new Date(v).toISOString());
+                        } else {
+                          setScheduledAt("");
+                        }
+                      }}
+                      className="input w-48"
+                    />
+                  </SettingRow>
+                )}
+              </>
+            )}
+            {(eventType === "OnInterval" || eventType === "OnSchedule") && (
+              <div className="px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border-t border-amber-100 dark:border-amber-900/30">
+                <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                  {t("trigger.schedule_limitations")}
+                </p>
+              </div>
+            )}
             <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] last:border-0">
               <button
                 type="button"

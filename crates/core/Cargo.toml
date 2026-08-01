@@ -28,6 +28,11 @@ ssh-key = { version = "0.7.0-rc.11", features = ["rand_core", "getrandom", "encr
 rand = { workspace = true }
 socket2 = "0.5"
 zeroize = { version = "1", features = ["zeroize_derive"] }
+portable-pty = "0.9"
+which = "7"
+reqwest = { workspace = true }
+if-addrs = "0.13"
+cron = "0.17.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

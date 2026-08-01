@@ -20,6 +20,13 @@ pub struct TriggerEvent {
     pub trigger_type: TriggerType,
     pub new_ip: Option<String>,
     pub old_ip: Option<String>,
+    // === 新增字段（本地事件用） ===
+    /// 局域网 IP 列表（OnLanIpChange 事件用）
+    pub new_ips: Option<Vec<String>>,
+    /// 旧局域网 IP 列表（OnLanIpChange 事件用）
+    pub old_ips: Option<Vec<String>>,
+    /// 终端 session ID（OnTerminalOpen / BeforeTerminalClose 事件用）
+    pub session_id: Option<String>,
 }
 
 /// Trigger execution result — returned after executing a trigger
@@ -171,7 +178,7 @@ impl TriggerEngine {
     /// filters by event type, checks cooldown, then executes matching triggers.
     pub async fn fire_event(
         &self,
-        ssh: &SshClientHandle,
+        ssh: Option<&SshClientHandle>,
         triggers: &[TriggerInstance],
         templates: &[TriggerTemplate],
         event: &TriggerEvent,
@@ -268,7 +275,7 @@ impl TriggerEngine {
         server_id: &str,
         server_name: &str,
         trigger_id: &str,
-        ssh: &SshClientHandle,
+        ssh: Option<&SshClientHandle>,
         triggers: &[TriggerInstance],
     ) -> Result<TriggerExecutionResult> {
         if self.is_paused(server_id).await {
@@ -316,15 +323,74 @@ impl TriggerEngine {
             trigger_type: TriggerType::ManualFire,
             new_ip: None,
             old_ip: None,
+            new_ips: None,
+            old_ips: None,
+            session_id: None,
         };
 
         Ok(self.execute_trigger(ssh, trigger, &event).await)
     }
 
+    /// Build template variables for a trigger event (without custom_variables,
+    /// which are engine-specific). Used by callers that need to render commands
+    /// outside of execute_trigger (e.g. injecting into a terminal PTY).
+    pub fn build_vars(
+        &self,
+        event: &TriggerEvent,
+        trigger: &TriggerInstance,
+    ) -> std::collections::HashMap<String, String> {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("ServerName".to_string(), event.server_name.clone());
+        if let Some(ref ip) = event.new_ip {
+            vars.insert("NewIP".to_string(), ip.clone());
+            vars.insert(
+                "IPFamily".to_string(),
+                crate::ssh::exec::ip_family(ip).to_string(),
+            );
+        }
+        if let Some(ref ip) = event.old_ip {
+            vars.insert("OldIP".to_string(), ip.clone());
+        }
+        if let Some(ref ips) = event.new_ips {
+            vars.insert("NewIPs".to_string(), ips.join(","));
+        }
+        if let Some(ref ips) = event.old_ips {
+            vars.insert("OldIPs".to_string(), ips.join(","));
+        }
+        if let Some(ref sid) = event.session_id {
+            vars.insert("SessionId".to_string(), sid.clone());
+        }
+        for (k, v) in &trigger.parameters {
+            vars.insert(k.clone(), v.clone());
+        }
+        // Add custom variables
+        let custom_vars = self.custom_variables.blocking_lock();
+        for cv in custom_vars.iter() {
+            vars.entry(cv.name.clone())
+                .or_insert_with(|| cv.value.clone());
+        }
+        vars
+    }
+
+    /// Render all commands of a trigger using the event's variables.
+    /// Used by callers that inject commands into a terminal PTY.
+    pub fn render_commands(
+        &self,
+        event: &TriggerEvent,
+        trigger: &TriggerInstance,
+    ) -> Vec<String> {
+        let vars = self.build_vars(event, trigger);
+        trigger
+            .commands
+            .iter()
+            .map(|cmd| crate::trigger::template::render_template(cmd, &vars))
+            .collect()
+    }
+
     /// Execute a single trigger — runs all its commands sequentially
     async fn execute_trigger(
         &self,
-        ssh: &SshClientHandle,
+        ssh: Option<&SshClientHandle>,
         trigger: &TriggerInstance,
         event: &TriggerEvent,
     ) -> TriggerExecutionResult {
@@ -343,6 +409,16 @@ impl TriggerEngine {
         }
         if let Some(ref ip) = event.old_ip {
             vars.insert("OldIP".to_string(), ip.clone());
+        }
+        // === 新增变量注入（本地事件用） ===
+        if let Some(ref ips) = event.new_ips {
+            vars.insert("NewIPs".to_string(), ips.join(","));
+        }
+        if let Some(ref ips) = event.old_ips {
+            vars.insert("OldIPs".to_string(), ips.join(","));
+        }
+        if let Some(ref sid) = event.session_id {
+            vars.insert("SessionId".to_string(), sid.clone());
         }
         // Add user parameters (from trigger instance, e.g. ProtectedPort)
         // Validate each parameter against shell metacharacters before inserting.
@@ -386,7 +462,13 @@ impl TriggerEngine {
             //   persisting secrets to disk via FileLogger.
             tracing::info!("executing trigger command (template: {})", cmd_template);
 
-            match ssh.exec(&rendered, trigger.timeout_secs).await {
+            let exec_result = if ssh.is_none() || event.server_id == "__local__" {
+                local_exec(&rendered, trigger.timeout_secs).await
+            } else {
+                ssh.unwrap().exec(&rendered, trigger.timeout_secs).await
+            };
+
+            match exec_result {
                 Ok(exec_result) => {
                     let cmd_success = exec_result.is_success();
                     command_results.push(CommandResult {
@@ -437,6 +519,41 @@ impl Default for TriggerEngine {
 }
 
 // === SECTION 1 END ===
+
+/// 在本地执行一条命令（用于本地触发器）。
+/// Unix 用 sh -c，Windows 用 pwsh -Command（优先）或 cmd /C（降级）。
+/// 带超时控制。
+async fn local_exec(command: &str, timeout_secs: u64) -> Result<crate::ssh::exec::ExecResult> {
+    use std::time::Duration;
+    use tokio::process::Command;
+    use tokio::time::timeout;
+
+    let (shell, args): (&str, Vec<&str>) = if cfg!(target_os = "windows") {
+        if which::which("pwsh").is_ok() {
+            ("pwsh", vec!["-NoProfile", "-Command", command])
+        } else if which::which("powershell").is_ok() {
+            ("powershell", vec!["-NoProfile", "-Command", command])
+        } else {
+            ("cmd", vec!["/C", command])
+        }
+    } else {
+        ("sh", vec!["-c", command])
+    };
+
+    let output = timeout(
+        Duration::from_secs(timeout_secs),
+        Command::new(shell).args(&args).output(),
+    )
+    .await
+    .map_err(|_| crate::error::Error::Other(format!("command timeout: {}s", timeout_secs)))?
+    .map_err(|e| crate::error::Error::Other(format!("local exec failed: {}", e)))?;
+
+    Ok(crate::ssh::exec::ExecResult {
+        exit_code: output.status.code().unwrap_or(255) as u32,
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
 
 /// RAII guard to decrement running_count when trigger execution completes
 struct RunningGuard<'a>(&'a TriggerEngine);
@@ -542,6 +659,9 @@ mod tests {
             trigger_type: TriggerType::OnConnect,
             new_ip: Some("1.2.3.4".to_string()),
             old_ip: None,
+            new_ips: None,
+            old_ips: None,
+            session_id: None,
         };
         assert_eq!(event.server_id, "srv_1");
         assert_eq!(event.trigger_type, TriggerType::OnConnect);
@@ -569,6 +689,61 @@ mod tests {
         assert_eq!(result.executed_commands, 3);
         assert_eq!(result.results.len(), 1);
         assert!(result.results[0].success);
+    }
+
+    #[tokio::test]
+    async fn test_local_exec_success() {
+        // echo should succeed on any platform
+        let result = local_exec("echo hello", 5).await.unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_local_exec_failure() {
+        // exit 7 should produce a non-zero exit code
+        let result = local_exec("exit 7", 5).await.unwrap();
+        assert_eq!(result.exit_code, 7);
+    }
+
+    #[tokio::test]
+    async fn test_local_exec_timeout() {
+        // sleep 10 with 1s timeout should fail (not hang)
+        let result = local_exec("sleep 10", 1).await;
+        assert!(result.is_err(), "expected timeout error");
+    }
+
+    #[test]
+    fn test_local_trigger_event_construction() {
+        let event = TriggerEvent {
+            server_id: "__local__".to_string(),
+            server_name: "My Computer".to_string(),
+            trigger_type: TriggerType::OnLanIpChange,
+            new_ip: None,
+            old_ip: None,
+            new_ips: Some(vec!["192.168.1.10".to_string()]),
+            old_ips: Some(vec!["192.168.1.5".to_string()]),
+            session_id: None,
+        };
+        assert_eq!(event.trigger_type, TriggerType::OnLanIpChange);
+        assert_eq!(event.new_ips.as_deref().unwrap(), &["192.168.1.10"]);
+        assert_eq!(event.old_ips.as_deref().unwrap(), &["192.168.1.5"]);
+    }
+
+    #[test]
+    fn test_terminal_event_construction() {
+        let event = TriggerEvent {
+            server_id: "__local__".to_string(),
+            server_name: "My Computer".to_string(),
+            trigger_type: TriggerType::OnTerminalOpen,
+            new_ip: None,
+            old_ip: None,
+            new_ips: None,
+            old_ips: None,
+            session_id: Some("sess_abc".to_string()),
+        };
+        assert_eq!(event.trigger_type, TriggerType::OnTerminalOpen);
+        assert_eq!(event.session_id.as_deref(), Some("sess_abc"));
     }
 }
 

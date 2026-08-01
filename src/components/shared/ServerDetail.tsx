@@ -2,15 +2,19 @@
 // Shows connection controls, proxy toggle, IP, and trigger status
 // Tab-based UI: Connection / Proxy / Triggers / Auth (FP-8.3)
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { Monitor } from "lucide-react";
 import { useServerStore, type TerminalTab } from "@/stores/serverStore";
+import { useTriggerStore } from "@/stores/triggerStore";
+import type { ServerState } from "@/stores/serverStore";
 import { useLogStore } from "@/stores/logStore";
 import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
 import { TriggerList } from "@/components/shared/TriggerList";
-import { PortForwardPanel } from "@/components/shared/PortForwardPanel";
+import { TabTriggerManager } from "@/components/shared/TabTriggerManager";
+import { PortForwardPanel, PortForwardPanelHandle } from "@/components/shared/PortForwardPanel";
 import { TerminalView } from "@/components/shared/TerminalView";
 import { openTerminalWithChannel } from "@/lib/terminal";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -71,9 +75,13 @@ export function ServerDetail() {
   } | null>(null);
   const [testingProxy, setTestingProxy] = useState(false);
   const testProxyAbort = useRef<AbortController | null>(null);
+  const portForwardRef = useRef<PortForwardPanelHandle>(null);
+  const [pfRules, setPfRules] = useState<{ running: boolean; enabled: boolean }[]>([]);
   // Tab rename state: which tab id is being renamed, and the current edit text
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
+  // Per-tab trigger manager dialog
+  const [triggerMgrTabId, setTriggerMgrTabId] = useState<string | null>(null);
   // Disconnect confirmation: shown when user clicks disconnect with active terminals
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [pendingCloseTab, setPendingCloseTab] = useState<string | null>(null);
@@ -98,8 +106,34 @@ export function ServerDetail() {
     setDragOverTabId(null);
   }, [selectedId]);
 
+  const isLocal = selectedId === "__local__";
   const server = servers.find((s) => s.id === selectedId);
-  const isConnected = server?.current_status === "connected";
+  // Virtual server for local terminal (no SSH config, reuses overview UI)
+  const displayServer: ServerState = isLocal
+    ? ({
+        id: "__local__",
+        name: t("server.my_computer"),
+        ssh: null as any,
+        proxy: { enabled: false, socks5_port: 0, http_port: 0, mixed_port: 0, max_channels: 0, channel_idle_timeout: 0 },
+        reconnect: { auto_reconnect: false, heartbeat_interval: 0, max_attempts: 0, reconnect_timeout_secs: 0, initial_backoff_secs: 0, max_backoff_secs: 0 },
+        ip_check: { enabled: false, interval_secs: 0 },
+        last_known_ip: null,
+        triggers: [],
+        suppress_firewall_badge: false,
+        current_status: "connected",
+        current_ip: null,
+        client_ip: null,
+        connected_since: null,
+        reconnect_count: 0,
+        max_attempts: 0,
+        proxy_running: false,
+        active_channels: 0,
+        bytes_in: 0,
+        bytes_out: 0,
+        auth_banner: null,
+      } as ServerState)
+    : server!;
+  const isConnected = isLocal || server?.current_status === "connected";
   // "connecting" is derived from the server's current status in the store,
   // so it survives switching to another server and back.
   const connecting =
@@ -210,6 +244,14 @@ export function ServerDetail() {
           disconnected: false,
         });
         setActiveTerminalTab(serverId, tabId);
+        // Send server-level exec_in_terminal overrides to daemon as session overrides
+        const overrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
+        if (overrides && Object.keys(overrides).length > 0) {
+          ipcInvoke("ipc_set_trigger_overrides", {
+            sessionId,
+            overrides,
+          }).catch(() => {});
+        }
         requestAnimationFrame(() => {
           updateServerStatus(
             serverId,
@@ -237,6 +279,80 @@ export function ServerDetail() {
     setActiveTerminalTab,
     updateServerStatus,
   ]);
+
+  // Fetch local terminal info (default shell, OS details, hostname, username) from backend
+  const [localInfo, setLocalInfo] = useState<{
+    default_shell: string;
+    shell_name: string;
+    os_name: string;
+    os_version: string;
+    os_arch: string;
+    hostname: string;
+    username: string;
+    real_name: string;
+    available_shells: string[];
+  } | null>(null);
+
+  useEffect(() => {
+    if (!isLocal) return;
+    ipcInvoke<{
+      default_shell: string;
+      shell_name: string;
+      os_name: string;
+      os_version: string;
+      os_arch: string;
+      hostname: string;
+      username: string;
+      real_name: string;
+      available_shells: string[];
+    }>("ipc_get_local_info")
+      .then((info) => setLocalInfo(info))
+      .catch(() => {});
+  }, [isLocal]);
+
+  // Selected shell for local terminal (null = use default)
+  const [selectedShell, setSelectedShell] = useState<string | null>(null);
+
+  // Open a local terminal (no SSH connection needed).
+  // Bypasses handleOpenTerminal entirely — calls openTerminalWithChannel
+  // with backend: "local" and manages the tab directly.
+  const handleOpenLocalTerminal = useCallback(async (shell?: string) => {
+    if (!isLocal) return;
+    const serverId = "__local__";
+    // Use explicitly passed shell, or the selected shell from toggle, or null (default)
+    const effectiveShell = shell ?? selectedShell ?? undefined;
+    try {
+      const result = await openTerminalWithChannel(serverId, 80, 24, {
+        backend: "local",
+        shell: effectiveShell,
+      });
+      const sessionId = result.session_id;
+      const tabId: Tab = `term:${sessionId}`;
+      const currentTabs =
+        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
+      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      addTerminalTab(serverId, {
+        id: tabId,
+        sessionId,
+        label: defaultLabel,
+        defaultLabel,
+        initialOutput: result.initial_output || "",
+        disconnected: false,
+      });
+      setActiveTerminalTab(serverId, tabId);
+      // Send server-level exec_in_terminal overrides to daemon as session overrides
+      const overrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
+      if (overrides && Object.keys(overrides).length > 0) {
+        ipcInvoke("ipc_set_trigger_overrides", {
+          sessionId,
+          overrides,
+        }).catch(() => {});
+      }
+    } catch (e) {
+      const msg = formatIpcError(e);
+      toast.error(t("server.terminal_open_failed"), { description: msg });
+    }
+  }, [isLocal, t, addTerminalTab, setActiveTerminalTab, selectedShell]);
 
   // Open a terminal from the context menu. Uses the same logic as the login button.
   // Shares the same serial queue as handleOpenTerminal to avoid SSH channel conflicts.
@@ -354,7 +470,7 @@ export function ServerDetail() {
     ],
   );
 
-  if (!server) {
+  if (!server && !isLocal) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500">
         {t("server.add")}
@@ -363,7 +479,7 @@ export function ServerDetail() {
   }
 
   const handleConnect = async () => {
-    if (!server.id) return;
+    if (!server?.id) return;
     updateServerStatus(server.id, "connecting");
     try {
       await ipcInvoke("ipc_connect_server", { serverId: server.id });
@@ -398,7 +514,7 @@ export function ServerDetail() {
   };
 
   const handleDisconnect = async () => {
-    if (!server.id) return;
+    if (!server?.id) return;
     // If there are active terminal sessions, confirm before disconnecting
     // (disconnecting will close all terminals)
     if (termTabs.length > 0) {
@@ -410,7 +526,7 @@ export function ServerDetail() {
 
   // Disconnect a single terminal tab's session (closes PTY, keeps SSH alive)
   const handleDisconnectTerminal = async (tabId: string) => {
-    const serverId = server.id;
+    const serverId = displayServer.id;
     const currentTabs = useServerStore.getState().terminal_tabs_by_server[serverId] || [];
     const tab = currentTabs.find((tt) => tt.id === tabId);
     if (!tab || !tab.sessionId) return;
@@ -423,7 +539,7 @@ export function ServerDetail() {
   };
 
   const doDisconnect = async () => {
-    if (!server.id) return;
+    if (!server?.id) return;
     try {
       // Close all terminal sessions for this server
       for (const tt of termTabs) {
@@ -448,7 +564,7 @@ export function ServerDetail() {
   };
 
   const commitRename = () => {
-    if (!renamingTabId || !server.id) {
+    if (!renamingTabId || !server?.id) {
       setRenamingTabId(null);
       return;
     }
@@ -556,11 +672,11 @@ export function ServerDetail() {
     const currentTabs = terminalTabsByServer[serverId] || [];
     const hasDisconnected = currentTabs.some((tt) => tt.disconnected);
     const proxyPort =
-      server.proxy.mixed_port > 0
-        ? server.proxy.mixed_port
-        : server.proxy.socks5_port;
+      displayServer.proxy.mixed_port > 0
+        ? displayServer.proxy.mixed_port
+        : displayServer.proxy.socks5_port;
     const items: ContextMenuEntry[] = [
-      ...(isConnected
+      ...(isConnected && !isLocal
         ? [
             {
               label: t("server.disconnect"),
@@ -574,7 +690,7 @@ export function ServerDetail() {
               onClick: () => handleConnect(),
             } as ContextMenuEntry,
           ]),
-      { label: t("tab.login_server"), onClick: () => openTerminalFromMenu() },
+      { label: isLocal ? t("server.open_local_terminal") : t("tab.login_server"), onClick: () => isLocal ? handleOpenLocalTerminal() : openTerminalFromMenu() },
       { separator: true },
       {
         label: t("tab.close_disconnected_terminals"),
@@ -587,7 +703,7 @@ export function ServerDetail() {
         disabled: currentTabs.length === 0,
       },
       { separator: true },
-      ...(server.proxy_running
+      ...(!isLocal && displayServer.proxy_running
         ? [
             {
               label: t("tab.stop_proxy", { port: proxyPort }),
@@ -635,6 +751,10 @@ export function ServerDetail() {
         disabled: tab.label === tab.defaultLabel,
       },
       {
+        label: t("tab.manage_triggers"),
+        onClick: () => setTriggerMgrTabId(tabId),
+      },
+      {
         label: t("tab.reconnect"),
         onClick: () => handleConnect(),
         disabled: isConnected,
@@ -665,14 +785,14 @@ export function ServerDetail() {
       { separator: true },
       {
         label: t("tab.new_clone_session"),
-        onClick: () => openTerminalFromMenu(),
+        onClick: () => isLocal ? handleOpenLocalTerminal() : openTerminalFromMenu(),
       },
     ];
     showContextMenu(e, items);
   };
 
   const handleToggleProxy = async () => {
-    if (!server.id) return;
+    if (!server?.id) return;
     const newEnabled = !server.proxy_running;
 
     // If starting proxy and not connected, auto-connect first
@@ -753,7 +873,7 @@ export function ServerDetail() {
     http_port?: number;
     mixed_port?: number;
   }) => {
-    if (!server.id) return;
+    if (!server?.id) return;
     try {
       await ipcInvoke("ipc_update_server", {
         server_id: server.id,
@@ -774,7 +894,7 @@ export function ServerDetail() {
   };
 
   const handleSetSystemProxy = async () => {
-    if (!server.id) return;
+    if (!server?.id) return;
     try {
       await ipcInvoke("ipc_set_system_proxy", { serverId: server.id });
       useConfigStore
@@ -806,7 +926,7 @@ export function ServerDetail() {
   };
 
   const handleTestProxy = async () => {
-    if (!server.id) return;
+    if (!server?.id) return;
     setTestingProxy(true);
     setTestProxyResult(null);
     const abort = new AbortController();
@@ -861,8 +981,8 @@ export function ServerDetail() {
 
   const statusColor = isConnected
     ? "text-[#34C759]"
-    : server.current_status === "auth_failed" ||
-        server.current_status === "offline"
+    : displayServer.current_status === "auth_failed" ||
+        displayServer.current_status === "offline"
       ? "text-[#FF3B30]"
       : "text-gray-400";
 
@@ -933,7 +1053,7 @@ export function ServerDetail() {
                   rightClickButtonRef.current = false;
                   return;
                 }
-                setActiveTerminalTab(server.id, tab.key);
+                setActiveTerminalTab(displayServer.id, tab.key);
               }}
               onMouseDown={(e) => {
                 // Detect right-click on mousedown (before click fires).
@@ -1041,6 +1161,18 @@ export function ServerDetail() {
           />
         )}
 
+        {triggerMgrTabId && (() => {
+          const tab = termTabs.find((tt) => tt.id === triggerMgrTabId);
+          if (!tab) return null;
+          return (
+            <TabTriggerManager
+              serverId={displayServer.id}
+              sessionId={tab.sessionId}
+              onClose={() => setTriggerMgrTabId(null)}
+            />
+          );
+        })()}
+
         {activeTab === "overview" && (
           <div className="flex-1 overflow-y-auto p-6">
             <div className="space-y-6 max-w-6xl min-h-full pb-6">
@@ -1052,19 +1184,25 @@ export function ServerDetail() {
                   <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100 dark:border-white/[0.06]">
                     <div className="min-w-0 flex items-center gap-3">
                       <div className="w-11 h-11 rounded-[13px] bg-gradient-to-br from-[#007AFF]/15 to-[#007AFF]/5 flex items-center justify-center text-[#007AFF] font-semibold text-lg shadow-sm">
-                        {server.name.charAt(0).toUpperCase()}
+                        {isLocal ? (
+                          <Monitor className="w-6 h-6" />
+                        ) : (
+                          displayServer.name.charAt(0).toUpperCase()
+                        )}
                       </div>
                       <div>
                         <div className="text-base font-semibold text-gray-900 dark:text-gray-100 truncate">
-                          {server.name}
+                          {displayServer.name}
                         </div>
                         <div className={`text-xs ${statusColor} font-medium`}>
-                          {t(`server.status.${server.current_status}`)}
+                          {isLocal
+                            ? t("server.local_ready")
+                            : t(`server.status.${displayServer.current_status}`)}
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
-                      {isConnected && (
+                      {!isLocal && isConnected && (
                         <button
                           className="px-3.5 py-1.5 text-sm rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] font-medium transition-colors"
                           onClick={handleDisconnect}
@@ -1074,24 +1212,96 @@ export function ServerDetail() {
                       )}
                       <button
                         className="px-4 py-1.5 text-sm rounded-lg bg-[#34C759] text-white hover:bg-[#2EB34F] disabled:opacity-50 font-medium transition-colors "
-                        onClick={handleOpenTerminal}
-                        disabled={connecting}
+                        onClick={isLocal ? () => handleOpenLocalTerminal() : handleOpenTerminal}
+                        disabled={isLocal ? false : connecting}
                       >
-                        {connecting
-                          ? t("server.status.connecting")
-                          : termTabs.length === 0
-                            ? t("server.connect_terminal")
-                            : t("server.login_server")}
+                        {isLocal
+                          ? t("server.open_local_terminal")
+                          : connecting
+                            ? t("server.status.connecting")
+                            : termTabs.length === 0
+                              ? t("server.connect_terminal")
+                              : t("server.login_server")}
                       </button>
                     </div>
                   </div>
                   <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">
+                    {isLocal ? (
+                      <>
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-gray-500">
+                            {t("server.local_shell")}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {/* Default shell button — shows shell name + (默认) */}
+                            <button
+                              onClick={() => setSelectedShell(null)}
+                              className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${
+                                selectedShell === null
+                                  ? "bg-[#007AFF] text-white"
+                                  : "bg-gray-100 dark:bg-[#2C2C2E] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#3A3A3C]"
+                              }`}
+                            >
+                              {localInfo?.shell_name || t("server.shell.default")}
+                              <span className="ml-1 opacity-60">
+                                ({t("server.shell.default_label")})
+                              </span>
+                            </button>
+                            {/* Other available shells */}
+                            {localInfo?.available_shells
+                              ?.filter((s) => s !== localInfo?.shell_name)
+                              .map((shell) => (
+                                <button
+                                  key={shell}
+                                  onClick={() => setSelectedShell(shell)}
+                                  className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${
+                                    selectedShell === shell
+                                      ? "bg-[#007AFF] text-white"
+                                      : "bg-gray-100 dark:bg-[#2C2C2E] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#3A3A3C]"
+                                  }`}
+                                >
+                                  {shell}
+                                </button>
+                              ))}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-gray-500">
+                            {t("server.local_os")}
+                          </span>
+                          <span className="font-mono text-sm text-[#1D1D1F] dark:text-gray-100 text-right">
+                            {localInfo
+                              ? `${localInfo.os_name} ${localInfo.os_version} (${localInfo.os_arch})`
+                              : "—"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-gray-500">
+                            {t("server.local_hostname")}
+                          </span>
+                          <span className="font-mono text-sm text-[#1D1D1F] dark:text-gray-100">
+                            {localInfo?.hostname || "—"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-gray-500">
+                            {t("server.local_user")}
+                          </span>
+                          <span className="font-mono text-sm text-[#1D1D1F] dark:text-gray-100">
+                            {localInfo
+                              ? `${localInfo.real_name} (${localInfo.username})`
+                              : "—"}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
                     <div className="flex items-center justify-between px-4 py-3">
                       <span className="text-sm text-gray-500">
                         {t("server.host")}
                       </span>
                       <span className="font-mono text-sm text-[#1D1D1F] dark:text-gray-100 truncate pl-4">
-                        {server.ssh?.host || "?"}:{server.ssh?.port || "?"}
+                        {displayServer.ssh?.host || "?"}:{displayServer.ssh?.port || "?"}
                       </span>
                     </div>
                     <div className="flex items-center justify-between px-4 py-3">
@@ -1099,7 +1309,7 @@ export function ServerDetail() {
                         {t("server.ip_label")}
                       </span>
                       <span className="font-mono text-sm text-[#1D1D1F] dark:text-gray-100 truncate pl-4">
-                        {server.client_ip || "—"}
+                        {displayServer.client_ip || "—"}
                       </span>
                     </div>
                     <div className="flex items-center justify-between px-4 py-3">
@@ -1107,7 +1317,7 @@ export function ServerDetail() {
                         {t("server.auth_method")}
                       </span>
                       <span className="text-sm text-[#1D1D1F] dark:text-gray-100">
-                        {server.ssh?.auth_method === "key"
+                        {displayServer.ssh?.auth_method === "key"
                           ? t("server.ssh_key")
                           : t("server.password")}
                       </span>
@@ -1118,15 +1328,15 @@ export function ServerDetail() {
                       </span>
                       <div className="flex items-center gap-3">
                         <Toggle
-                          checked={server.reconnect?.auto_reconnect ?? true}
+                          checked={displayServer.reconnect?.auto_reconnect ?? true}
                           onChange={(v) => {
                             ipcInvoke("ipc_update_server", {
-                              server_id: server.id,
+                              server_id: displayServer.id,
                               auto_reconnect: v,
                             }).catch(() => {});
                             useServerStore.setState((s) => ({
                               servers: s.servers.map((srv) =>
-                                srv.id === server.id
+                                srv.id === displayServer.id
                                   ? {
                                       ...srv,
                                       reconnect: {
@@ -1139,12 +1349,12 @@ export function ServerDetail() {
                             }));
                           }}
                         />
-                        {(server.reconnect?.auto_reconnect ?? true) && (
+                        {(displayServer.reconnect?.auto_reconnect ?? true) && (
                           <select
                             className="text-xs bg-[#F2F2F7]/80 dark:bg-[#2C2C2E]/80 border border-gray-200/80 dark:border-white/[0.08] rounded-lg px-2 py-1 text-[#1D1D1F] dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-[#007AFF]"
                             value={(() => {
                               const secs =
-                                server.reconnect?.reconnect_timeout_secs ??
+                                displayServer.reconnect?.reconnect_timeout_secs ??
                                 86400;
                               if (secs === 0) return "0";
                               if (secs < 60) return `${secs}s`;
@@ -1171,12 +1381,12 @@ export function ServerDetail() {
                                 secs = Math.max(3, Math.min(259200, secs));
                               }
                               ipcInvoke("ipc_update_server", {
-                                server_id: server.id,
+                                server_id: displayServer.id,
                                 reconnect_timeout_secs: secs,
                               }).catch(() => {});
                               useServerStore.setState((s) => ({
                                 servers: s.servers.map((srv) =>
-                                  srv.id === server.id
+                                  srv.id === displayServer.id
                                     ? {
                                         ...srv,
                                         reconnect: {
@@ -1206,21 +1416,24 @@ export function ServerDetail() {
                         )}
                       </div>
                     </div>
+                      </>
+                    )}
                   </div>
 
-                  {server.auth_banner && (
+                  {!isLocal && server?.auth_banner && (
                     <div className="border-t border-gray-100 dark:border-white/[0.06] px-4 py-3">
                       <div className="text-xs text-gray-500 mb-1.5">
                         {t("server.welcome_message")}
                       </div>
                       <pre className="font-mono text-xs text-gray-700 dark:text-gray-300 bg-gray-50/80 dark:bg-black/20 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">
-                        {server.auth_banner}
+                        {displayServer.auth_banner}
                       </pre>
                     </div>
                   )}
                 </div>
 
-                {/* Proxy card — macOS Settings style grouped list */}
+                {/* Proxy card — macOS Settings style grouped list (hidden for local terminal) */}
+                {!isLocal && (
                 <div className="bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-[16px] overflow-hidden border border-gray-200/80 dark:border-white/[0.06] flex flex-col">
                   {/* Header */}
                   <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100 dark:border-white/[0.06]">
@@ -1229,25 +1442,25 @@ export function ServerDetail() {
                         {t("server.proxy")}
                       </div>
                       <div
-                        className={`text-base font-semibold mt-0.5 ${server.proxy_running ? "text-[#34C759]" : "text-gray-400"}`}
+                        className={`text-base font-semibold mt-0.5 ${displayServer.proxy_running ? "text-[#34C759]" : "text-gray-400"}`}
                       >
                         {!isConnected
                           ? t("proxy.not_connected")
-                          : server.proxy_running
+                          : displayServer.proxy_running
                             ? t("proxy.started")
                             : t("proxy.off")}
                       </div>
                     </div>
                     <button
                       className={`px-4 py-1.5 text-sm rounded-lg font-medium transition-colors ${
-                        server.proxy_running
+                        displayServer.proxy_running
                           ? "bg-[#34C759] text-white hover:bg-[#2EB34F] "
                           : "bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C]"
                       }`}
                       onClick={handleToggleProxy}
-                      disabled={connecting && !server.proxy_running}
+                      disabled={connecting && !displayServer.proxy_running}
                     >
-                      {server.proxy_running
+                      {displayServer.proxy_running
                         ? t("server.stop_proxy")
                         : t("server.start_proxy")}
                     </button>
@@ -1255,24 +1468,24 @@ export function ServerDetail() {
 
                   {/* Port configuration rows */}
                   <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">
-                    {server.proxy.mixed_port > 0 ? (
+                    {displayServer.proxy.mixed_port > 0 ? (
                       <div className="flex items-center justify-between px-4 py-3">
                         <span className="text-sm text-gray-500">Mixed</span>
-                        {server.proxy_running ? (
+                        {displayServer.proxy_running ? (
                           <span className="text-sm font-mono text-[#1D1D1F] dark:text-gray-100">
-                            {server.proxy.mixed_port}
+                            {displayServer.proxy.mixed_port}
                           </span>
                         ) : (
                           <input
                             type="number"
                             className="w-20 px-2 py-1 text-sm font-mono border border-gray-200/80 dark:border-white/[0.08] rounded-lg bg-[#FBFBFB] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-gray-100 focus:outline-none focus:border-[#007AFF]"
-                            value={server.proxy.mixed_port}
+                            value={displayServer.proxy.mixed_port}
                             onChange={(e) =>
                               handleUpdateProxy({
                                 mixed_port: parseInt(e.target.value) || 0,
                               })
                             }
-                            disabled={server.proxy_running}
+                            disabled={displayServer.proxy_running}
                           />
                         )}
                       </div>
@@ -1283,42 +1496,42 @@ export function ServerDetail() {
                             <span className="text-sm text-gray-500">
                               SOCKS5
                             </span>
-                            {server.proxy_running ? (
+                            {displayServer.proxy_running ? (
                               <span className="text-sm font-mono text-[#1D1D1F] dark:text-gray-100">
-                                {server.proxy.socks5_port}
+                                {displayServer.proxy.socks5_port}
                               </span>
                             ) : (
                               <input
                                 type="number"
                                 className="w-20 px-2 py-1 text-sm font-mono border border-gray-200/80 dark:border-white/[0.08] rounded-lg bg-[#FBFBFB] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-gray-100 focus:outline-none focus:border-[#007AFF]"
-                                value={server.proxy.socks5_port}
+                                value={displayServer.proxy.socks5_port}
                                 onChange={(e) =>
                                   handleUpdateProxy({
                                     socks5_port:
                                       parseInt(e.target.value) || 1080,
                                   })
                                 }
-                                disabled={server.proxy_running}
+                                disabled={displayServer.proxy_running}
                               />
                             )}
                           </div>
                           <div className="flex items-center justify-between px-4 py-3">
                             <span className="text-sm text-gray-500">HTTP</span>
-                            {server.proxy_running ? (
+                            {displayServer.proxy_running ? (
                               <span className="text-sm font-mono text-[#1D1D1F] dark:text-gray-100">
-                                {server.proxy.http_port}
+                                {displayServer.proxy.http_port}
                               </span>
                             ) : (
                               <input
                                 type="number"
                                 className="w-20 px-2 py-1 text-sm font-mono border border-gray-200/80 dark:border-white/[0.08] rounded-lg bg-[#FBFBFB] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-gray-100 focus:outline-none focus:border-[#007AFF]"
-                                value={server.proxy.http_port}
+                                value={displayServer.proxy.http_port}
                                 onChange={(e) =>
                                   handleUpdateProxy({
                                     http_port: parseInt(e.target.value) || 8080,
                                   })
                                 }
-                                disabled={server.proxy_running}
+                                disabled={displayServer.proxy_running}
                               />
                             )}
                           </div>
@@ -1326,19 +1539,19 @@ export function ServerDetail() {
                       </>
                     )}
                     <div
-                      className={`grid ${server.proxy_running ? "grid-cols-1" : "grid-cols-2"} divide-x divide-gray-100 dark:divide-white/[0.06]`}
+                      className={`grid ${displayServer.proxy_running ? "grid-cols-1" : "grid-cols-2"} divide-x divide-gray-100 dark:divide-white/[0.06]`}
                     >
-                      {!server.proxy_running && (
+                      {!displayServer.proxy_running && (
                         <div className="flex items-center justify-between px-4 py-3">
                           <span className="text-sm text-gray-500">
                             {t("server.mixed_port")}
                           </span>
                           <Toggle
-                            checked={server.proxy.mixed_port > 0}
+                            checked={displayServer.proxy.mixed_port > 0}
                             onChange={(v) =>
                               handleUpdateProxy({
                                 mixed_port: v
-                                  ? server.proxy.socks5_port || 1080
+                                  ? displayServer.proxy.socks5_port || 1080
                                   : 0,
                               })
                             }
@@ -1346,7 +1559,7 @@ export function ServerDetail() {
                         </div>
                       )}
                       <div
-                        className={`flex items-center justify-between px-4 py-3 ${!server.proxy_running ? "opacity-50 pointer-events-none" : ""}`}
+                        className={`flex items-center justify-between px-4 py-3 ${!displayServer.proxy_running ? "opacity-50 pointer-events-none" : ""}`}
                       >
                         <span className="text-sm text-gray-500">
                           {t("server.system_proxy")}
@@ -1364,9 +1577,9 @@ export function ServerDetail() {
                   </div>
 
                   {/* Active clients indicator */}
-                  {server.proxy_running && server.active_channels > 0 && (
+                  {displayServer.proxy_running && displayServer.active_channels > 0 && (
                     <div className="text-xs text-[#34C759] font-medium px-4 py-2 border-t border-gray-100 dark:border-white/[0.06]">
-                      {server.active_channels} {t("server.active_clients")}
+                      {displayServer.active_channels} {t("server.active_clients")}
                     </div>
                   )}
 
@@ -1379,12 +1592,12 @@ export function ServerDetail() {
                         placeholder={t("server.test_proxy_url_placeholder")}
                         value={testProxyUrl}
                         onChange={(e) => setTestProxyUrl(e.target.value)}
-                        disabled={!server.proxy_running}
+                        disabled={!displayServer.proxy_running}
                       />
                       <button
                         className="px-4 py-2 text-sm rounded-lg bg-[#007AFF] text-white hover:bg-[#0063D1] disabled:opacity-50 transition-colors"
                         onClick={handleTestProxy}
-                        disabled={!server.proxy_running || testingProxy}
+                        disabled={!displayServer.proxy_running || testingProxy}
                       >
                         {testingProxy
                           ? t("common.testing")
@@ -1426,6 +1639,7 @@ export function ServerDetail() {
                     )}
                   </div>
                 </div>
+                )}
               </div>
 
               {/* Triggers panel — full width */}
@@ -1434,23 +1648,71 @@ export function ServerDetail() {
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                     {t("trigger.title")}
                   </h3>
+                  <button
+                    className="text-xs px-3 py-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-600 font-medium transition-colors shadow-sm"
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent("trigger-add", {
+                          detail: { serverId: displayServer.id },
+                        }),
+                      )
+                    }
+                  >
+                    + {t("trigger.add")}
+                  </button>
                 </div>
                 <div className="p-4">
-                  <TriggerList serverId={server.id} />
+                  <TriggerList serverId={displayServer.id} />
                 </div>
               </div>
 
               {/* Port forwarding panel — full width (PF-6) */}
+              {!isLocal && (
               <div className="bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-[16px] border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
                 <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                     {t("port_forward.title")}
                   </h3>
+                  <div className="flex items-center gap-2">
+                    {pfRules.some((r) => r.running) && (
+                      <button
+                        onClick={() => portForwardRef.current?.stopAll()}
+                        className="px-3 py-1.5 text-xs rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] font-medium transition-colors"
+                      >
+                        {t("port_forward.stop_all")}
+                      </button>
+                    )}
+                    {pfRules.some((r) => !r.running && r.enabled) && (
+                      <button
+                        onClick={() => portForwardRef.current?.startAll()}
+                        className="px-3 py-1.5 text-xs rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] font-medium transition-colors"
+                      >
+                        {t("port_forward.start_all")}
+                      </button>
+                    )}
+                    <button
+                      onClick={() =>
+                        window.dispatchEvent(
+                          new CustomEvent("port-forward-add", {
+                            detail: { serverId: displayServer.id },
+                          }),
+                        )
+                      }
+                      className="px-3 py-1.5 text-xs rounded-lg bg-[#007AFF] text-white hover:bg-[#0066D6] font-medium transition-colors"
+                    >
+                      + {t("port_forward.add_rule")}
+                    </button>
+                  </div>
                 </div>
                 <div className="p-4">
-                  <PortForwardPanel serverId={server.id} />
+                  <PortForwardPanel
+                    ref={portForwardRef}
+                    serverId={displayServer.id}
+                    onRulesChange={setPfRules}
+                  />
                 </div>
               </div>
+              )}
             </div>
           </div>
         )}
@@ -1480,7 +1742,7 @@ export function ServerDetail() {
           >
             <TerminalView
               sessionId={tt.sessionId}
-              serverId={server.id}
+              serverId={displayServer.id}
               active={activeTab === tt.id}
               initialOutput={tt.initialOutput}
             />
@@ -1492,8 +1754,8 @@ export function ServerDetail() {
                 <button
                   className="px-5 py-2.5 text-sm rounded-lg bg-green-500 text-white hover:bg-green-600 font-medium shadow-sm transition-colors"
                   onClick={async () => {
-                    if (!server.id) return;
-                    const serverId = server.id;
+                    if (!server?.id) return;
+                    const serverId = displayServer.id;
                     // Ensure SSH is connected first
                     const currentServer = useServerStore
                       .getState()

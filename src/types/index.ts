@@ -73,6 +73,11 @@ export interface TriggerInstance {
   template_hash_at_addition: string;
   cooldown_secs: number;
   last_fired_at: string | null;
+  exec_in_terminal: boolean;
+  interval_secs: number;
+  schedule_mode: string;
+  cron_expr: string;
+  scheduled_at: string;
 }
 
 /// Server configuration (matches Rust ServerConfig)
@@ -99,6 +104,14 @@ export type TriggerType =
   | "OnIpChange"
   | "OnProcessDead"
   | "OnPortClosed"
+  | "OnTerminalOpen"
+  | "BeforeTerminalClose"
+  | "OnNetworkDisconnect"
+  | "OnNetworkConnect"
+  | "OnLanIpChange"
+  | "OnPublicIpChange"
+  | "OnInterval"
+  | "OnSchedule"
   | "ManualFire";
 
 /// Parameter schema (matches Rust ParameterSchema)

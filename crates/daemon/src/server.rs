@@ -45,6 +45,12 @@ pub struct DaemonState {
     pub cloud_sync_callback: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<termfast_cloud_sync::callback::CallbackResult>>>>,
     /// Cloud sync pending auth info (provider + code_verifier for the in-flight callback)
     pub cloud_sync_pending: Arc<Mutex<Option<CloudSyncPendingAuth>>>,
+    /// 本地触发器引擎（独立于 SSH 服务器的 TriggerEngine）
+    pub local_trigger_engine: Arc<termfast_core::trigger::TriggerEngine>,
+    /// 本地网络监听 task handle（用于 shutdown 时 abort）
+    pub local_monitor_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// 本地 OnInterval 触发器 task handles
+    pub local_interval_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 /// Pending OAuth auth info stored while waiting for browser callback.
@@ -111,6 +117,9 @@ impl DaemonState {
             ),
             cloud_sync_callback: Arc::new(Mutex::new(None)),
             cloud_sync_pending: Arc::new(Mutex::new(None)),
+            local_trigger_engine: Arc::new(termfast_core::trigger::TriggerEngine::new()),
+            local_monitor_handle: Arc::new(Mutex::new(None)),
+            local_interval_handles: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -168,6 +177,269 @@ impl DaemonState {
     /// Notify shutdown
     pub async fn trigger_shutdown(&self) {
         self.shutdown_tx.notify_waiters();
+    }
+}
+
+/// Start (or restart) local OnInterval/OnSchedule trigger timer tasks.
+/// Called on daemon startup and whenever local triggers are updated.
+pub async fn start_local_interval_timers(state: &DaemonState) {
+    let mut handles = state.local_interval_handles.lock().await;
+    // Abort existing tasks
+    for h in handles.drain(..) {
+        h.abort();
+    }
+
+    let config = state.config_manager.lock().await.get().await;
+    use termfast_core::config::TriggerType;
+    let triggers: Vec<_> = config
+        .local_triggers
+        .iter()
+        .filter(|t| {
+            if !t.enabled {
+                return false;
+            }
+            match t.trigger_type {
+                TriggerType::OnInterval => t.interval_secs > 0,
+                TriggerType::OnSchedule => {
+                    t.schedule_mode == "cron" && !t.cron_expr.is_empty()
+                        || t.schedule_mode == "once" && !t.scheduled_at.is_empty()
+                }
+                _ => false,
+            }
+        })
+        .cloned()
+        .collect();
+    let config_manager = state.config_manager.clone();
+    drop(config);
+
+    if triggers.is_empty() {
+        return;
+    }
+
+    let engine = state.local_trigger_engine.clone();
+
+    for trigger in triggers {
+        let engine = engine.clone();
+        let config_manager = config_manager.clone();
+        let trigger_id = trigger.id.clone();
+        let trigger_name = trigger.name.clone();
+        let trigger_type = trigger.trigger_type.clone();
+
+        match &trigger_type {
+            TriggerType::OnInterval => {
+                let interval = std::time::Duration::from_secs(trigger.interval_secs);
+                let task = tokio::spawn(async move {
+                    let mut timer = tokio::time::interval(interval);
+                    timer.tick().await; // skip first
+                    loop {
+                        timer.tick().await;
+                        tracing::info!(
+                            "[OnInterval] firing local trigger '{}' ({})",
+                            trigger_name, trigger_id
+                        );
+                        let config = config_manager.lock().await.get().await;
+                        let current_triggers = config.local_triggers.clone();
+                        let templates = config.trigger_templates.clone();
+                        let event = termfast_core::trigger::TriggerEvent {
+                            server_id: "__local__".to_string(),
+                            server_name: "My Computer".to_string(),
+                            trigger_type: TriggerType::OnInterval,
+                            new_ip: None, old_ip: None,
+                            new_ips: None, old_ips: None,
+                            session_id: None,
+                        };
+                        let _ = engine
+                            .fire_event(None, &current_triggers, &templates, &event)
+                            .await;
+                    }
+                });
+                handles.push(task);
+            }
+            TriggerType::OnSchedule => {
+                let mode = trigger.schedule_mode.clone();
+                let cron_expr = trigger.cron_expr.clone();
+                let scheduled_at = trigger.scheduled_at.clone();
+
+                if mode == "once" {
+                    let target = chrono::DateTime::parse_from_rfc3339(&scheduled_at).ok();
+                    if let Some(target) = target {
+                        let target = target.with_timezone(&chrono::Utc);
+                        let now = chrono::Utc::now();
+                        let delay = (target - now).to_std().unwrap_or(std::time::Duration::ZERO);
+                        if delay == std::time::Duration::ZERO {
+                            continue;
+                        }
+                        let task = tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            tracing::info!(
+                                "[OnSchedule/once] firing local trigger '{}' ({})",
+                                trigger_name, trigger_id
+                            );
+                            let config = config_manager.lock().await.get().await;
+                            let current_triggers = config.local_triggers.clone();
+                            let templates = config.trigger_templates.clone();
+                            let event = termfast_core::trigger::TriggerEvent {
+                                server_id: "__local__".to_string(),
+                                server_name: "My Computer".to_string(),
+                                trigger_type: TriggerType::OnSchedule,
+                                new_ip: None, old_ip: None,
+                                new_ips: None, old_ips: None,
+                                session_id: None,
+                            };
+                            let _ = engine
+                                .fire_event(None, &current_triggers, &templates, &event)
+                                .await;
+                            // Disable the trigger in config
+                            {
+                                let mgr = config_manager.lock().await;
+                                let _ = mgr.modify(|c| {
+                                    if let Some(t) = c.local_triggers.iter_mut().find(|t| t.id == trigger_id) {
+                                        t.enabled = false;
+                                    }
+                                }).await;
+                            }
+                        });
+                        handles.push(task);
+                    }
+                } else if mode == "cron" {
+                    let cron: Result<cron::Schedule, _> = std::str::FromStr::from_str(&cron_expr);
+                    if let Ok(cron) = cron {
+                        let task = tokio::spawn(async move {
+                            loop {
+                                let now = chrono::Utc::now();
+                                let next = match cron.upcoming(chrono::Utc).next() {
+                                    Some(t) => t,
+                                    None => break,
+                                };
+                                let delay = (next - now).to_std().unwrap_or(std::time::Duration::ZERO);
+                                if delay > std::time::Duration::ZERO {
+                                    tokio::time::sleep(delay).await;
+                                }
+                                tracing::info!(
+                                    "[OnSchedule/cron] firing local trigger '{}' ({})",
+                                    trigger_name, trigger_id
+                                );
+                                let config = config_manager.lock().await.get().await;
+                                let current_triggers = config.local_triggers.clone();
+                                let templates = config.trigger_templates.clone();
+                                let event = termfast_core::trigger::TriggerEvent {
+                                    server_id: "__local__".to_string(),
+                                    server_name: "My Computer".to_string(),
+                                    trigger_type: TriggerType::OnSchedule,
+                                    new_ip: None, old_ip: None,
+                                    new_ips: None, old_ips: None,
+                                    session_id: None,
+                                };
+                                let _ = engine
+                                    .fire_event(None, &current_triggers, &templates, &event)
+                                    .await;
+                            }
+                        });
+                        handles.push(task);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    tracing::info!("started {} local timer tasks", handles.len());
+}
+
+fn broadcast_local_trigger_results(
+    state: &DaemonState,
+    event: &termfast_core::trigger::TriggerEvent,
+    results: &[termfast_core::trigger::engine::TriggerExecutionResult],
+) {
+    let log_buffer = state.log_buffer.clone();
+    let forwarder = state.event_forwarder_handle();
+    let kind_str = match event.trigger_type {
+        termfast_core::config::TriggerType::OnTerminalOpen => "OnTerminalOpen",
+        termfast_core::config::TriggerType::BeforeTerminalClose => "BeforeTerminalClose",
+        termfast_core::config::TriggerType::OnNetworkDisconnect => "OnNetworkDisconnect",
+        termfast_core::config::TriggerType::OnNetworkConnect => "OnNetworkConnect",
+        termfast_core::config::TriggerType::OnLanIpChange => "OnLanIpChange",
+        termfast_core::config::TriggerType::OnPublicIpChange => "OnPublicIpChange",
+        _ => "LocalEvent",
+    };
+    for r in results {
+        let level = if r.success {
+            termfast_core::log::LogLevel::Info
+        } else {
+            termfast_core::log::LogLevel::Error
+        };
+        let level_str = match level {
+            termfast_core::log::LogLevel::Info => "info",
+            termfast_core::log::LogLevel::Error => "error",
+            _ => "info",
+        };
+        let msg = format!(
+            "[{}] Trigger '{}' {} ({}/{})",
+            kind_str,
+            r.trigger_name,
+            if r.success { "succeeded" } else { "failed" },
+            r.executed_commands,
+            r.total_commands
+        );
+        let entry = termfast_core::log::LogEntry {
+            timestamp: chrono::Utc::now(),
+            server_id: Some("__local__".to_string()),
+            level,
+            kind: termfast_core::log::LogKind::Trigger,
+            message: msg.clone(),
+            data: None,
+            execution_id: None,
+        };
+        let buffer = log_buffer.clone();
+        let fwd = forwarder.clone();
+        let entry_clone = entry.clone();
+        let msg_clone = msg.clone();
+        let trigger_id = r.trigger_id.clone();
+        let trigger_name = r.trigger_name.clone();
+        let success = r.success;
+        let executed_commands = r.executed_commands;
+        let total_commands = r.total_commands;
+        let cmd_results: Vec<serde_json::Value> = r
+            .results
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "command": c.command,
+                    "exit_code": c.exit_code,
+                    "stdout": c.stdout,
+                    "stderr": c.stderr,
+                })
+            })
+            .collect();
+        tokio::spawn(async move {
+            buffer.add(entry_clone).await;
+            if let Ok(f) = fwd.lock() {
+                if let Some(ref fwd) = *f {
+                    fwd(
+                        "log:entry",
+                        serde_json::json!({
+                            "server_id": "__local__",
+                            "level": level_str,
+                            "kind": "Trigger",
+                            "message": msg_clone,
+                            "timestamp": entry.timestamp,
+                        }),
+                    );
+                    fwd(
+                        "trigger:completed",
+                        serde_json::json!({
+                            "server_id": "__local__",
+                            "trigger_id": trigger_id,
+                            "trigger_name": trigger_name,
+                            "success": success,
+                            "executed_commands": executed_commands,
+                            "total_commands": total_commands,
+                            "results": cmd_results,
+                        }),
+                    );
+                }
+            }
+        });
     }
 }
 
@@ -232,7 +504,273 @@ impl DaemonServer {
                     .set_custom_variables(custom_vars.clone())
                     .await;
             }
+            // Also sync to local trigger engine
+            state
+                .local_trigger_engine
+                .set_custom_variables(custom_vars)
+                .await;
         }
+
+        // === 启动本地网络监听 ===
+        let monitor = termfast_core::trigger::LocalNetworkMonitor::new();
+        let mut net_rx = monitor.start(30); // 30 秒轮询
+
+        let state_clone = state.clone();
+        let net_task = tokio::spawn(async move {
+            while let Some(event) = net_rx.recv().await {
+                let config = state_clone.config_manager.lock().await.get().await;
+                let triggers = config.local_triggers.clone();
+                let templates = config.trigger_templates.clone();
+
+                let trigger_event = match &event {
+                    termfast_core::trigger::LocalNetworkEvent::PublicIpChange {
+                        new_ip,
+                        old_ip,
+                    } => termfast_core::trigger::TriggerEvent {
+                        server_id: "__local__".to_string(),
+                        server_name: "My Computer".to_string(),
+                        trigger_type: event.trigger_type(),
+                        new_ip: Some(new_ip.clone()),
+                        old_ip: old_ip.clone(),
+                        new_ips: None,
+                        old_ips: None,
+                        session_id: None,
+                    },
+                    termfast_core::trigger::LocalNetworkEvent::LanIpChange {
+                        new_ips,
+                        old_ips,
+                    } => termfast_core::trigger::TriggerEvent {
+                        server_id: "__local__".to_string(),
+                        server_name: "My Computer".to_string(),
+                        trigger_type: event.trigger_type(),
+                        new_ip: None,
+                        old_ip: None,
+                        new_ips: Some(new_ips.clone()),
+                        old_ips: Some(old_ips.clone()),
+                        session_id: None,
+                    },
+                    _ => termfast_core::trigger::TriggerEvent {
+                        server_id: "__local__".to_string(),
+                        server_name: "My Computer".to_string(),
+                        trigger_type: event.trigger_type(),
+                        new_ip: None,
+                        old_ip: None,
+                        new_ips: None,
+                        old_ips: None,
+                        session_id: None,
+                    },
+                };
+
+                let engine = state_clone.local_trigger_engine.clone();
+
+                // Split triggers: exec_in_terminal=true → inject into PTY,
+                // exec_in_terminal=false → background fire_event
+                let matching: Vec<_> = triggers
+                    .iter()
+                    .filter(|t| t.trigger_type == trigger_event.trigger_type && t.enabled)
+                    .cloned()
+                    .collect();
+
+                // Find target session first (needed for override lookup)
+                let target_session = state_clone
+                    .terminal_manager
+                    .find_session_by_server("__local__")
+                    .await;
+
+                let (in_terminal, background): (Vec<_>, Vec<_>) = {
+                    let sid = target_session.as_deref().unwrap_or("");
+                    let mut in_t = Vec::new();
+                    let mut bg = Vec::new();
+                    for t in matching {
+                        let override_val = state_clone
+                            .terminal_manager
+                            .get_trigger_override(sid, &t.id)
+                            .await;
+                        let use_in_terminal = override_val.unwrap_or(t.exec_in_terminal);
+                        if use_in_terminal {
+                            in_t.push(t);
+                        } else {
+                            bg.push(t);
+                        }
+                    }
+                    (in_t, bg)
+                };
+
+                // Inject into terminal PTY (find an active local terminal)
+                if !in_terminal.is_empty() {
+                    if let Some(sid) = target_session {
+                        for trigger in &in_terminal {
+                            let rendered_cmds = engine.render_commands(&trigger_event, trigger);
+                            tracing::info!(
+                                "[net event consumer] injecting {} commands into terminal {} for trigger '{}'",
+                                rendered_cmds.len(),
+                                sid,
+                                trigger.name
+                            );
+                            for cmd in &rendered_cmds {
+                                let mut data = cmd.as_bytes().to_vec();
+                                data.push(b'\n');
+                                if let Err(e) = state_clone
+                                    .terminal_manager
+                                    .input_with_ack(&sid, &data, true)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "[net event consumer] failed to inject command: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        tracing::info!(
+                            "[net event consumer] no active local terminal for in-terminal injection, falling back to background"
+                        );
+                        // No active terminal — fall back to background execution
+                        let fallback_result = engine
+                            .fire_event(None, &in_terminal, &templates, &trigger_event)
+                            .await;
+                        if let Ok(results) = &fallback_result {
+                            broadcast_local_trigger_results(&state_clone, &trigger_event, results);
+                        }
+                    }
+                }
+
+                // Background execution
+                let result = if !background.is_empty() {
+                    engine
+                        .fire_event(None, &background, &templates, &trigger_event)
+                        .await
+                } else {
+                    Ok(vec![])
+                };
+
+                // Broadcast trigger results to frontend
+                if let Ok(results) = &result {
+                    broadcast_local_trigger_results(&state_clone, &trigger_event, results);
+                }
+            }
+        });
+        *state.local_monitor_handle.lock().await = Some(net_task);
+
+        // === 启动本地 OnInterval 触发器定时任务 ===
+        start_local_interval_timers(&state).await;
+
+        // === 启动终端事件消费 task ===
+        // subscribe_local_events 必须在 spawn 之前调用，否则 spawn 到 subscribe
+        // 之间有窗口期，此时 open_local() 的 Opened 事件会被丢弃
+        let state_clone2 = state.clone();
+        let mut term_rx = state_clone2.terminal_manager.subscribe_local_events().await;
+        tokio::spawn(async move {
+            tracing::info!("[terminal event consumer] task started, waiting for events");
+            while let Some(event) = term_rx.recv().await {
+                tracing::info!("[terminal event consumer] received event: {:?}", event);
+                let config = state_clone2.config_manager.lock().await.get().await;
+                let triggers = config.local_triggers.clone();
+                let templates = config.trigger_templates.clone();
+                tracing::info!("[terminal event consumer] local_triggers count: {}", triggers.len());
+
+                let trigger_event = termfast_core::trigger::TriggerEvent {
+                    server_id: "__local__".to_string(),
+                    server_name: "My Computer".to_string(),
+                    trigger_type: match event {
+                        crate::terminal::TerminalLifecycleEvent::Opened { .. } => {
+                            termfast_core::config::TriggerType::OnTerminalOpen
+                        }
+                        crate::terminal::TerminalLifecycleEvent::Closed { .. } => {
+                            termfast_core::config::TriggerType::BeforeTerminalClose
+                        }
+                    },
+                    new_ip: None,
+                    old_ip: None,
+                    new_ips: None,
+                    old_ips: None,
+                    session_id: match event {
+                        crate::terminal::TerminalLifecycleEvent::Opened { session_id } => {
+                            Some(session_id)
+                        }
+                        crate::terminal::TerminalLifecycleEvent::Closed { session_id } => {
+                            Some(session_id)
+                        }
+                    },
+                };
+
+                let engine = state_clone2.local_trigger_engine.clone();
+                tracing::info!("[terminal event consumer] firing event: type={:?}, triggers={}", trigger_event.trigger_type, triggers.len());
+
+                // Split triggers: exec_in_terminal=true → inject into PTY,
+                // exec_in_terminal=false → background fire_event.
+                // Check per-session overrides first, fall back to trigger config.
+                let matching: Vec<_> = triggers
+                    .iter()
+                    .filter(|t| t.trigger_type == trigger_event.trigger_type && t.enabled)
+                    .cloned()
+                    .collect();
+                let target_session = trigger_event.session_id.clone();
+                let (in_terminal, background): (Vec<_>, Vec<_>) = {
+                    let sid = target_session.as_deref().unwrap_or("");
+                    let mut in_t = Vec::new();
+                    let mut bg = Vec::new();
+                    for t in matching {
+                        let override_val = state_clone2
+                            .terminal_manager
+                            .get_trigger_override(sid, &t.id)
+                            .await;
+                        let use_in_terminal = override_val.unwrap_or(t.exec_in_terminal);
+                        if use_in_terminal {
+                            in_t.push(t);
+                        } else {
+                            bg.push(t);
+                        }
+                    }
+                    (in_t, bg)
+                };
+
+                // Inject into terminal PTY
+                if !in_terminal.is_empty() {
+                    if let Some(ref sid) = target_session {
+                        for trigger in &in_terminal {
+                            let rendered_cmds = engine.render_commands(&trigger_event, trigger);
+                            tracing::info!(
+                                "[terminal event consumer] injecting {} commands into terminal {} for trigger '{}'",
+                                rendered_cmds.len(),
+                                sid,
+                                trigger.name
+                            );
+                            for cmd in &rendered_cmds {
+                                let mut data = cmd.as_bytes().to_vec();
+                                data.push(b'\n');
+                                if let Err(e) = state_clone2
+                                    .terminal_manager
+                                    .input_with_ack(sid, &data, true)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "[terminal event consumer] failed to inject command: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Background execution
+                let result = if !background.is_empty() {
+                    engine
+                        .fire_event(None, &background, &templates, &trigger_event)
+                        .await
+                } else {
+                    Ok(vec![])
+                };
+                tracing::info!("[terminal event consumer] fire_event result: {:?}", result.as_ref().map(|r| format!("{} triggers executed", r.len())).unwrap_or_else(|e| format!("err: {}", e)));
+
+                // Broadcast trigger results to frontend
+                if let Ok(results) = &result {
+                    broadcast_local_trigger_results(&state_clone2, &trigger_event, results);
+                }
+            }
+        });
 
         // Start listening
         #[cfg(unix)]
@@ -386,6 +924,21 @@ impl DaemonServer {
             tracing::info!("[5/7] no SSH connections to disconnect, skipping ACK wait");
         }
 
+        // Step 5.5: Kill all local terminal sessions (local PTY child processes)
+        tracing::info!("[5.5/7] killing local terminal sessions");
+        self.state.terminal_manager.close_all_local().await;
+
+        // Abort local network monitor task + clear closed_sessions
+        if let Some(handle) = self.state.local_monitor_handle.lock().await.take() {
+            handle.abort();
+        }
+        // Abort local interval timer tasks
+        let mut interval_handles = self.state.local_interval_handles.lock().await;
+        for h in interval_handles.drain(..) {
+            h.abort();
+        }
+        self.state.terminal_manager.clear_closed_sessions().await;
+
         // Step 6: Skip keychain credential deletion on shutdown.
         // On macOS, deleting keychain entries triggers a system password prompt
         // (via `security delete-generic-password`), which is disruptive during
@@ -396,8 +949,56 @@ impl DaemonServer {
         tracing::info!("[7/7] persisting config and cleaning up");
         {
             let mgr = self.state.config_manager.lock().await;
-            if let Err(e) = mgr.save().await {
-                tracing::warn!("failed to persist config on shutdown: {}", e);
+            let config = mgr.get().await;
+            tracing::info!(
+                "[7/7] shutdown save: servers={}, local_triggers={}, corrupt_load={}",
+                config.servers.len(),
+                config.local_triggers.len(),
+                mgr.is_corrupt_load()
+            );
+            // Safety guard: if servers is empty but the config file on disk
+            // has servers, refuse to save. This prevents a bug or race
+            // condition (e.g. daemon not fully started before shutdown) from
+            // permanently deleting all server configurations.
+            let should_skip_save = if config.servers.is_empty() && !mgr.is_corrupt_load() {
+                // Read the config file from disk to check if it has servers
+                let storage = mgr.storage();
+                if storage.exists() {
+                    match storage.load() {
+                        Ok(disk_config) => {
+                            let disk_has_servers = !disk_config.servers.is_empty();
+                            if disk_has_servers {
+                                tracing::error!(
+                                    "[7/7] shutdown save: refusing to write empty servers \
+                                     config — disk config.json has {} servers. Skipping save \
+                                     to preserve existing config.json.",
+                                    disk_config.servers.len()
+                                );
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "[7/7] shutdown save: failed to load disk config for \
+                                 safety check: {}. Proceeding with save.",
+                                e
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    false // no file on disk, safe to save
+                }
+            } else {
+                false
+            };
+
+            if !should_skip_save {
+                if let Err(e) = mgr.save().await {
+                    tracing::warn!("failed to persist config on shutdown: {}", e);
+                }
             }
         }
 

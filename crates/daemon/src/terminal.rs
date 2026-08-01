@@ -1,17 +1,27 @@
-//! Terminal session manager — interactive SSH terminals
+//! Terminal session manager — interactive SSH terminals + local terminals
 //!
-//! Manages PTY shell sessions on top of existing SSH connections.
-//! Each session has a unique ID; output is streamed via the event forwarder.
+//! Manages PTY shell sessions on top of existing SSH connections,
+//! and local PTY sessions (no SSH). Each session has a unique ID;
+//! output is streamed via the event forwarder.
 
 use crate::server::{BinaryEventForwarder, EventForwarder};
 use russh::client;
 use russh::ChannelMsg;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use termfast_core::local::{ChildKiller, PtySize};
+use termfast_core::local::pty::open_local_pty;
 use termfast_core::ssh::pty;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+
+/// 本地终端生命周期事件（打开/关闭）
+#[derive(Debug, Clone)]
+pub enum TerminalLifecycleEvent {
+    Opened { session_id: String },
+    Closed { session_id: String },
+}
 
 /// Commands sent to a terminal session's write task
 enum TerminalCmd {
@@ -27,6 +37,10 @@ struct TerminalSession {
     cmd_tx: mpsc::UnboundedSender<TerminalCmd>,
     /// Handles to the background tasks — aborted on close
     tasks: Vec<JoinHandle<()>>,
+    /// Local terminal child killer (None for SSH terminals).
+    /// On close, kill is called regardless of task state to ensure
+    /// the child process is terminated.
+    kill_child: Option<Box<dyn ChildKiller + Send + Sync>>,
 }
 
 // === SECTION 1 END ===
@@ -36,6 +50,15 @@ pub struct TerminalManager {
     sessions: Mutex<HashMap<String, TerminalSession>>,
     forwarder: Arc<std::sync::Mutex<Option<EventForwarder>>>,
     binary_forwarder: Arc<std::sync::Mutex<Option<BinaryEventForwarder>>>,
+    /// 本地终端事件发送端（打开/关闭时发送）。Arc<Mutex> 因为要 clone 进 main task。
+    local_event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<TerminalLifecycleEvent>>>>,
+    /// 已发送 Closed 事件的 session_id（避免 main task 和 close() 双重发送）
+    closed_sessions: Arc<Mutex<HashSet<String>>>,
+    /// Per-session runtime overrides for exec_in_terminal.
+    /// Keyed by session_id, then trigger_id → exec_in_terminal override.
+    /// These are NOT persisted — cleared on restart. Used by the frontend
+    /// to toggle exec_in_terminal per-terminal without modifying trigger config.
+    trigger_overrides: Arc<Mutex<HashMap<String, HashMap<String, bool>>>>,
 }
 
 impl TerminalManager {
@@ -47,7 +70,28 @@ impl TerminalManager {
             sessions: Mutex::new(HashMap::new()),
             forwarder,
             binary_forwarder,
+            local_event_tx: Arc::new(Mutex::new(None)),
+            closed_sessions: Arc::new(Mutex::new(HashSet::new())),
+            trigger_overrides: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// 订阅本地终端生命周期事件。
+    /// **只能调用一次**：每次调用会创建新 channel 并覆盖 local_event_tx，
+    /// 之前的 subscriber 的 receiver 将不再收到事件。
+    /// 在 DaemonState 初始化时调用一次。
+    pub async fn subscribe_local_events(
+        &self,
+    ) -> mpsc::UnboundedReceiver<TerminalLifecycleEvent> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        *self.local_event_tx.lock().await = Some(tx);
+        tracing::info!("[TerminalManager] subscribe_local_events called — local_event_tx set");
+        rx
+    }
+
+    /// 清空 closed_sessions（在 daemon shutdown 时调用）
+    pub async fn clear_closed_sessions(&self) {
+        self.closed_sessions.lock().await.clear();
     }
 
     /// Open a new terminal session on the given server's SSH connection.
@@ -393,12 +437,179 @@ impl TerminalManager {
             server_id: server_id.to_string(),
             cmd_tx,
             tasks: vec![main_task],
+            kill_child: None,
         };
         self.sessions
             .lock()
             .await
             .insert(session_id.clone(), session);
         Ok((session_id, initial_output))
+    }
+
+    /// Open a local terminal session (no SSH).
+    ///
+    /// Spawns a local shell in a PTY using `portable-pty`. The reader/writer
+    /// are synchronous, so they're moved into `spawn_blocking` tasks with
+    /// mpsc channels bridging to the async main task.
+    pub async fn open_local(
+        &self,
+        cols: u32,
+        rows: u32,
+        shell: Option<String>,
+    ) -> Result<(String, Vec<u8>), String> {
+        let session_id = Uuid::new_v4().to_string();
+        let sid = session_id.clone();
+        let bin_fwd = self.binary_forwarder.clone();
+        let fwd = self.forwarder.clone();
+
+        let local_pty = open_local_pty(cols as u16, rows as u16, shell.as_deref())
+            .map_err(|e| format!("failed to open local PTY: {}", e))?;
+
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<TerminalCmd>();
+
+        // === Sync IO → async runtime adaptation ===
+        // Reader: spawn_blocking blocks on reader.read(), sends chunks via mpsc
+        let (read_tx, mut read_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let mut reader = local_pty.reader;
+        let read_task = tokio::task::spawn_blocking(move || {
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if read_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("local PTY read error: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Writer: independent spawn_blocking task (avoids &mut writer lifetime issue)
+        let (write_tx, mut write_rx) =
+            mpsc::unbounded_channel::<(Vec<u8>, Option<oneshot::Sender<()>>)>();
+        let mut writer = local_pty.writer;
+        let write_task = tokio::task::spawn_blocking(move || {
+            while let Some((data, ack)) = write_rx.blocking_recv() {
+                if writer.write_all(&data).is_err() {
+                    if let Some(tx) = ack {
+                        let _ = tx.send(());
+                    }
+                    break;
+                }
+                let _ = writer.flush();
+                if let Some(tx) = ack {
+                    let _ = tx.send(());
+                }
+            }
+        });
+
+        // Main task: select on read_rx (output) + cmd_rx (input/resize/close)
+        let task_sid = sid.clone();
+        let task_bin_fwd = bin_fwd.clone();
+        let task_fwd = fwd.clone();
+        let master = local_pty.master;
+        let mut child = local_pty.child;
+        // Clone Arc handles for local terminal events (move into main task)
+        let local_event_tx = self.local_event_tx.clone();
+        let closed_sessions = self.closed_sessions.clone();
+
+        let main_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    // read_rx.recv() returns None when read_task ends (shell exit / EOF)
+                    data = read_rx.recv() => {
+                        match data {
+                            Some(data) => {
+                                forward_terminal_output(&task_bin_fwd, &task_sid, &data, false);
+                            }
+                            None => {
+                                // Shell exited naturally (exit / Ctrl+D)
+                                let _ = child.kill();
+                                // 通知终端事件回调（去重：与 close() 竞争，先到先发）
+                                let mut closed = closed_sessions.lock().await;
+                                if !closed.contains(&task_sid) {
+                                    closed.insert(task_sid.clone());
+                                    if let Some(tx) = local_event_tx.lock().await.as_ref() {
+                                        let _ = tx.send(TerminalLifecycleEvent::Closed {
+                                            session_id: task_sid.clone(),
+                                        });
+                                    }
+                                }
+                                forward_terminal_closed(&task_fwd, &task_sid);
+                                break;
+                            }
+                        }
+                    }
+                    cmd = cmd_rx.recv() => {
+                        match cmd {
+                            Some(TerminalCmd::Input(data, ack)) => {
+                                if write_tx.send((data, ack)).is_err() {
+                                    tracing::error!("local PTY write task closed");
+                                    break;
+                                }
+                            }
+                            Some(TerminalCmd::Resize(c, r)) => {
+                                if let Err(e) = master.resize(PtySize {
+                                    rows: r as u16,
+                                    cols: c as u16,
+                                    pixel_width: 0,
+                                    pixel_height: 0,
+                                }) {
+                                    tracing::warn!("local PTY resize error: {}", e);
+                                }
+                            }
+                            Some(TerminalCmd::Close) | None => {
+                                let _ = child.kill();
+                                // 通知终端事件回调（去重：与 close() 竞争，先到先发）
+                                let mut closed = closed_sessions.lock().await;
+                                if !closed.contains(&task_sid) {
+                                    closed.insert(task_sid.clone());
+                                    if let Some(tx) = local_event_tx.lock().await.as_ref() {
+                                        let _ = tx.send(TerminalLifecycleEvent::Closed {
+                                            session_id: task_sid.clone(),
+                                        });
+                                    }
+                                }
+                                forward_terminal_closed(&task_fwd, &task_sid);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let killer = local_pty.killer;
+
+        let session = TerminalSession {
+            server_id: "__local__".to_string(),
+            cmd_tx,
+            tasks: vec![main_task, read_task, write_task],
+            kill_child: Some(killer),
+        };
+        self.sessions
+            .lock()
+            .await
+            .insert(session_id.clone(), session);
+
+        // 发送 Opened 事件
+        if let Some(tx) = self.local_event_tx.lock().await.as_ref() {
+            tracing::info!("[TerminalManager] sending Opened event for session {}", session_id);
+            let _ = tx.send(TerminalLifecycleEvent::Opened {
+                session_id: session_id.clone(),
+            });
+        } else {
+            tracing::warn!("[TerminalManager] local_event_tx is None — Opened event for session {} dropped (subscribe_local_events not called?)", session_id);
+        }
+
+        // initial_output is empty — local PTY output (prompt, MOTD) is streamed
+        // asynchronously via the binary forwarder, unlike SSH's synchronous read.
+        Ok((session_id, Vec::new()))
     }
 
     /// Send user input to the terminal.
@@ -465,6 +676,76 @@ impl TerminalManager {
             .map_err(|e| format!("failed to resize terminal: {}", e))
     }
 
+    /// Check if a session is a local terminal
+    pub async fn is_local_session(&self, session_id: &str) -> bool {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .map(|s| s.server_id == "__local__")
+            .unwrap_or(false)
+    }
+
+    /// Mark a session as closed in closed_sessions (dedup), WITHOUT sending
+    /// the channel event. This prevents the terminal event consumer task from
+    /// firing BeforeTerminalClose — the caller (handle_terminal_close) will fire
+    /// it directly before closing the terminal.
+    pub async fn mark_closed(&self, session_id: &str) {
+        let mut closed = self.closed_sessions.lock().await;
+        closed.insert(session_id.to_string());
+    }
+
+    /// Find the first active session for a given server_id.
+    /// Used by trigger injection to find a target terminal for events
+    /// that don't have a specific session_id (e.g. OnNetworkConnect).
+    pub async fn find_session_by_server(&self, server_id: &str) -> Option<String> {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .iter()
+            .find(|(_, s)| s.server_id == server_id)
+            .map(|(id, _)| id.clone())
+    }
+
+    /// Set per-session runtime overrides for exec_in_terminal.
+    /// Keyed by trigger_id → override value. NOT persisted — cleared on restart.
+    pub async fn set_trigger_overrides(
+        &self,
+        session_id: &str,
+        overrides: HashMap<String, bool>,
+    ) {
+        let mut all = self.trigger_overrides.lock().await;
+        all.insert(session_id.to_string(), overrides);
+    }
+
+    /// Get the exec_in_terminal override for a specific session+trigger.
+    /// Returns None if no override is set (use trigger's configured value).
+    pub async fn get_trigger_override(
+        &self,
+        session_id: &str,
+        trigger_id: &str,
+    ) -> Option<bool> {
+        let all = self.trigger_overrides.lock().await;
+        all.get(session_id)
+            .and_then(|m| m.get(trigger_id).copied())
+    }
+
+    /// Get all overrides for a session (for frontend to display current state).
+    pub async fn get_all_trigger_overrides(
+        &self,
+        session_id: &str,
+    ) -> HashMap<String, bool> {
+        self.trigger_overrides
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Clear overrides for a session (called on close).
+    pub async fn clear_trigger_overrides(&self, session_id: &str) {
+        self.trigger_overrides.lock().await.remove(session_id);
+    }
+
     /// Close a terminal session
     pub async fn close(&self, session_id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().await;
@@ -473,6 +754,28 @@ impl TerminalManager {
             for task in session.tasks {
                 task.abort();
             }
+            // Kill child process (local terminals) regardless of task state
+            if let Some(mut killer) = session.kill_child {
+                let _ = killer.kill();
+            }
+            // 发送 Closed 事件（去重）
+            if session.server_id == "__local__" {
+                let mut closed = self.closed_sessions.lock().await;
+                if !closed.contains(session_id) {
+                    closed.insert(session_id.to_string());
+                    if let Some(tx) = self.local_event_tx.lock().await.as_ref() {
+                        let _ = tx.send(TerminalLifecycleEvent::Closed {
+                            session_id: session_id.to_string(),
+                        });
+                    }
+                }
+                // 不在此处 remove：tokio task.abort() 是异步的，main task 可能
+                // 在 abort flag 检查之前已进入退出分支并获取锁。如果 close() 先
+                // remove 了条目，main task 的 contains 会为 false → 重复发送。
+                // 改为在 shutdown 时统一清理。
+            }
+            // Clear per-session trigger overrides
+            self.clear_trigger_overrides(session_id).await;
             Ok(())
         } else {
             Err(format!("terminal session not found: {}", session_id))
@@ -492,6 +795,54 @@ impl TerminalManager {
                 let _ = session.cmd_tx.send(TerminalCmd::Close);
                 for task in session.tasks {
                     task.abort();
+                }
+                // Kill child process (local terminals) — defensive: currently
+                // only called with SSH server_id, but handles __local__ too.
+                if let Some(mut killer) = session.kill_child {
+                    let _ = killer.kill();
+                }
+                // 发送 Closed 事件（去重）
+                if session.server_id == "__local__" {
+                    let mut closed = self.closed_sessions.lock().await;
+                    if !closed.contains(&id) {
+                        closed.insert(id.clone());
+                        if let Some(tx) = self.local_event_tx.lock().await.as_ref() {
+                            let _ = tx.send(TerminalLifecycleEvent::Closed {
+                                session_id: id.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Close all local terminal sessions (called on app shutdown)
+    pub async fn close_all_local(&self) {
+        let mut sessions = self.sessions.lock().await;
+        let to_remove: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| s.server_id == "__local__")
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in to_remove {
+            if let Some(session) = sessions.remove(&id) {
+                let _ = session.cmd_tx.send(TerminalCmd::Close);
+                for task in session.tasks {
+                    task.abort();
+                }
+                if let Some(mut killer) = session.kill_child {
+                    let _ = killer.kill();
+                }
+                // 发送 Closed 事件（去重）
+                let mut closed = self.closed_sessions.lock().await;
+                if !closed.contains(&id) {
+                    closed.insert(id.clone());
+                    if let Some(tx) = self.local_event_tx.lock().await.as_ref() {
+                        let _ = tx.send(TerminalLifecycleEvent::Closed {
+                            session_id: id.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -612,5 +963,111 @@ fn forward_terminal_closed(
                 serde_json::json!({ "sessionId": session_id }),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    /// Integration test: open_local → input → verify output → resize → close
+    ///
+    /// Verifies the full local terminal lifecycle:
+    /// 1. open_local spawns a local shell in a PTY
+    /// 2. input sends data to the shell (echo command)
+    /// 3. output is received via the binary event forwarder
+    /// 4. resize changes the PTY dimensions
+    /// 5. close terminates the session and kills the child process
+    #[tokio::test]
+    async fn test_open_local_input_resize_close() {
+        // Collect output bytes via a shared buffer
+        let output_buffer: Arc<StdMutex<Vec<u8>>> = Arc::new(StdMutex::new(Vec::new()));
+        let buf_clone = output_buffer.clone();
+
+        let binary_forwarder: BinaryEventForwarder = Box::new(move |_sid, data, _stderr| {
+            if let Ok(mut buf) = buf_clone.lock() {
+                buf.extend_from_slice(data);
+            }
+        });
+
+        let event_forwarder: EventForwarder = Box::new(|_event, _data| {});
+
+        let manager = TerminalManager::new(
+            Arc::new(StdMutex::new(Some(event_forwarder))),
+            Arc::new(StdMutex::new(Some(binary_forwarder))),
+        );
+
+        // 1. Open local terminal
+        let (session_id, initial_output) = manager
+            .open_local(80, 24, None)
+            .await
+            .expect("open_local should succeed");
+        assert!(!session_id.is_empty());
+        assert!(initial_output.is_empty()); // local PTY streams output async
+
+        // 2. Send input (echo command)
+        manager
+            .input(&session_id, b"echo test_daemon_local\n")
+            .await
+            .expect("input should succeed");
+
+        // 3. Wait for output containing "test_daemon_local"
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                panic!("timeout waiting for echo output");
+            }
+            {
+                let buf = output_buffer.lock().unwrap();
+                if buf.windows("test_daemon_local".len())
+                    .any(|w| w == b"test_daemon_local")
+                {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // 4. Resize
+        manager
+            .resize(&session_id, 120, 40)
+            .await
+            .expect("resize should succeed");
+
+        // 5. Close
+        manager
+            .close(&session_id)
+            .await
+            .expect("close should succeed");
+
+        // Verify session is removed
+        assert!(!manager.has_sessions_for_server("__local__").await);
+    }
+
+    /// Test close_all_local kills all local terminal sessions
+    #[tokio::test]
+    async fn test_close_all_local() {
+        let binary_forwarder: BinaryEventForwarder = Box::new(|_sid, _data, _stderr| {});
+        let event_forwarder: EventForwarder = Box::new(|_event, _data| {});
+
+        let manager = TerminalManager::new(
+            Arc::new(StdMutex::new(Some(event_forwarder))),
+            Arc::new(StdMutex::new(Some(binary_forwarder))),
+        );
+
+        // Open two local terminals
+        let (sid1, _) = manager.open_local(80, 24, None).await.unwrap();
+        let (sid2, _) = manager.open_local(80, 24, None).await.unwrap();
+
+        assert!(manager.has_sessions_for_server("__local__").await);
+
+        // Close all local
+        manager.close_all_local().await;
+
+        // Both should be gone
+        assert!(!manager.has_sessions_for_server("__local__").await);
+        assert!(manager.close(&sid1).await.is_err());
+        assert!(manager.close(&sid2).await.is_err());
     }
 }

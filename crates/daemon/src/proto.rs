@@ -190,6 +190,18 @@ pub enum Action {
     /// Get port forward status. Params: { server_id, rule_id }
     /// Returns: { rule_id, running, active_connections, bytes_in, bytes_out }
     GetPortForwardStatus,
+
+    // Local triggers (list 复用 GetConfig)
+    SaveLocalTrigger,
+    RemoveLocalTrigger,
+    ManualFireLocalTrigger,
+
+    // Per-session trigger overrides (runtime, not persisted)
+    /// Set exec_in_terminal overrides for a session. Params: { session_id, overrides: { trigger_id: bool } }
+    SetTriggerOverrides,
+    /// Get exec_in_terminal overrides for a session. Params: { session_id }
+    /// Returns: { overrides: { trigger_id: bool } }
+    GetTriggerOverrides,
 }
 
 /// Event types (daemon → all clients broadcast, §10.6)

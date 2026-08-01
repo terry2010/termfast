@@ -21,6 +21,9 @@ pub struct Config {
     /// Server configurations
     #[serde(default)]
     pub servers: Vec<ServerConfig>,
+    /// 本地触发器（不绑定任何 SSH 服务器）
+    #[serde(default)]
+    pub local_triggers: Vec<TriggerInstance>,
 }
 
 fn default_version() -> u32 {
@@ -233,6 +236,16 @@ pub enum TriggerType {
     OnIpChange,
     OnProcessDead,
     OnPortClosed,
+    // === 本地事件（新增） ===
+    OnTerminalOpen,
+    BeforeTerminalClose,
+    OnNetworkDisconnect,
+    OnNetworkConnect,
+    OnLanIpChange,
+    OnPublicIpChange,
+    // === 定时触发 ===
+    OnInterval,
+    OnSchedule,
     #[default]
     ManualFire,
 }
@@ -525,6 +538,26 @@ pub struct TriggerInstance {
     /// Last time this trigger was fired (RFC3339 timestamp)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_fired_at: Option<String>,
+    /// If true, inject commands into the active terminal PTY instead of
+    /// running via a separate exec channel/subprocess. Only effective for
+    /// OnConnect/OnReconnect (inject into the connected terminal) and
+    /// BeforeTerminalClose (inject into the closing terminal). Other event
+    /// types fall back to background execution regardless of this flag.
+    #[serde(default)]
+    pub exec_in_terminal: bool,
+    /// Interval in seconds for OnInterval triggers. Ignored for other types.
+    #[serde(default)]
+    pub interval_secs: u64,
+    /// Schedule mode for OnSchedule triggers: "cron" or "once".
+    /// "cron" = repeat at cron-specified times, "once" = run once at scheduled_at.
+    #[serde(default)]
+    pub schedule_mode: String,
+    /// Cron expression for OnSchedule with mode="cron" (e.g. "0 3 * * *").
+    #[serde(default)]
+    pub cron_expr: String,
+    /// RFC3339 datetime for OnSchedule with mode="once" (e.g. "2025-01-15T08:00:00").
+    #[serde(default)]
+    pub scheduled_at: String,
 }
 
 /// Server configuration (§7.2).
@@ -566,6 +599,7 @@ impl Default for Config {
             general: GeneralConfig::default(),
             trigger_templates: crate::config::builtin_templates::all_builtin_templates(),
             servers: Vec::new(),
+            local_triggers: Vec::new(),
         }
     }
 }

@@ -1,7 +1,7 @@
 // TriggerList — trigger cards (§6.5 / FP-8.4)
-// Type tag + command summary + modified tag + run/edit buttons
+// Type tag + exec_in_terminal toggle + run/edit buttons
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useTriggerStore } from "@/stores/triggerStore";
 import { useServerStore } from "@/stores/serverStore";
@@ -21,6 +21,22 @@ const EVENT_TYPE_COLORS: Record<TriggerType, string> = {
     "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
   OnPortClosed:
     "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
+  OnTerminalOpen:
+    "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
+  BeforeTerminalClose:
+    "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+  OnNetworkDisconnect:
+    "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
+  OnNetworkConnect:
+    "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
+  OnLanIpChange:
+    "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
+  OnPublicIpChange:
+    "bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300",
+  OnInterval:
+    "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300",
+  OnSchedule:
+    "bg-violet-100 text-violet-700 dark:bg-violet-900 dark:text-violet-300",
   ManualFire: "bg-gray-100 text-gray-700 dark:bg-[#2C2C2E] dark:text-gray-300",
 };
 
@@ -48,41 +64,52 @@ export function TriggerList({ serverId }: { serverId: string }) {
     }
   }, [serverId, servers, setServerTriggers]);
 
+  // Listen for "trigger-add" event from the panel header button
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.serverId === serverId) {
+        setEditingTrigger(null);
+      }
+    };
+    window.addEventListener("trigger-add", handler);
+    return () => window.removeEventListener("trigger-add", handler);
+  }, [serverId]);
+
   // Fetch triggers directly via IPC on mount and when serverId changes
   useEffect(() => {
-    ipcInvoke<TriggerInstance[]>("ipc_list_triggers", { server_id: serverId })
+    const isLocal = serverId === "__local__";
+    const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
+    const ipcParams = isLocal ? {} : { server_id: serverId };
+    ipcInvoke<TriggerInstance[]>(ipcName, ipcParams)
       .then((triggers) => {
         if (Array.isArray(triggers)) {
           setServerTriggers(serverId, triggers);
         }
       })
       .catch((e) =>
-        console.error("[TriggerList] ipc_list_triggers failed:", e),
+        console.error(`[TriggerList] ${ipcName} failed:`, e),
       );
   }, [serverId, setServerTriggers]);
 
   const handleSaved = () => {
-    // Reload triggers from daemon and update store
-    ipcInvoke<TriggerInstance[]>("ipc_list_triggers", { server_id: serverId })
+    const isLocal = serverId === "__local__";
+    const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
+    const ipcParams = isLocal ? {} : { server_id: serverId };
+    ipcInvoke<TriggerInstance[]>(ipcName, ipcParams)
       .then((triggers) => {
-        console.log("ipc_list_triggers returned:", JSON.stringify(triggers));
         if (Array.isArray(triggers)) {
           setServerTriggers(serverId, triggers);
-        } else {
-          console.warn(
-            "ipc_list_triggers returned non-array:",
-            typeof triggers,
-            triggers,
-          );
         }
-        // Also reload server list to sync config
-        ipcInvoke<{ servers: any[] }>("ipc_list_servers")
-          .then((data) => {
-            if (data?.servers) {
-              useServerStore.setState({ servers: data.servers });
-            }
-          })
-          .catch(() => {});
+        if (!isLocal) {
+          ipcInvoke<{ servers: any[] }>("ipc_list_servers")
+            .then((data) => {
+              if (data?.servers) {
+                useServerStore.setState({ servers: data.servers });
+              }
+            })
+            .catch(() => {});
+        }
       })
       .catch(() => {});
   };
@@ -97,17 +124,6 @@ export function TriggerList({ serverId }: { serverId: string }) {
           onSaved={handleSaved}
         />
       )}
-      <div className="flex justify-between items-center mb-3">
-        <span className="text-sm text-gray-500 dark:text-gray-400">
-          {triggers.length > 0 ? t("trigger.title") : t("trigger.title")}
-        </span>
-        <button
-          className="text-xs px-3 py-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-600 font-medium transition-colors shadow-sm"
-          onClick={() => setEditingTrigger(null)}
-        >
-          + {t("trigger.add")}
-        </button>
-      </div>
       {triggers.length === 0 ? (
         <div className="py-8 text-center">
           <div className="w-10 h-10 rounded-full bg-gray-100 dark:bg-[#2C2C2E]/50 flex items-center justify-center text-gray-400 mx-auto mb-3">
@@ -161,6 +177,8 @@ export function TriggerList({ serverId }: { serverId: string }) {
   );
 }
 
+// === SECTION 1 END ===
+
 function TriggerCard({
   trigger,
   executing,
@@ -181,17 +199,35 @@ function TriggerCard({
   const { t } = useTranslation();
   const startExecution = useTriggerStore((s) => s.startExecution);
   const finishExecution = useTriggerStore((s) => s.finishExecution);
+  const setExecInTerminalOverride = useTriggerStore(
+    (s) => s.setExecInTerminalOverride,
+  );
+  // Subscribe directly to overrides data so toggle changes trigger re-render
+  const overrides = useTriggerStore(
+    (s) => s.serverExecInTerminalOverrides[serverId],
+  );
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const commandSummary = trigger.commands[0]?.slice(0, 60) || "";
+  const [showTooltip, setShowTooltip] = useState(false);
+  const infoRef = useRef<HTMLDivElement>(null);
+  const effectiveExecInTerminal =
+    overrides && trigger.id in overrides
+      ? overrides[trigger.id]
+      : trigger.exec_in_terminal;
 
   const handleDelete = async () => {
     try {
-      await ipcInvoke("ipc_remove_trigger", {
-        params: {
-          server_id: serverId,
+      if (serverId === "__local__") {
+        await ipcInvoke("ipc_remove_local_trigger", {
           trigger_id: trigger.id,
-        },
-      });
+        });
+      } else {
+        await ipcInvoke("ipc_remove_trigger", {
+          params: {
+            server_id: serverId,
+            trigger_id: trigger.id,
+          },
+        });
+      }
     } catch (e) {
       console.error("delete trigger failed:", e);
     }
@@ -211,16 +247,17 @@ function TriggerCard({
       success: null,
     });
     try {
+      const isLocal = serverId === "__local__";
       const result = await ipcInvoke<{
         success: boolean;
         executed_commands: number;
         total_commands: number;
         results?: CommandResult[];
-      }>("ipc_manual_fire_trigger", {
-        serverId,
-        triggerId: trigger.id,
-      });
-      // Update execution with results
+      }>(isLocal ? "ipc_manual_fire_local_trigger" : "ipc_manual_fire_trigger",
+        isLocal
+          ? { trigger_id: trigger.id }
+          : { serverId, triggerId: trigger.id },
+      );
       useTriggerStore.getState().updateExecution(execId, {
         success: result.success,
         executed_commands: result.executed_commands,
@@ -245,9 +282,28 @@ function TriggerCard({
 
   return (
     <div className="border-b border-gray-100 dark:border-white/[0.06] last:border-0 hover:bg-[#FBFBFB] dark:hover:bg-[#2C2C2E]/20 transition-colors">
-      <div className="flex items-center justify-between gap-4 px-4 py-3.5">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap mb-1">
+      <div className="flex items-center gap-3 px-4 py-3.5">
+        {/* Left: exec_in_terminal toggle (runtime override, not persisted) */}
+        <div
+          className="flex-shrink-0"
+          title={t("trigger.exec_in_terminal")}
+        >
+          <Toggle
+            checked={effectiveExecInTerminal}
+            onChange={(v) =>
+              setExecInTerminalOverride(serverId, trigger.id, v)
+            }
+          />
+        </div>
+
+        {/* Center: trigger info (no command display — hover tooltip instead) */}
+        <div
+          ref={infoRef}
+          className="min-w-0 flex-1"
+          onMouseEnter={() => setShowTooltip(true)}
+          onMouseLeave={() => setShowTooltip(false)}
+        >
+          <div className="flex items-center gap-2 flex-wrap">
             <span
               className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${EVENT_TYPE_COLORS[triggerType]}`}
             >
@@ -262,16 +318,31 @@ function TriggerCard({
               </span>
             )}
           </div>
-          <div className="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">
-            {commandSummary}
-          </div>
         </div>
+        {/* Hover tooltip — rendered as fixed to escape overflow-hidden containers */}
+        {showTooltip && trigger.commands.length > 0 && infoRef.current && (() => {
+          const rect = infoRef.current.getBoundingClientRect();
+          return (
+            <div
+              className="fixed z-[200] max-w-md p-2 rounded-lg bg-gray-900 dark:bg-[#2C2C2E] text-xs text-gray-100 dark:text-gray-200 shadow-lg border border-gray-700 dark:border-white/[0.1] font-mono whitespace-pre-wrap break-all"
+              style={{ top: rect.bottom + 4, left: rect.left }}
+            >
+              {trigger.commands.map((cmd, i) => (
+                <div key={i} className={i > 0 ? "mt-1" : ""}>
+                  <span className="text-green-400">$</span> {cmd}
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+
+        {/* Right: action buttons */}
         <div className="flex items-center gap-1 flex-shrink-0">
           <button
             className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
             onClick={handleFire}
-            disabled={!connected}
-            title={!connected ? t("server.connect_first") : undefined}
+            disabled={!connected && serverId !== "__local__"}
+            title={!connected && serverId !== "__local__" ? t("server.connect_first") : undefined}
           >
             ▶ {t("trigger.fire")}
           </button>
@@ -299,6 +370,7 @@ function TriggerCard({
               }}
             />
           </div>
+          {/* Execution results — close button has large clickable area (full right side) */}
           <div className="text-xs text-gray-500 flex items-center justify-between mb-2">
             <span>
               {executing.executed_commands}/{executing.total_commands}
@@ -311,7 +383,7 @@ function TriggerCard({
                 <span className="text-red-500">✗ {t("common.failed")}</span>
               )}
               <button
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xs"
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xs px-3 py-1 -mr-3 rounded-lg hover:bg-gray-100 dark:hover:bg-[#2C2C2E] transition-colors"
                 onClick={() => finishExecution(executing.execution_id)}
                 title={t("common.close")}
               >
@@ -359,3 +431,29 @@ function TriggerCard({
     </div>
   );
 }
+
+function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 ${
+        checked ? "bg-blue-500" : "bg-gray-200 dark:bg-gray-600"
+      }`}
+    >
+      <span
+        className="inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200"
+        style={{ transform: checked ? "translateX(18px)" : "translateX(2px)" }}
+      />
+    </button>
+  );
+}
+
