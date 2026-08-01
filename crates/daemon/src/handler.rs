@@ -157,6 +157,7 @@ async fn handle_list_servers(state: &DaemonState) -> HandlerResult {
         let cfg = &s.config;
         let triggers = s.triggers.lock().await.clone();
         let auth_banner = s.auth_banner().await;
+        let rz_available = s.rz_available().await;
         server_list.push(serde_json::json!({
             "id": s.id(),
             "name": s.name(),
@@ -212,6 +213,7 @@ async fn handle_list_servers(state: &DaemonState) -> HandlerResult {
             "bytes_in": bytes_in,
             "bytes_out": bytes_out,
             "auth_banner": auth_banner,
+            "rz_available": rz_available,
         }));
     }
     Ok(serde_json::json!({ "servers": server_list }))
@@ -229,11 +231,13 @@ async fn handle_get_server_status(
     let server = state.server_manager.get_server(server_id).await?;
     let status = server.status().await;
     let ip = server.current_ip().await;
+    let rz_available = server.rz_available().await;
 
     Ok(serde_json::json!({
         "server_id": server_id,
         "status": format!("{:?}", status),
         "ip": ip,
+        "rz_available": rz_available,
     }))
 }
 
@@ -715,8 +719,9 @@ async fn handle_connect_server(state: &DaemonState, params: &serde_json::Value) 
                         .await;
                 }
             }
+            let rz_available = server.rz_available().await;
             Ok(
-                serde_json::json!({ "server_id": server_id, "status": "connected", "client_ip": client_ip }),
+                serde_json::json!({ "server_id": server_id, "status": "connected", "client_ip": client_ip, "rz_available": rz_available }),
             )
         }
         Err(e) => {

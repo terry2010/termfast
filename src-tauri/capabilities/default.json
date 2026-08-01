@@ -57,13 +57,8 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "$HOME" },
-        { "path": "$DOWNLOAD" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "$DOCUMENT" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DESKTOP" },
-        { "path": "$DESKTOP/**" }
+        { "path": "/" },
+        { "path": "/**" }
       ],
       "deny": [
         { "path": "$HOME/.ssh/**" },

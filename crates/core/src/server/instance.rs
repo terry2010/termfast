@@ -75,6 +75,8 @@ pub struct ServerInstance {
     channel_manager: Mutex<Option<Arc<ChannelManager>>>,
     /// Runtime state manager for IP persistence (FP-1.3b)
     runtime_state: Mutex<Option<Arc<crate::config::RuntimeStateManager>>>,
+    /// Whether rz (ZMODEM upload) is available on the remote server
+    pub rz_available: Arc<Mutex<bool>>,
     /// Optional callback to broadcast trigger results to frontend
     trigger_result_callback: Mutex<
         Option<
@@ -145,6 +147,7 @@ impl ServerInstance {
             proxy_running: Mutex::new(false),
             channel_manager: Mutex::new(None),
             runtime_state: Mutex::new(None),
+            rz_available: Arc::new(Mutex::new(false)),
             trigger_result_callback: Mutex::new(None),
             status_change_callback: Mutex::new(None),
             client_ip: Mutex::new(None),
@@ -181,6 +184,11 @@ impl ServerInstance {
 
     pub async fn client_ip(&self) -> Option<String> {
         self.client_ip.lock().await.clone()
+    }
+
+    /// Check if rz (ZMODEM upload) is available on the remote server
+    pub async fn rz_available(&self) -> bool {
+        *self.rz_available.lock().await
     }
 
     pub async fn set_client_ip(&self, ip: Option<String>) {
@@ -1072,6 +1080,21 @@ impl ServerInstance {
     }
 
     async fn fire_on_connect_triggers(&self) {
+        // Check rz availability using the existing SSH handle
+        if let Some(h) = self.ssh_client.get_handle().await {
+            match crate::ssh::exec::exec(&h, "command -v rz 2>/dev/null || which rz 2>/dev/null", 5).await {
+                Ok(result) => {
+                    let available = result.is_success() && !result.stdout.trim().is_empty();
+                    *self.rz_available.lock().await = available;
+                    tracing::debug!("rz available for {}: {}", self.config.name, available);
+                }
+                Err(e) => {
+                    tracing::warn!("failed to check rz for {}: {}", self.config.name, e);
+                    *self.rz_available.lock().await = false;
+                }
+            }
+        }
+
         let event = TriggerEvent {
             server_id: self.config.id.clone(),
             server_name: self.config.name.clone(),
@@ -1119,6 +1142,19 @@ impl ServerInstance {
     }
 
     async fn fire_on_reconnect_triggers(&self) {
+        // Re-check rz availability after reconnect
+        if let Some(h) = self.ssh_client.get_handle().await {
+            match crate::ssh::exec::exec(&h, "command -v rz 2>/dev/null || which rz 2>/dev/null", 5).await {
+                Ok(result) => {
+                    let available = result.is_success() && !result.stdout.trim().is_empty();
+                    *self.rz_available.lock().await = available;
+                }
+                Err(_) => {
+                    *self.rz_available.lock().await = false;
+                }
+            }
+        }
+
         let event = TriggerEvent {
             server_id: self.config.id.clone(),
             server_name: self.config.name.clone(),

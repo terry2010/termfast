@@ -44,7 +44,7 @@ function mockServer(id: string, name: string, status: ServerState["current_statu
     reconnect_count: 0,
     max_attempts: 10,
     proxy_running: false,
-    active_channels: 0, bytes_in: 0, bytes_out: 0, auth_banner: null,
+    active_channels: 0, bytes_in: 0, bytes_out: 0, auth_banner: null, rz_available: false,
   };
 }
 

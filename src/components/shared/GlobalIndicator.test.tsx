@@ -19,7 +19,7 @@ function mockServer(id: string, status: ServerState["current_status"]): ServerSt
     last_known_ip: null, triggers: [], suppress_firewall_badge: false,
     current_status: status, current_ip: null,
     client_ip: null, connected_since: null,
-    reconnect_count: 0, max_attempts: 10, proxy_running: false, active_channels: 0, bytes_in: 0, bytes_out: 0, auth_banner: null,
+    reconnect_count: 0, max_attempts: 10, proxy_running: false, active_channels: 0, bytes_in: 0, bytes_out: 0, auth_banner: null, rz_available: false,
   };
 }
 

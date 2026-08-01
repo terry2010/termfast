@@ -10,7 +10,7 @@ mod credential_manager;
 use credential_manager::{credential_file_path, CredentialState};
 use daemon_embed::EmbeddedDaemon;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Shared embedded daemon — None until async startup completes
 pub struct AppState {
@@ -56,7 +56,26 @@ pub fn run() {
             // Dock. The user quits via Cmd+Q, tray menu "Quit", or the
             // app menu. This matches macOS HIG and standard tray-app
             // behavior on Windows.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            match event {
+                tauri::WindowEvent::DragDrop(drag_drop) => {
+                    use tauri::DragDropEvent;
+                    match drag_drop {
+                        DragDropEvent::Enter { paths, .. } => {
+                            let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                            let _ = window.emit("file-drag-enter", &paths);
+                        }
+                        DragDropEvent::Over { .. } => {}
+                        DragDropEvent::Leave => {
+                            let _ = window.emit("file-drag-leave", ());
+                        }
+                        DragDropEvent::Drop { paths, .. } => {
+                            let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                            let _ = window.emit("file-drop", &paths);
+                        }
+                        _ => {}
+                    }
+                }
+                tauri::WindowEvent::CloseRequested { api, .. } => {
                 let state = window.app_handle().try_state::<AppState>();
                 let quitting = state
                     .map(|s| s.is_quitting.load(std::sync::atomic::Ordering::SeqCst))
@@ -84,6 +103,8 @@ pub fn run() {
                         }
                     });
                 }
+                }
+                _ => {}
             }
         })
         .setup(|app| {

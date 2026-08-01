@@ -159,15 +159,18 @@ describe("PortForwardPanel", () => {
     });
   });
 
-  it("shows bulk action buttons when rules have running or startable rules", async () => {
+  it("calls onRulesChange when rules are loaded", async () => {
+    const onRulesChange = vi.fn();
     mockIpcInvoke.mockResolvedValue({
       rules: [
         { id: "pf_1", name: "Test", type: "local", running: true, enabled: true },
       ],
     });
-    render(<PortForwardPanel serverId="srv1" />);
+    render(<PortForwardPanel serverId="srv1" onRulesChange={onRulesChange} />);
     await waitFor(() => {
-      expect(screen.getByText("port_forward.stop_all")).toBeInTheDocument();
+      expect(onRulesChange).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "pf_1", running: true, enabled: true }),
+      ]);
     });
   });
 });

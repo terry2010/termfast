@@ -12,7 +12,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { open, remove, copyFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
+import { open, remove, copyFile, readFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { Channel } from "@tauri-apps/api/core";
 import { useConfigStore } from "@/stores/configStore";
@@ -244,6 +244,7 @@ interface TerminalViewProps {
   serverId: string;
   active: boolean;
   initialOutput?: string;
+  rzAvailable?: boolean;
 }
 
 // Module-level snapshot cache: key = serverId, value = serialized terminal
@@ -320,7 +321,7 @@ function stripLeadingZmodemHeaders(octets: number[]): number[] {
   return octets.slice(i);
 }
 
-export function TerminalView({ sessionId, serverId, active, initialOutput }: TerminalViewProps) {
+export function TerminalView({ sessionId, serverId, active, initialOutput, rzAvailable }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -348,6 +349,12 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const rzAvailableRef = useRef(rzAvailable);
+  rzAvailableRef.current = rzAvailable;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const sendToBackendRef = useRef<(bytes: Uint8Array | number[], waitForSend?: boolean) => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -422,6 +429,10 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
         wait_for_send: waitForSend,
       }).then(() => {}).catch(() => {});
     };
+    sendToBackendRef.current = sendToBackend;
+
+    // File paths from drag-drop (when rz is available, used instead of file picker)
+    let pendingDropPaths: string[] | null = null;
 
     // --- ZMODEM Sentry ---
     // Intercepts ZMODEM frames in the terminal output stream. Non-ZMODEM
@@ -653,8 +664,109 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
     };
 
     // rz: remote is RECEIVING files from us (session.type === "send").
-    // Show a file picker and send selected files via ZMODEM.
+    // If pendingDropPaths is set (from drag-drop), read those files directly.
+    // Otherwise show a file picker and send selected files via ZMODEM.
     function handleRzUpload(session: ZmodemSession) {
+      console.log("[ZMODEM] handleRzUpload called, pendingDropPaths:", pendingDropPaths);
+      // If files were drag-dropped, use those paths instead of the file picker
+      if (pendingDropPaths && pendingDropPaths.length > 0) {
+        const dropPaths = pendingDropPaths;
+        pendingDropPaths = null;
+        console.log("[ZMODEM] using drag-drop paths:", dropPaths);
+        (async () => {
+          try {
+            for (const filePath of dropPaths) {
+              const fileName = filePath.split("/").pop() || filePath.split("\\").pop() || filePath;
+              console.log("[ZMODEM] reading file:", filePath);
+              const fileData = await readFile(filePath);
+              console.log(`[ZMODEM] rz: sending drag-dropped file ${fileName} (${fileData.byteLength} bytes)`);
+              const xfer = await session.send_offer({
+                name: fileName,
+                size: fileData.byteLength,
+                mtime: new Date(),
+                files_remaining: dropPaths.length - dropPaths.indexOf(filePath),
+                bytes_remaining: 0,
+              });
+              console.log("[ZMODEM] rz: offer resolved, xfer=", !!xfer);
+              if (!xfer) {
+                console.log("[ZMODEM] rz: receiver skipped file");
+                continue;
+              }
+              // The receiver may ask to resume from a non-zero offset (ZRPOS).
+              const startOffset = (xfer as any).get_offset() as number;
+              console.log(`[ZMODEM] rz: startOffset=${startOffset}, size=${fileData.byteLength}`);
+              (session as any)._file_offset = startOffset;
+
+              const total = Math.max(0, fileData.byteLength - startOffset);
+              setZmodemProgress({
+                active: true,
+                isUpload: true,
+                filename: fileName,
+                received: 0,
+                total,
+                percent: 0,
+              });
+              let uploadCancelled = false;
+              zmodemCancelRef.current = () => {
+                if (uploadCancelled) return;
+                uploadCancelled = true;
+                try { (session as any).abort(); } catch (_) {}
+                clearZmodemProgress();
+              };
+              const chunkSize = 8192;
+              let lastUploadPercent = -1;
+              for (let offset = startOffset; offset < fileData.byteLength; offset += chunkSize) {
+                const chunk = fileData.subarray(offset, Math.min(offset + chunkSize, fileData.byteLength));
+                xfer.send(chunk);
+                if (lastSenderPromise) {
+                  await lastSenderPromise;
+                  lastSenderPromise = null;
+                }
+                const currentOffset = (xfer as any).get_offset() as number;
+                const sent = currentOffset - startOffset;
+                const percent = Math.min(99, Math.floor((sent / total) * 100));
+                if (percent > lastUploadPercent) {
+                  lastUploadPercent = percent;
+                  setZmodemProgress({
+                    active: true,
+                    isUpload: true,
+                    filename: fileName,
+                    received: sent,
+                    total,
+                    percent,
+                  });
+                }
+              }
+              if (lastSenderPromise) {
+                await lastSenderPromise;
+                lastSenderPromise = null;
+              }
+              await xfer.end(new Uint8Array(0));
+              setZmodemProgress({
+                active: true,
+                isUpload: true,
+                filename: fileName,
+                received: total,
+                total,
+                percent: 100,
+              });
+            }
+            console.log("[ZMODEM] rz: closing session (drag-drop)");
+            const closePromise = session.close();
+            zmodemEnding = true;
+            await closePromise;
+            setTimeout(() => clearZmodemProgress(), 1200);
+          } catch (e) {
+            console.error("[ZMODEM] rz: drag-drop upload failed:", e);
+            zmodemEnding = true;
+            try { session.abort(); } catch (_) {}
+            clearZmodemProgress();
+          }
+          cleanupSession(session);
+        })();
+        return;
+      }
+
       const input = document.createElement("input");
       input.type = "file";
       input.multiple = true;
@@ -854,6 +966,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
         lastSenderPromise = sendToBackend(octets, true);
       },
       on_detect: (detection: ZmodemDetection) => {
+        console.log("[ZMODEM] on_detect triggered");
         // Cooldown: after a session ends, ignore spurious detections from
         // echoed ZMODEM protocol bytes that are still in the PTY buffer.
         if (Date.now() < zmodemCooldownUntil) {
@@ -866,13 +979,13 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
         // unconditionally sends ZSINIT, restarts the timer, and overwrites
         // _next_header_handler (which races with the ZFIN handler and prevents
         // close() from resolving). The keepalive is only needed to keep lrzsz
-        // alive while the user is picking a file; we disable it entirely on the
-        // session instance so no ZSINIT packets can ever be sent.
+        // alive while the user is picking a file; we disable the keepalive
+        // timer entirely but keep _send_ZSINIT working — it's needed by
+        // _ensure_receiver_escapes_ctrl_chars() during send_offer().
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const sessAny = session as any;
         sessAny._start_keepalive = function () { /* disabled */ };
         sessAny._stop_keepalive = function () { /* disabled */ };
-        sessAny._send_ZSINIT = function () { /* disabled */ };
         // Stop any keepalive that was already scheduled by the original
         // _start_keepalive called during set_sender.
         sessAny._keepalive_stopped = true;
@@ -1005,6 +1118,51 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       }
     }).then((fn) => { unlistenClosed = fn; });
 
+    // Listen for file drag-drop events from Tauri
+    // Use a cancelled flag to handle the async listen() Promise race:
+    // in React StrictMode, cleanup may run before the Promise resolves,
+    // leaving the unlistenFn as undefined and leaking the listener.
+    let dragCancelled = false;
+    let unlistenDragEnter: UnlistenFn | undefined;
+    let unlistenDragLeave: UnlistenFn | undefined;
+    let unlistenFileDrop: UnlistenFn | undefined;
+    listen<string[]>("file-drag-enter", () => {
+      if (dragCancelled) return;
+      if (activeRef.current && rzAvailableRef.current) setDragOver(true);
+    }).then((fn) => {
+      if (dragCancelled) { fn(); } else { unlistenDragEnter = fn; }
+    });
+    listen("file-drag-leave", () => {
+      if (dragCancelled) return;
+      setDragOver(false);
+    }).then((fn) => {
+      if (dragCancelled) { fn(); } else { unlistenDragLeave = fn; }
+    });
+    listen<string[]>("file-drop", (event) => {
+      if (dragCancelled) return;
+      setDragOver(false);
+      if (!activeRef.current) return;
+      const paths = event.payload;
+      if (!paths || paths.length === 0) return;
+      const encoder = new TextEncoder();
+      if (rzAvailableRef.current) {
+        // rz available: type "rz" command to trigger ZMODEM upload
+        const bytes = encoder.encode("rz\n");
+        sendToBackendRef.current(bytes);
+        // ZMODEM sentry will detect the rz session and call handleRzUpload,
+        // but we need to feed it the dropped file paths. Store them so
+        // handleRzUpload can use them instead of the file picker.
+        pendingDropPaths = paths;
+      } else {
+        // rz not available: insert file paths at cursor (no newline)
+        const quoted = paths.map(p => p.includes(" ") ? `"${p}"` : p).join(" ");
+        const bytes = encoder.encode(quoted);
+        sendToBackendRef.current(bytes);
+      }
+    }).then((fn) => {
+      if (dragCancelled) { fn(); } else { unlistenFileDrop = fn; }
+    });
+
     // Window resize handler — skip when container is hidden (0 dimensions)
     const handleResize = () => {
       if (!containerRef.current) return;
@@ -1040,6 +1198,10 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
       resizeDisposable.dispose();
       unregisterTerminalOutput(sessionId);
       if (unlistenClosed) unlistenClosed();
+      dragCancelled = true;
+      if (unlistenDragEnter) unlistenDragEnter();
+      if (unlistenDragLeave) unlistenDragLeave();
+      if (unlistenFileDrop) unlistenFileDrop();
       window.removeEventListener("resize", handleResize);
       resizeObserver.disconnect();
       term.dispose();
@@ -1214,6 +1376,18 @@ export function TerminalView({ sessionId, serverId, active, initialOutput }: Ter
             >
               取消
             </button>
+          </div>
+        </div>
+      )}
+      {dragOver && (
+        <div className="absolute top-4 left-4 right-4 z-40 bg-slate-800/95 border-2 border-dashed border-blue-500 text-white p-3 rounded-lg shadow-lg pointer-events-none">
+          <div className="flex items-center justify-center gap-2 text-sm text-blue-400">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <span className="font-medium">拖入此处通过 rz 上传文件</span>
           </div>
         </div>
       )}

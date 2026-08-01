@@ -17,6 +17,8 @@ export interface ServerState extends ServerConfig {
   bytes_out: number;
   /** SSH auth banner (RFC4252 §5.4) — welcome message from server */
   auth_banner: string | null;
+  /** Whether rz (ZMODEM upload) is available on the remote server */
+  rz_available: boolean;
 }
 
 export interface TerminalTab {
@@ -46,6 +48,7 @@ interface ServerStore {
   setLoading: (loading: boolean) => void;
   setProxyStatus: (serverId: string, running: boolean) => void;
   setAuthBanner: (serverId: string, banner: string | null) => void;
+  setRzAvailable: (serverId: string, available: boolean) => void;
   addTerminalTab: (serverId: string, tab: TerminalTab) => void;
   removeTerminalTab: (serverId: string, tabId: string) => void;
   setTerminalTabsForServer: (serverId: string, tabs: TerminalTab[]) => void;
@@ -125,6 +128,13 @@ export const useServerStore = create<ServerStore>((set, get) => ({
     set((state) => ({
       servers: state.servers.map((s) =>
         s.id === serverId ? { ...s, auth_banner: banner } : s
+      ),
+    })),
+
+  setRzAvailable: (serverId, available) =>
+    set((state) => ({
+      servers: state.servers.map((s) =>
+        s.id === serverId ? { ...s, rz_available: available } : s
       ),
     })),
 

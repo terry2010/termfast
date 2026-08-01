@@ -131,6 +131,7 @@ export function ServerDetail() {
         bytes_in: 0,
         bytes_out: 0,
         auth_banner: null,
+        rz_available: false,
       } as ServerState)
     : server!;
   const isConnected = isLocal || server?.current_status === "connected";
@@ -185,7 +186,10 @@ export function ServerDetail() {
       if (!liveConnected) {
         updateServerStatus(serverId, "connecting");
         try {
-          await ipcInvoke("ipc_connect_server", { serverId });
+          const result = await ipcInvoke<{ rz_available?: boolean }>("ipc_connect_server", { serverId });
+          if (result && typeof result.rz_available === "boolean") {
+            useServerStore.getState().setRzAvailable(serverId, result.rz_available);
+          }
         } catch (e: any) {
           const errMsg = formatIpcError(e);
           updateServerStatus(serverId, "offline");
@@ -368,7 +372,10 @@ export function ServerDetail() {
       if (!alreadyConnected) {
         store.updateServerStatus(serverId, "connecting");
         try {
-          await ipcInvoke("ipc_connect_server", { serverId });
+          const result = await ipcInvoke<{ rz_available?: boolean }>("ipc_connect_server", { serverId });
+          if (result && typeof result.rz_available === "boolean") {
+            useServerStore.getState().setRzAvailable(serverId, result.rz_available);
+          }
         } catch (e: any) {
           const errMsg = formatIpcError(e);
           store.updateServerStatus(serverId, "offline");
@@ -482,12 +489,15 @@ export function ServerDetail() {
     if (!server?.id) return;
     updateServerStatus(server.id, "connecting");
     try {
-      await ipcInvoke("ipc_connect_server", { serverId: server.id });
+      const result = await ipcInvoke<{ rz_available?: boolean }>("ipc_connect_server", { serverId: server.id });
       updateServerStatus(
         server.id,
         "connected",
         server.last_known_ip || undefined,
       );
+      if (result && typeof result.rz_available === "boolean") {
+        useServerStore.getState().setRzAvailable(server.id, result.rz_available);
+      }
     } catch (e: any) {
       const errMsg = formatIpcError(e);
       updateServerStatus(server.id, "offline");
@@ -799,7 +809,10 @@ export function ServerDetail() {
     if (newEnabled && !isConnected) {
       updateServerStatus(server.id, "connecting");
       try {
-        await ipcInvoke("ipc_connect_server", { serverId: server.id });
+        const result = await ipcInvoke<{ rz_available?: boolean }>("ipc_connect_server", { serverId: server.id });
+        if (result && typeof result.rz_available === "boolean") {
+          useServerStore.getState().setRzAvailable(server.id, result.rz_available);
+        }
         updateServerStatus(
           server.id,
           "connected",
@@ -1745,6 +1758,7 @@ export function ServerDetail() {
               serverId={displayServer.id}
               active={activeTab === tt.id}
               initialOutput={tt.initialOutput}
+              rzAvailable={displayServer.rz_available}
             />
             {tt.disconnected && (
               <div className="absolute top-0 left-0 right-0 flex items-center justify-between bg-black/70 px-4 py-2 z-10 pointer-events-auto">
@@ -1766,7 +1780,10 @@ export function ServerDetail() {
                     ) {
                       updateServerStatus(serverId, "connecting");
                       try {
-                        await ipcInvoke("ipc_connect_server", { serverId });
+                        const result = await ipcInvoke<{ rz_available?: boolean }>("ipc_connect_server", { serverId });
+                        if (result && typeof result.rz_available === "boolean") {
+                          useServerStore.getState().setRzAvailable(serverId, result.rz_available);
+                        }
                         updateServerStatus(
                           serverId,
                           "connected",

@@ -605,6 +605,7 @@ export function ServerList({
                 bytes_in: 0,
                 bytes_out: 0,
                 auth_banner: null,
+                rz_available: false,
               } as ServerState}
               selected={selectedId === "__local__"}
               collapsed={!showFullContent}
