@@ -12,7 +12,7 @@ use ::jni::JNIEnv;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::Mutex;
-use termfast_core::config::{Config, ConfigManager, ServerConfig as CoreServerConfig, TriggerInstance};
+use termfast_core::config::{Config, ConfigManager, ServerConfig as CoreServerConfig, TriggerInstance, TriggerTemplate};
 use termfast_core::server::ServerInstance;
 use termfast_credential::CredentialStore;
 
@@ -1089,24 +1089,6 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialGetKey
     }
 }
 
-/// Get the derived key (base64-encoded 32 bytes) for caching in Android Keystore.
-/// Returns null if the store is locked.
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialGetKey(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
-    let store = crate::credential::android_credential_store();
-    match store.derived_key() {
-        Some(key) => {
-            let encoded = base64_encode(key.as_bytes());
-            string_to_jstring(&mut env, encoded.as_str()).into_raw()
-        }
-        None => std::ptr::null_mut(),
-    }
-}
-
 /// Lock the credential store (clear cached key and map from memory).
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
@@ -1342,6 +1324,35 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeListTriggerTempl
     };
     let json = serde_json::to_string(&templates).unwrap_or_default();
     string_to_jstring(&mut env, &json).into_raw()
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetTriggerTemplates(
+    mut env: JNIEnv,
+    _class: JClass,
+    json: JString,
+) -> jboolean {
+    let json_str = jstring_to_string(&mut env, &json);
+    let templates: Vec<TriggerTemplate> = match serde_json::from_str(&json_str) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to parse trigger templates: {:?}", e);
+            return bool_to_jbool(false);
+        }
+    };
+    let st = state().lock().unwrap();
+    if let Some(ref cm) = st.config_manager {
+        let rt = runtime();
+        let result = rt.block_on(async {
+            cm.modify(|config| {
+                config.trigger_templates = templates;
+            }).await.is_ok()
+        });
+        bool_to_jbool(result)
+    } else {
+        bool_to_jbool(false)
+    }
 }
 
 #[cfg(target_os = "android")]

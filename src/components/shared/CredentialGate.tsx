@@ -169,7 +169,7 @@ function CredentialSetupScreen({
   const [confirm, setConfirm] = useState("");
 
   const canSubmit =
-    password.length >= 4 &&
+    password.length >= 6 &&
     password === confirm &&
     !loading;
 
@@ -213,7 +213,7 @@ function CredentialSetupScreen({
               {t("credentials.password_mismatch")}
             </p>
           )}
-          {password && password.length < 4 && (
+          {password && password.length < 6 && (
             <p className="text-xs text-gray-400">
               {t("credentials.password_too_short")}
             </p>
@@ -308,7 +308,7 @@ function CredentialMigrationDialog({
   const [confirm, setConfirm] = useState("");
 
   const canSubmit =
-    password.length >= 4 &&
+    password.length >= 6 &&
     password === confirm &&
     !loading;
 

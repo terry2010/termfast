@@ -53,6 +53,7 @@ object RustBridge {
     // --- Triggers ---
     external fun nativeListTriggers(serverId: String): String
     external fun nativeListTriggerTemplates(): String
+    external fun nativeSetTriggerTemplates(json: String): Boolean
     external fun nativeSetServerTriggers(serverId: String, json: String): Boolean
     external fun nativeRunTrigger(serverId: String, triggerId: String): String
 

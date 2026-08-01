@@ -12,6 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,6 +50,7 @@ fun TriggerTab(
     var result by remember { mutableStateOf<TriggerResult?>(null) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var connected by remember { mutableStateOf(false) }
+    var showTemplateDialog by remember { mutableStateOf(false) }
 
     fun refresh() {
         triggers = repo.listTriggers(serverId)
@@ -82,9 +84,14 @@ fun TriggerTab(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("触发器", style = MaterialTheme.typography.titleMedium)
-            Button(onClick = { onEdit(TriggerInstance(id = UUID.randomUUID().toString())) }) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Text("添加")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showTemplateDialog = true }) {
+                    Text("模板库")
+                }
+                Button(onClick = { onEdit(TriggerInstance(id = UUID.randomUUID().toString())) }) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Text("添加")
+                }
             }
         }
         if (!connected) {
@@ -156,6 +163,12 @@ fun TriggerTab(
             Spacer(Modifier.height(8.dp))
             TriggerResultView(r)
         }
+    }
+
+    if (showTemplateDialog) {
+        TemplateLibraryDialog(
+            onDismiss = { showTemplateDialog = false },
+        )
     }
 }
 
@@ -451,4 +464,179 @@ fun TriggerEditScreen(navController: NavController, serverId: String, triggerId:
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TemplateLibraryDialog(onDismiss: () -> Unit) {
+    val repo = remember { RustRepository }
+    var templates by remember { mutableStateOf(repo.listTriggerTemplates()) }
+    var editingTemplate by remember { mutableStateOf<TriggerTemplate?>(null) }
+    var showNewDialog by remember { mutableStateOf(false) }
+
+    if (showNewDialog) {
+        TemplateEditDialog(
+            template = TriggerTemplate(id = UUID.randomUUID().toString()),
+            onDismiss = { showNewDialog = false },
+            onSave = { saved ->
+                val updated = templates.filter { it.id != saved.id } + saved
+                repo.setTriggerTemplates(updated)
+                templates = repo.listTriggerTemplates()
+                showNewDialog = false
+            },
+        )
+    }
+
+    editingTemplate?.let { tpl ->
+        TemplateEditDialog(
+            template = tpl,
+            onDismiss = { editingTemplate = null },
+            onSave = { saved ->
+                val updated = templates.filter { it.id != saved.id } + saved
+                repo.setTriggerTemplates(updated)
+                templates = repo.listTriggerTemplates()
+                editingTemplate = null
+            },
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("模板库", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                templates.forEach { tpl ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(tpl.name, style = MaterialTheme.typography.bodyLarge)
+                            if (tpl.description.isNotBlank()) {
+                                Text(
+                                    tpl.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (tpl.built_in) {
+                                Text(
+                                    "内置",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                        if (!tpl.built_in) {
+                            IconButton(onClick = { editingTemplate = tpl }) {
+                                Icon(Icons.Filled.Edit, contentDescription = "编辑")
+                            }
+                            IconButton(onClick = {
+                                val updated = templates.filter { it.id != tpl.id }
+                                repo.setTriggerTemplates(updated)
+                                templates = repo.listTriggerTemplates()
+                            }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                }
+                if (templates.isEmpty()) {
+                    Text("暂无模板", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { showNewDialog = true }) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Text("新建模板")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TemplateEditDialog(
+    template: TriggerTemplate,
+    onDismiss: () -> Unit,
+    onSave: (TriggerTemplate) -> Unit,
+) {
+    var name by remember { mutableStateOf(template.name) }
+    var description by remember { mutableStateOf(template.description) }
+    var type by remember { mutableStateOf(template.trigger_type) }
+    var commands by remember { mutableStateOf(template.commands.joinToString("\n")) }
+    var timeout by remember { mutableStateOf(template.timeout_secs.toString()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑模板", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it },
+                    label = { Text("名称") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = description, onValueChange = { description = it },
+                    label = { Text("描述") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                var expanded by remember { mutableStateOf(false) }
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = type,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("类型") },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        listOf("ManualFire", "OnConnect", "OnReconnect", "OnIpChange").forEach {
+                            DropdownMenuItem(
+                                text = { Text(it) },
+                                onClick = { type = it; expanded = false }
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = timeout, onValueChange = { timeout = it },
+                    label = { Text("超时 (秒)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = commands, onValueChange = { commands = it },
+                    label = { Text("命令 (每行一个)") },
+                    modifier = Modifier.fillMaxWidth().height(120.dp),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(template.copy(
+                        name = name,
+                        description = description,
+                        trigger_type = type,
+                        commands = commands.lines().map { it.trim() }.filter { it.isNotEmpty() },
+                        timeout_secs = timeout.toLongOrNull() ?: 30,
+                        built_in = false,
+                    ))
+                },
+                enabled = name.isNotBlank(),
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }

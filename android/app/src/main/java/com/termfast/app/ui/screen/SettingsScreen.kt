@@ -28,11 +28,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.termfast.app.BuildConfig
 import com.termfast.app.data.AppSettings
 import com.termfast.app.data.CredentialManager
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.SettingsRepository
 import com.termfast.app.ui.TerminalThemes
+import com.termfast.app.update.GitHubReleaseUpdater
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -127,23 +129,32 @@ fun SettingsScreen(navController: NavController) {
             // Terminal section
             TerminalSettingsSection()
 
+            // General section (language)
+            SettingsSectionCard(title = "通用", icon = Icons.Filled.Info) {
+                val languages = listOf("system" to "跟随系统", "zh" to "中文", "en" to "English")
+                DropdownRow(
+                    label = "语言",
+                    options = languages,
+                    selected = settings.language,
+                    onSelect = { update { copy(language = it) } },
+                )
+            }
+
             // Notifications section
             SettingsSectionCard(title = "通知", icon = Icons.Filled.Notifications) {
                 NotificationSwitch("连接成功", settings.notify_connect_success) { update { copy(notify_connect_success = it) } }
+                NotificationSwitch("重连成功", settings.notify_reconnect_success) { update { copy(notify_reconnect_success = it) } }
                 NotificationSwitch("断开连接", settings.notify_disconnect) { update { copy(notify_disconnect = it) } }
                 NotificationSwitch("认证失败", settings.notify_auth_fail) { update { copy(notify_auth_fail = it) } }
                 NotificationSwitch("代理状态变化", settings.notify_proxy_toggle) { update { copy(notify_proxy_toggle = it) } }
+                NotificationSwitch("代理端口冲突", settings.notify_proxy_port_conflict) { update { copy(notify_proxy_port_conflict = it) } }
                 NotificationSwitch("触发器成功", settings.notify_trigger_success) { update { copy(notify_trigger_success = it) } }
                 NotificationSwitch("触发器失败", settings.notify_trigger_fail) { update { copy(notify_trigger_fail = it) } }
                 NotificationSwitch("IP 变化", settings.notify_ip_change) { update { copy(notify_ip_change = it) } }
             }
 
             // About section
-            SettingsSectionCard(title = "关于", icon = Icons.Filled.Info) {
-                InfoRow(label = "版本", value = "0.1.9")
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                InfoRow(label = "开源协议", value = "Apache-2.0")
-            }
+            AboutSection(context)
 
             // Logs entry — moved from bottom nav to settings
             Spacer(Modifier.height(8.dp))
@@ -389,6 +400,59 @@ private fun ButtonRow(label: String, isDanger: Boolean = false, onClick: () -> U
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DropdownRow(
+    label: String,
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = options.firstOrNull { it.first == selected }?.second ?: selected
+
+    Box {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = true }
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                selectedLabel,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            options.forEach { (value, label) ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = {
+                        onSelect(value)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun ImportPasswordDialog(
     busy: Boolean,
@@ -444,7 +508,7 @@ private fun SetupPasswordDialog(
 ) {
     var pw by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
-    val canSubmit = pw.length >= 8 && pw == confirm && !busy
+    val canSubmit = pw.length >= 6 && pw == confirm && !busy
 
     AlertDialog(
         onDismissRequest = { onDismiss() },
@@ -494,7 +558,7 @@ private fun ChangePasswordDialog(
     var old by remember { mutableStateOf("") }
     var new by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
-    val canSubmit = old.isNotEmpty() && new.length >= 8 && new == confirm && !busy
+    val canSubmit = old.isNotEmpty() && new.length >= 6 && new == confirm && !busy
 
     AlertDialog(
         onDismissRequest = { onDismiss() },
@@ -749,4 +813,52 @@ private fun saveTerminalConfig(themeId: String, fontSize: Int) {
         terminal_font_size = fontSize,
     )
     RustRepository.saveConfig(config.copy(general = newGeneral))
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AboutSection(context: android.content.Context) {
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    var checking by remember { mutableStateOf(false) }
+
+    SettingsSectionCard(title = "关于", icon = Icons.Filled.Info) {
+        InfoRow(label = "版本", value = BuildConfig.VERSION_NAME)
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+        InfoRow(label = "开源协议", value = "Apache-2.0")
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+        ButtonRow(label = if (checking) "检查中…" else "检查更新") {
+            if (!checking) {
+                checking = true
+                scope.launch {
+                    val updater = GitHubReleaseUpdater(context)
+                    val release = withContext(Dispatchers.IO) { updater.fetchLatest() }
+                    checking = false
+                    if (release == null) {
+                        snackbarHostState.showSnackbar("无法获取更新信息，请检查网络")
+                    } else if (updater.isNewer(release, BuildConfig.VERSION_NAME)) {
+                        val apkAsset = release.assets.firstOrNull { it.name.endsWith(".apk") }
+                        if (apkAsset != null) {
+                            val sha = updater.extractSha256FromBody(release.body)
+                            snackbarHostState.showSnackbar(
+                                message = "发现新版本 ${release.tag_name}，正在下载…",
+                            )
+                            val result = withContext(Dispatchers.IO) {
+                                updater.downloadApk(apkAsset.browser_download_url, apkAsset.size)
+                            }
+                            if (result != null && updater.verifySha256(result, sha)) {
+                                updater.installApk(result.file)
+                            } else {
+                                snackbarHostState.showSnackbar("下载失败或校验未通过")
+                            }
+                        } else {
+                            snackbarHostState.showSnackbar("发现新版本 ${release.tag_name}，但未找到 APK 安装包")
+                        }
+                    } else {
+                        snackbarHostState.showSnackbar("已是最新版本")
+                    }
+                }
+            }
+        }
+    }
 }

@@ -16,7 +16,11 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 32
-        versionName = "0.2.12"
+        // Read versionName from workspace Cargo.toml to keep in sync
+        val cargoVersion = File(rootDir.parentFile, "Cargo.toml").readText()
+            .lines().firstOrNull { it.trim().startsWith("version =") }
+            ?.substringAfter("\"")?.substringBefore("\"") ?: "0.0.0"
+        versionName = cargoVersion
 
         ndk {
             abiFilters += listOf("arm64-v8a")

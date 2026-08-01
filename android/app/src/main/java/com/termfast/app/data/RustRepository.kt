@@ -112,6 +112,11 @@ object RustRepository {
         else json.decodeFromString(ListSerializer(TriggerTemplate.serializer()), raw)
     }
 
+    fun setTriggerTemplates(templates: List<TriggerTemplate>): Boolean {
+        val jsonStr = json.encodeToString(ListSerializer(TriggerTemplate.serializer()), templates)
+        return RustBridge.nativeSetTriggerTemplates(jsonStr)
+    }
+
     fun setServerTriggers(serverId: String, triggers: List<TriggerInstance>): Boolean {
         val jsonStr = json.encodeToString(ListSerializer(TriggerInstance.serializer()), triggers)
         return RustBridge.nativeSetServerTriggers(serverId, jsonStr)

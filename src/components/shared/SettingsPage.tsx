@@ -817,7 +817,7 @@ function CredentialSection() {
   useEffect(() => { refreshStatus(); }, [refreshStatus]);
 
   const handleSetup = useCallback(async () => {
-    if (setupPw !== setupConfirmPw || setupPw.length < 4) return;
+    if (setupPw !== setupConfirmPw || setupPw.length < 6) return;
     setBusy(true);
     try {
       await ipcInvoke("ipc_initialize_credentials", { masterPassword: setupPw });
@@ -850,7 +850,7 @@ function CredentialSection() {
   }, [unlockPw, t, refreshStatus]);
 
   const handleChangePassword = useCallback(async () => {
-    if (newPw !== confirmPw || newPw.length < 4) return;
+    if (newPw !== confirmPw || newPw.length < 6) return;
     setBusy(true);
     try {
       await ipcInvoke("ipc_change_credential_password", {
@@ -1065,7 +1065,7 @@ function CredentialSection() {
               </button>
               <button
                 onClick={handleSetup}
-                disabled={busy || setupPw.length < 4 || setupPw !== setupConfirmPw}
+                disabled={busy || setupPw.length < 6 || setupPw !== setupConfirmPw}
                 className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
                 {busy ? t("common.loading") : t("credentials.setup_button")}
@@ -1159,7 +1159,7 @@ function CredentialSection() {
               </button>
               <button
                 onClick={handleChangePassword}
-                disabled={busy || !oldPw || newPw.length < 4 || newPw !== confirmPw}
+                disabled={busy || !oldPw || newPw.length < 6 || newPw !== confirmPw}
                 className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
                 {busy ? t("common.loading") : t("credentials.change_password_button")}

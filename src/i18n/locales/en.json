@@ -511,7 +511,7 @@
     "master_password": "Master password",
     "confirm_password": "Confirm password",
     "password_mismatch": "Passwords do not match",
-    "password_too_short": "Password must be at least 4 characters",
+    "password_too_short": "Password must be at least 6 characters",
     "change_password_title": "Change Master Password",
     "change_password_old": "Current master password",
     "change_password_new": "New master password",

@@ -514,7 +514,7 @@
     "master_password": "主密码",
     "confirm_password": "确认主密码",
     "password_mismatch": "两次输入的密码不一致",
-    "password_too_short": "密码至少 4 个字符",
+    "password_too_short": "密码至少 6 个字符",
     "change_password_title": "修改主密码",
     "change_password_old": "当前主密码",
     "change_password_new": "新主密码",
