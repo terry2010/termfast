@@ -54,3 +54,6 @@ website/
 # 临时备份和实验目录
 bak/
 spikes/
+
+# OpenCode CLI local config
+opencode.json
