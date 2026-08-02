@@ -44,6 +44,9 @@ impl From<ConnectionState> for ServerStatus {
     }
 }
 
+/// Callback type for persisting trigger updates (e.g. disable after once-fire).
+pub type TriggerPersistCallback = Arc<dyn Fn(&str, &TriggerInstance) + Send + Sync>;
+
 /// A single server instance with all runtime state
 #[allow(clippy::type_complexity)]
 pub struct ServerInstance {
@@ -96,7 +99,7 @@ pub struct ServerInstance {
     /// Port forward manager (PF-4)
     port_forward_manager: Arc<PortForwardManager>,
     /// Optional callback to persist a trigger update (e.g. disable after once-fire)
-    trigger_persist_callback: Mutex<Option<Arc<dyn Fn(&str, &TriggerInstance) + Send + Sync>>>,
+    trigger_persist_callback: Mutex<Option<TriggerPersistCallback>>,
 }
 
 // === SECTION 1 END ===
@@ -267,7 +270,7 @@ impl ServerInstance {
     /// Set callback to persist trigger updates (e.g. disable after once-fire)
     pub async fn set_trigger_persist_callback(
         &self,
-        cb: Arc<dyn Fn(&str, &TriggerInstance) + Send + Sync>,
+        cb: TriggerPersistCallback,
     ) {
         *self.trigger_persist_callback.lock().await = Some(cb);
     }

@@ -7,6 +7,8 @@ import { useTranslation } from "react-i18next";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Monitor } from "lucide-react";
 import { useServerStore, type TerminalTab } from "@/stores/serverStore";
+import { AgentStatusDot } from "@/components/shared/AgentStatusDot";
+import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { useTriggerStore } from "@/stores/triggerStore";
 import type { ServerState } from "@/stores/serverStore";
 import { useLogStore } from "@/stores/logStore";
@@ -190,6 +192,11 @@ export function ServerDetail() {
           if (result && typeof result.rz_available === "boolean") {
             useServerStore.getState().setRzAvailable(serverId, result.rz_available);
           }
+          updateServerStatus(
+            serverId,
+            "connected",
+            liveServer?.last_known_ip || undefined,
+          );
         } catch (e: any) {
           const errMsg = formatIpcError(e);
           updateServerStatus(serverId, "offline");
@@ -246,6 +253,7 @@ export function ServerDetail() {
           defaultLabel,
           initialOutput,
           disconnected: false,
+          agentStatus: null,
         });
         setActiveTerminalTab(serverId, tabId);
         // Send server-level exec_in_terminal overrides to daemon as session overrides
@@ -342,6 +350,7 @@ export function ServerDetail() {
         defaultLabel,
         initialOutput: result.initial_output || "",
         disconnected: false,
+        agentStatus: null,
       });
       setActiveTerminalTab(serverId, tabId);
       // Send server-level exec_in_terminal overrides to daemon as session overrides
@@ -376,6 +385,11 @@ export function ServerDetail() {
           if (result && typeof result.rz_available === "boolean") {
             useServerStore.getState().setRzAvailable(serverId, result.rz_available);
           }
+          store.updateServerStatus(
+            serverId,
+            "connected",
+            currentServer.last_known_ip || undefined,
+          );
         } catch (e: any) {
           const errMsg = formatIpcError(e);
           store.updateServerStatus(serverId, "offline");
@@ -416,6 +430,7 @@ export function ServerDetail() {
           defaultLabel,
           initialOutput,
           disconnected: false,
+          agentStatus: null,
         });
         store.setActiveTerminalTab(serverId, tabId);
         requestAnimationFrame(() => {
@@ -983,12 +998,13 @@ export function ServerDetail() {
     testProxyAbort.current?.abort();
   };
 
-  const tabs: { key: Tab; label: string; disconnected: boolean }[] = [
-    { key: "overview", label: t("server.overview"), disconnected: false },
+  const tabs: { key: Tab; label: string; disconnected: boolean; agentStatus: AgentStatus | null }[] = [
+    { key: "overview", label: t("server.overview"), disconnected: false, agentStatus: null },
     ...termTabs.map((tt) => ({
       key: tt.id as Tab,
       label: tt.label,
       disconnected: tt.disconnected,
+      agentStatus: tt.agentStatus ?? null,
     })),
   ];
 
@@ -1109,7 +1125,12 @@ export function ServerDetail() {
                   onClick={(e) => e.stopPropagation()}
                 />
               ) : (
-                <span>{tab.label}</span>
+                <span className="flex items-center gap-1.5">
+                  {tab.agentStatus && tab.agentStatus !== "unknown" && (
+                    <AgentStatusDot status={tab.agentStatus} />
+                  )}
+                  {tab.label}
+                </span>
               )}
               {tab.key !== "overview" && renamingTabId !== tab.key && (
                 <span
@@ -1759,6 +1780,7 @@ export function ServerDetail() {
               active={activeTab === tt.id}
               initialOutput={tt.initialOutput}
               rzAvailable={displayServer.rz_available}
+              tabId={tt.id}
             />
             {tt.disconnected && (
               <div className="absolute top-0 left-0 right-0 flex items-center justify-between bg-black/70 px-4 py-2 z-10 pointer-events-auto">
@@ -1820,6 +1842,7 @@ export function ServerDetail() {
                         defaultLabel,
                         initialOutput: newInitialOutput,
                         disconnected: false,
+                        agentStatus: null,
                       });
                       setActiveTerminalTab(serverId, newTabId);
                     } catch (e) {

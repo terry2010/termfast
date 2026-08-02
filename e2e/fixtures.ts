@@ -356,6 +356,15 @@ export async function mockTauri(
                 result = { server_id: sid, status: "connected" };
                 break;
               }
+              case "ipc_terminal_open": {
+                // Return a mock terminal session
+                const sessionId = `term_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                result = {
+                  session_id: sessionId,
+                  initial_output: "",
+                };
+                break;
+              }
               case "ipc_disconnect_server": {
                 const sid = args?.serverId || args?.server_id;
                 const srv = findServer(sid);
@@ -569,6 +578,12 @@ export async function mockTauri(
             throw e;
           }
         },
+        transformCallback: (callback: (data: any) => void, once?: boolean) => {
+          // Return a fake callback ID — Channel uses this to register callbacks
+          const id = `cb_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+          return id;
+        },
+        convertFileSrc: (path: string) => path,
       };
     },
     { servers, config },

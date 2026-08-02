@@ -59,14 +59,14 @@ test.describe("Trigger list rendering", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    // Event type tag: "On Ip Change" (split camelCase)
-    await expect(page.locator("text=On Ip Change")).toBeVisible({
+    // Event type tag: "On IP Change"
+    await expect(page.locator("text=On IP Change")).toBeVisible({
       timeout: 3000,
     });
-    // Command summary (truncated to 60 chars)
-    await expect(
-      page.locator("text=firewall-cmd --add-source={{.NewIP}}"),
-    ).toBeVisible({ timeout: 3000 });
+    // Trigger name should be visible
+    await expect(page.locator("text=Firewalld IP Update")).toBeVisible({
+      timeout: 3000,
+    });
   });
 
   test("trigger card has Fire, Edit, Delete buttons", async ({ page }) => {
@@ -94,14 +94,19 @@ test.describe("Manual fire trigger (U5)", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     // Connect first — Fire button is disabled when not connected
-    await page.locator("button.bg-blue-500:has-text('Connect')").click();
+    await page.locator("button:has-text('Connect Terminal')").click();
     await expect
       .poll(
         async () => (await getCallsFor(page, "ipc_connect_server")).length,
         { timeout: 5000 },
       )
       .toBeGreaterThanOrEqual(1);
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(1000);
+    // Click the Overview tab to return to the overview view (where triggers are visible)
+    await page.locator("text=Overview").first().click();
+    await page.waitForTimeout(500);
+    // Now the Fire Trigger button should be visible and enabled
+    await expect(page.locator("button:has-text('Fire Trigger')")).toBeEnabled({ timeout: 5000 });
     await page.locator("button:has-text('Fire Trigger')").first().click();
     await expect
       .poll(
@@ -142,8 +147,8 @@ test.describe("Add new trigger via editor (U11)", () => {
     await page
       .locator("[data-testid='trigger-name-input']")
       .fill("My Custom Trigger");
-    // Select event type (OnConnect)
-    await page.locator("select").first().selectOption("OnConnect");
+    // Select event type (OnConnect) — it's the second select (first is timeout/interval)
+    await page.locator("select").nth(1).selectOption("OnConnect");
     // Type into CodeMirror editor — click the editor area and type
     const editor = page.locator(".cm-editor .cm-content").first();
     await editor.click();

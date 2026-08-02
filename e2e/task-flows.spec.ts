@@ -72,7 +72,7 @@ test.describe("FP-9.1: Connect & Disconnect", () => {
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
     // Detail panel should show Connect button (not "Connect All" which is in sidebar)
-    const connectBtn = page.locator("button.bg-blue-500:has-text('Connect')");
+    const connectBtn = page.locator("button:has-text('Connect Terminal')");
     await expect(connectBtn).toBeVisible({ timeout: 3000 });
     await connectBtn.click();
     // Wait for IPC call — use toBeGreaterThanOrEqual since app may auto-reconnect
@@ -87,14 +87,22 @@ test.describe("FP-9.1: Connect & Disconnect", () => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
     // Connect first — use the detail panel's Connect button (not "Connect All")
-    const connectBtn = page.locator("button.bg-blue-500:has-text('Connect')");
+    const connectBtn = page.locator("button:has-text('Connect Terminal')");
     await connectBtn.click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(1000);
+    // Click the Overview tab to return to the overview view
+    await page.locator("text=Overview").first().click();
+    await page.waitForTimeout(500);
     // Now disconnect button should be visible in detail panel
-    const disconnectBtn = page.locator("button.bg-red-500:has-text('Disconnect')");
-    await expect(disconnectBtn).toBeVisible({ timeout: 3000 });
+    const disconnectBtn = page.locator("button:has-text('Disconnect Server')");
+    await expect(disconnectBtn).toBeVisible({ timeout: 5000 });
     await disconnectBtn.click();
+    // A confirmation dialog appears (due to active terminals) — confirm it
+    // The dialog uses .fixed.inset-0 and the confirm button says "Disconnect"
+    const dialog = page.locator(".fixed.inset-0").last();
+    await expect(dialog).toBeVisible({ timeout: 3000 });
+    await dialog.locator("button:has-text('Disconnect')").click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_disconnect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
   });
 });
@@ -128,18 +136,15 @@ test.describe("FP-9.4: Proxy Toggle", () => {
   test("start proxy button calls ipc_toggle_proxy with enabled=true", async ({ page }) => {
     await waitForAppReady(page);
     await page.locator("text=Tokyo VPS").first().click();
-    // Connect first (proxy start requires connected state) — use detail panel's button
-    await page.locator("button.bg-blue-500:has-text('Connect')").click();
-    await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(300);
-    // Switch to Proxy tab
-    // Start Proxy button should be visible
+    // Start Proxy button is visible in the overview (auto-connects if needed)
     const startBtn = page.locator("button:has-text('Start Proxy')");
     await expect(startBtn).toBeVisible({ timeout: 3000 });
     await startBtn.click();
     // Verify ipc_toggle_proxy was called with enabled=true
+    // (handleToggleProxy auto-connects first, then toggles proxy)
+    await expect.poll(async () => (await getCallsFor(page, "ipc_toggle_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     const toggleCalls = await getCallsFor(page, "ipc_toggle_proxy");
-    expect(toggleCalls.length).toBeGreaterThanOrEqual(1);
     expect(toggleCalls[toggleCalls.length - 1].args.enabled).toBe(true);
   });
 
@@ -235,19 +240,25 @@ test.describe("FP-9.8: Multi-Server", () => {
     // Click first server
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
-    await expect(page.locator(".text-xl.font-bold:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".text-base.font-semibold:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
     // Click second server
     await page.locator("text=US West").first().click();
     await page.waitForTimeout(300);
-    await expect(page.locator(".text-xl.font-bold:has-text('US West')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".text-base.font-semibold:has-text('US West')")).toBeVisible({ timeout: 3000 });
     // First server header should no longer be the active detail
-    await expect(page.locator(".text-xl.font-bold:has-text('Tokyo VPS')")).toHaveCount(0);
+    await expect(page.locator(".text-base.font-semibold:has-text('Tokyo VPS')")).toHaveCount(0);
   });
 
-  test("both servers show their respective port chips", async ({ page }) => {
+  test("both servers show their respective port values in detail panel", async ({ page }) => {
     await waitForAppReady(page);
-    await expect(page.locator("text=:1080")).toBeVisible({ timeout: 5000 });
-    await expect(page.locator("text=:1081")).toBeVisible({ timeout: 5000 });
+    // Click first server and check SOCKS5 port
+    await page.locator("text=Tokyo VPS").first().click();
+    await page.waitForTimeout(300);
+    await expect(page.locator("input[type='number']").first()).toHaveValue("1080", { timeout: 5000 });
+    // Click second server and check SOCKS5 port
+    await page.locator("text=US West").first().click();
+    await page.waitForTimeout(300);
+    await expect(page.locator("input[type='number']").first()).toHaveValue("1081", { timeout: 5000 });
   });
 });
 

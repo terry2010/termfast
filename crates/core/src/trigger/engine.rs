@@ -8,7 +8,7 @@ use crate::config::{TriggerInstance, TriggerTemplate, TriggerType};
 use crate::error::Result;
 use crate::ssh::client::SshClientHandle;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -79,7 +79,9 @@ pub struct TriggerEngine {
     /// Pending events accumulated while paused (§10.3)
     pending_events: Mutex<Vec<PendingEvent>>,
     /// User-defined custom variables (injected into every trigger execution)
-    custom_variables: Mutex<Vec<crate::config::CustomVariable>>,
+    /// Uses std::sync::Mutex because render_commands() is a sync function called
+    /// from async contexts (tokio::sync::Mutex::blocking_lock panics in async runtime).
+    custom_variables: StdMutex<Vec<crate::config::CustomVariable>>,
 }
 
 impl TriggerEngine {
@@ -91,13 +93,13 @@ impl TriggerEngine {
             cooldowns: Mutex::new(HashMap::new()),
             running_count: Mutex::new(0),
             pending_events: Mutex::new(Vec::new()),
-            custom_variables: Mutex::new(Vec::new()),
+            custom_variables: StdMutex::new(Vec::new()),
         }
     }
 
     /// Update custom variables (called when config changes)
     pub async fn set_custom_variables(&self, vars: Vec<crate::config::CustomVariable>) {
-        *self.custom_variables.lock().await = vars;
+        *self.custom_variables.lock().unwrap() = vars;
     }
 
     /// Check if any trigger is currently running
@@ -364,7 +366,7 @@ impl TriggerEngine {
             vars.insert(k.clone(), v.clone());
         }
         // Add custom variables
-        let custom_vars = self.custom_variables.blocking_lock();
+        let custom_vars = self.custom_variables.lock().unwrap();
         for cv in custom_vars.iter() {
             vars.entry(cv.name.clone())
                 .or_insert_with(|| cv.value.clone());
@@ -445,12 +447,14 @@ impl TriggerEngine {
         // Add user-defined custom variables (from global config)
         // These are injected last so they don't override system variables,
         // but CAN be overridden by trigger-specific parameters above.
-        let custom_vars = self.custom_variables.lock().await;
-        for cv in custom_vars.iter() {
-            vars.entry(cv.name.clone())
-                .or_insert_with(|| cv.value.clone());
+        // Scoped block ensures the std::sync::MutexGuard is dropped before any .await.
+        {
+            let custom_vars = self.custom_variables.lock().unwrap();
+            for cv in custom_vars.iter() {
+                vars.entry(cv.name.clone())
+                    .or_insert_with(|| cv.value.clone());
+            }
         }
-        drop(custom_vars);
 
         let total = trigger.commands.len();
         let mut command_results = Vec::new();
@@ -462,10 +466,13 @@ impl TriggerEngine {
             //   persisting secrets to disk via FileLogger.
             tracing::info!("executing trigger command (template: {})", cmd_template);
 
-            let exec_result = if ssh.is_none() || event.server_id == "__local__" {
-                local_exec(&rendered, trigger.timeout_secs).await
-            } else {
-                ssh.unwrap().exec(&rendered, trigger.timeout_secs).await
+            let exec_result = match (&ssh, event.server_id == "__local__") {
+                (None, _) | (Some(_), true) => {
+                    local_exec(&rendered, trigger.timeout_secs).await
+                }
+                (Some(ssh), false) => {
+                    ssh.exec(&rendered, trigger.timeout_secs).await
+                }
             };
 
             match exec_result {

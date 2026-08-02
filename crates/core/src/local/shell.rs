@@ -110,6 +110,11 @@ pub fn resolve_full_path() -> Result<String, Box<dyn std::error::Error>> {
     Ok(std::env::var("PATH").unwrap_or_else(|_| "/system/bin:/system/xbin".into()))
 }
 
+#[cfg(target_os = "ios")]
+pub fn resolve_full_path() -> Result<String, Box<dyn std::error::Error>> {
+    Ok(std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()))
+}
+
 #[cfg(target_os = "windows")]
 pub fn resolve_full_path() -> Result<String, Box<dyn std::error::Error>> {
     Ok(std::env::var("PATH")?)

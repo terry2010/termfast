@@ -294,7 +294,7 @@ mod tests {
         std::fs::write(&path, &content).unwrap();
 
         let config = load_config_with_migration(&path).unwrap();
-        assert!(config.servers.len() > 0, "should load servers from old config");
+        assert!(!config.servers.is_empty(), "should load servers from old config");
         assert_eq!(config.local_triggers.len(), 0, "local_triggers should default to empty");
         assert_ne!(config, crate::config::Config::default(), "should not equal default (has servers)");
     }

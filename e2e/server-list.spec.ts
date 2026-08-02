@@ -32,7 +32,7 @@ test.describe("Server selection", () => {
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(300);
     // Detail panel should show the server name as header
-    await expect(page.locator(".text-xl.font-bold:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".text-base.font-semibold:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
   });
 
   test("selecting different server changes detail content", async ({ page }) => {
@@ -40,45 +40,49 @@ test.describe("Server selection", () => {
     // Select first
     await page.locator("text=Tokyo VPS").first().click();
     await page.waitForTimeout(200);
-    await expect(page.locator(".text-xl.font-bold:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".text-base.font-semibold:has-text('Tokyo VPS')")).toBeVisible({ timeout: 3000 });
     // Select second
     await page.locator("text=US West").first().click();
     await page.waitForTimeout(200);
-    await expect(page.locator(".text-xl.font-bold:has-text('US West')")).toBeVisible({ timeout: 3000 });
+    await expect(page.locator(".text-base.font-semibold:has-text('US West')")).toBeVisible({ timeout: 3000 });
   });
 });
 
 test.describe("Port copy chip (U8)", () => {
-  test("port chip shows :PORT for each server", async ({ page }) => {
+  test("port inputs show correct values in detail panel", async ({ page }) => {
     await waitForAppReady(page);
-    await expect(page.locator("button:has-text(':1080')")).toBeVisible({ timeout: 5000 });
-    await expect(page.locator("button:has-text(':1081')")).toBeVisible({ timeout: 5000 });
+    await page.locator("text=Tokyo VPS").first().click();
+    await page.waitForTimeout(300);
+    // Port number inputs in detail panel: SOCKS5=1080, HTTP=8080
+    const numInputs = page.locator("input[type='number']");
+    await expect(numInputs.first()).toHaveValue("1080", { timeout: 5000 });
+    await expect(numInputs.nth(1)).toHaveValue("8080", { timeout: 5000 });
   });
 
-  test("clicking port chip shows copied indicator", async ({ page }) => {
+  test("port input value changes when switching servers", async ({ page }) => {
     await waitForAppReady(page);
-    // Grant clipboard permissions for headless browser
-    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-    const portChip = page.locator("button:has-text(':1080')").first();
-    await portChip.click();
+    await page.locator("text=US West").first().click();
     await page.waitForTimeout(300);
-    // After click, should show ✓ (copied indicator) — use first to avoid strict mode
-    await expect(page.locator("button").filter({ hasText: "✓" })).toBeVisible({ timeout: 3000 });
+    const numInputs = page.locator("input[type='number']");
+    await expect(numInputs.first()).toHaveValue("1081", { timeout: 5000 });
   });
 });
 
 test.describe("Inline proxy toggle (U6)", () => {
-  test("inline toggle button exists in server list item", async ({ page }) => {
+  test("proxy toggle button exists in detail panel", async ({ page }) => {
     await waitForAppReady(page);
-    // The inline toggle has aria-label "Toggle proxy"
-    await expect(page.locator("[aria-label='Toggle proxy']").first()).toBeVisible({ timeout: 5000 });
+    await page.locator("text=Tokyo VPS").first().click();
+    await page.waitForTimeout(300);
+    // The Start Proxy button is in the detail panel
+    await expect(page.locator("button:has-text('Start Proxy')")).toBeVisible({ timeout: 5000 });
   });
 
-  test("clicking inline toggle calls ipc_toggle_proxy", async ({ page }) => {
+  test("clicking Start Proxy calls ipc_toggle_proxy", async ({ page }) => {
     await waitForAppReady(page);
-    const toggle = page.locator("[aria-label='Toggle proxy']").first();
-    await toggle.click();
-    await expect.poll(async () => (await getCallsFor(page, "ipc_toggle_proxy")).length).toBeGreaterThanOrEqual(1);
+    await page.locator("text=Tokyo VPS").first().click();
+    await page.waitForTimeout(300);
+    await page.locator("button:has-text('Start Proxy')").click();
+    await expect.poll(async () => (await getCallsFor(page, "ipc_toggle_proxy")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     const calls = await getCallsFor(page, "ipc_toggle_proxy");
     // First server proxy_running is false, so toggle should send enabled=true
     expect(calls[0].args.enabled).toBe(true);
@@ -113,10 +117,20 @@ test.describe("Abnormal server pinning (U7)", () => {
       ],
     });
     await waitForAppReady(page, 5000);
-    // Abnormal should appear before Normal in the list
+    // Abnormal should appear before Normal in the list (auth_failed is sorted to top)
+    // Note: a "My Computer" local server may also appear; we check relative order
     const items = page.locator("[role='listitem']");
-    const firstItem = items.first();
-    await expect(firstItem).toContainText("Abnormal Server", { timeout: 5000 });
+    const count = await items.count();
+    let abnormalIdx = -1;
+    let normalIdx = -1;
+    for (let i = 0; i < count; i++) {
+      const text = await items.nth(i).textContent() || "";
+      if (text.includes("Abnormal Server")) abnormalIdx = i;
+      if (text.includes("Normal Server")) normalIdx = i;
+    }
+    expect(abnormalIdx).toBeGreaterThanOrEqual(0);
+    expect(normalIdx).toBeGreaterThanOrEqual(0);
+    expect(abnormalIdx).toBeLessThan(normalIdx);
   });
 });
 

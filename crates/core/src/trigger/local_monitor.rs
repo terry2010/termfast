@@ -38,6 +38,12 @@ pub struct LocalNetworkMonitor {
     fail_count: u32,
 }
 
+impl Default for LocalNetworkMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalNetworkMonitor {
     pub fn new() -> Self {
         Self {
