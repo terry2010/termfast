@@ -789,12 +789,19 @@ async fn ipc_shutdown(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// Called from the Developer Options settings section.
 #[tauri::command]
 fn ipc_toggle_devtools(app_handle: tauri::AppHandle, open: bool) -> Result<(), String> {
+    // open_devtools/close_devtools only available in debug builds.
+    #[cfg(debug_assertions)]
     if let Some(window) = app_handle.get_webview_window("main") {
         if open {
             window.open_devtools();
         } else {
             window.close_devtools();
         }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app_handle, open);
+        tracing::warn!("DevTools toggle is only available in debug builds");
     }
     Ok(())
 }
