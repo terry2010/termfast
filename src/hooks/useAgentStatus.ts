@@ -107,6 +107,12 @@ export function useAgentStatus(
   const stateRef = useRef<AgentState>(createAgentState(performance.now()));
   // Track disposables so we can clean up on unmount / term change.
   const disposablesRef = useRef<Array<{ dispose: () => void }>>([]);
+  // Cache options per active tab for Devin multi-select.
+  // When the cursor moves to "Other (type your own)" in Devin's multi-select,
+  // the terminal shows a text input field and the option list disappears.
+  // extractOptions then only returns ["Other (type your own)"].
+  // We cache the full option list per tab to avoid the overlay shrinking to 1 option.
+  const cachedOptionsRef = useRef<Map<number, string[]>>(new Map());
   const tickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -140,11 +146,26 @@ export function useAgentStatus(
             if (tabInfo) {
               activeTabIndex = tabInfo.activeIndex;
               totalTabs = tabInfo.labels.length;
+              // Debug: log tab info to file for diagnosis
+              logTerminalDebug(sessionId, `tabInfo: labels=${JSON.stringify(tabInfo.labels)} activeIndex=${tabInfo.activeIndex} debug=${tabInfo.debug ?? "none"}`);
             }
             // Extract review answers when on the Confirm tab (last tab)
             if (tabInfo && tabInfo.activeIndex === tabInfo.labels.length - 1) {
               reviewAnswers = extractReviewAnswers(state.cli, screenText);
             }
+          }
+          // Devin multi-select: when cursor is on "Other (type your own)",
+          // the terminal shows a text input and the option list disappears.
+          // extractOptions returns only ["Other (type your own)"].
+          // Use cached options for this tab to keep the overlay stable.
+          if (state.cli === "devin" && isMultiSelect && options && options.length === 1 && /other/i.test(options[0])) {
+            const cached = cachedOptionsRef.current.get(activeTabIndex);
+            if (cached && cached.length > 1) {
+              options = cached;
+            }
+          } else if (state.cli === "devin" && isMultiSelect && options && options.length > 1) {
+            // Cache the full option list for this tab
+            cachedOptionsRef.current.set(activeTabIndex, options);
           }
           // Update state machine's multiSelect flag
           state.isMultiSelect = isMultiSelect;

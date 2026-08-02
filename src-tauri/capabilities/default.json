@@ -47,6 +47,8 @@
     "dialog:allow-message",
     "fs:allow-write-file",
     "fs:allow-read-file",
+    "fs:allow-open",
+    "fs:allow-mkdir",
     "updater:default",
     {
       "identifier": "shell:allow-open",

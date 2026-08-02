@@ -16,7 +16,7 @@
 // When the user clicks an option, answerSubmitter generates the keystrokes
 // and TerminalView sends them to the PTY.
 
-import { memo, useState, useEffect } from "react";
+import { memo, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus, CliType } from "@/hooks/agentStateMachine";
 
@@ -47,13 +47,17 @@ interface AgentQuestionOverlayProps {
   onAnswer: (option: string, index: number) => void;
   /** Called when user toggles an option in multi-select mode.
    *  The parent sends the toggle keystrokes to the PTY. */
-  onToggle: (option: string) => void;
+  onToggle: (option: string, index: number) => void;
   /** Called when user clicks Submit in multi-select mode.
    *  The parent sends the confirm keystrokes (Tab + Enter) to the PTY. */
   onSubmitMultiSelect: () => void;
   /** Called when user submits a text answer (Type your own answer).
    *  The parent navigates to the option, enters text mode, and types. */
-  onTextAnswer: (option: string, text: string) => void;
+  onTextAnswer: (option: string, text: string, index: number) => void;
+  /** Called when user cancels text input mode ("Back to options").
+   *  The parent sends Escape to the terminal to exit the CLI's text editing
+   *  mode (Devin's 'e' select+type mode). */
+  onTextCancel: () => void;
   /** Called when user clicks "Previous question" (multi-question mode). */
   onPrevQuestion: () => void;
   /** Called when user clicks "Next question" (multi-question mode). */
@@ -73,9 +77,10 @@ const CLI_NAMES: Record<CliType, string> = {
   shell: "Shell",
 };
 
-/** Check if an option is the "Type your own answer" entry. */
+/** Check if an option is the "Type your own answer" entry.
+ *  Matches both "Type your own answer" (OpenCode) and "Other (type your own)" (Devin). */
 function isTypeYourOwnAnswer(option: string): boolean {
-  return /type\s+your\s+own\s+answer/i.test(option);
+  return /type\s+your\s+own/i.test(option);
 }
 
 function AgentQuestionOverlayImpl({
@@ -94,6 +99,7 @@ function AgentQuestionOverlayImpl({
   onToggle,
   onSubmitMultiSelect,
   onTextAnswer,
+  onTextCancel,
   onPrevQuestion,
   onNextQuestion,
   onConfirm,
@@ -104,22 +110,88 @@ function AgentQuestionOverlayImpl({
   const [checked, setChecked] = useState<Set<number>>(new Set());
   // Track text answers typed via "Type your own answer" (option index → text)
   const [textAnswers, setTextAnswers] = useState<Map<number, string>>(new Map());
+  // Cache checked/textAnswers per tab in multi-question mode.
+  // When navigating between questions (←→), the questionKey changes and
+  // triggers a reset. We cache per-tab state so switching back restores
+  // the previously checked options and text answers.
+  const tabStateRef = useRef<Map<number, { checked: Set<number>; textAnswers: Map<number, string> }>>(new Map());
+  const prevTabRef = useRef<number>(-1);
 
-  // In multi-question mode, the last question tab is right before the Confirm tab.
-  // Confirm tab index = totalTabs - 1, so last question = totalTabs - 2.
-  // Only show the Confirm button when on the last question.
-  const isLastQuestion = isMultiQuestion && totalTabs > 0 && activeTabIndex === totalTabs - 2;
+  // In multi-question mode, determine which tab is the "last question" tab.
+  // OpenCode has a separate "Confirm" tab at the end (totalTabs - 1),
+  // so the last question is at totalTabs - 2.
+  // Devin has NO Confirm tab — all tabs are question tabs,
+  // so the last question is at totalTabs - 1.
+  const lastQuestionIndex = cli === "devin" ? totalTabs - 1 : totalTabs - 2;
+  const isLastQuestion = isMultiQuestion && totalTabs > 0 && activeTabIndex === lastQuestionIndex;
+  // First/last question detection for Devin — hide Prev/Next to prevent wrap.
+  // Devin's ←→ is circular (wraps around), and there's no Confirm tab.
+  // OpenCode has a Confirm tab at the end, so Next on last question is useful.
+  const isFirstQuestion = isMultiQuestion && totalTabs > 0 && activeTabIndex === 0;
+  const hidePrev = cli === "devin" && isFirstQuestion;
+  const hideNext = cli === "devin" && isLastQuestion;
   // Text input mode: when user clicks "Type your own answer"
   const [textMode, setTextMode] = useState(false);
   const [textModeIndex, setTextModeIndex] = useState(-1);
   const [textOption, setTextOption] = useState<string>("");
   const [textValue, setTextValue] = useState("");
+  // Ref to prevent resetting textMode when screen redraws during text editing
+  // (Devin's text editing mode removes option numbers, causing question extraction
+  // to fail and questionKey to change to a fallback — we don't want that to
+  // close the text input)
+  const textModeRef = useRef(false);
+  useEffect(() => { textModeRef.current = textMode; }, [textMode]);
 
-  // Reset local state when the question changes (new question in sequence)
+  // Reset local state when the question changes (new question in sequence).
+  // Skip the reset if we're in text editing mode AND the new questionKey is
+  // empty or a fallback string — this happens when Devin redraws the screen
+  // during text editing (option numbers disappear, question extraction fails).
+  // A real question change (next question in multi-question mode) will have
+  // a non-empty, non-fallback questionKey and will correctly reset textMode.
   const questionKey = question ?? blockedMessage ?? "";
+
+  // When activeTabIndex changes in multi-question mode, cache the old tab's
+  // state and restore the new tab's cached state (if any).
   useEffect(() => {
-    setChecked(new Set());
-    setTextAnswers(new Map());
+    if (!isMultiQuestion) return;
+    const prevTab = prevTabRef.current;
+    const currTab = activeTabIndex;
+    if (prevTab === currTab) return;
+    // Cache old tab state
+    if (prevTab >= 0) {
+      tabStateRef.current.set(prevTab, {
+        checked: new Set(checked),
+        textAnswers: new Map(textAnswers),
+      });
+    }
+    // Restore new tab state
+    const cached = tabStateRef.current.get(currTab);
+    if (cached) {
+      setChecked(new Set(cached.checked));
+      setTextAnswers(new Map(cached.textAnswers));
+    } else {
+      setChecked(new Set());
+      setTextAnswers(new Map());
+    }
+    setTextMode(false);
+    setTextValue("");
+    prevTabRef.current = currTab;
+  }, [activeTabIndex, isMultiQuestion]);
+
+  useEffect(() => {
+    if (textModeRef.current) {
+      // In text mode: only skip reset if the new key is a fallback
+      // (empty, null, or "Devin is asking a question" / "OpenCode is asking a question")
+      const isFallback = !questionKey || /is asking a question/i.test(questionKey);
+      if (isFallback) return;
+      // Real question change while in text mode — reset
+    }
+    // Only reset if NOT in multi-question mode (multi-question handles reset
+    // in the activeTabIndex effect above to preserve per-tab state)
+    if (!isMultiQuestion) {
+      setChecked(new Set());
+      setTextAnswers(new Map());
+    }
     setTextMode(false);
     setTextValue("");
   }, [questionKey]);
@@ -164,7 +236,7 @@ function AgentQuestionOverlayImpl({
       return next;
     });
     // Send toggle keystroke to PTY
-    onToggle(option);
+    onToggle(option, index);
   };
 
   // ── Multi-select: Submit ───────────────────────────────────────────
@@ -176,7 +248,7 @@ function AgentQuestionOverlayImpl({
   // ── Text answer: Send ──────────────────────────────────────────────
   const handleTextSubmit = () => {
     if (textValue.trim()) {
-      onTextAnswer(textOption, textValue.trim());
+      onTextAnswer(textOption, textValue.trim(), textModeIndex);
       // Mark the option as checked and store the text answer
       setChecked((prev) => new Set(prev).add(textModeIndex));
       setTextAnswers((prev) => new Map(prev).set(textModeIndex, textValue.trim()));
@@ -187,6 +259,8 @@ function AgentQuestionOverlayImpl({
 
   // ── Text answer: Cancel ───────────────────────────────────────────
   const handleTextCancel = () => {
+    // Notify the terminal to exit text editing mode (e.g. Devin's 'e' mode)
+    onTextCancel();
     setTextMode(false);
     setTextValue("");
   };
@@ -290,18 +364,22 @@ function AgentQuestionOverlayImpl({
             {/* Multi-question navigation + Confirm */}
             {isMultiQuestion ? (
               <div className="flex gap-2 mt-2">
-                <button
-                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
-                  onClick={onPrevQuestion}
-                >
-                  ← {t("server.agent_prev_question")}
-                </button>
-                <button
-                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
-                  onClick={onNextQuestion}
-                >
-                  {t("server.agent_next_question")} →
-                </button>
+                {!hidePrev && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    onClick={onPrevQuestion}
+                  >
+                    ← {t("server.agent_prev_question")}
+                  </button>
+                )}
+                {!hideNext && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    onClick={onNextQuestion}
+                  >
+                    {t("server.agent_next_question")} →
+                  </button>
+                )}
                 {isLastQuestion && (
                   <button
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
@@ -337,18 +415,22 @@ function AgentQuestionOverlayImpl({
             {/* Multi-question navigation + Confirm */}
             {isMultiQuestion && (
               <div className="flex gap-2 mt-2">
-                <button
-                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
-                  onClick={onPrevQuestion}
-                >
-                  ← {t("server.agent_prev_question")}
-                </button>
-                <button
-                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
-                  onClick={onNextQuestion}
-                >
-                  {t("server.agent_next_question")} →
-                </button>
+                {!hidePrev && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    onClick={onPrevQuestion}
+                  >
+                    ← {t("server.agent_prev_question")}
+                  </button>
+                )}
+                {!hideNext && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    onClick={onNextQuestion}
+                  >
+                    {t("server.agent_next_question")} →
+                  </button>
+                )}
                 {isLastQuestion && (
                   <button
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
@@ -383,7 +465,7 @@ function AgentQuestionOverlayImpl({
               </div>
             )}
             <div className="flex gap-2">
-              {isMultiQuestion && (
+              {isMultiQuestion && !hidePrev && (
                 <button
                   className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
                   onClick={onPrevQuestion}

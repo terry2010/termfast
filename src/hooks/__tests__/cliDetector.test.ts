@@ -23,6 +23,11 @@ describe("detectCliFromTitle", () => {
     expect(detectCliFromTitle("Devin - working")).toBe("devin");
   });
 
+  it("detects Devin from lowercase title (devin: workspace)", () => {
+    // Devin CLI v3000+ emits lowercase "devin: <workspace>" as OSC 0 title
+    expect(detectCliFromTitle("devin: ssh-proxy")).toBe("devin");
+  });
+
   it("returns unknown for non-CLI titles", () => {
     expect(detectCliFromTitle("bash")).toBe("unknown");
     expect(detectCliFromTitle("")).toBe("unknown");

@@ -146,8 +146,9 @@ export function parseOsc0(data: string): AgentSignal | null {
     return { kind: "title", cli: "claude-code", title };
   }
 
-  // Devin: title contains "Devin"
-  if (title.includes("Devin")) {
+  // Devin: title contains "Devin" (case-insensitive — Devin CLI emits
+  // lowercase "devin: <workspace>" as the OSC 0 title)
+  if (title.toLowerCase().includes("devin")) {
     return { kind: "title", cli: "devin", title };
   }
 

@@ -9,6 +9,8 @@ interface MockCellConfig {
   width?: number;
   bgMode?: number;
   bgColor?: number;
+  fgMode?: number;
+  fgColor?: number;
 }
 
 function createMockCell(config: MockCellConfig): IBufferCell {
@@ -16,9 +18,9 @@ function createMockCell(config: MockCellConfig): IBufferCell {
     getWidth: () => config.width ?? 1,
     getChars: () => config.char,
     getCode: () => config.char.charCodeAt(0) || 0,
-    getFgColor: () => 0,
+    getFgColor: () => config.fgColor ?? 0,
     getBgColor: () => config.bgColor ?? 0,
-    getFgColorMode: () => 0,
+    getFgColorMode: () => config.fgMode ?? 0,
     getBgColorMode: () => config.bgMode ?? 0,
     isBold: () => false,
     isItalic: () => false,
@@ -32,25 +34,38 @@ function createMockCell(config: MockCellConfig): IBufferCell {
 }
 
 // ── Mock IBufferLine ──────────────────────────────────────────────────────
-// Builds a line from a string + optional per-position bg color overrides.
-// `bgOverrides` maps character index → { mode, color } for that position.
+// Builds a line from a string + optional per-position color overrides.
+// `bgOverrides` maps character index → { mode, color } for background.
+// `fgOverrides` maps character index → { mode, color } for foreground.
+// CJK characters are simulated as width=2 with a continuation cell (width=0),
+// matching real xterm.js behavior.
 function createMockLine(
   text: string,
   bgOverrides?: Map<number, { mode: number; color: number }>,
+  fgOverrides?: Map<number, { mode: number; color: number }>,
 ): IBufferLine {
   const cells: IBufferCell[] = [];
   for (let i = 0; i < text.length; i++) {
-    const override = bgOverrides?.get(i);
+    const bg = bgOverrides?.get(i);
+    const fg = fgOverrides?.get(i);
+    const isWide = /[\u3000-\u9fff\uf900-\ufaff\u{1f000}-\u{1ffff}]/u.test(text[i]);
     cells.push(
       createMockCell({
         char: text[i],
-        bgMode: override?.mode ?? 0,
-        bgColor: override?.color ?? 0,
+        width: isWide ? 2 : 1,
+        bgMode: bg?.mode ?? 0,
+        bgColor: bg?.color ?? 0,
+        fgMode: fg?.mode ?? 0,
+        fgColor: fg?.color ?? 0,
       }),
     );
+    if (isWide) {
+      // Add continuation cell (width=0) for wide characters
+      cells.push(createMockCell({ char: "", width: 0 }));
+    }
   }
   return {
-    length: text.length,
+    length: cells.length,
     getCell: (x: number) => (x >= 0 && x < cells.length ? cells[x] : undefined),
     isWrapped: false,
   } as unknown as IBufferLine;
@@ -70,13 +85,21 @@ function createMockTerminal(lines: IBufferLine[]): Terminal {
 }
 
 // ── Color constants ───────────────────────────────────────────────────────
-// Accent color: RGB (157, 124, 216) — active tab background
-const ACCENT_BG_MODE = 2;
+// Accent color: RGB (157, 124, 216) — active tab background (OpenCode)
+const ACCENT_BG_MODE = 0x03000000;
 const ACCENT_BG_COLOR = (157 << 16) | (124 << 8) | 216; // 10302616
 
-// Panel background: RGB (20, 20, 20) — inactive tab background
-const PANEL_BG_MODE = 2;
+// Panel background: RGB (20, 20, 20) — inactive tab background (OpenCode)
+const PANEL_BG_MODE = 0x03000000;
 const PANEL_BG_COLOR = (20 << 16) | (20 << 8) | 20; // 1310740
+
+// Devin active tab foreground: RGB (94, 196, 255) — bright blue
+const DEVIN_ACTIVE_FG_MODE = 0x03000000;
+const DEVIN_ACTIVE_FG_COLOR = (94 << 16) | (196 << 8) | 255; // 6188031
+
+// Devin inactive tab foreground: RGB (124, 124, 124) — gray
+const DEVIN_INACTIVE_FG_MODE = 0x03000000;
+const DEVIN_INACTIVE_FG_COLOR = (124 << 16) | (124 << 8) | 124; // 8157436
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
@@ -230,5 +253,110 @@ describe("extractTabInfo", () => {
     expect(result).not.toBeNull();
     expect(result!.labels).toEqual(["编程语言", "测试反馈", "Confirm"]);
     expect(result!.activeIndex).toBe(0);
+  });
+});
+
+// ── Devin tab row tests ───────────────────────────────────────────────────
+
+describe("extractTabInfo — Devin format", () => {
+  it("returns labels for Devin tab row (── label · label ──)", () => {
+    // Devin tab row: "── 测试单选 · 测试多选 · 布尔确认 · 长标签测试 ──..."
+    const tabRow = "── 测试单选 · 测试多选 · 布尔确认 · 长标签测试 ────────────────────────────────────────────────────────────────────────────────────────";
+    const lines = [createMockLine(tabRow)];
+    const term = createMockTerminal(lines);
+    const result = extractTabInfo(term);
+    expect(result).not.toBeNull();
+    expect(result!.labels).toEqual(["测试单选", "测试多选", "布尔确认", "长标签测试"]);
+  });
+
+  it("returns activeIndex=0 when first tab has bright blue fg", () => {
+    const tabRow = "── 测试单选 · 测试多选 · 布尔确认 ────────────────────────────────────────────────────────────────────────────────────────";
+    // "测试单选" starts at pos 3 (after "── ")
+    // Devin uses FOREGROUND color: active=RGB(94,196,255), inactive=RGB(124,124,124)
+    const fgOverrides = new Map<number, { mode: number; color: number }>();
+    for (let i = 3; i <= 6; i++) {
+      fgOverrides.set(i, { mode: DEVIN_ACTIVE_FG_MODE, color: DEVIN_ACTIVE_FG_COLOR });
+    }
+    const lines = [createMockLine(tabRow, undefined, fgOverrides)];
+    const term = createMockTerminal(lines);
+    const result = extractTabInfo(term);
+    expect(result).not.toBeNull();
+    expect(result!.labels).toEqual(["测试单选", "测试多选", "布尔确认"]);
+    expect(result!.activeIndex).toBe(0);
+  });
+
+  it("returns activeIndex=1 when second tab has bright blue fg", () => {
+    const tabRow = "── 测试单选 · 测试多选 · 布尔确认 ────────────────────────────────────────────────────────────────────────────────────────";
+    // "测试多选" starts at pos 9 (after "── 测试单选 · ")
+    const fgOverrides = new Map<number, { mode: number; color: number }>();
+    for (let i = 9; i <= 12; i++) {
+      fgOverrides.set(i, { mode: DEVIN_ACTIVE_FG_MODE, color: DEVIN_ACTIVE_FG_COLOR });
+    }
+    const lines = [createMockLine(tabRow, undefined, fgOverrides)];
+    const term = createMockTerminal(lines);
+    const result = extractTabInfo(term);
+    expect(result).not.toBeNull();
+    expect(result!.activeIndex).toBe(1);
+  });
+
+  it("returns activeIndex=-1 when all tabs are gray (no active)", () => {
+    const tabRow = "── 测试单选 · 测试多选 · 布尔确认 ────────────────────────────────────────────────────────────────────────────────────────";
+    // All tabs gray fg (inactive) — no bright blue
+    const fgOverrides = new Map<number, { mode: number; color: number }>();
+    for (let i = 3; i <= 6; i++) {
+      fgOverrides.set(i, { mode: DEVIN_INACTIVE_FG_MODE, color: DEVIN_INACTIVE_FG_COLOR });
+    }
+    for (let i = 9; i <= 12; i++) {
+      fgOverrides.set(i, { mode: DEVIN_INACTIVE_FG_MODE, color: DEVIN_INACTIVE_FG_COLOR });
+    }
+    for (let i = 15; i <= 18; i++) {
+      fgOverrides.set(i, { mode: DEVIN_INACTIVE_FG_MODE, color: DEVIN_INACTIVE_FG_COLOR });
+    }
+    const lines = [createMockLine(tabRow, undefined, fgOverrides)];
+    const term = createMockTerminal(lines);
+    const result = extractTabInfo(term);
+    expect(result).not.toBeNull();
+    expect(result!.labels).toEqual(["测试单选", "测试多选", "布尔确认"]);
+    expect(result!.activeIndex).toBe(-1);
+  });
+
+  it("returns activeIndex=-1 when color detection fails (no fg color)", () => {
+    const tabRow = "── 测试单选 · 测试多选 · 布尔确认 ────────────────────────────────────────────────────────────────────────────────────────";
+    const lines = [createMockLine(tabRow)];
+    const term = createMockTerminal(lines);
+    const result = extractTabInfo(term);
+    expect(result).not.toBeNull();
+    expect(result!.labels).toEqual(["测试单选", "测试多选", "布尔确认"]);
+    expect(result!.activeIndex).toBe(-1);
+  });
+
+  it("handles answered tabs with ✓ suffix", () => {
+    // Tab row with ✓ on first tab: "── 测试单选 ✓ · 测试多选 · 布尔确认 ──..."
+    const tabRow = "── 测试单选 ✓ · 测试多选 · 布尔确认 ────────────────────────────────────────────────────────────────────────────────────────";
+    // "测试多选" is active (bright blue fg)
+    // "测试单选" starts at pos 3, "测试多选" starts at pos 12 (after "── 测试单选 ✓ · ")
+    const fgOverrides = new Map<number, { mode: number; color: number }>();
+    for (let i = 12; i <= 15; i++) {
+      fgOverrides.set(i, { mode: DEVIN_ACTIVE_FG_MODE, color: DEVIN_ACTIVE_FG_COLOR });
+    }
+    const lines = [createMockLine(tabRow, undefined, fgOverrides)];
+    const term = createMockTerminal(lines);
+    const result = extractTabInfo(term);
+    expect(result).not.toBeNull();
+    expect(result!.labels).toEqual(["测试单选 ✓", "测试多选", "布尔确认"]);
+    expect(result!.activeIndex).toBe(1);
+  });
+
+  it("returns null for non-tab lines with ──", () => {
+    // Just a separator line, not a tab row
+    const lines = [createMockLine("─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────")];
+    const term = createMockTerminal(lines);
+    expect(extractTabInfo(term)).toBeNull();
+  });
+
+  it("returns null for Devin tab row with only 1 label", () => {
+    const lines = [createMockLine("── 单标签 ────────────────────────────────────────────────────────────────────────────────────────")];
+    const term = createMockTerminal(lines);
+    expect(extractTabInfo(term)).toBeNull();
   });
 });

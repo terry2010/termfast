@@ -546,6 +546,168 @@ describe("detectStatusFromScreen — Devin working spinner", () => {
   });
 });
 
+// ── Devin ask_user_question dialog tests ─────────────────────────────────────
+// These tests verify detection of Devin's ask_user_question popup format:
+//   "↑↓ navigate · ↵ select · e select+type · ? help me out · esc cancel"
+// Four variants: single/multi-select × single/multi-question
+
+describe("detectStatusFromScreen — Devin ask_user_question dialog", () => {
+  it("detects blocked for single-select single-question footer", () => {
+    const screen = "  ❭ 1 Rust\n  · 2 TypeScript\n↑↓ navigate · ↵ select · e select+type · ? help me out · esc cancel";
+    expect(detectStatusFromScreen("devin", screen)).toBe("blocked");
+  });
+
+  it("detects blocked for multi-select single-question footer", () => {
+    const screen = "  □ 1 VS Code\n  □ 2 tmux\n↑↓ navigate · ␣ toggle · ↵ select · e select+type · ? help me out · esc cancel";
+    expect(detectStatusFromScreen("devin", screen)).toBe("blocked");
+  });
+
+  it("detects blocked for single-select multi-question footer", () => {
+    const screen = "  ❭ 1 确认型弹窗\n  · 2 选择型弹窗\n↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel";
+    expect(detectStatusFromScreen("devin", screen)).toBe("blocked");
+  });
+
+  it("detects blocked for multi-select multi-question footer", () => {
+    const screen = "  □ 1 多选问题\n  □ 2 单选问题\n↑↓ navigate · ␣ toggle · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel";
+    expect(detectStatusFromScreen("devin", screen)).toBe("blocked");
+  });
+
+  it("blocked (ask_user_question) has higher priority than idle", () => {
+    const screen = "❭ Ask Devin to build features\n  ❭ 1 Rust\n↑↓ navigate · ↵ select · esc cancel";
+    expect(detectStatusFromScreen("devin", screen)).toBe("blocked");
+  });
+});
+
+describe("extractQuestion — Devin ask_user_question", () => {
+  it("extracts question text above first numbered option", () => {
+    const screen = [
+      "── 编程语言 ────────────────────────────────────────────────────",
+      "  这是一个单选单问题弹窗测试。你最喜欢哪种编程语言？",
+      "  ❭ 1 Rust",
+      "      系统级语言，内存安全，性能优秀",
+      "  · 2 TypeScript",
+      "─────────────────────────────────────────────────────────────",
+      "↑↓ navigate · ↵ select · e select+type · ? help me out · esc cancel",
+    ].join("\n");
+    expect(extractQuestion("devin", screen)).toBe("这是一个单选单问题弹窗测试。你最喜欢哪种编程语言？");
+  });
+
+  it("extracts question text for multi-select dialog", () => {
+    const screen = [
+      "── 开发工具 ────────────────────────────────────────────────────",
+      "  这是一个多选单问题弹窗测试。你日常开发中常用哪些工具？（可多选） (multi-select)",
+      "  □ 1 VS Code",
+      "      代码编辑器，轻量级、插件丰富",
+      "  □ 2 tmux",
+      "─────────────────────────────────────────────────────────────",
+      "↑↓ navigate · ␣ toggle · ↵ select · e select+type · ? help me out · esc cancel",
+    ].join("\n");
+    expect(extractQuestion("devin", screen)).toBe("这是一个多选单问题弹窗测试。你日常开发中常用哪些工具？（可多选） (multi-select)");
+  });
+
+  it("extracts question text for multi-question dialog", () => {
+    const screen = [
+      "── 交互类型 · 弹窗特性 · UI 渲染 · 改进建议 ────────────────────",
+      "  这是第 1 个测试问题（单选）：你希望测试哪种类型的弹窗交互？",
+      "  ❭ 1 确认型弹窗",
+      "      简单的 yes/no 确认场景",
+      "  · 2 选择型弹窗",
+      "─────────────────────────────────────────────────────────────",
+      "↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel",
+    ].join("\n");
+    expect(extractQuestion("devin", screen)).toBe("这是第 1 个测试问题（单选）：你希望测试哪种类型的弹窗交互？");
+  });
+
+  it("returns fallback when question text not found", () => {
+    const screen = "  ❭ 1 Rust\n↑↓ navigate · ↵ select · esc cancel";
+    expect(extractQuestion("devin", screen)).toBe("Devin is asking a question");
+  });
+});
+
+describe("extractOptions — Devin ask_user_question", () => {
+  it("extracts options with ❭/· prefix (single-select)", () => {
+    const screen = [
+      "  ❭ 1 Rust",
+      "      系统级语言，内存安全，性能优秀",
+      "  · 2 TypeScript",
+      "      前端主流，类型安全的 JavaScript 超集",
+      "  · 3 Python",
+      "  · 4 Go",
+      "  ·   Other (type your own)",
+      "↑↓ navigate · ↵ select · e select+type · ? help me out · esc cancel",
+    ].join("\n");
+    expect(extractOptions("devin", screen)).toEqual([
+      "1. Rust",
+      "2. TypeScript",
+      "3. Python",
+      "4. Go",
+      "Other (type your own)",
+    ]);
+  });
+
+  it("extracts options with □ prefix (multi-select)", () => {
+    const screen = [
+      "  □ 1 多选问题",
+      "      测试 multi_select=true 时用户能否选多个选项",
+      "  □ 2 单选问题",
+      "  □ 3 Other 自定义",
+      "  □ 4 跳过问题",
+      "  □ 5 Other (type your own)",
+      "↑↓ navigate · ␣ toggle · ↵ select · e select+type · ? help me out · esc cancel",
+    ].join("\n");
+    expect(extractOptions("devin", screen)).toEqual([
+      "1. 多选问题",
+      "2. 单选问题",
+      "3. Other 自定义",
+      "4. 跳过问题",
+      "5. Other (type your own)",
+    ]);
+  });
+
+  it("extracts options with ■ prefix (checked multi-select)", () => {
+    const screen = [
+      "  ■ 1 React",
+      "  □ 2 Vue",
+      "↑↓ navigate · ␣ toggle · ↵ select · e select+type · ? help me out · esc cancel",
+    ].join("\n");
+    expect(extractOptions("devin", screen)).toEqual(["1. React", "2. Vue"]);
+  });
+});
+
+describe("detectMultiSelect — Devin", () => {
+  it("returns true for multi-select footer (␣ toggle)", () => {
+    const screen = "  □ 1 VS Code\n↑↓ navigate · ␣ toggle · ↵ select · e select+type · ? help me out · esc cancel";
+    expect(detectMultiSelect("devin", screen)).toBe(true);
+  });
+
+  it("returns false for single-select footer (no ␣ toggle)", () => {
+    const screen = "  ❭ 1 Rust\n↑↓ navigate · ↵ select · e select+type · ? help me out · esc cancel";
+    expect(detectMultiSelect("devin", screen)).toBe(false);
+  });
+
+  it("returns true for multi-select multi-question footer", () => {
+    const screen = "  □ 1 多选问题\n↑↓ navigate · ␣ toggle · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel";
+    expect(detectMultiSelect("devin", screen)).toBe(true);
+  });
+});
+
+describe("detectMultiQuestion — Devin", () => {
+  it("returns true for multi-question footer (←→ switch question)", () => {
+    const screen = "  ❭ 1 确认型弹窗\n↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel";
+    expect(detectMultiQuestion("devin", screen)).toBe(true);
+  });
+
+  it("returns false for single-question footer (no ←→ switch question)", () => {
+    const screen = "  ❭ 1 Rust\n↑↓ navigate · ↵ select · e select+type · ? help me out · esc cancel";
+    expect(detectMultiQuestion("devin", screen)).toBe(false);
+  });
+
+  it("returns true for multi-select multi-question footer", () => {
+    const screen = "  □ 1 多选问题\n↑↓ navigate · ␣ toggle · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel";
+    expect(detectMultiQuestion("devin", screen)).toBe(true);
+  });
+});
+
 describe("detectStatusFromScreen — Codex working (TUI spinner only)", () => {
   it("detects working from '• Working (0s • esc to interrupt)'", () => {
     const screen = "• Working (0s • esc to interrupt)";

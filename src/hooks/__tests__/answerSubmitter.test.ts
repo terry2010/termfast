@@ -1,9 +1,9 @@
 // Unit tests for answerSubmitter — per-CLI answer submission strategies
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS } from "../answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, navigatePrevQuestion, navigateNextQuestion } from "../answerSubmitter";
 
 describe("submitAnswer — Devin", () => {
-  it("sends number + Enter for numbered option", () => {
+  it("sends number + Enter for numbered option (permission dialog)", () => {
     expect(submitAnswer("devin", "1. Yes", 0)).toBe("1\r");
     expect(submitAnswer("devin", "2. No", 1)).toBe("2\r");
   });
@@ -11,6 +11,120 @@ describe("submitAnswer — Devin", () => {
   it("falls back to index+1 when no number prefix", () => {
     expect(submitAnswer("devin", "Yes", 0)).toBe("1\r");
     expect(submitAnswer("devin", "No", 1)).toBe("2\r");
+  });
+
+  it("sends 'e' for Other (type your own) option", () => {
+    expect(submitAnswer("devin", "Other (type your own)", 4)).toBe("e");
+  });
+});
+
+describe("toggleDevinOption — Devin multi-select toggle (relative navigation)", () => {
+  it("sends Down + Space when target is below current position", () => {
+    // currentPos=0, target=2: Down 2 + Space
+    expect(toggleDevinOption("3. Python", 2, 0)).toBe("\x1b[B\x1b[B ");
+  });
+
+  it("sends Up + Space when target is above current position", () => {
+    // currentPos=3, target=1: Up 2 + Space
+    expect(toggleDevinOption("2. tmux", 1, 3)).toBe("\x1b[A\x1b[A ");
+  });
+
+  it("sends only Space when already at target", () => {
+    // currentPos=2, target=2: just Space
+    expect(toggleDevinOption("3. Other", 2, 2)).toBe(" ");
+  });
+
+  it("sends Down + Space for first toggle from pos 0", () => {
+    // currentPos=0, target=1: Down 1 + Space
+    expect(toggleDevinOption("2. TypeScript", 1, 0)).toBe("\x1b[B ");
+  });
+
+  it("defaults currentPos to 0 when not provided", () => {
+    // No currentPos: defaults to 0, target=2: Down 2 + Space
+    expect(toggleDevinOption("3. Other", 2)).toBe("\x1b[B\x1b[B ");
+  });
+
+  it("handles sequential toggles correctly (simulating cursor tracking)", () => {
+    // Simulate: toggle 1, then 3, then 0 (with 5 options)
+    // Toggle 1 from pos 0: Down 1 + Space, cursor -> 1
+    expect(toggleDevinOption("2. TS", 1, 0)).toBe("\x1b[B ");
+    // Toggle 3 from pos 1: Down 2 + Space, cursor -> 3
+    expect(toggleDevinOption("4. Go", 3, 1)).toBe("\x1b[B\x1b[B ");
+    // Toggle 0 from pos 3: Up 3 + Space, cursor -> 0
+    expect(toggleDevinOption("1. Rust", 0, 3)).toBe("\x1b[A\x1b[A\x1b[A ");
+  });
+});
+
+describe("submitDevinMultiSelect — Devin multi-select submit", () => {
+  it("sends Enter to submit", () => {
+    expect(submitDevinMultiSelect()).toBe("\r");
+  });
+});
+
+describe("submitDevinConfirm — Devin multi-question confirm", () => {
+  it("sends just Enter when already on last tab (no options)", () => {
+    expect(submitDevinConfirm(false, 2, 3)).toBe("\r");
+  });
+
+  it("navigates with → arrows from tab 0 to last tab", () => {
+    // 3 tabs, currently on tab 0, need 2 → presses + Enter
+    expect(submitDevinConfirm(true, 0, 3)).toBe("\x1b[C\x1b[C\r");
+  });
+
+  it("navigates with → arrows from tab 1 to last tab", () => {
+    // 3 tabs, currently on tab 1, need 1 → press + Enter
+    expect(submitDevinConfirm(true, 1, 3)).toBe("\x1b[C\r");
+  });
+
+  it("sends just Enter when already on confirm tab (activeIndex === confirmIndex)", () => {
+    // 3 tabs, currently on tab 2 (confirm), need 0 arrows
+    expect(submitDevinConfirm(true, 2, 3)).toBe("\r");
+  });
+
+  it("wraps around with modulo when activeIndex > confirmIndex", () => {
+    // 4 tabs, currently on tab 3, confirm is tab 3 → 0 arrows
+    expect(submitDevinConfirm(true, 3, 4)).toBe("\r");
+  });
+
+  it("falls back to Enter when totalTabs is 0", () => {
+    expect(submitDevinConfirm(true, -1, 0)).toBe("\r");
+  });
+});
+
+describe("submitDevinTextAnswer — Devin text answer", () => {
+  it("sends number + 'e' for navigate, text + Enter for type (numbered option)", () => {
+    const parts = submitDevinTextAnswer("5. Other (type your own)", "custom text");
+    expect(parts.navigate).toBe("5e");
+    expect(parts.type).toBe("custom text\r");
+  });
+
+  it("sends relative Down navigation + 'e' when target is below current pos", () => {
+    // "Other (type your own)" at index 4, current pos = 1
+    const parts = submitDevinTextAnswer("Other (type your own)", "hello", false, 4, 5, 1);
+    // Down 3 times (from pos 1 to pos 4) + 'e'
+    expect(parts.navigate).toBe("\x1b[B\x1b[B\x1b[B" + "e");
+    expect(parts.type).toBe("hello\r");
+  });
+
+  it("sends relative Up navigation + 'e' when target is above current pos", () => {
+    // "Other (type your own)" at index 0, current pos = 3
+    const parts = submitDevinTextAnswer("Other (type your own)", "hello", false, 0, 5, 3);
+    // Up 3 times (from pos 3 to pos 0) + 'e'
+    expect(parts.navigate).toBe("\x1b[A\x1b[A\x1b[A" + "e");
+    expect(parts.type).toBe("hello\r");
+  });
+
+  it("sends only 'e' when already at target position", () => {
+    const parts = submitDevinTextAnswer("Other (type your own)", "hello", false, 2, 5, 2);
+    expect(parts.navigate).toBe("e");
+    expect(parts.type).toBe("hello\r");
+  });
+
+  it("defaults to currentPos=0 when not provided", () => {
+    const parts = submitDevinTextAnswer("Other (type your own)", "hello", false, 2, 5);
+    // Down 2 times (from pos 0 to pos 2) + 'e'
+    expect(parts.navigate).toBe("\x1b[B\x1b[B" + "e");
+    expect(parts.type).toBe("hello\r");
   });
 });
 
@@ -279,5 +393,39 @@ describe("sendTextAnswerWithDelay", () => {
     vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS);
     expect(sends).toHaveLength(2);
     expect(new TextDecoder().decode(sends[1])).toBe("hello\r");
+  });
+});
+
+// navigatePrevQuestion / navigateNextQuestion tests
+
+describe("navigatePrevQuestion - multi-question tab navigation", () => {
+  it("sends only Left arrow for Devin", () => {
+    expect(navigatePrevQuestion("devin")).toBe("\x1b[D");
+  });
+
+  it("sends only Left arrow for OpenCode", () => {
+    expect(navigatePrevQuestion("opencode")).toBe("\x1b[D");
+  });
+
+  it("sends only Left arrow for other CLIs", () => {
+    expect(navigatePrevQuestion("claude-code")).toBe("\x1b[D");
+    expect(navigatePrevQuestion("codex")).toBe("\x1b[D");
+    expect(navigatePrevQuestion("unknown")).toBe("\x1b[D");
+  });
+});
+
+describe("navigateNextQuestion - multi-question tab navigation", () => {
+  it("sends only Right arrow for Devin", () => {
+    expect(navigateNextQuestion("devin")).toBe("\x1b[C");
+  });
+
+  it("sends only Right arrow for OpenCode", () => {
+    expect(navigateNextQuestion("opencode")).toBe("\x1b[C");
+  });
+
+  it("sends only Right arrow for other CLIs", () => {
+    expect(navigateNextQuestion("claude-code")).toBe("\x1b[C");
+    expect(navigateNextQuestion("codex")).toBe("\x1b[C");
+    expect(navigateNextQuestion("unknown")).toBe("\x1b[C");
   });
 });

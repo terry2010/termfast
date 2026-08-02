@@ -36,8 +36,8 @@ export function detectCliFromTitle(title: string): CliType {
     return "claude-code";
   }
 
-  // Devin: "Devin" in title
-  if (t.includes("Devin")) {
+  // Devin: "Devin" in title (case-insensitive — Devin CLI emits lowercase "devin: <workspace>")
+  if (t.toLowerCase().includes("devin")) {
     return "devin";
   }
 

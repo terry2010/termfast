@@ -37,16 +37,156 @@ export function submitAnswer(cli: CliType, option: string, index: number, option
 }
 
 // ── Devin ────────────────────────────────────────────────────────────────────
-// Devin shows numbered options: "1. Yes" "2. No" etc.
-// Submit: press the number key + Enter.
-function submitDevin(option: string, _index: number): string {
+// Devin has two dialog types:
+// 1. Permission dialog: numbered options "1 Yes (Approve once)" etc.
+//    Submit: press the number key + Enter.
+// 2. ask_user_question dialog: numbered options with ↑↓ navigate footer
+//    Single-select: ↑↓ to navigate, Enter to select (auto-advances in multi-question)
+//    Multi-select: ↑↓ to navigate, Space to toggle, Enter to submit (after all toggles)
+//    The overlay uses index-based arrow navigation since Devin doesn't bind number keys
+//    for ask_user_question dialogs (only the permission dialog uses number keys).
+
+/**
+ * Toggle a single option in multi-select mode for Devin's ask_user_question.
+ *
+ * Devin's multi-select footer: "↑↓ navigate · ␣ toggle · ↵ select"
+ * The option list is CIRCULAR (wraps around), so we cannot use ↑N to go to
+ * the top. Instead, we track the cursor position and compute the relative
+ * movement from the current position to the target.
+ *
+ * @param option      the option string (unused, kept for API compatibility)
+ * @param targetIndex 0-based index of the option to toggle
+ * @param currentPos  current cursor position (0-based), tracked by the caller
+ * @returns the keystroke string to send
+ */
+export function toggleDevinOption(
+  _option: string,
+  targetIndex: number,
+  currentPos = 0,
+): string {
+  if (targetIndex > currentPos) {
+    // Move down to target
+    return "\x1b[B".repeat(targetIndex - currentPos) + " ";
+  }
+  if (targetIndex < currentPos) {
+    // Move up to target
+    return "\x1b[A".repeat(currentPos - targetIndex) + " ";
+  }
+  // Already at target — just toggle
+  return " ";
+}
+
+/**
+ * Submit multi-select for Devin's ask_user_question.
+ * After toggling all desired options, press Enter to submit.
+ * In multi-question mode, Enter auto-advances to the next question tab.
+ */
+export function submitDevinMultiSelect(): string {
+  return "\r";
+}
+
+/**
+ * Navigate to the Confirm tab in Devin's multi-question dialog.
+ * Uses → arrow keys to switch to the last question tab, then Enter to submit.
+ * Same as OpenCode: → arrows (confirmIndex - activeIndex) mod totalTabs times + Enter.
+ */
+export function submitDevinConfirm(hasOptions: boolean, activeIndex: number, totalTabs: number): string {
+  if (!hasOptions) {
+    // Already on the last tab — just Enter
+    return "\r";
+  }
+  if (totalTabs <= 0) {
+    return "\r";
+  }
+  // In Devin multi-question, → switches to next question.
+  // The last tab is the "submit" tab (no options, just Enter to confirm).
+  const confirmIndex = totalTabs - 1;
+  const currentTab = activeIndex >= 0 ? activeIndex : 0;
+  const arrowsNeeded = (confirmIndex - currentTab + totalTabs) % totalTabs;
+  return "\x1b[C".repeat(arrowsNeeded) + "\r";
+}
+
+/**
+ * Submit "Type your own answer" for Devin's ask_user_question.
+ * Press 'e' to enter text input mode, then type the text + Enter.
+ * In multi-select mode, Enter adds the text but doesn't advance —
+ * caller must then navigate to Confirm + Enter.
+ *
+ * For numbered options: number key navigates to the option, then 'e' enters text mode.
+ * For "Other (type your own)" (no number): use relative arrow navigation from
+ * the current cursor position (Devin's list is circular, so we can't use ↑N
+ * to go to the top). The caller must track and pass the current cursor position.
+ */
+export function submitDevinTextAnswer(
+  option: string,
+  text: string,
+  _isMultiSelect?: boolean,
+  index?: number,
+  optionCount?: number,
+  currentPos?: number,
+): { navigate: string; type: string } {
+  const numMatch = option.match(/^(\d+)/);
+  if (numMatch) {
+    // Numbered option: number key navigates, then 'e' enters text mode
+    const num = parseInt(numMatch[1], 10);
+    return {
+      navigate: String(num) + "e",
+      type: text + "\r",
+    };
+  }
+  // No number (e.g. "Other (type your own)"): use relative arrow navigation
+  const idx = index ?? 0;
+  const cur = currentPos ?? 0;
+  let nav = "";
+  if (idx > cur) {
+    nav = "\x1b[B".repeat(idx - cur) + "e";
+  } else if (idx < cur) {
+    nav = "\x1b[A".repeat(cur - idx) + "e";
+  } else {
+    nav = "e";
+  }
+  return {
+    navigate: nav,
+    type: text + "\r",
+  };
+}
+
+function submitDevin(option: string, index: number): string {
   // Extract the number from the option string (e.g. "1. Yes" → "1")
   const match = option.match(/^(\d+)/);
   if (match) {
+    // Permission dialog: number + Enter
+    // ask_user_question single-select: number key navigates + Enter selects
     return match[1] + "\r";
   }
+  // "Other (type your own)" — no number, use 'e' to enter text mode
+  if (/other/i.test(option)) {
+    return "e";
+  }
   // Fallback: send the index + 1 as a number
-  return String(_index + 1) + "\r";
+  return String(index + 1) + "\r";
+}
+
+/**
+ * Generate keystrokes to navigate to the previous question tab
+ * in multi-question mode.
+ *
+ * All CLIs use Left arrow to switch to the previous question tab.
+ * Devin's footer says "←→ switch question" even in "└ e..." text editing
+ * state, so Left arrow should switch tabs directly.
+ */
+export function navigatePrevQuestion(_cli: CliType): string {
+  return "\x1b[D";
+}
+
+/**
+ * Generate keystrokes to navigate to the next question tab
+ * in multi-question mode.
+ *
+ * All CLIs use Right arrow to switch to the next question tab.
+ */
+export function navigateNextQuestion(_cli: CliType): string {
+  return "\x1b[C";
 }
 
 // ── OpenCode ──────────────────────────────────────────────────────────────────

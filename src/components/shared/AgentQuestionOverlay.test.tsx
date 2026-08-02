@@ -25,6 +25,7 @@ const defaultProps = {
   onToggle: vi.fn(),
   onSubmitMultiSelect: vi.fn(),
   onTextAnswer: vi.fn(),
+  onTextCancel: vi.fn(),
   onPrevQuestion: vi.fn(),
   onNextQuestion: vi.fn(),
   onConfirm: vi.fn(),
@@ -129,7 +130,7 @@ describe("AgentQuestionOverlay — multi-select", () => {
       />,
     );
     fireEvent.click(getByText("1. Apple"));
-    expect(onToggle).toHaveBeenCalledWith("1. Apple");
+    expect(onToggle).toHaveBeenCalledWith("1. Apple", 0);
     expect(onAnswer).not.toHaveBeenCalled();
   });
 
@@ -166,6 +167,23 @@ describe("AgentQuestionOverlay — type your own answer", () => {
     expect(getByPlaceholderText("server.agent_type_answer_placeholder")).toBeTruthy();
   });
 
+  it("switches to text input mode when Devin 'Other (type your own)' is clicked", () => {
+    const onAnswer = vi.fn();
+    const { getByText, getByPlaceholderText } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="Pick one:"
+        options={["1. Apple", "2. Banana", "Other (type your own)"]}
+        onAnswer={onAnswer}
+      />,
+    );
+    // Click "Other (type your own)" — should enter text mode, NOT call onAnswer
+    fireEvent.click(getByText("Other (type your own)"));
+    expect(getByPlaceholderText("server.agent_type_answer_placeholder")).toBeTruthy();
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
   it("calls onTextAnswer when text is entered and Send is clicked", () => {
     const onTextAnswer = vi.fn();
     const { getByText, getByPlaceholderText } = render(
@@ -181,7 +199,7 @@ describe("AgentQuestionOverlay — type your own answer", () => {
     const input = getByPlaceholderText("server.agent_type_answer_placeholder");
     fireEvent.change(input, { target: { value: "My custom answer" } });
     fireEvent.click(getByText("server.agent_type_answer_submit"));
-    expect(onTextAnswer).toHaveBeenCalledWith("2. Type your own answer", "My custom answer");
+    expect(onTextAnswer).toHaveBeenCalledWith("2. Type your own answer", "My custom answer", 1);
   });
 
   it("exits text mode when Cancel button is clicked", () => {
@@ -202,6 +220,24 @@ describe("AgentQuestionOverlay — type your own answer", () => {
     expect(getByText("1. Apple")).toBeTruthy();
   });
 
+  it("calls onTextCancel when Cancel button is clicked (to exit CLI text mode)", () => {
+    const onTextCancel = vi.fn();
+    const { getByText } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="Pick one:"
+        options={["1. Apple", "Other (type your own)"]}
+        onTextCancel={onTextCancel}
+      />,
+    );
+    fireEvent.click(getByText("Other (type your own)"));
+    fireEvent.click(getByText("server.agent_back_to_options"));
+    // onTextCancel should be called so the terminal sends Escape to exit
+    // Devin's text editing mode
+    expect(onTextCancel).toHaveBeenCalledTimes(1);
+  });
+
   it("shows checkbox checked + typed text after multi-select text answer submit", () => {
     const onTextAnswer = vi.fn();
     const { getByText, getByPlaceholderText, container } = render(
@@ -220,7 +256,7 @@ describe("AgentQuestionOverlay — type your own answer", () => {
     fireEvent.change(input, { target: { value: "my custom text" } });
     fireEvent.click(getByText("server.agent_type_answer_submit"));
     // onTextAnswer should be called
-    expect(onTextAnswer).toHaveBeenCalledWith("2. Type your own answer", "my custom text");
+    expect(onTextAnswer).toHaveBeenCalledWith("2. Type your own answer", "my custom text", 1);
     // The checkbox for option 2 should be checked (blue bg)
     const buttons = container.querySelectorAll("button");
     const option2Btn = Array.from(buttons).find((b) => b.textContent?.includes("Type your own answer"));
@@ -284,6 +320,58 @@ describe("AgentQuestionOverlay — question change reset", () => {
     expect(getByText("1. Banana")).toBeTruthy();
   });
 
+  it("does NOT reset text mode when question becomes fallback (Devin screen redraw)", () => {
+    // Devin scenario: user enters text mode → screen redraws → option numbers
+    // disappear → questionExtractor returns "Devin is asking a question" (fallback)
+    // → questionKey changes → but textMode should stay open.
+    const { getByText, queryByPlaceholderText, rerender } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="这是第 1 个问题：你选哪个？"
+        options={["1. 选项 A", "2. 选项 B", "Other (type your own)"]}
+      />,
+    );
+    // Enter text mode
+    fireEvent.click(getByText("Other (type your own)"));
+    expect(queryByPlaceholderText("server.agent_type_answer_placeholder")).toBeTruthy();
+    // Re-render with fallback question (Devin screen redraw during text editing)
+    rerender(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="Devin is asking a question"
+        options={["Other (type your own)"]}
+      />,
+    );
+    // Text mode should NOT be reset — input still visible
+    expect(queryByPlaceholderText("server.agent_type_answer_placeholder")).toBeTruthy();
+  });
+
+  it("does NOT reset text mode when question becomes empty (Devin screen redraw)", () => {
+    const { getByText, queryByPlaceholderText, rerender } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="Pick one:"
+        options={["1. Apple", "Other (type your own)"]}
+      />,
+    );
+    fireEvent.click(getByText("Other (type your own)"));
+    expect(queryByPlaceholderText("server.agent_type_answer_placeholder")).toBeTruthy();
+    // Re-render with empty question (extraction failed completely)
+    rerender(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question={null}
+        options={null}
+      />,
+    );
+    // Text mode should NOT be reset — input still visible
+    expect(queryByPlaceholderText("server.agent_type_answer_placeholder")).toBeTruthy();
+  });
+
   it("resets checked state when question changes in multi-select", () => {
     const { getByText, rerender, container } = render(
       <AgentQuestionOverlay
@@ -345,6 +433,63 @@ describe("AgentQuestionOverlay — question change reset", () => {
       />,
     );
     // Prev/Next still shown, but Confirm NOT shown (not last question)
+    expect(getByText(/server.agent_prev_question/)).toBeTruthy();
+    expect(getByText(/server.agent_next_question/)).toBeTruthy();
+    expect(queryByText(/server.agent_confirm/)).toBeNull();
+  });
+
+  it("Devin: shows Confirm button when on last question (totalTabs-1, no Confirm tab)", () => {
+    // Devin has NO separate Confirm tab — all tabs are question tabs.
+    // Last question = totalTabs - 1 (not totalTabs - 2 like OpenCode).
+    const { getByText, queryByText } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="这是最后一个问题"
+        options={["1. 选项 A", "2. 选项 B"]}
+        isMultiQuestion={true}
+        activeTabIndex={3}
+        totalTabs={4}
+      />,
+    );
+    expect(getByText(/server.agent_prev_question/)).toBeTruthy();
+    // Next button should be hidden on last question (prevent wrap)
+    expect(queryByText(/server.agent_next_question/)).toBeNull();
+    expect(getByText(/server.agent_confirm/)).toBeTruthy();
+  });
+
+  it("Devin: does not show Confirm button when not on last question", () => {
+    const { getByText, queryByText } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="Q1?"
+        options={["1. A", "2. B"]}
+        isMultiQuestion={true}
+        activeTabIndex={0}
+        totalTabs={4}
+      />,
+    );
+    // First question (Devin): Prev hidden (prevent wrap), Next shown
+    expect(queryByText(/server.agent_prev_question/)).toBeNull();
+    expect(getByText(/server.agent_next_question/)).toBeTruthy();
+    // activeTabIndex=0, totalTabs=4, lastQuestion=3 → NOT last question
+    expect(queryByText(/server.agent_confirm/)).toBeNull();
+  });
+
+  it("Devin: shows both Prev and Next on middle question", () => {
+    const { getByText, queryByText } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="Q2?"
+        options={["1. A", "2. B"]}
+        isMultiQuestion={true}
+        activeTabIndex={1}
+        totalTabs={4}
+      />,
+    );
+    // Middle question: both Prev and Next shown
     expect(getByText(/server.agent_prev_question/)).toBeTruthy();
     expect(getByText(/server.agent_next_question/)).toBeTruthy();
     expect(queryByText(/server.agent_confirm/)).toBeNull();

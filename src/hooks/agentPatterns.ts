@@ -60,6 +60,13 @@ const devinPatterns: CliPatterns = {
     // Devin's primary signals come from OSC, not screen. These are fallbacks.
     // Permission approval dialog: "1 Yes (Approve once)" + "↑↓ select · ↵ confirm"
     { status: "blocked", pattern: /\d+\s+Yes\s*\(Approve|↑↓\s+select.*↵\s+confirm/i, priority: 10 },
+    // Question/selector dialog (ask_user_question): "↑↓ navigate · ↵ select" footer.
+    // This covers all four variants:
+    //   single-select single-question: "↑↓ navigate · ↵ select · e select+type · ? help me out · esc cancel"
+    //   multi-select  single-question: "↑↓ navigate · ␣ toggle · ↵ select · e select+type · ? help me out · esc cancel"
+    //   single-select multi-question:  "↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel"
+    //   multi-select  multi-question:  "↑↓ navigate · ␣ toggle · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel"
+    { status: "blocked", pattern: /↑↓\s+navigate.*↵\s+select.*esc\s+cancel/i, priority: 9 },
     // "Do you want to continue?" or "Press q to quit" patterns
     { status: "blocked", pattern: /Do you want to|Press . to|Would you like to/i, priority: 8 },
     // Devin working: Braille spinner + active verb (Thinking/Working/etc.) +
@@ -76,9 +83,41 @@ const devinPatterns: CliPatterns = {
     { status: "idle", pattern: /❭ Ask Devin to/i, priority: 3 },
   ],
   questionExtractor: (text) => {
+    const lines = text.split("\n");
+    // Question/selector dialog (ask_user_question):
+    // The question text is on a line between the "──" separator and the
+    // first numbered option. Format: "  这是第 1 个测试问题（单选）：..."
+    const selectorIdx = lines.findIndex((l) => /↑↓\s+navigate.*esc\s+cancel/.test(l));
+    if (selectorIdx >= 0) {
+      // Find the first numbered option line above the footer.
+      // Format: "  ❭ 1 确认型弹窗" or "  □ 1 多选问题" or "  · 1 Rust"
+      const optionPattern = /^\s*[❭·□■]\s*(\d+)\s+(.+)/;
+      let firstOptionIdx = -1;
+      for (let i = 0; i < selectorIdx; i++) {
+        if (optionPattern.test(lines[i])) {
+          firstOptionIdx = i;
+          break;
+        }
+      }
+      if (firstOptionIdx >= 0) {
+        // Walk upward from firstOptionIdx-1 to find the question text.
+        // Skip empty lines, "──" separator lines, and description lines
+        // (indented text under options). The question is the first
+        // non-empty, non-separator line.
+        for (let i = firstOptionIdx - 1; i >= 0; i--) {
+          const trimmed = lines[i].trim();
+          if (!trimmed) continue;
+          // Skip "──" separator lines (box-drawing)
+          if (/^[─━]+$/.test(trimmed)) continue;
+          // Skip lines that are just box-drawing chars
+          if (/^[┃│║┌┐└┘├┤┬┴┼─━]+$/.test(trimmed)) continue;
+          return trimmed;
+        }
+      }
+      return "Devin is asking a question";
+    }
     // Devin permission dialog: the question is the command being approved
     // Look for "Running command" line or a line ending with ?
-    const lines = text.split("\n");
     for (const line of lines) {
       const trimmed = line.trim();
       if (trimmed.endsWith("?") && trimmed.length > 10) {
@@ -95,13 +134,37 @@ const devinPatterns: CliPatterns = {
     return null;
   },
   optionsExtractor: (text) => {
-    // Devin shows numbered options in two formats:
+    const lines = text.split("\n");
+    // Question/selector dialog (ask_user_question):
+    // Options have format: "  ❭ 1 确认型弹窗" or "  □ 1 多选问题" or "  · 1 Rust"
+    // Prefixes: "❭" = selected (single-select), "□" = unchecked (multi-select),
+    //           "■" = checked (multi-select), "·" = unselected (single-select)
+    // Also "  ·   Other (type your own)" — no number, special entry
+    const selectorIdx = lines.findIndex((l) => /↑↓\s+navigate.*esc\s+cancel/.test(l));
+    if (selectorIdx >= 0) {
+      const options: string[] = [];
+      const optionPattern = /^\s*[❭·□■]\s*(\d+)\s+(.+)/;
+      const otherPattern = /^\s*[❭·□■]\s+(Other\s*\(type your own\))/i;
+      for (let i = 0; i < selectorIdx; i++) {
+        const m = lines[i].match(optionPattern);
+        if (m) {
+          options.push(`${m[1]}. ${m[2].trim()}`);
+          continue;
+        }
+        const om = lines[i].match(otherPattern);
+        if (om) {
+          options.push(om[1].trim());
+        }
+      }
+      if (options.length > 0) return options;
+    }
+    // Devin permission dialog: numbered options
     // "1 Yes  (Approve once)" — number + space (new permission dialog)
     // "1. Yes" — number + dot + space (older format)
     // Prefixes: "❭" = selected item, "·" = unselected item
     const options: string[] = [];
     const optionPattern = /^(?:[❭·]\s*)?(\d+)[.\s]+(.+)$/;
-    for (const line of text.split("\n")) {
+    for (const line of lines) {
       const m = line.trim().match(optionPattern);
       if (m) {
         options.push(`${m[1]}. ${m[2].trim()}`);
@@ -109,6 +172,11 @@ const devinPatterns: CliPatterns = {
     }
     return options.length > 0 ? options : null;
   },
+  // Multi-select detection: "␣ toggle" in footer means multi-select.
+  // Single-select footer has no "␣ toggle".
+  multiSelectDetector: (text) => /↑↓\s+navigate.*␣\s+toggle.*esc\s+cancel/i.test(text),
+  // Multi-question detection: "←→ switch question" in footer means multi-question.
+  multiQuestionDetector: (text) => /↑↓\s+navigate.*←→\s+switch question.*esc\s+cancel/i.test(text),
 };
 
 // ── OpenCode patterns ──────────────────────────────────────────────────────────
