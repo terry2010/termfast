@@ -36,6 +36,15 @@ export interface AgentState {
    *  screen doesn't show a blocked pattern — Devin's OSC-set blocked state
    *  is authoritative and should only be cleared by another OSC signal. */
   blockedFromOsc: boolean;
+  /** Counter: consecutive screen scrapes that did NOT detect "blocked" while
+   *  in blocked state. Used to prevent flickering when a CLI's permission
+   *  dialog is briefly hidden during alt-screen redraws (e.g. OpenCode).
+   *  When this reaches BLOCKED_MISS_THRESHOLD, the blocked status is cleared. */
+  blockedMissCount: number;
+  /** True if the current blocked dialog is multi-select (e.g. OpenCode
+   *  "enter toggle" footer). The UI uses this to show checkboxes + Submit
+   *  button instead of single-click option buttons. */
+  isMultiSelect: boolean;
 }
 
 /** Debounce window for non-priority transitions (ms). */
@@ -43,6 +52,12 @@ const DEBOUNCE_MS = 500;
 
 /** After "done", auto-decay to "idle" after this long with no activity (ms). */
 const DONE_TO_IDLE_MS = 5000;
+
+/** When in blocked state (screen-scrape-set), how many consecutive ticks must
+ *  detectStatus return a non-blocked status before clearing blocked. This
+ *  prevents flickering when a CLI's permission dialog is briefly hidden during
+ *  alt-screen redraws (e.g. OpenCode). 3 ticks = 1.5s at 500ms tick interval. */
+export const BLOCKED_MISS_THRESHOLD = 3;
 
 /**
  * Fallback timeout: if in "working" state with no PTY output for this long
@@ -73,6 +88,8 @@ export function createAgentState(now: number): AgentState {
     pendingFireAt: 0,
     blockedMessage: null,
     blockedFromOsc: false,
+    blockedMissCount: 0,
+    isMultiSelect: false,
   };
 }
 
@@ -151,6 +168,7 @@ export function applyScreenStatus(
     state.blockedMessage = message;
     state.blockedFromOsc = false;
     state.pendingStatus = null;
+    state.blockedMissCount = 0;
   } else if (status === "done") {
     transitionTo(state, "done", now);
     state.blockedMessage = null;
@@ -175,6 +193,28 @@ export function applyScreenStatus(
       state.pendingStatus = null;
     }
   }
+}
+
+/**
+ * Force-clear blocked status set by screen scraping.
+ * Used when blockedMissCount reaches threshold — the permission dialog is
+ * truly gone and the CLI has resumed. Bypasses the normal applyScreenStatus
+ * guard that prevents idle from overriding blocked.
+ *
+ * @param targetStatus  The status to transition to ("idle" or "working").
+ */
+export function clearScreenBlocked(
+  state: AgentState,
+  targetStatus: AgentStatus,
+  now: number,
+): void {
+  if (state.status !== "blocked") return;
+  transitionTo(state, targetStatus, now);
+  state.blockedMessage = null;
+  state.blockedFromOsc = false;
+  state.pendingStatus = null;
+  state.blockedMissCount = 0;
+  state.isMultiSelect = false;
 }
 
 /**

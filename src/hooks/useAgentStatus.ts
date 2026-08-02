@@ -21,16 +21,19 @@ import {
   createAgentState,
   applySignal,
   applyScreenStatus,
+  clearScreenBlocked,
   notifyOutput,
   tick,
   setCliType,
   resetAgentState,
   type AgentState,
   type AgentStatus,
+  BLOCKED_MISS_THRESHOLD,
 } from "./agentStateMachine";
-import { scrapeScreen, joinLines } from "./screenScraper";
+import { scrapeScreen, joinLines, extractTabInfo } from "./screenScraper";
 import { detectCli, detectStatus, prepareScreenText } from "./cliDetector";
-import { extractQuestion, extractOptions } from "./agentPatterns";
+import { extractQuestion, extractOptions, detectMultiSelect, detectMultiQuestion, extractReviewAnswers } from "./agentPatterns";
+import { logTerminalDebug } from "./terminalLogger";
 
 /** Tick interval for time-based transitions + screen scraping. */
 const TICK_INTERVAL_MS = 500;
@@ -64,6 +67,16 @@ export interface AgentStatusInfo {
   question: string | null;
   /** Answer options extracted from screen when blocked (null if not extractable). */
   options: string[] | null;
+  /** True if the current blocked dialog is multi-select (checkboxes + Submit). */
+  isMultiSelect: boolean;
+  /** True if the current blocked dialog is multi-question (has Confirm tab). */
+  isMultiQuestion: boolean;
+  /** Active tab index in multi-question dialog (-1 if not multi-question or detection failed). */
+  activeTabIndex: number;
+  /** Total number of tabs in multi-question dialog (0 if not multi-question). */
+  totalTabs: number;
+  /** Review answers extracted from the Confirm tab (null if not on Confirm tab). */
+  reviewAnswers: string[] | null;
 }
 
 /**
@@ -83,6 +96,11 @@ export function useAgentStatus(
     blockedMessage: null,
     question: null,
     options: null,
+    isMultiSelect: false,
+    isMultiQuestion: false,
+    activeTabIndex: -1,
+    totalTabs: 0,
+    reviewAnswers: null,
   });
 
   // State machine lives in a ref — mutated in place, no re-allocation per tick.
@@ -101,6 +119,11 @@ export function useAgentStatus(
     const syncToReact = () => {
       let question: string | null = null;
       let options: string[] | null = null;
+      let isMultiSelect = false;
+      let isMultiQuestion = false;
+      let activeTabIndex = -1;
+      let totalTabs = 0;
+      let reviewAnswers: string[] | null = null;
 
       // Only scrape screen for question/options when blocked
       if (state.status === "blocked" && state.cli !== "unknown") {
@@ -109,6 +132,26 @@ export function useAgentStatus(
           const screenText = prepareScreenText(joinLines(lines));
           question = extractQuestion(state.cli, screenText);
           options = extractOptions(state.cli, screenText);
+          isMultiSelect = detectMultiSelect(state.cli, screenText);
+          isMultiQuestion = detectMultiQuestion(state.cli, screenText);
+          // Extract tab info for multi-question dialogs (active tab detection)
+          if (isMultiQuestion) {
+            const tabInfo = extractTabInfo(term);
+            if (tabInfo) {
+              activeTabIndex = tabInfo.activeIndex;
+              totalTabs = tabInfo.labels.length;
+            }
+            // Extract review answers when on the Confirm tab (last tab)
+            if (tabInfo && tabInfo.activeIndex === tabInfo.labels.length - 1) {
+              reviewAnswers = extractReviewAnswers(state.cli, screenText);
+            }
+          }
+          // Update state machine's multiSelect flag
+          state.isMultiSelect = isMultiSelect;
+          // Debug: log extraction results for blocked state diagnosis
+          const extractMsg = `blocked extraction: cli=${state.cli} question=${JSON.stringify(question)} options=${JSON.stringify(options)} multiSelect=${isMultiSelect} multiQuestion=${isMultiQuestion} activeTab=${activeTabIndex} totalTabs=${totalTabs} reviewAnswers=${JSON.stringify(reviewAnswers)}`;
+          console.log(`[agentStatus] ${extractMsg}`);
+          logTerminalDebug(sessionId, extractMsg);
         } catch {
           // Screen scrape can fail if terminal is in a weird state — ignore
         }
@@ -120,6 +163,11 @@ export function useAgentStatus(
         blockedMessage: state.blockedMessage,
         question,
         options,
+        isMultiSelect,
+        isMultiQuestion,
+        activeTabIndex,
+        totalTabs,
+        reviewAnswers,
       });
     };
 
@@ -215,31 +263,66 @@ export function useAgentStatus(
         try {
           const lines = scrapeScreen(term);
           const screenText = prepareScreenText(joinLines(lines));
+          // Debug: log screen content every 10 ticks (~5s) for diagnosis
+          if (tickCount % 10 === 0) {
+            const nonEmpty = lines.filter((l) => l.trim().length > 0);
+            const screenDump = nonEmpty.map((l, i) => `  [${i}] ${JSON.stringify(l)}`).join("\n");
+            const msg = `tick#${tickCount} cli=${state.cli} status=${state.status} screen (${nonEmpty.length} non-empty lines):\n${screenDump}`;
+            console.log(`[agentStatus] ${msg}`);
+            logTerminalDebug(sessionId, msg);
+          }
           const screenStatus = detectStatus(state.cli, screenText);
-          if (screenStatus) {
-            // Apply status from screen (blocked, done, idle, working)
-            if (screenStatus === "blocked" || screenStatus !== prevStatus) {
+          if (tickCount % 10 === 0) {
+            const msg2 = `tick#${tickCount} detectStatus=${screenStatus} prevStatus=${prevStatus}`;
+            console.log(`[agentStatus] ${msg2}`);
+            logTerminalDebug(sessionId, msg2);
+          }
+          if (screenStatus === "blocked") {
+            // Blocked pattern detected — apply immediately, reset miss count
+            state.blockedMissCount = 0;
+            console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=blocked → applying (miss count reset)`);
+            applyScreenStatus(state, "blocked", null, performance.now());
+          } else if ((screenStatus === "working" || screenStatus === "done") &&
+                     state.status === "blocked" && !state.blockedFromOsc) {
+            // Definitive non-blocked signal (spinner or completion marker).
+            // The CLI has clearly resumed — apply immediately, no miss count.
+            console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=${screenStatus} while blocked → applying (definitive signal)`);
+            applyScreenStatus(state, screenStatus, null, performance.now());
+            state.blockedMissCount = 0;
+          } else if (screenStatus === "idle" && state.status === "blocked" && !state.blockedFromOsc) {
+            // Currently blocked (screen-set) but screen shows idle. This could be:
+            //  A. Permission dialog dismissed → CLI idle
+            //  B. Permission dialog in alt-screen redraw gap → still blocked
+            // The idle footer (ctrl+p commands) is always visible in OpenCode,
+            // even during permission dialogs, so idle is NOT definitive.
+            // Use blockedMissCount: require N consecutive idle detections.
+            state.blockedMissCount++;
+            if (state.blockedMissCount >= BLOCKED_MISS_THRESHOLD) {
+              console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} ≥ ${BLOCKED_MISS_THRESHOLD} → applying idle`);
+              clearScreenBlocked(state, "idle", performance.now());
+            } else {
+              console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} < ${BLOCKED_MISS_THRESHOLD} → staying blocked (redraw gap?)`);
+            }
+          } else if (screenStatus) {
+            // Normal case: not blocked, apply status change if different
+            if (screenStatus !== prevStatus) {
               console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=${screenStatus} prevStatus=${prevStatus} → applying`);
               applyScreenStatus(state, screenStatus, null, performance.now());
             }
           } else {
-            // No CLI-specific status patterns found on screen.
+            // No CLI-specific status patterns found on screen (null).
             let correctedFromBlocked = false;
             if (state.status === "blocked" && !state.blockedFromOsc) {
-              // Was blocked (by screen scrape) but screen no longer shows
-              // blocked pattern. User answered the question / dialog was
-              // dismissed → CLI resumed. Transition to working so the
-              // spinner shows while CLI runs.
-              //
-              // NOTE: Only do this for screen-scrape-set blocked, NOT for
-              // OSC-set blocked (blockedFromOsc=true). Devin's OSC 777
-              // "Devin needs input" sets blocked authoritatively — the
-              // screen may not show a blocked pattern (Devin's screen
-              // patterns only cover permission dialogs), but the state
-              // should remain blocked until another OSC signal clears it.
-              console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked (screen) but no blocked pattern on screen → working`);
-              applyScreenStatus(state, "working", null, performance.now());
-              correctedFromBlocked = true;
+              // Currently blocked (screen-set) but no pattern matched at all.
+              // Same redraw-gap logic: use miss count before clearing.
+              state.blockedMissCount++;
+              if (state.blockedMissCount >= BLOCKED_MISS_THRESHOLD) {
+                console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} ≥ ${BLOCKED_MISS_THRESHOLD} → working (dialog dismissed)`);
+                clearScreenBlocked(state, "working", performance.now());
+                correctedFromBlocked = true;
+              } else {
+                console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} < ${BLOCKED_MISS_THRESHOLD} → staying blocked (redraw gap?)`);
+              }
             }
             // Correct false "working" from user-input echo.
             // When the user types in an AI CLI's input box, PTY echoes the
@@ -298,6 +381,14 @@ export function useAgentStatus(
         try {
           const lines = scrapeScreen(term);
           const screenText = prepareScreenText(joinLines(lines));
+          // Debug: log screen content every 10 ticks for CLI detection diagnosis
+          if (tickCount % 10 === 0) {
+            const nonEmpty = lines.filter((l) => l.trim().length > 0);
+            const screenDump = nonEmpty.map((l, i) => `  [${i}] ${JSON.stringify(l)}`).join("\n");
+            const msg = `tick#${tickCount} cli=unknown — screen (${nonEmpty.length} non-empty lines):\n${screenDump}`;
+            console.log(`[agentStatus] ${msg}`);
+            logTerminalDebug(sessionId, msg);
+          }
           const detected = detectCli("", screenText);
           if (detected !== "unknown") {
             console.log(`[agentStatus] tick#${tickCount}: detected CLI=${detected} from screen`);
@@ -317,6 +408,11 @@ export function useAgentStatus(
         console.log(`[agentStatus] tick#${tickCount}: syncing React — status ${lastSyncedStatus}→${state.status} cli ${lastSyncedCli}→${state.cli}`);
         lastSyncedStatus = state.status;
         lastSyncedCli = state.cli;
+        syncToReact();
+      } else if (state.status === "blocked") {
+        // Still blocked — question/options may have changed (multi-question
+        // dialogs: OpenCode shows Q1, then Q2, etc. without leaving "blocked").
+        // Re-extract question/options so the overlay updates.
         syncToReact();
       }
     }, TICK_INTERVAL_MS);

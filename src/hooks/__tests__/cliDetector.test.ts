@@ -45,6 +45,26 @@ describe("detectCliFromScreen", () => {
     expect(detectCliFromScreen(screen)).toBe("opencode");
   });
 
+  it("detects OpenCode from permission dialog", () => {
+    const screen = "△ Permission required\nbash test.sh";
+    expect(detectCliFromScreen(screen)).toBe("opencode");
+  });
+
+  it("detects OpenCode from selector dialog footer", () => {
+    const screen = "  ┃  1. Rust\n  ┃  2. Python\n  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss";
+    expect(detectCliFromScreen(screen)).toBe("opencode");
+  });
+
+  it("detects OpenCode from multi-select footer (enter toggle)", () => {
+    const screen = "  ┃  1. [ ] 单选\n  ┃  2. [ ] 多选\n  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss";
+    expect(detectCliFromScreen(screen)).toBe("opencode");
+  });
+
+  it("detects OpenCode from single-select footer (enter submit)", () => {
+    const screen = "  ┃  1. 单选\n  ┃  2. 多选\n  ┃  ↑↓ select  enter submit  esc dismiss";
+    expect(detectCliFromScreen(screen)).toBe("opencode");
+  });
+
   it("detects Codex from progress spinner", () => {
     const screen = "• Working (0s • esc to interrupt)";
     expect(detectCliFromScreen(screen)).toBe("codex");
@@ -87,6 +107,13 @@ describe("detectStatus", () => {
 
   it("detects OpenCode blocked from Permission required", () => {
     const screen = prepareScreenText("△ Permission required\nbash test.sh");
+    expect(detectStatus("opencode", screen)).toBe("blocked");
+  });
+
+  it("detects OpenCode blocked from selector dialog footer", () => {
+    const screen = prepareScreenText(
+      "  ┃  What framework?\n  ┃  1. React\n  ┃  2. Vue\n  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss"
+    );
     expect(detectStatus("opencode", screen)).toBe("blocked");
   });
 

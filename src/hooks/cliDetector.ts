@@ -75,6 +75,10 @@ export function detectCliFromScreen(screenText: string): CliType {
   if (/△\s+(?:Permission required|Always allow)\b/.test(screenText)) {
     return "opencode";
   }
+  // OpenCode question/selector dialog
+  if (/↑↓\s+select.*enter\s+\w+.*esc\s+dismiss/.test(screenText)) {
+    return "opencode";
+  }
   // OpenCode completion marker
   if (/▣\s+\S+\s+·\s+.+?\s+·\s+(?:\d+m\s+)?\d+(?:\.\d+)?s/.test(screenText)) {
     return "opencode";

@@ -6,10 +6,17 @@
 //   - The question text (extracted from screen)
 //   - Answer option buttons (extracted from screen)
 //
+// Three modes:
+//   1. Single-select (default): click an option → submitAnswer → dismiss
+//   2. Multi-select (isMultiSelect=true): checkboxes + Submit button
+//      Click toggles selection locally; Submit sends all toggles + confirms
+//   3. Type your own answer: if user clicks "Type your own answer" option,
+//      overlay switches to text input mode with a Send button
+//
 // When the user clicks an option, answerSubmitter generates the keystrokes
 // and TerminalView sends them to the PTY.
 
-import { memo, useCallback } from "react";
+import { memo, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus, CliType } from "@/hooks/agentStateMachine";
 
@@ -24,10 +31,35 @@ interface AgentQuestionOverlayProps {
   question: string | null;
   /** Answer options extracted from screen. */
   options: string[] | null;
+  /** True if the current blocked dialog is multi-select. */
+  isMultiSelect: boolean;
+  /** True if the current blocked dialog is multi-question (has Confirm tab). */
+  isMultiQuestion: boolean;
+  /** Active tab index in multi-question dialog (-1 if unknown). */
+  activeTabIndex: number;
+  /** Total number of tabs in multi-question dialog (0 if not multi-question). */
+  totalTabs: number;
+  /** Review answers extracted from the Confirm tab (null if not on Confirm tab). */
+  reviewAnswers: string[] | null;
   /** Blocked message (from OSC 777 for Devin, or screen scrape). */
   blockedMessage: string | null;
-  /** Called when user clicks an answer option. */
+  /** Called when user clicks an answer option (single-select). */
   onAnswer: (option: string, index: number) => void;
+  /** Called when user toggles an option in multi-select mode.
+   *  The parent sends the toggle keystrokes to the PTY. */
+  onToggle: (option: string) => void;
+  /** Called when user clicks Submit in multi-select mode.
+   *  The parent sends the confirm keystrokes (Tab + Enter) to the PTY. */
+  onSubmitMultiSelect: () => void;
+  /** Called when user submits a text answer (Type your own answer).
+   *  The parent navigates to the option, enters text mode, and types. */
+  onTextAnswer: (option: string, text: string) => void;
+  /** Called when user clicks "Previous question" (multi-question mode). */
+  onPrevQuestion: () => void;
+  /** Called when user clicks "Next question" (multi-question mode). */
+  onNextQuestion: () => void;
+  /** Called when user clicks "Confirm" (multi-question mode, final submit). */
+  onConfirm: () => void;
   /** Called when user dismisses the overlay without answering. */
   onDismiss: () => void;
 }
@@ -41,22 +73,123 @@ const CLI_NAMES: Record<CliType, string> = {
   shell: "Shell",
 };
 
+/** Check if an option is the "Type your own answer" entry. */
+function isTypeYourOwnAnswer(option: string): boolean {
+  return /type\s+your\s+own\s+answer/i.test(option);
+}
+
 function AgentQuestionOverlayImpl({
   visible,
   status,
   cli,
   question,
   options,
+  isMultiSelect,
+  isMultiQuestion,
+  activeTabIndex,
+  totalTabs,
+  reviewAnswers,
   blockedMessage,
   onAnswer,
+  onToggle,
+  onSubmitMultiSelect,
+  onTextAnswer,
+  onPrevQuestion,
+  onNextQuestion,
+  onConfirm,
   onDismiss,
 }: AgentQuestionOverlayProps) {
   const { t } = useTranslation();
+  // Multi-select: track which options are checked locally
+  const [checked, setChecked] = useState<Set<number>>(new Set());
+  // Track text answers typed via "Type your own answer" (option index → text)
+  const [textAnswers, setTextAnswers] = useState<Map<number, string>>(new Map());
+
+  // In multi-question mode, the last question tab is right before the Confirm tab.
+  // Confirm tab index = totalTabs - 1, so last question = totalTabs - 2.
+  // Only show the Confirm button when on the last question.
+  const isLastQuestion = isMultiQuestion && totalTabs > 0 && activeTabIndex === totalTabs - 2;
+  // Text input mode: when user clicks "Type your own answer"
+  const [textMode, setTextMode] = useState(false);
+  const [textModeIndex, setTextModeIndex] = useState(-1);
+  const [textOption, setTextOption] = useState<string>("");
+  const [textValue, setTextValue] = useState("");
+
+  // Reset local state when the question changes (new question in sequence)
+  const questionKey = question ?? blockedMessage ?? "";
+  useEffect(() => {
+    setChecked(new Set());
+    setTextAnswers(new Map());
+    setTextMode(false);
+    setTextValue("");
+  }, [questionKey]);
 
   if (!visible || status !== "blocked") return null;
 
   const cliName = CLI_NAMES[cli] ?? "AI";
-  const displayQuestion = question || blockedMessage || t("agent_question_default");
+  const displayQuestion = question || blockedMessage || t("server.agent_question_default");
+
+  // ── Single-select: click option → submit ──────────────────────────
+  const handleSingleSelect = (option: string, index: number) => {
+    if (isTypeYourOwnAnswer(option)) {
+      // Switch to text input mode
+      setTextOption(option);
+      setTextModeIndex(index);
+      setTextMode(true);
+      setTextValue("");
+      return;
+    }
+    onAnswer(option, index);
+  };
+
+  // ── Multi-select: toggle checkbox ──────────────────────────────────
+  const handleMultiToggle = (option: string, index: number) => {
+    if (isTypeYourOwnAnswer(option)) {
+      // Switch to text input mode
+      setTextOption(option);
+      setTextModeIndex(index);
+      setTextMode(true);
+      // Pre-fill with existing text answer if any
+      setTextValue(textAnswers.get(index) ?? "");
+      return;
+    }
+    // Toggle local checked state
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+    // Send toggle keystroke to PTY
+    onToggle(option);
+  };
+
+  // ── Multi-select: Submit ───────────────────────────────────────────
+  const handleMultiSubmit = () => {
+    onSubmitMultiSelect();
+    setChecked(new Set());
+  };
+
+  // ── Text answer: Send ──────────────────────────────────────────────
+  const handleTextSubmit = () => {
+    if (textValue.trim()) {
+      onTextAnswer(textOption, textValue.trim());
+      // Mark the option as checked and store the text answer
+      setChecked((prev) => new Set(prev).add(textModeIndex));
+      setTextAnswers((prev) => new Map(prev).set(textModeIndex, textValue.trim()));
+      setTextMode(false);
+      setTextValue("");
+    }
+  };
+
+  // ── Text answer: Cancel ───────────────────────────────────────────
+  const handleTextCancel = () => {
+    setTextMode(false);
+    setTextValue("");
+  };
 
   return (
     <div
@@ -70,7 +203,7 @@ function AgentQuestionOverlayImpl({
           <div className="flex items-center gap-2">
             <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse" />
             <span className="text-sm font-medium text-red-400">
-              {cliName} {t("agent_needs_input")}
+              {cliName} {t("server.agent_needs_input")}
             </span>
           </div>
           <button
@@ -89,30 +222,186 @@ function AgentQuestionOverlayImpl({
           </p>
         </div>
 
-        {/* Options */}
-        {options && options.length > 0 && (
+        {/* Text input mode (Type your own answer) */}
+        {textMode && (
+          <div className="px-4 pb-3">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={textValue}
+                onChange={(e) => setTextValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleTextSubmit();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    handleTextCancel();
+                  }
+                }}
+                placeholder={t("server.agent_type_answer_placeholder")}
+                autoFocus
+                className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-800 text-gray-100 border border-gray-700 focus:border-blue-500 focus:outline-none transition-colors"
+              />
+              <button
+                className="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                onClick={handleTextSubmit}
+              >
+                {t("server.agent_type_answer_submit")}
+              </button>
+              <button
+                className="px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors whitespace-nowrap"
+                onClick={handleTextCancel}
+              >
+                {t("server.agent_back_to_options")}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Options — multi-select mode (checkboxes + Submit/Confirm) */}
+        {!textMode && isMultiSelect && options && options.length > 0 && (
+          <div className="px-4 pb-3 flex flex-col gap-2">
+            {options.map((option, index) => {
+              const textAns = textAnswers.get(index);
+              return (
+                <button
+                  key={index}
+                  className="flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-100 border border-gray-700 hover:border-gray-600 transition-colors text-left"
+                  onClick={() => handleMultiToggle(option, index)}
+                >
+                  <span className={`inline-flex items-center justify-center w-4 h-4 rounded border ${checked.has(index) ? "bg-blue-600 border-blue-500" : "border-gray-600"}`}>
+                    {checked.has(index) && (
+                      <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="flex-1">
+                    {option}
+                    {textAns && (
+                      <span className="text-blue-400 ml-2">: {textAns}</span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+            {/* Multi-question navigation + Confirm */}
+            {isMultiQuestion ? (
+              <div className="flex gap-2 mt-2">
+                <button
+                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                  onClick={onPrevQuestion}
+                >
+                  ← {t("server.agent_prev_question")}
+                </button>
+                <button
+                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                  onClick={onNextQuestion}
+                >
+                  {t("server.agent_next_question")} →
+                </button>
+                {isLastQuestion && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
+                    onClick={onConfirm}
+                  >
+                    ✓ {t("server.agent_confirm")}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <button
+                className="w-full px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors mt-1"
+                onClick={handleMultiSubmit}
+              >
+                {t("server.agent_submit")}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Options — single-select mode (click to submit) */}
+        {!textMode && !isMultiSelect && options && options.length > 0 && (
           <div className="px-4 pb-3 flex flex-col gap-2">
             {options.map((option, index) => (
               <button
                 key={index}
                 className="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-100 border border-gray-700 hover:border-gray-600 transition-colors text-left"
-                onClick={() => onAnswer(option, index)}
+                onClick={() => handleSingleSelect(option, index)}
               >
                 {option}
               </button>
             ))}
+            {/* Multi-question navigation + Confirm */}
+            {isMultiQuestion && (
+              <div className="flex gap-2 mt-2">
+                <button
+                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                  onClick={onPrevQuestion}
+                >
+                  ← {t("server.agent_prev_question")}
+                </button>
+                <button
+                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                  onClick={onNextQuestion}
+                >
+                  {t("server.agent_next_question")} →
+                </button>
+                {isLastQuestion && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
+                    onClick={onConfirm}
+                  >
+                    ✓ {t("server.agent_confirm")}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
 
-        {/* Fallback: if no options extracted, show a "Go to terminal" button */}
-        {(!options || options.length === 0) && (
-          <div className="px-4 pb-3">
-            <button
-              className="w-full px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
-              onClick={onDismiss}
-            >
-              {t("agent_go_to_terminal")}
-            </button>
+        {/* Fallback: if no options extracted (e.g. on the Confirm tab) */}
+        {(!options || options.length === 0) && !textMode && (
+          <div className="px-4 pb-3 flex flex-col gap-2">
+            {/* Multi-question Confirm tab: show review answers + Confirm button */}
+            {isMultiQuestion && (
+              <div className="flex flex-col gap-1">
+                <p className="text-sm text-gray-300 leading-relaxed">
+                  {t("server.agent_review_answers")}
+                </p>
+                {reviewAnswers && reviewAnswers.length > 0 && (
+                  <ul className="text-sm text-gray-200 leading-relaxed list-none space-y-1 mt-1">
+                    {reviewAnswers.map((ans, i) => (
+                      <li key={i} className="px-2 py-1 rounded bg-gray-800/60 border border-gray-700">
+                        {ans}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            <div className="flex gap-2">
+              {isMultiQuestion && (
+                <button
+                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                  onClick={onPrevQuestion}
+                >
+                  ← {t("server.agent_prev_question")}
+                </button>
+              )}
+              <button
+                className={`flex-1 px-4 py-2 text-sm rounded-lg text-white transition-colors font-medium ${
+                  isMultiQuestion
+                    ? "bg-green-600 hover:bg-green-500"
+                    : "bg-blue-600 hover:bg-blue-500"
+                }`}
+                onClick={isMultiQuestion ? onConfirm : onDismiss}
+              >
+                {isMultiQuestion ? `✓ ${t("server.agent_confirm")}` : t("server.agent_go_to_terminal")}
+              </button>
+            </div>
           </div>
         )}
       </div>

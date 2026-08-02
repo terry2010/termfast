@@ -1,6 +1,6 @@
 // Unit tests for agentPatterns — question + option extraction
 import { describe, it, expect } from "vitest";
-import { extractQuestion, extractOptions, detectStatusFromScreen, stripAnsi } from "../agentPatterns";
+import { extractQuestion, extractOptions, detectStatusFromScreen, detectMultiSelect, detectMultiQuestion, extractReviewAnswers, stripAnsi } from "../agentPatterns";
 
 describe("stripAnsi", () => {
   it("removes SGR codes", () => {
@@ -79,13 +79,318 @@ describe("extractQuestion — OpenCode", () => {
 });
 
 describe("extractOptions — OpenCode", () => {
-  it("returns Allow/Deny for permission", () => {
+  it("returns Allow once/Allow always/Reject for permission", () => {
+    const screen = "△ Permission required\n  # Shell command\n  Allow once   Allow always   Reject   ctrl+f fullscreen  ⇆ select  enter confirm";
+    expect(extractOptions("opencode", screen)).toEqual(["Allow once", "Allow always", "Reject"]);
+  });
+
+  it("returns fallback buttons when footer not found", () => {
     const screen = "△ Permission required\nbash test.sh";
-    expect(extractOptions("opencode", screen)).toEqual(["Allow", "Deny"]);
+    expect(extractOptions("opencode", screen)).toEqual(["Allow once", "Allow always", "Reject"]);
   });
 
   it("returns null when no permission dialog", () => {
     expect(extractOptions("opencode", "just working")).toBeNull();
+  });
+});
+
+// ── OpenCode question/selector dialog tests ──────────────────────────────────
+
+describe("detectStatusFromScreen — OpenCode selector dialog", () => {
+  it("detects blocked for single-select footer (enter confirm)", () => {
+    const screen = [
+      "  ┃  如果只能用一种语言写一辈子代码，你选哪个？",
+      "  ┃  1. Rust",
+      "  ┃  2. Python",
+      "  ┃  3. TypeScript",
+      "  ┃  4. Type your own answer",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
+  });
+
+  it("detects blocked for single-select footer (enter submit)", () => {
+    const screen = [
+      "  ┃  你想测试提问弹窗的什么功能？",
+      "  ┃  1. 单选",
+      "  ┃  2. 多选",
+      "  ┃  3. 自定义输入",
+      "  ┃  4. Type your own answer",
+      "  ┃  ↑↓ select  enter submit  esc dismiss",
+    ].join("\n");
+    expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
+  });
+
+  it("detects blocked for multi-select footer (enter toggle)", () => {
+    const screen = [
+      "  ┃  你希望测试哪种类型的提问？ (select all that apply)",
+      "  ┃  1. [ ] 单选",
+      "  ┃  2. [ ] 多选",
+      "  ┃  3. [✓] 自由输入",
+      "  ┃  4. [ ] Type your own answer",
+      "  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss",
+    ].join("\n");
+    expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
+  });
+
+  it("does NOT detect blocked for permission footer without esc dismiss", () => {
+    // Permission dialog footer: "⇆ select  enter confirm" (no "esc dismiss")
+    const screen = [
+      "  ┃  △ Permission required",
+      "  ┃   Allow once   Allow always   Reject",
+      "  ┃  ⇆ select  enter confirm",
+    ].join("\n");
+    // Should still be blocked, but via the △ pattern (priority 10), not the selector pattern
+    expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
+  });
+
+  it("does NOT detect blocked for idle footer with ctrl+p commands", () => {
+    const screen = [
+      "  ┃  Some AI output",
+      "  ┃  esc interrupt  ctrl+p commands",
+    ].join("\n");
+    expect(detectStatusFromScreen("opencode", screen)).not.toBe("blocked");
+  });
+
+  it("detects blocked for multi-question Confirm tab (no ↑↓ select)", () => {
+    // Confirm tab footer: "⇆ tab  enter submit  esc dismiss" — no ↑↓ select
+    // because there are no options to navigate on the Confirm tab.
+    const screen = [
+      "  ┃  → Asked 3 questions",
+      "  ┃   编程语言   测试反馈   下一步   Confirm",
+      "  ┃  Review",
+      "  ┃  编程语言: Rust",
+      "  ┃  测试反馈: 很好用",
+      "  ┃  ⇆ tab  enter submit  esc dismiss",
+    ].join("\n");
+    expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
+  });
+});
+
+describe("extractQuestion — OpenCode selector dialog", () => {
+  it("extracts question text above numbered options", () => {
+    const screen = [
+      "  ┃",
+      "  ┃  如果只能用一种语言写一辈子代码，你选哪个？",
+      "  ┃",
+      "  ┃  1. Rust",
+      "  ┃     性能与内存安全兼得，但学习曲线陡峭",
+      "  ┃  2. Python",
+      "  ┃  3. TypeScript",
+      "  ┃  4. Type your own answer",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(extractQuestion("opencode", screen)).toBe("如果只能用一种语言写一辈子代码，你选哪个？");
+  });
+
+  it("extracts question with box-drawing prefix on option lines", () => {
+    const screen = [
+      "  ┃  What is your preferred framework?",
+      "  ┃  1. React",
+      "  ┃  2. Vue",
+      "  ┃  3. Svelte",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(extractQuestion("opencode", screen)).toBe("What is your preferred framework?");
+  });
+
+  it("returns fallback when no question text found above options", () => {
+    const screen = [
+      "  ┃  1. Option A",
+      "  ┃  2. Option B",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(extractQuestion("opencode", screen)).toBe("OpenCode is asking a question");
+  });
+
+  it("returns null when no selector footer present", () => {
+    const screen = "  ┃  Just some output\n  ┃  ctrl+p commands";
+    expect(extractQuestion("opencode", screen)).toBeNull();
+  });
+});
+
+describe("extractOptions — OpenCode selector dialog", () => {
+  it("extracts numbered options from selector dialog", () => {
+    const screen = [
+      "  ┃  如果只能用一种语言写一辈子代码，你选哪个？",
+      "  ┃  1. Rust",
+      "  ┃     性能与内存安全兼得，但学习曲线陡峭",
+      "  ┃  2. Python",
+      "  ┃     简单通用，AI 时代生态最丰富",
+      "  ┃  3. TypeScript",
+      "  ┃     全栈通吃，前后端一鱼两吃",
+      "  ┃  4. Type your own answer",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(extractOptions("opencode", screen)).toEqual([
+      "1. Rust",
+      "2. Python",
+      "3. TypeScript",
+      "4. Type your own answer",
+    ]);
+  });
+
+  it("extracts options with box-drawing prefix", () => {
+    const screen = [
+      "  ┃  1. React",
+      "  ┃  2. Vue",
+      "  ┃  3. Svelte",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(extractOptions("opencode", screen)).toEqual([
+      "1. React",
+      "2. Vue",
+      "3. Svelte",
+    ]);
+  });
+
+  it("returns null when no selector footer present", () => {
+    const screen = "  ┃  1. Some text\n  ┃  ctrl+p commands";
+    expect(extractOptions("opencode", screen)).toBeNull();
+  });
+
+  it("returns null when no numbered options found above footer", () => {
+    const screen = [
+      "  ┃  Some output without options",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(extractOptions("opencode", screen)).toBeNull();
+  });
+
+  it("strips [ ] and [✓] checkbox prefix from multi-select options", () => {
+    const screen = [
+      "  ┃  你希望测试哪种类型的提问？",
+      "  ┃  1. [ ] 单选",
+      "  ┃  2. [ ] 多选",
+      "  ┃  3. [✓] 自由输入",
+      "  ┃  4. [ ] Type your own answer",
+      "  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss",
+    ].join("\n");
+    expect(extractOptions("opencode", screen)).toEqual([
+      "1. 单选",
+      "2. 多选",
+      "3. 自由输入",
+      "4. Type your own answer",
+    ]);
+  });
+});
+
+describe("detectMultiSelect — OpenCode", () => {
+  it("returns true for multi-select footer (enter toggle)", () => {
+    const screen = "  ┃  1. [ ] Apple\n  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss";
+    expect(detectMultiSelect("opencode", screen)).toBe(true);
+  });
+
+  it("returns false for single-select footer (enter confirm)", () => {
+    const screen = "  ┃  1. Apple\n  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss";
+    expect(detectMultiSelect("opencode", screen)).toBe(false);
+  });
+
+  it("returns false for single-select footer (enter submit)", () => {
+    const screen = "  ┃  1. Apple\n  ┃  ↑↓ select  enter submit  esc dismiss";
+    expect(detectMultiSelect("opencode", screen)).toBe(false);
+  });
+
+  it("returns false for permission dialog (no selector footer)", () => {
+    const screen = "△ Permission required\nAllow once   Allow always   Reject";
+    expect(detectMultiSelect("opencode", screen)).toBe(false);
+  });
+
+  it("returns false for non-OpenCode CLI", () => {
+    const screen = "Some question\n1. Yes\n2. No";
+    expect(detectMultiSelect("devin", screen)).toBe(false);
+  });
+});
+
+describe("detectMultiQuestion — OpenCode", () => {
+  it("returns true for multi-question dialog with Confirm tab", () => {
+    const screen = [
+      "  ┃  → Asked 3 questions",
+      "  ┃   编程语言   测试反馈   下一步   Confirm",
+      "  ┃  你最喜欢哪种编程语言？",
+      "  ┃  1. Rust",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(detectMultiQuestion("opencode", screen)).toBe(true);
+  });
+
+  it("returns false for single-question dialog (no tab row)", () => {
+    const screen = [
+      "  ┃  你喜欢哪个？",
+      "  ┃  1. Apple",
+      "  ┃  2. Banana",
+      "  ┃  ↑↓ select  enter submit  esc dismiss",
+    ].join("\n");
+    expect(detectMultiQuestion("opencode", screen)).toBe(false);
+  });
+
+  it("returns false for permission dialog (no tab row)", () => {
+    const screen = "△ Permission required\nAllow once   Allow always   Reject";
+    expect(detectMultiQuestion("opencode", screen)).toBe(false);
+  });
+
+  it("returns false for non-OpenCode CLI", () => {
+    const screen = "Some question\n1. Yes\n2. No";
+    expect(detectMultiQuestion("devin", screen)).toBe(false);
+  });
+});
+
+describe("extractReviewAnswers — OpenCode Confirm tab", () => {
+  it("extracts review answers from Confirm tab", () => {
+    const screen = [
+      "  ┃   弹窗功能   主题风格   交互体验   Confirm",
+      "  ┃",
+      "  ┃  Review",
+      "  ┃",
+      "  ┃  弹窗功能: 多选, 自定义输入, 问题跳过, 234234",
+      "  ┃",
+      "  ┃  主题风格: 跟随系统, 深色",
+      "  ┃",
+      "  ┃  交互体验: 待优化",
+      "  ┃  ⇆ tab  enter submit  esc dismiss",
+    ].join("\n");
+    const answers = extractReviewAnswers("opencode", screen);
+    expect(answers).not.toBeNull();
+    expect(answers).toHaveLength(3);
+    expect(answers![0]).toBe("弹窗功能: 多选, 自定义输入, 问题跳过, 234234");
+    expect(answers![1]).toBe("主题风格: 跟随系统, 深色");
+    expect(answers![2]).toBe("交互体验: 待优化");
+  });
+
+  it("returns null when not on Confirm tab (no Review header)", () => {
+    const screen = [
+      "  ┃   弹窗功能   主题风格   交互体验   Confirm",
+      "  ┃  你最喜欢哪种编程语言？",
+      "  ┃  1. Rust",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ].join("\n");
+    expect(extractReviewAnswers("opencode", screen)).toBeNull();
+  });
+
+  it("returns null for non-OpenCode CLI", () => {
+    const screen = "Review\nQuestion 1: Answer";
+    expect(extractReviewAnswers("devin", screen)).toBeNull();
+  });
+
+  it("stops at footer line", () => {
+    const screen = [
+      "  ┃  Review",
+      "  ┃  Q1: Answer 1",
+      "  ┃  ⇆ tab  enter submit  esc dismiss",
+      "  ┃  Q2: Answer 2",
+    ].join("\n");
+    const answers = extractReviewAnswers("opencode", screen);
+    expect(answers).not.toBeNull();
+    expect(answers).toHaveLength(1);
+    expect(answers![0]).toBe("Q1: Answer 1");
+  });
+
+  it("returns null when Review header exists but no answer lines", () => {
+    const screen = [
+      "  ┃  Review",
+      "  ┃  ⇆ tab  enter submit  esc dismiss",
+    ].join("\n");
+    expect(extractReviewAnswers("opencode", screen)).toBeNull();
   });
 });
 

@@ -8,6 +8,7 @@ import {
   tick,
   setCliType,
   resetAgentState,
+  clearScreenBlocked,
   type AgentState,
 } from "../agentStateMachine";
 
@@ -17,6 +18,11 @@ describe("createAgentState", () => {
     expect(state.status).toBe("unknown");
     expect(state.cli).toBe("unknown");
     expect(state.blockedMessage).toBeNull();
+  });
+
+  it("initializes isMultiSelect to false", () => {
+    const state = createAgentState(1000);
+    expect(state.isMultiSelect).toBe(false);
   });
 });
 
@@ -320,6 +326,30 @@ describe("applyScreenStatus", () => {
     state.status = "unknown";
     applyScreenStatus(state, "idle", null, 2000);
     expect(state.status).toBe("idle");
+  });
+});
+
+describe("clearScreenBlocked", () => {
+  it("transitions blocked → working and resets blocked fields", () => {
+    const state = createAgentState(1000);
+    state.status = "blocked";
+    state.blockedMessage = "Permission required";
+    state.blockedFromOsc = true;
+    state.blockedMissCount = 2;
+    state.isMultiSelect = true;
+    clearScreenBlocked(state, "working", 2000);
+    expect(state.status).toBe("working");
+    expect(state.blockedMessage).toBeNull();
+    expect(state.blockedFromOsc).toBe(false);
+    expect(state.blockedMissCount).toBe(0);
+    expect(state.isMultiSelect).toBe(false);
+  });
+
+  it("does nothing when not in blocked state", () => {
+    const state = createAgentState(1000);
+    state.status = "working";
+    clearScreenBlocked(state, "done", 2000);
+    expect(state.status).toBe("working");
   });
 });
 

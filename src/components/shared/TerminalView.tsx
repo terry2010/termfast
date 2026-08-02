@@ -15,8 +15,17 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { open, remove, copyFile, readFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
-import { submitAnswer } from "@/hooks/answerSubmitter";
+import type { AgentStatus } from "@/hooks/agentStateMachine";
+import { shouldResetOverlay } from "@/hooks/overlayReset";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay } from "@/hooks/answerSubmitter";
 import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
+import {
+  initTerminalLog,
+  logTerminalInput,
+  logTerminalOutput,
+  flushTerminalLog,
+  closeTerminalLog,
+} from "@/hooks/terminalLogger";
 import { Channel } from "@tauri-apps/api/core";
 import { useConfigStore } from "@/stores/configStore";
 import { useServerStore } from "@/stores/serverStore";
@@ -339,7 +348,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
 
   // AI CLI agent status — binds OSC handlers + output monitoring to the terminal
   const [agentTerm, setAgentTerm] = useState<Terminal | null>(null);
-  const { status: agentStatus, cli: agentCli, blockedMessage: agentBlockedMessage, question: agentQuestion, options: agentOptions } = useAgentStatus(agentTerm, sessionId);
+  const { status: agentStatus, cli: agentCli, blockedMessage: agentBlockedMessage, question: agentQuestion, options: agentOptions, isMultiSelect: agentIsMultiSelect, isMultiQuestion: agentIsMultiQuestion, activeTabIndex: agentActiveTabIndex, totalTabs: agentTotalTabs, reviewAnswers: agentReviewAnswers } = useAgentStatus(agentTerm, sessionId);
   const setTerminalTabAgentStatus = useServerStore((s) => s.setTerminalTabAgentStatus);
   const [agentOverlayDismissed, setAgentOverlayDismissed] = useState(false);
 
@@ -350,23 +359,119 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     }
   }, [agentStatus, tabId, serverId, setTerminalTabAgentStatus]);
 
-  // Reset overlay dismissed state when status changes from blocked to non-blocked
+  // Reset overlay dismissed state when status changes from blocked to non-blocked,
+  // OR when a new question appears while still blocked (multi-question dialogs:
+  // OpenCode shows question 1, then question 2, etc. without leaving "blocked").
+  const agentStatusRef = useRef<AgentStatus>("unknown");
+  const agentQuestionRef = useRef<string | null>(null);
   useEffect(() => {
-    if (agentStatus !== "blocked") {
+    if (shouldResetOverlay(agentStatusRef.current, agentStatus, agentQuestionRef.current, agentQuestion)) {
       setAgentOverlayDismissed(false);
     }
-  }, [agentStatus]);
+    agentStatusRef.current = agentStatus;
+    agentQuestionRef.current = agentQuestion;
+  }, [agentStatus, agentQuestion]);
 
   // Handle answer submission — send keystrokes to the PTY via the backend
+  // In multi-question mode, DON'T dismiss — OpenCode auto-advances to next
+  // question tab and the overlay should stay for the next question.
   const handleAgentAnswer = useCallback((option: string, index: number) => {
     if (!termRef.current || agentCli === "unknown") return;
-    const keystrokes = submitAnswer(agentCli, option, index);
-    // Send keystrokes directly to the backend PTY (not term.input which only
-    // writes to xterm's local buffer without sending to the SSH/local PTY)
+    const optionCount = agentOptions?.length;
+    const keystrokes = submitAnswer(agentCli, option, index, optionCount);
     const bytes = new TextEncoder().encode(keystrokes);
+    logTerminalInput(sessionIdRef.current, bytes);
     sendToBackendRef.current(bytes);
+    // For OpenCode permission dialogs (single-select, not multi-question),
+    // DON'T dismiss the overlay — the status change from "blocked" to
+    // "working" will naturally hide it. This way, if the click didn't
+    // activate the correct button (e.g. mouse hover changed the focus),
+    // the user can try again.
+    if (!agentIsMultiQuestion && agentCli !== "opencode") {
+      setAgentOverlayDismissed(true);
+    }
+  }, [agentCli, agentOptions, agentIsMultiQuestion]);
+
+  // Handle multi-select toggle — send toggle keystrokes but DON'T dismiss
+  const handleAgentToggle = useCallback((option: string) => {
+    if (!termRef.current || agentCli === "unknown") return;
+    // Only OpenCode has multi-select; for other CLIs, fall back to single answer
+    if (agentCli === "opencode") {
+      const optionCount = agentOptions?.length;
+      const keystrokes = toggleOpenCodeOption(option, optionCount);
+      const bytes = new TextEncoder().encode(keystrokes);
+      logTerminalInput(sessionIdRef.current, bytes);
+      sendToBackendRef.current(bytes);
+    }
+    // Don't dismiss — user may want to toggle more options
+  }, [agentCli, agentOptions]);
+
+  // Handle multi-select submit — send Tab+Enter to confirm, then dismiss
+  const handleAgentSubmitMultiSelect = useCallback(() => {
+    if (!termRef.current || agentCli === "unknown") return;
+    if (agentCli === "opencode") {
+      const keystrokes = submitOpenCodeMultiSelect();
+      const bytes = new TextEncoder().encode(keystrokes);
+      logTerminalInput(sessionIdRef.current, bytes);
+      sendToBackendRef.current(bytes);
+    }
     setAgentOverlayDismissed(true);
   }, [agentCli]);
+
+  // Handle text answer (Type your own answer) — navigate + type + submit
+  // Split into two sends: first navigate to option + Enter (enter text mode),
+  // then after 300ms delay, type the text + Enter (submit).
+  // The delay is needed because OpenCode needs time to redraw the text input
+  // after Enter — if we send text immediately, it gets lost.
+  const handleAgentTextAnswer = useCallback((option: string, text: string) => {
+    if (!termRef.current || agentCli === "unknown") return;
+    if (agentCli === "opencode") {
+      const optionCount = agentOptions?.length;
+      const parts = submitOpenCodeTextAnswer(option, text, agentIsMultiSelect, optionCount);
+      sendTextAnswerWithDelay(parts, (bytes) => {
+        logTerminalInput(sessionIdRef.current, bytes);
+        sendToBackendRef.current(bytes);
+      });
+    }
+    if (!agentIsMultiQuestion) {
+      setAgentOverlayDismissed(true);
+    }
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion]);
+
+  // Handle navigate to previous question tab (multi-question mode)
+  // OpenCode binds ← to selectTab((tab - 1 + tabs) % tabs)
+  const handleAgentPrevQuestion = useCallback(() => {
+    if (!termRef.current || agentCli === "unknown") return;
+    const bytes = new TextEncoder().encode("\x1b[D"); // Left arrow
+    logTerminalInput(sessionIdRef.current, bytes);
+    sendToBackendRef.current(bytes);
+    // Don't dismiss — overlay should stay for next question
+  }, [agentCli]);
+
+  // Handle navigate to next question tab (multi-question mode)
+  // OpenCode binds → to selectTab((tab + 1) % tabs)
+  const handleAgentNextQuestion = useCallback(() => {
+    if (!termRef.current || agentCli === "unknown") return;
+    const bytes = new TextEncoder().encode("\x1b[C"); // Right arrow
+    logTerminalInput(sessionIdRef.current, bytes);
+    sendToBackendRef.current(bytes);
+    // Don't dismiss — overlay should stay for next question
+  }, [agentCli]);
+
+  // Handle confirm in multi-question mode.
+  // Uses submitOpenCodeConfirm to calculate the correct → arrow presses
+  // to navigate to the Confirm tab, then Enter to submit.
+  const handleAgentConfirm = useCallback(() => {
+    if (!termRef.current || agentCli === "unknown") return;
+    if (agentCli === "opencode") {
+      const hasOptions = !!(agentOptions && agentOptions.length > 0);
+      const keystrokes = submitOpenCodeConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs);
+      const bytes = new TextEncoder().encode(keystrokes);
+      logTerminalInput(sessionIdRef.current, bytes);
+      sendToBackendRef.current(bytes);
+    }
+    setAgentOverlayDismissed(true);
+  }, [agentCli, agentOptions, agentActiveTabIndex, agentTotalTabs]);
 
   // Terminal appearance from config
   const config = useConfigStore((s) => s.config);
@@ -1124,6 +1229,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     const utf8Encoder = new TextEncoder();
     const inputDisposable = term.onData((data) => {
       const bytes = utf8Encoder.encode(data);
+      logTerminalInput(sessionIdRef.current, bytes);
       sendToBackend(bytes);
     });
 
@@ -1175,6 +1281,9 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       const hadSession = !!zmodemSession;
       const inCooldown = Date.now() < zmodemCooldownUntil;
 
+      // Log raw PTY output to disk (for debugging AI CLI status detection)
+      logTerminalOutput(sessionIdRef.current, rawBytes);
+
       if (inCooldown && !zmodemSession) {
         // Cooldown after session end: write raw data, skip Sentry
         // to prevent spurious session creation from echoed ZMODEM bytes.
@@ -1212,6 +1321,9 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       }
     };
     registerTerminalOutput(sessionId, handleBinaryOutput);
+
+    // Initialize terminal I/O log (writes to AppLocalData/termfast-logs/)
+    initTerminalLog(sessionId).catch(() => {});
 
     // Listen for terminal closed event
     let unlistenClosed: UnlistenFn | undefined;
@@ -1285,6 +1397,9 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     return () => {
       // Flush any pending chunks before disposing
       flushPending();
+      // Flush + close terminal I/O log
+      flushTerminalLog(sessionIdRef.current);
+      closeTerminalLog(sessionIdRef.current).catch(() => {});
       // Save terminal snapshot for reconnect history restore
       if (serializeRef.current) {
         try {
@@ -1444,8 +1559,19 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         cli={agentCli}
         question={agentQuestion}
         options={agentOptions}
+        isMultiSelect={agentIsMultiSelect}
+        isMultiQuestion={agentIsMultiQuestion}
+        activeTabIndex={agentActiveTabIndex}
+        totalTabs={agentTotalTabs}
+        reviewAnswers={agentReviewAnswers}
         blockedMessage={agentBlockedMessage}
         onAnswer={handleAgentAnswer}
+        onToggle={handleAgentToggle}
+        onSubmitMultiSelect={handleAgentSubmitMultiSelect}
+        onTextAnswer={handleAgentTextAnswer}
+        onPrevQuestion={handleAgentPrevQuestion}
+        onNextQuestion={handleAgentNextQuestion}
+        onConfirm={handleAgentConfirm}
         onDismiss={() => setAgentOverlayDismissed(true)}
       />
       {showSearch && (

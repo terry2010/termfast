@@ -43,6 +43,12 @@ export interface CliPatterns {
   questionExtractor?: (screenText: string) => string | null;
   /** Extract answer options when blocked (null if not extractable). */
   optionsExtractor?: (screenText: string) => string[] | null;
+  /** Detect if the current blocked dialog is multi-select (null if N/A). */
+  multiSelectDetector?: (screenText: string) => boolean;
+  /** Detect if the current blocked dialog is multi-question (has Confirm tab). */
+  multiQuestionDetector?: (screenText: string) => boolean;
+  /** Extract review answers from the Confirm tab (null if not on Confirm tab). */
+  reviewAnswersExtractor?: (screenText: string) => string[] | null;
 }
 
 // ── Devin patterns ────────────────────────────────────────────────────────────
@@ -112,6 +118,17 @@ const opencodePatterns: CliPatterns = {
   statusPatterns: [
     // Permission dialog — highest priority
     { status: "blocked", pattern: /△\s+(?:Permission required|Always allow)\b/, priority: 10 },
+    // Question/selector dialog: "↑↓ select  enter <verb>  esc dismiss" footer.
+    // This appears when OpenCode asks the user a question with numbered options.
+    // The verb after "enter" varies: "confirm" (single-select), "toggle"
+    // (multi-select), "submit" (single-select variant). Match any word.
+    // Distinct from permission dialog (which has "Allow once/Reject" buttons)
+    // and from idle footer (which has "ctrl+p commands" but no "esc dismiss").
+    { status: "blocked", pattern: /↑↓\s+select.*enter\s+\w+.*esc\s+dismiss/, priority: 9 },
+    // Multi-question Confirm tab: "⇆ tab  enter submit  esc dismiss" footer.
+    // The Confirm tab hides ↑↓ select (no options to navigate), but the dialog
+    // is still blocked (user must press Enter to submit all answers).
+    { status: "blocked", pattern: /⇆\s+tab.*enter\s+submit.*esc\s+dismiss/, priority: 9 },
     // Completion marker: "▣ Build · DeepSeek · 3.9s"
     { status: "done", pattern: /▣\s+\S+\s+·\s+.+?\s+·\s+(?:\d+m\s+)?\d+(?:\.\d+)?s/, priority: 8 },
     // Tool-call spinner: "⠋ Read <path>" etc. — only reliable working indicator
@@ -124,8 +141,8 @@ const opencodePatterns: CliPatterns = {
     // "working" detection. The spinner pattern above is the reliable indicator.
   ],
   questionExtractor: (text) => {
-    // Permission dialog: "△ Permission required" followed by tool description
     const lines = text.split("\n");
+    // Permission dialog: "△ Permission required" followed by tool description
     for (let i = 0; i < lines.length; i++) {
       if (/△\s+Permission required/.test(lines[i])) {
         // The next non-empty line is usually the tool/command description
@@ -138,17 +155,114 @@ const opencodePatterns: CliPatterns = {
         return "Permission required";
       }
     }
+    // Question/selector dialog: find the question text above the numbered options.
+    // The selector footer "↑↓ select ... esc dismiss" identifies the dialog.
+    // The question is the first non-empty, non-box-drawing line above the
+    // first numbered option (1. 2. 3. ...).
+    const selectorIdx = lines.findIndex((l) => /↑↓\s+select.*esc\s+dismiss/.test(l));
+    if (selectorIdx >= 0) {
+      // Find ALL numbered option lines above the footer.
+      // Format: "  ┃  1. Rust" (box-drawing char + spaces + number + text)
+      const optionIdxs: number[] = [];
+      for (let i = 0; i < selectorIdx; i++) {
+        if (/^\s*[┃│║]?\s*\d+\.\s+\S/.test(lines[i])) {
+          optionIdxs.push(i);
+        }
+      }
+      if (optionIdxs.length > 0) {
+        const firstOptionIdx = optionIdxs[0];
+        // Walk upward from firstOptionIdx-1 to find the question text
+        for (let i = firstOptionIdx - 1; i >= 0; i--) {
+          const trimmed = lines[i].trim();
+          // Strip leading box-drawing chars for content check
+          const content = trimmed.replace(/^[┃│║]\s*/, "").trim();
+          // Skip empty lines, box-drawing-only lines, and tab-label lines
+          if (content &&
+              !/^[┃│║┌┐└┘├┤┬┴┼─━]+$/.test(trimmed) &&
+              !/^\s*$/.test(content)) {
+            return content;
+          }
+        }
+      }
+      return "OpenCode is asking a question";
+    }
     return null;
   },
   optionsExtractor: (text) => {
-    // OpenCode permission shows "Allow" / "Deny" buttons
     const lines = text.split("\n");
+    // Permission dialog: extract actual button names from the footer line.
+    // Footer format: "Allow once   Allow always   Reject   ctrl+f fullscreen  ⇆ select  enter confirm"
     for (const line of lines) {
       if (/△\s+Permission required/.test(line)) {
-        return ["Allow", "Deny"];
+        // Find the footer line with the buttons (contains "Allow" and "Reject")
+        for (const fl of lines) {
+          if (/Allow\s+once.*Allow\s+always.*Reject/.test(fl)) {
+            // Extract button names: "Allow once", "Allow always", "Reject"
+            const buttons = fl.match(/Allow\s+once|Allow\s+always|Reject/g);
+            if (buttons && buttons.length > 0) return buttons;
+          }
+        }
+        // Fallback if footer format changes
+        return ["Allow once", "Allow always", "Reject"];
       }
     }
+    // Question/selector dialog: extract numbered options (1. Rust  2. Python  ...)
+    // Format: "  ┃  1. Rust" (single-select) or "  ┃  1. [ ] 单选" (multi-select)
+    // Allow box-drawing chars before the number, strip [ ]/[✓] checkbox prefix
+    const selectorIdx = lines.findIndex((l) => /↑↓\s+select.*esc\s+dismiss/.test(l));
+    if (selectorIdx >= 0) {
+      const options: string[] = [];
+      for (let i = 0; i < selectorIdx; i++) {
+        const m = lines[i].match(/^\s*[┃│║]?\s*(\d+)\.\s+(.+)$/);
+        if (m) {
+          // Strip [ ] or [✓] checkbox prefix from multi-select options
+          const label = m[2].replace(/^\[[\s✓]\]\s*/, "").trim();
+          options.push(`${m[1]}. ${label}`);
+        }
+      }
+      if (options.length > 0) return options;
+    }
     return null;
+  },
+  // Multi-select detection: "enter toggle" in footer means multi-select.
+  // "enter confirm" or "enter submit" means single-select.
+  multiSelectDetector: (text) => /↑↓\s+select.*enter\s+toggle.*esc\s+dismiss/.test(text),
+  // Multi-question detection: tab row with "Confirm" at the end.
+  // Format: "  ┃   编程语言   测试反馈   下一步   Confirm"
+  // Single-question dialogs don't have a tab row.
+  multiQuestionDetector: (text) => {
+    const lines = text.split("\n");
+    return lines.some((l) => {
+      // Tab row has multiple tab labels ending with "Confirm"
+      const trimmed = l.replace(/^[┃│║]\s*/, "").trim();
+      return /\bConfirm\b/.test(trimmed) && /\s{2,}/.test(trimmed) && trimmed.split(/\s{2,}/).length >= 2;
+    });
+  },
+  // Review answers extraction: on the Confirm tab, OpenCode shows a "Review"
+  // header followed by lines like "弹窗功能: 多选, 自定义输入, 问题跳过".
+  // Extract each "label: values" line as a review answer entry.
+  reviewAnswersExtractor: (text) => {
+    const lines = text.split("\n");
+    // Must have a "Review" header line (identifies the Confirm tab content)
+    const reviewIdx = lines.findIndex((l) => l.replace(/^\s*[┃│║]\s*/, "").trim() === "Review");
+    if (reviewIdx < 0) return null;
+    // Collect "label: values" lines after the Review header.
+    // Skip empty lines (answers are separated by blank lines).
+    // Stop at footer or tab row.
+    const answers: string[] = [];
+    for (let i = reviewIdx + 1; i < lines.length; i++) {
+      const trimmed = lines[i].replace(/^\s*[┃│║]\s*/, "").trim();
+      // Stop at footer or tab row
+      if (/⇆\s+tab|enter\s+submit|enter\s+confirm|esc\s+dismiss/.test(trimmed)) break;
+      if (/\bConfirm\b/.test(trimmed) && /\s{2,}/.test(trimmed)) break;
+      // Skip empty lines
+      if (!trimmed) continue;
+      // Match "label: values" format (colon separator)
+      if (/^[^:]+:\s*.+/.test(trimmed)) {
+        answers.push(trimmed);
+      }
+    }
+    return answers.length > 0 ? answers : null;
   },
 };
 
@@ -360,5 +474,35 @@ export function extractOptions(cli: CliType, screenText: string): string[] | nul
   const patterns = PATTERNS[cli];
   if (!patterns?.optionsExtractor) return null;
   return patterns.optionsExtractor(screenText);
+}
+
+/**
+ * Detect if the current blocked dialog is multi-select.
+ * @returns true if multi-select, false if single-select or N/A.
+ */
+export function detectMultiSelect(cli: CliType, screenText: string): boolean {
+  const patterns = PATTERNS[cli];
+  if (!patterns?.multiSelectDetector) return false;
+  return patterns.multiSelectDetector(screenText);
+}
+
+/**
+ * Detect if the current blocked dialog is multi-question (has Confirm tab).
+ * @returns true if multi-question, false if single-question or N/A.
+ */
+export function detectMultiQuestion(cli: CliType, screenText: string): boolean {
+  const patterns = PATTERNS[cli];
+  if (!patterns?.multiQuestionDetector) return false;
+  return patterns.multiQuestionDetector(screenText);
+}
+
+/**
+ * Extract review answers from the Confirm tab (multi-question dialogs).
+ * @returns array of "label: values" strings, or null if not on Confirm tab.
+ */
+export function extractReviewAnswers(cli: CliType, screenText: string): string[] | null {
+  const patterns = PATTERNS[cli];
+  if (!patterns?.reviewAnswersExtractor) return null;
+  return patterns.reviewAnswersExtractor(screenText);
 }
 // === SECTION 2 END ===

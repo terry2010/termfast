@@ -464,6 +464,105 @@ describe("useAgentStatus", () => {
       vi.advanceTimersByTime(600);
     });
     // Screen now shows working (spinner) — blocked should be cleared
+    // Working is a definitive signal, so it clears blocked immediately (1 tick)
+    expect(result.current.status).toBe("working");
+  });
+
+  it("blocked persists during alt-screen redraw gaps (idle flicker)", () => {
+    // OpenCode's permission dialog flickers: the △ Permission required pattern
+    // appears in one frame but is overwritten by the next redraw. The idle
+    // footer (ctrl+p commands) is always visible, so detectStatus returns idle
+    // during the gap. blockedMissCount should keep blocked status stable
+    // until N consecutive idle detections confirm the dialog is truly gone.
+    const term = createMockTerminal([
+      "△ Permission required",
+      "bash rm -rf /",
+      "esc interrupt  ctrl+p commands",
+    ]);
+    const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
+
+    // Tick detects OpenCode + blocked from screen
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.cli).toBe("opencode");
+    expect(result.current.status).toBe("blocked");
+
+    // Screen redraws — △ disappears but idle footer remains.
+    // This is a redraw gap, not a real idle — blocked should persist.
+    term._setScreenLines([
+      "  ┃  Some AI output text",
+      "  ┃  More output",
+      "   ■⬝⬝⬝  esc interrupt  ctrl+p commands  • OpenCode 1.18.11",
+    ]);
+    // Tick 1: idle detected, missCount=1 < 3 → stay blocked
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.status).toBe("blocked");
+
+    // Tick 2: idle detected again, missCount=2 < 3 → stay blocked
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.status).toBe("blocked");
+
+    // △ reappears briefly (next permission dialog frame) → blocked confirmed
+    term._setScreenLines([
+      "△ Permission required",
+      "← Access external directory ~/.config/opencode",
+      "esc interrupt  ctrl+p commands",
+    ]);
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.status).toBe("blocked");
+    // missCount should be reset when blocked is re-detected
+
+    // Screen changes to working (spinner) — definitive signal, clears blocked
+    term._setScreenLines(["  ⠋ Thinking", "esc interrupt  ctrl+p commands"]);
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.status).toBe("working");
+  });
+
+  it("blocked clears after N consecutive idle detections (dialog truly dismissed)", () => {
+    // When the permission dialog is truly gone (user clicked Allow in the TUI),
+    // the screen shows idle footer without △. After BLOCKED_MISS_THRESHOLD
+    // consecutive idle detections, blocked should clear to idle.
+    const term = createMockTerminal([
+      "△ Permission required",
+      "bash rm -rf /",
+      "esc interrupt  ctrl+p commands",
+    ]);
+    const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
+
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.status).toBe("blocked");
+
+    // Screen shows idle (no △, just footer) — dialog dismissed
+    term._setScreenLines([
+      "  ┃  AI output text",
+      "   ■⬝⬝⬝  esc interrupt  ctrl+p commands  • OpenCode 1.18.11",
+    ]);
+
+    // 2 ticks: missCount=2 < 3 → still blocked
+    act(() => { vi.advanceTimersByTime(1100); });
+    expect(result.current.status).toBe("blocked");
+
+    // 3rd tick: missCount=3 ≥ 3 → clear to idle
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("blocked clears immediately when working spinner appears (definitive signal)", () => {
+    // When the screen shows a working spinner while blocked, the CLI has
+    // clearly resumed. No need to wait for missCount threshold.
+    const term = createMockTerminal([
+      "△ Permission required",
+      "bash rm -rf /",
+      "esc interrupt  ctrl+p commands",
+    ]);
+    const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
+
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.status).toBe("blocked");
+
+    // Screen shows working spinner — definitive signal
+    term._setScreenLines(["  ⠋ Read src/main.ts", "esc interrupt  ctrl+p commands"]);
+    act(() => { vi.advanceTimersByTime(600); });
+    // Should clear blocked immediately (1 tick, not 3)
     expect(result.current.status).toBe("working");
   });
 });
@@ -670,7 +769,8 @@ describe("useAgentStatus — screen scraping for non-Devin CLIs", () => {
     const screen = [
       "Some content",
       "△ Permission required",
-      "bash test.sh",
+      "  # Shell command",
+      "  Allow once   Allow always   Reject   ctrl+f fullscreen  ⇆ select  enter confirm",
     ];
     const term = createMockTerminal(screen);
     const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
@@ -683,8 +783,56 @@ describe("useAgentStatus — screen scraping for non-Devin CLIs", () => {
     expect(result.current.cli).toBe("opencode");
     // Question should be extracted from screen
     expect(result.current.question).toContain("Permission required");
-    // Options should be Allow/Deny
-    expect(result.current.options).toEqual(["Allow", "Deny"]);
+    // Options should be the actual OpenCode buttons
+    expect(result.current.options).toEqual(["Allow once", "Allow always", "Reject"]);
+  });
+
+  it("re-extracts question/options when question changes while still blocked (multi-question)", () => {
+    // OpenCode multi-question dialog: Q1 appears, user answers, Q2 appears
+    // without leaving "blocked" status. The tick must re-extract question/options.
+    const q1Screen = [
+      "  ┃  → Asked 3 questions",
+      "  ┃   编程语言   测试反馈   下一步   Confirm",
+      "  ┃  你最喜欢哪种编程语言？",
+      "  ┃  1. Rust",
+      "  ┃  2. TypeScript",
+      "  ┃  3. Python",
+      "  ┃  4. Go",
+      "  ┃  5. Type your own answer",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ];
+    const term = createMockTerminal(q1Screen);
+    const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
+
+    // Tick 1: detect OpenCode + blocked + Q1
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(result.current.status).toBe("blocked");
+    expect(result.current.cli).toBe("opencode");
+    expect(result.current.question).toContain("编程语言");
+    expect(result.current.options).toEqual(["1. Rust", "2. TypeScript", "3. Python", "4. Go", "5. Type your own answer"]);
+
+    // Simulate user answering Q1 → OpenCode switches to Q2 (still blocked)
+    const q2Screen = [
+      "  ┃  → Asked 3 questions",
+      "  ┃   编程语言   测试反馈   下一步   Confirm",
+      "  ┃  你对这个测试弹窗的感觉如何？",
+      "  ┃  1. 很好用",
+      "  ┃  2. 一般般",
+      "  ┃  3. 有改进空间",
+      "  ┃  4. Type your own answer",
+      "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+    ];
+    term._setScreenLines(q2Screen);
+
+    // Tick 2: still blocked, but question changed → must re-extract
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(result.current.status).toBe("blocked");
+    expect(result.current.question).toContain("测试弹窗的感觉");
+    expect(result.current.options).toEqual(["1. 很好用", "2. 一般般", "3. 有改进空间", "4. Type your own answer"]);
   });
 
   it("detects Devin permission dialog via screen scrape", () => {
@@ -839,7 +987,9 @@ describe("useAgentStatus — screen scraping for non-Devin CLIs", () => {
 
     // Phase 4: User clicks Yes — dialog disappears, Devin resumes
     term._setScreenLines(["⏺ Running command", "  │ $ echo hello", "hello"]);
-    act(() => { vi.advanceTimersByTime(600); });
+    // Need 3 consecutive ticks with non-blocked screen to clear blocked
+    // (blockedMissCount threshold prevents flickering during alt-screen redraws)
+    act(() => { vi.advanceTimersByTime(1600); });
     // Blocked but screen no longer shows blocked pattern → working
     expect(result.current.status).toBe("working");
 
