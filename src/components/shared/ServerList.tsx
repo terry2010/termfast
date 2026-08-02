@@ -58,6 +58,7 @@ async function openLocalTerminalFromList() {
       defaultLabel,
       initialOutput: result.initial_output || "",
       disconnected: false,
+      agentStatus: null,
     });
     store.setActiveTerminalTab(serverId, tabId);
   } catch (e: any) {
@@ -257,6 +258,7 @@ export function ServerList({
             defaultLabel,
             initialOutput,
             disconnected: false,
+            agentStatus: null,
           });
           store.setActiveTerminalTab(serverId, tabId);
           // Wait for the tab to render before changing button status

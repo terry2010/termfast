@@ -86,6 +86,7 @@ export function useTrayMenu() {
                 defaultLabel,
                 initialOutput: result.initial_output || "",
                 disconnected: false,
+                agentStatus: null,
               });
               setActiveTerminalTab(server.id, tabId);
               // Show main window so user can see terminal

@@ -2,7 +2,7 @@
 // Connects to a backend PTY session via IPC
 // Supports ZMODEM (rz/sz) file transfers via zmodem.js-ex
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -14,8 +14,12 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { open, remove, copyFile, readFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
 import { ipcInvoke } from "@/hooks/useIpc";
+import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
+import { submitAnswer } from "@/hooks/answerSubmitter";
+import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
 import { Channel } from "@tauri-apps/api/core";
 import { useConfigStore } from "@/stores/configStore";
+import { useServerStore } from "@/stores/serverStore";
 import { getTerminalTheme } from "@/lib/terminalThemes";
 import { Sentry as ZmodemSentry, type ZmodemDetection, type ZmodemSession, type ZmodemTransfer } from "zmodem.js-ex";
 import * as ZmodemLib from "zmodem.js-ex";
@@ -245,6 +249,8 @@ interface TerminalViewProps {
   active: boolean;
   initialOutput?: string;
   rzAvailable?: boolean;
+  /** Terminal tab ID (for updating agentStatus in the store). */
+  tabId?: string;
 }
 
 // Module-level snapshot cache: key = serverId, value = serialized terminal
@@ -321,7 +327,7 @@ function stripLeadingZmodemHeaders(octets: number[]): number[] {
   return octets.slice(i);
 }
 
-export function TerminalView({ sessionId, serverId, active, initialOutput, rzAvailable }: TerminalViewProps) {
+export function TerminalView({ sessionId, serverId, active, initialOutput, rzAvailable, tabId }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -330,6 +336,37 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   const webglRef = useRef<WebglAddon | null>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+
+  // AI CLI agent status — binds OSC handlers + output monitoring to the terminal
+  const [agentTerm, setAgentTerm] = useState<Terminal | null>(null);
+  const { status: agentStatus, cli: agentCli, blockedMessage: agentBlockedMessage, question: agentQuestion, options: agentOptions } = useAgentStatus(agentTerm, sessionId);
+  const setTerminalTabAgentStatus = useServerStore((s) => s.setTerminalTabAgentStatus);
+  const [agentOverlayDismissed, setAgentOverlayDismissed] = useState(false);
+
+  // Sync agent status to tab store (for tab label rendering)
+  useEffect(() => {
+    if (tabId && serverId) {
+      setTerminalTabAgentStatus(serverId, tabId, agentStatus);
+    }
+  }, [agentStatus, tabId, serverId, setTerminalTabAgentStatus]);
+
+  // Reset overlay dismissed state when status changes from blocked to non-blocked
+  useEffect(() => {
+    if (agentStatus !== "blocked") {
+      setAgentOverlayDismissed(false);
+    }
+  }, [agentStatus]);
+
+  // Handle answer submission — send keystrokes to the PTY via the backend
+  const handleAgentAnswer = useCallback((option: string, index: number) => {
+    if (!termRef.current || agentCli === "unknown") return;
+    const keystrokes = submitAnswer(agentCli, option, index);
+    // Send keystrokes directly to the backend PTY (not term.input which only
+    // writes to xterm's local buffer without sending to the SSH/local PTY)
+    const bytes = new TextEncoder().encode(keystrokes);
+    sendToBackendRef.current(bytes);
+    setAgentOverlayDismissed(true);
+  }, [agentCli]);
 
   // Terminal appearance from config
   const config = useConfigStore((s) => s.config);
@@ -394,10 +431,73 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     const serializeAddon = new SerializeAddon();
     term.loadAddon(serializeAddon);
 
+    // ── macOS WKWebView IME composition fix ───────────────────────────
+    // On macOS Tauri (WKWebView), xterm.js's composition handling is broken:
+    // 1. Chinese IME composition text may not be correctly sent to the PTY
+    // 2. keyCode=229 events bypass xterm's normal key handling
+    // 3. beforeinput events for punctuation/symbols are swallowed
+    //
+    // Fix: attach compositionend + beforeinput listeners to xterm's helper
+    // textarea, forwarding composed text directly to the PTY via TextEncoder.
+    // A compositionActive flag prevents double-send when xterm's own handler
+    // also processes the event.
+    const imeDisposers: (() => void)[] = [];
+    const helperTextarea = term.textarea;
+    if (helperTextarea) {
+      const imeEncoder = new TextEncoder();
+      let compositionActive = false;
+
+      // Track composition state to avoid double-sending
+      const onCompositionStart = () => { compositionActive = true; };
+      const onCompositionUpdate = () => { compositionActive = true; };
+
+      // compositionend: IME finished composing (user selected a candidate)
+      // Forward the composed text directly to PTY, bypassing xterm's handler
+      // which may drop or garble it on WKWebView.
+      const onCompositionEnd = (e: CompositionEvent) => {
+        compositionActive = false;
+        if (e.data && e.data.length > 0) {
+          const bytes = imeEncoder.encode(e.data);
+          sendToBackendRef.current(bytes);
+          // Clear textarea to prevent xterm's diff-based handler from re-sending
+          helperTextarea.value = "";
+        }
+      };
+
+      // beforeinput: catches punctuation/symbol input that WKWebView delivers
+      // via this event instead of xterm's normal key path (macOS Chinese IME).
+      // Only forward short symbol-only input (not regular text composition).
+      const onBeforeInput = (e: InputEvent) => {
+        if (e.isComposing || compositionActive) return;
+        const data = e.data;
+        if (!data || data.length === 0) return;
+        // Only handle if it looks like IME-delivered symbol/punctuation
+        // (not regular ASCII typing which xterm handles fine)
+        if (data.length <= 4 && !/^[a-zA-Z0-9\s]+$/.test(data)) {
+          const bytes = imeEncoder.encode(data);
+          sendToBackendRef.current(bytes);
+          e.preventDefault(); // prevent xterm's broken handler from also processing
+        }
+      };
+
+      helperTextarea.addEventListener("compositionstart", onCompositionStart);
+      helperTextarea.addEventListener("compositionupdate", onCompositionUpdate);
+      helperTextarea.addEventListener("compositionend", onCompositionEnd);
+      helperTextarea.addEventListener("beforeinput", onBeforeInput);
+      imeDisposers.push(() => {
+        helperTextarea.removeEventListener("compositionstart", onCompositionStart);
+        helperTextarea.removeEventListener("compositionupdate", onCompositionUpdate);
+        helperTextarea.removeEventListener("compositionend", onCompositionEnd);
+        helperTextarea.removeEventListener("beforeinput", onBeforeInput);
+      });
+    }
+
     termRef.current = term;
     fitRef.current = fitAddon;
     searchRef.current = searchAddon;
     serializeRef.current = serializeAddon;
+    // Expose terminal instance to useAgentStatus (registers OSC handlers)
+    setAgentTerm(term);
 
     // Restore saved snapshot (from previous unmount, e.g. reconnect) if available.
     // Falls back to initialOutput (MOTD/prompt from backend) for new sessions.
@@ -1019,10 +1119,11 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       return true;
     });
 
-    // User input → backend (base64 encoded for binary safety)
+    // User input → backend (UTF-8 encoded for binary safety)
+    // Use TextEncoder for correct multi-byte UTF-8 (Chinese, Japanese, Korean, emoji)
+    const utf8Encoder = new TextEncoder();
     const inputDisposable = term.onData((data) => {
-      const bytes = new Uint8Array(data.length);
-      for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i);
+      const bytes = utf8Encoder.encode(data);
       sendToBackend(bytes);
     });
 
@@ -1064,6 +1165,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         term.write(merged);
       }
       pendingChunks = [];
+      // Notify agent state machine that PTY output was received (drives "working" inference)
+      notifyAgentOutput(sessionIdRef.current);
     };
 
     // Binary terminal output: register a callback for raw bytes from the Channel.
@@ -1115,6 +1218,9 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     listen<{ sessionId: string }>("terminal:closed", (event) => {
       if (event.payload.sessionId === sessionIdRef.current) {
         term.write("\r\n[Connection closed]\r\n");
+        // Reset agent status — the AI CLI process has exited, so the tab
+        // should stop showing the working spinner / blocked indicator.
+        resetAgentStatus(sessionIdRef.current);
       }
     }).then((fn) => { unlistenClosed = fn; });
 
@@ -1196,6 +1302,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       }
       inputDisposable.dispose();
       resizeDisposable.dispose();
+      // Dispose IME composition fix listeners
+      for (const d of imeDisposers) { try { d(); } catch { /* ignore */ } }
       unregisterTerminalOutput(sessionId);
       if (unlistenClosed) unlistenClosed();
       dragCancelled = true;
@@ -1210,6 +1318,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       searchRef.current = null;
       serializeRef.current = null;
       webglRef.current = null;
+      // Clear agent status monitoring
+      setAgentTerm(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
@@ -1327,6 +1437,16 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       <div
         ref={containerRef}
         className="w-full h-full"
+      />
+      <AgentQuestionOverlay
+        visible={!agentOverlayDismissed}
+        status={agentStatus}
+        cli={agentCli}
+        question={agentQuestion}
+        options={agentOptions}
+        blockedMessage={agentBlockedMessage}
+        onAnswer={handleAgentAnswer}
+        onDismiss={() => setAgentOverlayDismissed(true)}
       />
       {showSearch && (
         <div className="absolute top-2 right-2 z-50 bg-slate-800/95 border border-slate-600 rounded-lg shadow-lg flex items-center gap-1 px-2 py-1.5">

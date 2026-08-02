@@ -598,6 +598,10 @@ impl TerminalManager {
             .insert(session_id.clone(), session);
 
         // 发送 Opened 事件
+        // Delay briefly to give the shell time to start and be ready for input.
+        // Without this, OnTerminalOpen trigger commands may be injected before
+        // the shell is ready to process them, causing them to be lost.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         if let Some(tx) = self.local_event_tx.lock().await.as_ref() {
             tracing::info!("[TerminalManager] sending Opened event for session {}", session_id);
             let _ = tx.send(TerminalLifecycleEvent::Opened {

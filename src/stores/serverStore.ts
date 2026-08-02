@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import type { ServerConfig, ServerStatus } from "@/types";
+import type { AgentStatus } from "@/hooks/agentStateMachine";
 
 export interface ServerState extends ServerConfig {
   current_status: ServerStatus;
@@ -28,6 +29,8 @@ export interface TerminalTab {
   defaultLabel: string;
   initialOutput: string;
   disconnected: boolean;
+  /** AI CLI agent status (null = no AI CLI detected / not yet monitored). */
+  agentStatus: AgentStatus | null;
 }
 
 interface ServerStore {
@@ -56,6 +59,7 @@ interface ServerStore {
   renameTerminalTab: (serverId: string, tabId: string, label: string) => void;
   setTerminalTabDisconnected: (serverId: string, sessionId: string) => void;
   clearTerminalTabs: (serverId: string) => void;
+  setTerminalTabAgentStatus: (serverId: string, tabId: string, status: AgentStatus) => void;
 }
 
 export const useServerStore = create<ServerStore>((set, get) => ({
@@ -210,6 +214,24 @@ export const useServerStore = create<ServerStore>((set, get) => ({
       return {
         terminal_tabs_by_server: nextTabs,
         active_terminal_tab_by_server: nextActive,
+      };
+    }),
+
+  setTerminalTabAgentStatus: (serverId, tabId, status) =>
+    set((state) => {
+      const tabs = state.terminal_tabs_by_server[serverId];
+      if (!tabs) return state;
+      const idx = tabs.findIndex((t) => t.id === tabId);
+      if (idx < 0) return state;
+      // Skip if status unchanged (avoid unnecessary re-renders)
+      if (tabs[idx].agentStatus === status) return state;
+      const nextTabs = [...tabs];
+      nextTabs[idx] = { ...nextTabs[idx], agentStatus: status };
+      return {
+        terminal_tabs_by_server: {
+          ...state.terminal_tabs_by_server,
+          [serverId]: nextTabs,
+        },
       };
     }),
 }));
