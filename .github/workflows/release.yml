@@ -136,6 +136,28 @@ jobs:
           cp src-tauri/dmg-extras/fix-quarantine.command "$MOUNT_POINT/"
           chmod +x "$MOUNT_POINT/fix-quarantine.command"
 
+          # Set DMG window layout via AppleScript: larger window + icon positions
+          # so all 4 items (app, Applications, README, script) are visible at once.
+          osascript <<EOF
+          tell application "Finder"
+            tell disk "$(basename "$MOUNT_POINT")"
+              open
+              set current view of container window to icon view
+              set toolbar visible of container window to false
+              set statusbar visible of container window to false
+              set the bounds of container window to {400, 100, 1000, 560}
+              set theViewOptions to the icon view options of container window
+              set arrangement of theViewOptions to not arranged
+              set icon size of theViewOptions to 72
+              set position of item "TermFast.app" of container window to {120, 80}
+              set position of item "Applications" of container window to {480, 80}
+              set position of item "README.txt" of container window to {120, 280}
+              set position of item "fix-quarantine.command" of container window to {480, 280}
+              close
+            end tell
+          end tell
+          EOF
+
           # Unmount
           hdiutil detach "$MOUNT_POINT"
 
@@ -143,7 +165,7 @@ jobs:
           rm -f "$DMG"
           hdiutil convert "$RW_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG"
           rm -f "$RW_DMG"
-          echo "✅ README and fix-quarantine.command added to DMG"
+          echo "✅ README and fix-quarantine.command added to DMG with custom layout"
 
       - name: Re-upload DMG with README to Release
         if: matrix.platform == 'macos-latest'
