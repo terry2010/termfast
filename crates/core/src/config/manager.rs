@@ -126,6 +126,26 @@ impl ConfigManager {
             return Ok(result);
         }
 
+        // Safety guard: if the config was loaded corruptly (corrupt_load=true)
+        // and the modification did not add any servers (still 0), skip saving.
+        // This prevents a benign user action (e.g. changing the theme) from
+        // persisting an empty servers list over the backed-up original config
+        // that may still contain servers. The in-memory config IS updated so
+        // the UI reflects the user's change, but the file is not overwritten.
+        // Once the user adds a server (servers goes from 0 to >0), the
+        // corrupt_load flag is cleared and normal saving resumes.
+        let was_corrupt = self
+            .corrupt_load
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if was_corrupt && server_count_after == 0 {
+            tracing::warn!(
+                "modify() skipped save: corrupt_load=true and servers still \
+                 empty — preserving backed-up config on disk. In-memory config \
+                 updated (e.g. theme/language change will take effect this session)."
+            );
+            return Ok(result);
+        }
+
         // User explicitly modified the config — clear corrupt_load flag.
         self.corrupt_load
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -145,6 +165,18 @@ impl ConfigManager {
     {
         let mut config = self.config.write().await;
         let result = f(&mut config);
+        // If the config was loaded corruptly and servers are still empty,
+        // skip saving to preserve any backed-up config on disk.
+        let was_corrupt = self
+            .corrupt_load
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if was_corrupt && config.servers.is_empty() {
+            tracing::warn!(
+                "modify_unchecked() skipped save: corrupt_load=true and \
+                 servers empty — preserving backed-up config on disk."
+            );
+            return Ok(result);
+        }
         self.corrupt_load
             .store(false, std::sync::atomic::Ordering::Relaxed);
         self.storage

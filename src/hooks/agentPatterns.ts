@@ -117,6 +117,11 @@ const devinPatterns: CliPatterns = {
       return "Devin is asking a question";
     }
     // Devin permission dialog: the question is the command being approved
+    // Only run these fallbacks if we're in a permission dialog (footer has
+    // "↑↓ select" not "↑↓ navigate"). This prevents AI response text from
+    // being mistaken for the question.
+    const hasPermissionFooter = /↑↓\s+select.*↵\s+(confirm|insert).*esc\s+cancel/i.test(text);
+    if (!hasPermissionFooter) return null;
     // Look for "Running command" line or a line ending with ?
     for (const line of lines) {
       const trimmed = line.trim();
@@ -140,20 +145,73 @@ const devinPatterns: CliPatterns = {
     // Prefixes: "❭" = selected (single-select), "□" = unchecked (multi-select),
     //           "■" = checked (multi-select), "·" = unselected (single-select)
     // Also "  ·   Other (type your own)" — no number, special entry
+    // Some dialogs have options WITHOUT numbers (e.g. "  □ 2 个选项" where "2" is
+    // part of the label, not a number prefix). We detect this by checking if the
+    // extracted numbers form a consecutive sequence (1,2,3...). If not, we treat
+    // all options as unnumbered.
     const selectorIdx = lines.findIndex((l) => /↑↓\s+navigate.*esc\s+cancel/.test(l));
     if (selectorIdx >= 0) {
-      const options: string[] = [];
       const optionPattern = /^\s*[❭·□■]\s*(\d+)\s+(.+)/;
       const otherPattern = /^\s*[❭·□■]\s+(Other\s*\(type your own\))/i;
+      const unnumberedPattern = /^\s*[❭·□■]\s+(.+)/;
+
+      // Find the question line — options only appear AFTER it.
+      // The dialog has a "──" separator line above the question (part of
+      // the tab row), and options appear below the question.
+      // We find the FIRST "──" line (from the top), which is the tab row
+      // separator. Options start after the question line that follows it.
+      // This prevents user message lines (with "❭" prefix) from being
+      // mistaken for options.
+      let separatorIdx = -1;
       for (let i = 0; i < selectorIdx; i++) {
+        if (/──/.test(lines[i])) {
+          separatorIdx = i;
+          break;
+        }
+      }
+      const startIdx = separatorIdx >= 0 ? separatorIdx + 1 : 0;
+
+      // First pass: try numbered extraction
+      const numberedOptions: string[] = [];
+      const numberedIndices: number[] = [];
+      for (let i = startIdx; i < selectorIdx; i++) {
         const m = lines[i].match(optionPattern);
         if (m) {
-          options.push(`${m[1]}. ${m[2].trim()}`);
+          numberedOptions.push(`${m[1]}. ${m[2].trim()}`);
+          numberedIndices.push(parseInt(m[1], 10));
           continue;
         }
         const om = lines[i].match(otherPattern);
         if (om) {
+          numberedOptions.push(om[1].trim());
+          numberedIndices.push(-1); // Other has no number
+        }
+      }
+
+      if (numberedOptions.length > 0) {
+        // Check if numbered options form a consecutive sequence (1, 2, 3, ...)
+        // ignoring "Other" entries (number -1)
+        const numberedNums = numberedIndices.filter((n) => n > 0).sort((a, b) => a - b);
+        const isConsecutive = numberedNums.length > 0 &&
+          numberedNums.every((n, idx) => n === idx + 1);
+        if (isConsecutive) {
+          return numberedOptions;
+        }
+        // Numbers not consecutive → options are unnumbered, "N" is part of label
+        // Fall through to unnumbered extraction
+      }
+
+      // Second pass: unnumbered extraction
+      const options: string[] = [];
+      for (let i = startIdx; i < selectorIdx; i++) {
+        const om = lines[i].match(otherPattern);
+        if (om) {
           options.push(om[1].trim());
+          continue;
+        }
+        const m = lines[i].match(unnumberedPattern);
+        if (m) {
+          options.push(m[1].trim());
         }
       }
       if (options.length > 0) return options;
@@ -162,6 +220,11 @@ const devinPatterns: CliPatterns = {
     // "1 Yes  (Approve once)" — number + space (new permission dialog)
     // "1. Yes" — number + dot + space (older format)
     // Prefixes: "❭" = selected item, "·" = unselected item
+    // Only run this fallback if we're in a permission dialog (footer has
+    // "↑↓ select" not "↑↓ navigate"). This prevents AI response text
+    // (numbered lists like "1. 改为每题...") from being mistaken for options.
+    const hasPermissionFooter = /↑↓\s+select.*↵\s+(confirm|insert).*esc\s+cancel/i.test(text);
+    if (!hasPermissionFooter) return null;
     const options: string[] = [];
     const optionPattern = /^(?:[❭·]\s*)?(\d+)[.\s]+(.+)$/;
     for (const line of lines) {

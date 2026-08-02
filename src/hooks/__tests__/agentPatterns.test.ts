@@ -22,7 +22,7 @@ describe("stripAnsi", () => {
 
 describe("extractQuestion — Devin", () => {
   it("extracts question ending with ?", () => {
-    const screen = "Some output\nDo you want to continue?\n1. Yes\n2. No";
+    const screen = "Some output\nDo you want to continue?\n1. Yes\n2. No\n↑↓ select · ↵ confirm · esc cancel";
     expect(extractQuestion("devin", screen)).toBe("Do you want to continue?");
   });
 
@@ -33,7 +33,7 @@ describe("extractQuestion — Devin", () => {
 
 describe("extractOptions — Devin", () => {
   it("extracts numbered options (old format with dot)", () => {
-    const screen = "Do you want to continue?\n1. Yes\n2. No\n3. Maybe";
+    const screen = "Do you want to continue?\n1. Yes\n2. No\n3. Maybe\n↑↓ select · ↵ confirm · esc cancel";
     const options = extractOptions("devin", screen);
     expect(options).toEqual(["1. Yes", "2. No", "3. Maybe"]);
   });

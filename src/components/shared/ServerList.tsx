@@ -571,19 +571,9 @@ export function ServerList({
         >
           {loading ? (
             <SkeletonList count={3} />
-          ) : sorted.length === 0 ? (
-            <button
-              className={`w-full p-3 text-center text-sm text-gray-500 hover:text-[#007AFF] hover:bg-gray-100/80 transition-colors rounded-lg ${!showFullContent ? "hidden" : ""}`}
-              onClick={() => {
-                onAddServer ? onAddServer() : setShowAddDialog(true);
-              }}
-              title={t("server.add")}
-            >
-              {t("server.add")}
-            </button>
           ) : (
             <>
-            {/* "我的电脑" virtual node — pinned at top, not draggable */}
+            {/* "我的电脑" virtual node — pinned at top, not draggable, always visible */}
             <ServerListItem
               key="__local__"
               server={{
@@ -618,7 +608,18 @@ export function ServerList({
                 ]);
               }}
             />
-            {sorted.map((server) => (
+            {sorted.length === 0 ? (
+              <button
+                className={`w-full p-3 text-center text-sm text-gray-500 hover:text-[#007AFF] hover:bg-gray-100/80 transition-colors rounded-lg ${!showFullContent ? "hidden" : ""}`}
+                onClick={() => {
+                  onAddServer ? onAddServer() : setShowAddDialog(true);
+                }}
+                title={t("server.add")}
+              >
+                {t("server.add")}
+              </button>
+            ) : (
+              sorted.map((server) => (
               <ServerListItem
                 key={server.id}
                 server={server}
@@ -679,7 +680,8 @@ export function ServerList({
                   setDragOverId(null);
                 }}
               />
-            ))}
+              ))
+            )}
             </>
           )}
         </div>
