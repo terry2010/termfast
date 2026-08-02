@@ -80,6 +80,12 @@ export default function App() {
       .then(async (data) => {
         if (data) {
           setConfig(data);
+          // Open DevTools on startup if developer option is enabled
+          if (data?.general?.dev_devtools) {
+            ipcInvoke("ipc_toggle_devtools", { open: true }).catch((e) =>
+              console.error("open devtools on startup failed:", e),
+            );
+          }
           // Apply saved language preference on startup
           const savedLang = data?.general?.language;
           if (savedLang) {

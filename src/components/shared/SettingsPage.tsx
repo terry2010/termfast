@@ -22,7 +22,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 type TabId =
-  "general" | "logs" | "terminal" | "proxy" | "trigger" | "notification" | "credentials" | "cloud_sync" | "data" | "about";
+  "general" | "logs" | "terminal" | "proxy" | "trigger" | "notification" | "credentials" | "cloud_sync" | "data" | "developer" | "about";
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -33,6 +33,9 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const isScrollingRef = useRef(false);
 
+  const config = useConfigStore((s) => s.config);
+  const devModeActive = !!(config?.general.dev_terminal_log || config?.general.dev_devtools);
+
   const tabs: { id: TabId; label: string }[] = [
     { id: "general", label: t("settings.general.title") },
     { id: "logs", label: t("settings.logs.title") },
@@ -42,6 +45,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     { id: "notification", label: t("settings.notification.title") },
     { id: "credentials", label: t("credentials.settings_section") },
     { id: "cloud_sync", label: t("settings.cloud_sync.title") },
+    ...(devModeActive ? [{ id: "developer" as TabId, label: t("settings.developer.title") }] : []),
     { id: "about", label: t("settings.about.title") },
   ];
 
@@ -176,6 +180,15 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
             >
               <CloudSyncSection />
             </div>
+            {devModeActive && (
+              <div
+                ref={(el) => {
+                  sectionRefs.current.developer = el;
+                }}
+              >
+                <DeveloperSection />
+              </div>
+            )}
             <div
               ref={(el) => {
                 sectionRefs.current.about = el;
@@ -661,12 +674,36 @@ function NotificationSection() {
 
 function AboutSection() {
   const { t } = useTranslation();
+  const config = useConfigStore((s) => s.config);
+  const updateGeneral = useConfigStore((s) => s.updateGeneral);
   const [checking, setChecking] = useState(false);
   const [appVersion, setAppVersion] = useState("");
+  const clickCountRef = useRef(0);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("0.2.17"));
   }, []);
+
+  const handleVersionClick = () => {
+    clickCountRef.current++;
+    if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    clickTimerRef.current = setTimeout(() => {
+      clickCountRef.current = 0;
+    }, 3000);
+    if (clickCountRef.current >= 7) {
+      clickCountRef.current = 0;
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+      const newDevMode = !config?.general.dev_terminal_log && !config?.general.dev_devtools;
+      // Toggle dev mode: enable both flags or disable both
+      updateGeneral({ dev_terminal_log: newDevMode, dev_devtools: newDevMode } as any);
+      ipcInvoke("ipc_update_general_config", {
+        dev_terminal_log: newDevMode,
+        dev_devtools: newDevMode,
+      }).catch((e) => console.error("toggle dev mode failed:", e));
+      toast.success(newDevMode ? t("settings.developer.activated") : t("settings.developer.deactivated"));
+    }
+  };
 
   const handleCheck = async () => {
     if (checking) return;
@@ -689,6 +726,8 @@ function AboutSection() {
     }
   };
 
+  const devModeActive = !!(config?.general.dev_terminal_log || config?.general.dev_devtools);
+
   return (
     <SettingGroup title={t("settings.about.title")}>
       <SettingItem
@@ -701,9 +740,13 @@ function AboutSection() {
               <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                 TermFast
               </div>
-              <div className="text-xs text-gray-500 dark:text-gray-400">
+              <button
+                className="text-xs text-gray-500 dark:text-gray-400 cursor-default select-none"
+                onClick={handleVersionClick}
+                title={devModeActive ? t("settings.developer.click_to_disable") : t("settings.developer.click_to_enable")}
+              >
                 v{appVersion || "..."}
-              </div>
+              </button>
             </div>
           </div>
         }
@@ -739,6 +782,73 @@ function AboutSection() {
           )}
         </SettingItem>
       </button>
+    </SettingGroup>
+  );
+}
+
+function DeveloperSection() {
+  const { t } = useTranslation();
+  const config = useConfigStore((s) => s.config);
+  const updateGeneral = useConfigStore((s) => s.updateGeneral);
+
+  if (!config) return null;
+  const devModeActive = config.general.dev_terminal_log || config.general.dev_devtools;
+  if (!devModeActive) return null;
+
+  const updateAndSave = (patch: Record<string, unknown>) => {
+    updateGeneral(patch as any);
+    ipcInvoke("ipc_update_general_config", patch).catch((e) =>
+      console.error("save dev config failed:", e),
+    );
+  };
+
+  const openLogFolder = async () => {
+    try {
+      const { appLocalDataDir } = await import("@tauri-apps/api/path");
+      const baseDir = await appLocalDataDir();
+      const logDir = `${baseDir}/termfast-logs`;
+      await openUrl(`file://${logDir}`);
+    } catch (e) {
+      console.error("open log folder failed:", e);
+    }
+  };
+
+  return (
+    <SettingGroup title={t("settings.developer.title")}>
+      <SettingItem
+        label={
+          <div className="flex items-center gap-2">
+            <span>{t("settings.developer.terminal_log")}</span>
+            {config.general.dev_terminal_log && (
+              <button
+                type="button"
+                className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 font-medium transition-colors"
+                onClick={openLogFolder}
+                title={t("settings.developer.open_log_folder")}
+              >
+                {t("settings.developer.open_log_folder")}
+              </button>
+            )}
+          </div>
+        }
+        hint={t("settings.developer.terminal_log_hint")}
+      >
+        <Toggle
+          checked={config.general.dev_terminal_log}
+          onChange={(v) => updateAndSave({ dev_terminal_log: v })}
+        />
+      </SettingItem>
+      <SettingItem label={t("settings.developer.devtools")} hint={t("settings.developer.devtools_hint")}>
+        <Toggle
+          checked={config.general.dev_devtools}
+          onChange={(v) => {
+            updateAndSave({ dev_devtools: v });
+            ipcInvoke("ipc_toggle_devtools", { open: v }).catch((e) =>
+              console.error("toggle devtools failed:", e),
+            );
+          }}
+        />
+      </SettingItem>
     </SettingGroup>
   );
 }

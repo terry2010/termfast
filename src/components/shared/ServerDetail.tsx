@@ -239,7 +239,12 @@ export function ServerDetail() {
       }
       // SSH connected — now open terminal session
       try {
-        const result = await openTerminalWithChannel(serverId);
+        // Read trigger overrides before opening terminal (passed to daemon
+        // in the same call to avoid race condition with terminal event consumer).
+        const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
+        const result = await openTerminalWithChannel(serverId, 80, 24, {
+          triggerOverrides: triggerOverrides && Object.keys(triggerOverrides).length > 0 ? triggerOverrides : undefined,
+        });
         const sessionId = result.session_id;
         const initialOutput = result.initial_output || "";
         const tabId: Tab = `term:${sessionId}`;
@@ -256,14 +261,6 @@ export function ServerDetail() {
           agentStatus: null,
         });
         setActiveTerminalTab(serverId, tabId);
-        // Send server-level exec_in_terminal overrides to daemon as session overrides
-        const overrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
-        if (overrides && Object.keys(overrides).length > 0) {
-          ipcInvoke("ipc_set_trigger_overrides", {
-            sessionId,
-            overrides,
-          }).catch(() => {});
-        }
         requestAnimationFrame(() => {
           updateServerStatus(
             serverId,
@@ -333,10 +330,14 @@ export function ServerDetail() {
     const serverId = "__local__";
     // Use explicitly passed shell, or the selected shell from toggle, or null (default)
     const effectiveShell = shell ?? selectedShell ?? undefined;
+    // Read trigger overrides before opening terminal (passed to daemon
+    // in the same call to avoid race condition with terminal event consumer).
+    const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
     try {
       const result = await openTerminalWithChannel(serverId, 80, 24, {
         backend: "local",
         shell: effectiveShell,
+        triggerOverrides: triggerOverrides && Object.keys(triggerOverrides).length > 0 ? triggerOverrides : undefined,
       });
       const sessionId = result.session_id;
       const tabId: Tab = `term:${sessionId}`;
@@ -353,14 +354,6 @@ export function ServerDetail() {
         agentStatus: null,
       });
       setActiveTerminalTab(serverId, tabId);
-      // Send server-level exec_in_terminal overrides to daemon as session overrides
-      const overrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
-      if (overrides && Object.keys(overrides).length > 0) {
-        ipcInvoke("ipc_set_trigger_overrides", {
-          sessionId,
-          overrides,
-        }).catch(() => {});
-      }
     } catch (e) {
       const msg = formatIpcError(e);
       toast.error(t("server.terminal_open_failed"), { description: msg });

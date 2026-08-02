@@ -1400,7 +1400,11 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     registerTerminalOutput(sessionId, handleBinaryOutput);
 
     // Initialize terminal I/O log (writes to AppLocalData/termfast-logs/)
-    initTerminalLog(sessionId).catch(() => {});
+    // Only when developer terminal logging is enabled in config
+    const config = useConfigStore.getState().config;
+    if (config?.general?.dev_terminal_log) {
+      initTerminalLog(sessionId).catch(() => {});
+    }
 
     // Listen for terminal closed event
     let unlistenClosed: UnlistenFn | undefined;

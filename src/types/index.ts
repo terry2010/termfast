@@ -74,6 +74,8 @@ export interface TriggerInstance {
   cooldown_secs: number;
   last_fired_at: string | null;
   exec_in_terminal: boolean;
+  /// Whether this trigger is bound to new terminals by default (list toggle default)
+  bind_new_terminals: boolean;
   interval_secs: number;
   schedule_mode: string;
   cron_expr: string;
@@ -199,6 +201,10 @@ export interface GeneralConfig {
   terminal_font_size: number;
   /// Terminal font family CSS string
   terminal_font_family: string;
+  /// Developer option: log detailed terminal I/O to disk
+  dev_terminal_log: boolean;
+  /// Developer option: open DevTools
+  dev_devtools: boolean;
 }
 
 /// User-defined custom variable for trigger templates

@@ -217,13 +217,17 @@ pub async fn start_local_interval_timers(state: &DaemonState) {
     }
 
     let engine = state.local_trigger_engine.clone();
+    let terminal_manager = state.terminal_manager.clone();
 
     for trigger in triggers {
         let engine = engine.clone();
         let config_manager = config_manager.clone();
+        let terminal_manager = terminal_manager.clone();
         let trigger_id = trigger.id.clone();
         let trigger_name = trigger.name.clone();
         let trigger_type = trigger.trigger_type.clone();
+        let trigger_exec_in_terminal = trigger.exec_in_terminal;
+        let trigger_bind_new_terminals = trigger.bind_new_terminals;
 
         match &trigger_type {
             TriggerType::OnInterval => {
@@ -248,6 +252,46 @@ pub async fn start_local_interval_timers(state: &DaemonState) {
                             new_ips: None, old_ips: None,
                             session_id: None,
                         };
+
+                        // bind_new_terminals=false → skip entirely (user disabled).
+                        // exec_in_terminal=true → inject into active terminal (fallback to background if none).
+                        // exec_in_terminal=false → background fire_event.
+                        if !trigger_bind_new_terminals {
+                            tracing::info!(
+                                "[OnInterval] trigger '{}' bind_new_terminals=false, skipping",
+                                trigger_name
+                            );
+                            continue;
+                        }
+
+                        if trigger_exec_in_terminal {
+                            // Inject into the first active local terminal session
+                            let target_session = terminal_manager
+                                .find_session_by_server("__local__")
+                                .await;
+                            if let Some(ref sid) = target_session {
+                                let trigger = current_triggers.iter().find(|t| t.id == trigger_id);
+                                if let Some(trigger) = trigger {
+                                    let rendered_cmds = engine.render_commands(&event, trigger);
+                                    for cmd in &rendered_cmds {
+                                        let mut data = cmd.as_bytes().to_vec();
+                                        data.push(b'\n');
+                                        if let Err(e) = terminal_manager
+                                            .input_with_ack(sid, &data, true)
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                "[OnInterval] failed to inject command: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            // No active terminal — fall back to background
+                        }
+
                         let _ = engine
                             .fire_event(None, &current_triggers, &templates, &event)
                             .await;
@@ -275,20 +319,56 @@ pub async fn start_local_interval_timers(state: &DaemonState) {
                                 "[OnSchedule/once] firing local trigger '{}' ({})",
                                 trigger_name, trigger_id
                             );
-                            let config = config_manager.lock().await.get().await;
-                            let current_triggers = config.local_triggers.clone();
-                            let templates = config.trigger_templates.clone();
-                            let event = termfast_core::trigger::TriggerEvent {
-                                server_id: "__local__".to_string(),
-                                server_name: "My Computer".to_string(),
-                                trigger_type: TriggerType::OnSchedule,
-                                new_ip: None, old_ip: None,
-                                new_ips: None, old_ips: None,
-                                session_id: None,
-                            };
-                            let _ = engine
-                                .fire_event(None, &current_triggers, &templates, &event)
-                                .await;
+                            if !trigger_bind_new_terminals {
+                                tracing::info!(
+                                    "[OnSchedule/once] trigger '{}' bind_new_terminals=false, skipping",
+                                    trigger_name
+                                );
+                            } else {
+                                let config = config_manager.lock().await.get().await;
+                                let current_triggers = config.local_triggers.clone();
+                                let templates = config.trigger_templates.clone();
+                                let event = termfast_core::trigger::TriggerEvent {
+                                    server_id: "__local__".to_string(),
+                                    server_name: "My Computer".to_string(),
+                                    trigger_type: TriggerType::OnSchedule,
+                                    new_ip: None, old_ip: None,
+                                    new_ips: None, old_ips: None,
+                                    session_id: None,
+                                };
+                                if trigger_exec_in_terminal {
+                                    let target_session = terminal_manager
+                                        .find_session_by_server("__local__")
+                                        .await;
+                                    if let Some(ref sid) = target_session {
+                                        let trigger = current_triggers.iter().find(|t| t.id == trigger_id);
+                                        if let Some(trigger) = trigger {
+                                            let rendered_cmds = engine.render_commands(&event, trigger);
+                                            for cmd in &rendered_cmds {
+                                                let mut data = cmd.as_bytes().to_vec();
+                                                data.push(b'\n');
+                                                if let Err(e) = terminal_manager
+                                                    .input_with_ack(sid, &data, true)
+                                                    .await
+                                                {
+                                                    tracing::warn!(
+                                                        "[OnSchedule/once] failed to inject command: {}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        let _ = engine
+                                            .fire_event(None, &current_triggers, &templates, &event)
+                                            .await;
+                                    }
+                                } else {
+                                    let _ = engine
+                                        .fire_event(None, &current_triggers, &templates, &event)
+                                        .await;
+                                }
+                            }
                             // Disable the trigger in config
                             {
                                 let mgr = config_manager.lock().await;
@@ -319,6 +399,13 @@ pub async fn start_local_interval_timers(state: &DaemonState) {
                                     "[OnSchedule/cron] firing local trigger '{}' ({})",
                                     trigger_name, trigger_id
                                 );
+                                if !trigger_bind_new_terminals {
+                                    tracing::info!(
+                                        "[OnSchedule/cron] trigger '{}' bind_new_terminals=false, skipping",
+                                        trigger_name
+                                    );
+                                    continue;
+                                }
                                 let config = config_manager.lock().await.get().await;
                                 let current_triggers = config.local_triggers.clone();
                                 let templates = config.trigger_templates.clone();
@@ -330,9 +417,38 @@ pub async fn start_local_interval_timers(state: &DaemonState) {
                                     new_ips: None, old_ips: None,
                                     session_id: None,
                                 };
-                                let _ = engine
-                                    .fire_event(None, &current_triggers, &templates, &event)
-                                    .await;
+                                if trigger_exec_in_terminal {
+                                    let target_session = terminal_manager
+                                        .find_session_by_server("__local__")
+                                        .await;
+                                    if let Some(ref sid) = target_session {
+                                        let trigger = current_triggers.iter().find(|t| t.id == trigger_id);
+                                        if let Some(trigger) = trigger {
+                                            let rendered_cmds = engine.render_commands(&event, trigger);
+                                            for cmd in &rendered_cmds {
+                                                let mut data = cmd.as_bytes().to_vec();
+                                                data.push(b'\n');
+                                                if let Err(e) = terminal_manager
+                                                    .input_with_ack(sid, &data, true)
+                                                    .await
+                                                {
+                                                    tracing::warn!(
+                                                        "[OnSchedule/cron] failed to inject command: {}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        let _ = engine
+                                            .fire_event(None, &current_triggers, &templates, &event)
+                                            .await;
+                                    }
+                                } else {
+                                    let _ = engine
+                                        .fire_event(None, &current_triggers, &templates, &event)
+                                        .await;
+                                }
                             }
                         });
                         handles.push(task);
@@ -698,9 +814,11 @@ impl DaemonServer {
                 let engine = state_clone2.local_trigger_engine.clone();
                 tracing::info!("[terminal event consumer] firing event: type={:?}, triggers={}", trigger_event.trigger_type, triggers.len());
 
-                // Split triggers: exec_in_terminal=true → inject into PTY,
-                // exec_in_terminal=false → background fire_event.
-                // Check per-session overrides first, fall back to trigger config.
+                // For OnTerminalOpen/BeforeTerminalClose:
+                //   exec_in_terminal=true + bind_new_terminals=true → inject into PTY
+                //   exec_in_terminal=true + bind_new_terminals=false → skip (user opted out of auto-trigger)
+                //   exec_in_terminal=false → background fire_event
+                // Per-session overrides (stored as exec_in_terminal) take priority.
                 let matching: Vec<_> = triggers
                     .iter()
                     .filter(|t| t.trigger_type == trigger_event.trigger_type && t.enabled)
@@ -716,9 +834,16 @@ impl DaemonServer {
                             .terminal_manager
                             .get_trigger_override(sid, &t.id)
                             .await;
-                        let use_in_terminal = override_val.unwrap_or(t.exec_in_terminal);
-                        if use_in_terminal {
-                            in_t.push(t);
+                        // Override (if set) replaces exec_in_terminal.
+                        let effective_exec_in_terminal =
+                            override_val.unwrap_or(t.exec_in_terminal);
+                        if effective_exec_in_terminal {
+                            // In-terminal: only auto-inject if bind_new_terminals is on.
+                            // (Override turning ON exec_in_terminal implies inject.)
+                            if override_val.is_some() || t.bind_new_terminals {
+                                in_t.push(t);
+                            }
+                            // else: skip — user wants in-terminal but not auto-triggered.
                         } else {
                             bg.push(t);
                         }

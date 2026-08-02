@@ -217,6 +217,9 @@
     "event_type": "Event Type",
     "exec_in_terminal": "Execute in terminal",
     "exec_in_terminal_hint": "Inject commands into the active terminal PTY instead of running in background",
+    "bind_new_terminals": "Bind to new terminals",
+    "bind_new_terminals_hint": "When enabled, this trigger is automatically bound when a new terminal opens. You can toggle it per-trigger in the list — list changes are temporary and reset on app restart.",
+    "bind_new_terminals_tooltip": "Toggle to bind this trigger when opening a new terminal (temporary — not saved)",
     "per_terminal_hint": "Changes here only affect this terminal and are not saved. Restarting the app restores the trigger's configured value.",
     "overridden": "overridden",
     "interval_secs": "Interval (seconds)",
@@ -455,6 +458,18 @@
       "installed": "Update installed. Restart to apply.",
       "confirm": "Install update {{version}}?",
       "install": "Install"
+    },
+    "developer": {
+      "title": "Developer Options",
+      "terminal_log": "Terminal I/O Logging",
+      "terminal_log_hint": "Record raw terminal input/output to disk for debugging AI CLI agent interactions",
+      "open_log_folder": "Open folder",
+      "devtools": "Open DevTools",
+      "devtools_hint": "Open the WebKit/WKWebView inspector for debugging the app UI",
+      "activated": "Developer mode activated",
+      "deactivated": "Developer mode deactivated",
+      "click_to_enable": "Click version 7 times to enable developer options",
+      "click_to_disable": "Click version 7 times to disable developer options"
     }
   },
   "onboarding": {

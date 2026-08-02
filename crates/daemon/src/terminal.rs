@@ -456,6 +456,7 @@ impl TerminalManager {
         cols: u32,
         rows: u32,
         shell: Option<String>,
+        trigger_overrides: Option<std::collections::HashMap<String, bool>>,
     ) -> Result<(String, Vec<u8>), String> {
         let session_id = Uuid::new_v4().to_string();
         let sid = session_id.clone();
@@ -596,6 +597,12 @@ impl TerminalManager {
             .lock()
             .await
             .insert(session_id.clone(), session);
+
+        // Set trigger overrides BEFORE sending the Opened event, so the
+        // terminal event consumer sees them when it processes the event.
+        if let Some(overrides) = trigger_overrides {
+            self.set_trigger_overrides(&session_id, overrides).await;
+        }
 
         // 发送 Opened 事件
         // Delay briefly to give the shell time to start and be ready for input.
@@ -1004,7 +1011,7 @@ mod tests {
 
         // 1. Open local terminal
         let (session_id, initial_output) = manager
-            .open_local(80, 24, None)
+            .open_local(80, 24, None, None)
             .await
             .expect("open_local should succeed");
         assert!(!session_id.is_empty());
@@ -1061,8 +1068,8 @@ mod tests {
         );
 
         // Open two local terminals
-        let (sid1, _) = manager.open_local(80, 24, None).await.unwrap();
-        let (sid2, _) = manager.open_local(80, 24, None).await.unwrap();
+        let (sid1, _) = manager.open_local(80, 24, None, None).await.unwrap();
+        let (sid2, _) = manager.open_local(80, 24, None, None).await.unwrap();
 
         assert!(manager.has_sessions_for_server("__local__").await);
 

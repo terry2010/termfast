@@ -127,6 +127,12 @@ pub struct GeneralConfig {
     /// Terminal font family CSS string
     #[serde(default = "default_terminal_font_family")]
     pub terminal_font_family: String,
+    /// Developer option: log detailed terminal I/O to disk
+    #[serde(default)]
+    pub dev_terminal_log: bool,
+    /// Developer option: open DevTools
+    #[serde(default)]
+    pub dev_devtools: bool,
 }
 
 /// User-defined custom variable for trigger templates
@@ -224,6 +230,8 @@ impl Default for GeneralConfig {
             terminal_theme: default_terminal_theme(),
             terminal_font_size: default_terminal_font_size(),
             terminal_font_family: default_terminal_font_family(),
+            dev_terminal_log: false,
+            dev_devtools: false,
         }
     }
 }
@@ -545,6 +553,10 @@ pub struct TriggerInstance {
     /// types fall back to background execution regardless of this flag.
     #[serde(default)]
     pub exec_in_terminal: bool,
+    /// Whether this trigger is bound to new terminals by default.
+    /// The list toggle reflects this value; user can override at runtime.
+    #[serde(default)]
+    pub bind_new_terminals: bool,
     /// Interval in seconds for OnInterval triggers. Ignored for other types.
     #[serde(default)]
     pub interval_secs: u64,

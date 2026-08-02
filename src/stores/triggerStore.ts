@@ -15,6 +15,10 @@ interface TriggerStore {
    * Keyed by serverId, then triggerId → override value.
    * When a new terminal opens, these are sent to the daemon as session overrides. */
   serverExecInTerminalOverrides: Record<string, Record<string, boolean>>;
+  /** Per-server runtime overrides for bind_new_terminals (NOT persisted).
+   * Keyed by serverId, then triggerId → override value.
+   * Reset when the app closes; preserved across tab switches. */
+  serverBindNewTerminalsOverrides: Record<string, Record<string, boolean>>;
 
   setTemplates: (templates: TriggerTemplate[]) => void;
   loadTemplates: () => Promise<void>;
@@ -29,6 +33,10 @@ interface TriggerStore {
   setExecInTerminalOverride: (serverId: string, triggerId: string, value: boolean) => void;
   /** Get the effective exec_in_terminal value (override or config). */
   getEffectiveExecInTerminal: (serverId: string, trigger: TriggerInstance) => boolean;
+  /** Set a runtime override for bind_new_terminals (not persisted). */
+  setBindNewTerminalsOverride: (serverId: string, triggerId: string, value: boolean) => void;
+  /** Get the effective bind_new_terminals value (override or config). */
+  getEffectiveBindNewTerminals: (serverId: string, trigger: TriggerInstance) => boolean;
 }
 
 export interface CommandResult {
@@ -56,6 +64,7 @@ export const useTriggerStore = create<TriggerStore>((set, get) => ({
   serverTriggers: {},
   executing: {},
   serverExecInTerminalOverrides: {},
+  serverBindNewTerminalsOverrides: {},
 
   setTemplates: (templates) => set({ templates }),
 
@@ -111,5 +120,24 @@ export const useTriggerStore = create<TriggerStore>((set, get) => ({
       return overrides[trigger.id];
     }
     return trigger.exec_in_terminal;
+  },
+
+  setBindNewTerminalsOverride: (serverId, triggerId, value) =>
+    set((state) => ({
+      serverBindNewTerminalsOverrides: {
+        ...state.serverBindNewTerminalsOverrides,
+        [serverId]: {
+          ...(state.serverBindNewTerminalsOverrides[serverId] || {}),
+          [triggerId]: value,
+        },
+      },
+    })),
+
+  getEffectiveBindNewTerminals: (serverId, trigger) => {
+    const overrides = get().serverBindNewTerminalsOverrides[serverId];
+    if (overrides && trigger.id in overrides) {
+      return overrides[trigger.id];
+    }
+    return trigger.bind_new_terminals;
   },
 }));

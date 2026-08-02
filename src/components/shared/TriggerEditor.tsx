@@ -11,6 +11,7 @@ import { StreamLanguage } from "@codemirror/language";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
 import { Modal } from "@/components/ui/Modal";
+import { toast } from "@/components/ui/toast";
 import { useTriggerStore } from "@/stores/triggerStore";
 import type { TriggerInstance, TriggerType, TriggerTemplate } from "@/types";
 
@@ -36,7 +37,7 @@ export function TriggerEditor({
   const [eventType, setEventType] = useState<TriggerType>(
     (trigger as any)?.trigger_type || "ManualFire",
   );
-  const [timeoutSecs, setTimeoutSecs] = useState(trigger?.timeout_secs || 1);
+  const [timeoutSecs, setTimeoutSecs] = useState(trigger?.timeout_secs || 30);
   const [cooldownSecs, setCooldownSecs] = useState(
     trigger?.cooldown_secs || 1,
   );
@@ -51,6 +52,9 @@ export function TriggerEditor({
   );
   const [execInTerminal, setExecInTerminal] = useState<boolean>(
     trigger?.exec_in_terminal ?? false,
+  );
+  const [bindNewTerminals, setBindNewTerminals] = useState<boolean>(
+    trigger?.bind_new_terminals ?? false,
   );
   // Interval: stored as seconds in config, displayed as days+hours+minutes+seconds
   const rawInterval = trigger?.interval_secs || 300;
@@ -119,7 +123,6 @@ export function TriggerEditor({
   );
 
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
 
   const templates = useTriggerStore((s) => s.templates);
@@ -180,12 +183,11 @@ export function TriggerEditor({
       });
     }
     setShowTemplateSelector(false);
-    setError(null);
   };
 
   const handleSave = async () => {
     if (!name.trim()) {
-      setError(t("trigger.name_required"));
+      toast.error(t("trigger.name_required"));
       return;
     }
 
@@ -195,12 +197,11 @@ export function TriggerEditor({
       .filter((c) => c.length > 0);
 
     if (commands.length === 0) {
-      setError(t("trigger.commands_required"));
+      toast.error(t("trigger.commands_required"));
       return;
     }
 
     setSaving(true);
-    setError(null);
 
     const isLocal = serverId === "__local__";
     try {
@@ -223,6 +224,7 @@ export function TriggerEditor({
             last_fired_at: trigger?.last_fired_at ?? null,
             template_hash_at_addition: "",
             exec_in_terminal: execInTerminal,
+            bind_new_terminals: bindNewTerminals,
             interval_secs: intervalSecs,
             schedule_mode: scheduleMode,
             cron_expr: cronExpr,
@@ -245,6 +247,7 @@ export function TriggerEditor({
             notify_on_failure: notifyOnFailure,
             commands,
             exec_in_terminal: execInTerminal,
+            bind_new_terminals: bindNewTerminals,
             interval_secs: intervalSecs,
             schedule_mode: scheduleMode,
             cron_expr: cronExpr,
@@ -271,6 +274,7 @@ export function TriggerEditor({
             last_fired_at: null,
             template_hash_at_addition: "",
             exec_in_terminal: execInTerminal,
+            bind_new_terminals: bindNewTerminals,
             interval_secs: intervalSecs,
             schedule_mode: scheduleMode,
             cron_expr: cronExpr,
@@ -281,7 +285,7 @@ export function TriggerEditor({
       onSaved?.();
       onClose();
     } catch (e) {
-      setError(formatIpcError(e));
+      toast.error(formatIpcError(e));
     } finally {
       setSaving(false);
     }
@@ -376,6 +380,22 @@ export function TriggerEditor({
                 onChange={setExecInTerminal}
               />
             </div>
+            {execInTerminal && (
+              <div className="flex items-center justify-between px-4 py-3">
+                <div>
+                  <span className="text-sm text-gray-700 dark:text-gray-200">
+                    {t("trigger.bind_new_terminals")}
+                  </span>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                    {t("trigger.bind_new_terminals_hint")}
+                  </p>
+                </div>
+                <Toggle
+                  checked={bindNewTerminals}
+                  onChange={setBindNewTerminals}
+                />
+              </div>
+            )}
             {eventType === "OnInterval" && (
               <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06]">
                 <div className="flex items-center justify-between gap-4">
@@ -631,13 +651,6 @@ export function TriggerEditor({
               <Toggle checked={notifyOnFailure} onChange={setNotifyOnFailure} />
             </SettingRow>
           </SettingGroup>
-
-          {/* Error */}
-          {error && (
-            <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">
-              {error}
-            </div>
-          )}
         </div>
       </Modal>
 

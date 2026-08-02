@@ -289,6 +289,8 @@ pub fn run() {
             ipc_get_trigger_overrides,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
             ipc_quit_app,
+            // Developer options
+            ipc_toggle_devtools,
             // Cloud sync
             ipc_cloud_sync_auth_url,
             ipc_cloud_sync_exchange_code,
@@ -405,6 +407,8 @@ async fn ipc_update_general_config(
     log_max_days: Option<u32>,
     log_max_size_mb: Option<u32>,
     custom_variables: Option<Vec<serde_json::Value>>,
+    dev_terminal_log: Option<bool>,
+    dev_devtools: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({});
     if let Some(v) = theme {
@@ -433,6 +437,12 @@ async fn ipc_update_general_config(
     }
     if let Some(v) = custom_variables {
         params["custom_variables"] = serde_json::json!(v);
+    }
+    if let Some(v) = dev_terminal_log {
+        params["dev_terminal_log"] = serde_json::json!(v);
+    }
+    if let Some(v) = dev_devtools {
+        params["dev_devtools"] = serde_json::json!(v);
     }
     forward_to_daemon(
         &state,
@@ -774,6 +784,20 @@ async fn ipc_shutdown(state: tauri::State<'_, AppState>) -> Result<(), String> {
 }
 
 // === SECTION 3 END ===
+
+/// Toggle DevTools for the main window.
+/// Called from the Developer Options settings section.
+#[tauri::command]
+fn ipc_toggle_devtools(app_handle: tauri::AppHandle, open: bool) -> Result<(), String> {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        if open {
+            window.open_devtools();
+        } else {
+            window.close_devtools();
+        }
+    }
+    Ok(())
+}
 
 /// Quit the app gracefully (from tray menu "Quit").
 /// Performs daemon shutdown then exits, bypassing minimize_to_tray.
@@ -1257,6 +1281,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 // === SECTION: Terminal IPC commands ===
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn ipc_terminal_open(
     state: tauri::State<'_, AppState>,
     server_id: String,
@@ -1265,6 +1290,7 @@ async fn ipc_terminal_open(
     on_output: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
     backend: Option<String>,
     shell: Option<String>,
+    trigger_overrides: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "server_id": server_id,
@@ -1272,6 +1298,7 @@ async fn ipc_terminal_open(
         "rows": rows.unwrap_or(24),
         "backend": backend.as_deref().unwrap_or("ssh"),
         "shell": shell,
+        "trigger_overrides": trigger_overrides,
     });
     let result = forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalOpen, params).await?;
     // Register the channel for this session so the binary event forwarder can send raw bytes

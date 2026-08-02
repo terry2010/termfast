@@ -219,6 +219,9 @@
     "event_type": "事件类型",
     "exec_in_terminal": "在终端内执行",
     "exec_in_terminal_hint": "将命令注入到当前终端 PTY 执行，而非后台独立执行",
+    "bind_new_terminals": "绑定所有新建终端",
+    "bind_new_terminals_hint": "开启后，打开新终端时自动绑定此触发器。可在列表中单独切换——列表中的改动是临时的，重启后恢复。",
+    "bind_new_terminals_tooltip": "切换以在打开新终端时绑定此触发器（临时——不会保存）",
     "per_terminal_hint": "此处的修改仅对当前终端有效，不会保存。重启应用后恢复触发器的配置值。",
     "overridden": "已覆盖",
     "interval_secs": "间隔（秒）",
@@ -457,6 +460,18 @@
       "installed": "更新已安装，重启后生效",
       "confirm": "是否安装更新 {{version}}？",
       "install": "安装"
+    },
+    "developer": {
+      "title": "开发者选项",
+      "terminal_log": "终端 I/O 日志",
+      "terminal_log_hint": "记录终端原始输入/输出到磁盘，用于调试 AI CLI 交互",
+      "open_log_folder": "打开文件夹",
+      "devtools": "打开开发者工具",
+      "devtools_hint": "打开 WebKit/WKWebView 检查器，用于调试应用界面",
+      "activated": "开发者模式已开启",
+      "deactivated": "开发者模式已关闭",
+      "click_to_enable": "点击版本号 7 次开启开发者选项",
+      "click_to_disable": "点击版本号 7 次关闭开发者选项"
     }
   },
   "onboarding": {

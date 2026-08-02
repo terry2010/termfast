@@ -7,6 +7,7 @@ import { useTriggerStore } from "@/stores/triggerStore";
 import { useServerStore } from "@/stores/serverStore";
 import type { TriggerExecution, CommandResult } from "@/stores/triggerStore";
 import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
+import { toast } from "@/components/ui/toast";
 import { TriggerEditor } from "@/components/shared/TriggerEditor";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { TriggerInstance, TriggerType } from "@/types";
@@ -199,20 +200,54 @@ function TriggerCard({
   const { t } = useTranslation();
   const startExecution = useTriggerStore((s) => s.startExecution);
   const finishExecution = useTriggerStore((s) => s.finishExecution);
-  const setExecInTerminalOverride = useTriggerStore(
-    (s) => s.setExecInTerminalOverride,
-  );
-  // Subscribe directly to overrides data so toggle changes trigger re-render
-  const overrides = useTriggerStore(
-    (s) => s.serverExecInTerminalOverrides[serverId],
-  );
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
   const infoRef = useRef<HTMLDivElement>(null);
-  const effectiveExecInTerminal =
-    overrides && trigger.id in overrides
-      ? overrides[trigger.id]
-      : trigger.exec_in_terminal;
+  // The list toggle reflects bind_new_terminals (persisted config: whether
+  // this trigger auto-injects into new terminals).
+  const effectiveBindNewTerminals = trigger.bind_new_terminals;
+
+  const handleToggleBindNewTerminals = async (v: boolean) => {
+    try {
+      const isLocal = serverId === "__local__";
+      if (isLocal) {
+        const updated = { ...trigger, bind_new_terminals: v };
+        await ipcInvoke("ipc_save_local_trigger", { trigger: updated });
+      } else {
+        await ipcInvoke("ipc_update_trigger", {
+          params: {
+            server_id: serverId,
+            trigger_id: trigger.id,
+            name: trigger.name,
+            trigger_type: trigger.trigger_type,
+            enabled: trigger.enabled,
+            timeout_secs: trigger.timeout_secs,
+            cooldown_secs: trigger.cooldown_secs,
+            continue_on_error: trigger.continue_on_error,
+            notify_on_success: trigger.notify_on_success,
+            notify_on_failure: trigger.notify_on_failure,
+            commands: trigger.commands,
+            exec_in_terminal: trigger.exec_in_terminal,
+            bind_new_terminals: v,
+            interval_secs: trigger.interval_secs,
+            schedule_mode: trigger.schedule_mode,
+            cron_expr: trigger.cron_expr,
+            scheduled_at: trigger.scheduled_at,
+          },
+        });
+      }
+      // Refresh trigger list
+      const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
+      const ipcParams = isLocal ? {} : { server_id: serverId };
+      const triggers = await ipcInvoke<TriggerInstance[]>(ipcName, ipcParams);
+      if (Array.isArray(triggers)) {
+        useTriggerStore.getState().setServerTriggers(serverId, triggers);
+      }
+    } catch (e) {
+      console.error("toggle bind_new_terminals failed:", e);
+      toast.error(formatIpcError(e));
+    }
+  };
 
   const handleDelete = async () => {
     try {
@@ -228,8 +263,17 @@ function TriggerCard({
           },
         });
       }
+      // Refresh trigger list after successful deletion
+      const isLocal = serverId === "__local__";
+      const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
+      const ipcParams = isLocal ? {} : { server_id: serverId };
+      const triggers = await ipcInvoke<TriggerInstance[]>(ipcName, ipcParams);
+      if (Array.isArray(triggers)) {
+        useTriggerStore.getState().setServerTriggers(serverId, triggers);
+      }
     } catch (e) {
       console.error("delete trigger failed:", e);
+      toast.error(formatIpcError(e));
     }
     setConfirmDelete(false);
   };
@@ -283,16 +327,14 @@ function TriggerCard({
   return (
     <div className="border-b border-gray-100 dark:border-white/[0.06] last:border-0 hover:bg-[#FBFBFB] dark:hover:bg-[#2C2C2E]/20 transition-colors">
       <div className="flex items-center gap-3 px-4 py-3.5">
-        {/* Left: exec_in_terminal toggle (runtime override, not persisted) */}
+        {/* Left: bind_new_terminals toggle (persisted config) */}
         <div
           className="flex-shrink-0"
-          title={t("trigger.exec_in_terminal")}
+          title={t("trigger.bind_new_terminals_tooltip")}
         >
           <Toggle
-            checked={effectiveExecInTerminal}
-            onChange={(v) =>
-              setExecInTerminalOverride(serverId, trigger.id, v)
-            }
+            checked={effectiveBindNewTerminals}
+            onChange={handleToggleBindNewTerminals}
           />
         </div>
 

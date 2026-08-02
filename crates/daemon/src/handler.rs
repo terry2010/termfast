@@ -1144,6 +1144,12 @@ async fn handle_update_general_config(
         if let Some(v) = params["http_proxy_url"].as_str() {
             config.general.http_proxy_url = v.to_string();
         }
+        if let Some(v) = params["dev_terminal_log"].as_bool() {
+            config.general.dev_terminal_log = v;
+        }
+        if let Some(v) = params["dev_devtools"].as_bool() {
+            config.general.dev_devtools = v;
+        }
     })
     .await
     .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
@@ -2478,6 +2484,9 @@ async fn handle_update_trigger(state: &DaemonState, params: &serde_json::Value) 
                 if let Some(exec_in_terminal) = params["exec_in_terminal"].as_bool() {
                     trigger.exec_in_terminal = exec_in_terminal;
                 }
+                if let Some(bind_new_terminals) = params["bind_new_terminals"].as_bool() {
+                    trigger.bind_new_terminals = bind_new_terminals;
+                }
                 if let Some(interval_secs) = params["interval_secs"].as_u64() {
                     trigger.interval_secs = interval_secs;
                 }
@@ -2967,6 +2976,17 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Parse trigger overrides from the request (set before Opened event
+    // to avoid race condition with terminal event consumer).
+    let trigger_overrides: Option<std::collections::HashMap<String, bool>> = params
+        .get("trigger_overrides")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_bool().map(|b| (k.clone(), b)))
+                .collect()
+        });
+
     tracing::info!(
         "handle_terminal_open: server_id={}, backend={}, cols={}, rows={}",
         server_id,
@@ -2979,7 +2999,7 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
     if backend == "local" {
         let (session_id, initial_output) = state
             .terminal_manager
-            .open_local(cols, rows, shell)
+            .open_local(cols, rows, shell, trigger_overrides)
             .await
             .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
         use base64::Engine;
@@ -3017,6 +3037,15 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         .open(&ssh_handle, server_id, cols, rows)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
+
+    // Set trigger overrides for this session (passed from frontend to avoid
+    // race condition — overrides are available before any trigger fires).
+    if let Some(ref overrides) = trigger_overrides {
+        state
+            .terminal_manager
+            .set_trigger_overrides(&session_id, overrides.clone())
+            .await;
+    }
 
     tracing::info!(
         "handle_terminal_open: PTY opened, session_id={}, initial_output={} bytes",
@@ -3181,9 +3210,11 @@ async fn handle_terminal_close(state: &DaemonState, params: &serde_json::Value) 
                 session_id: Some(session_id.to_string()),
             };
 
-            // Split triggers: exec_in_terminal=true → inject into PTY,
-            // exec_in_terminal=false → background fire_event.
-            // Check per-session overrides first, fall back to trigger config.
+            // For BeforeTerminalClose:
+            //   exec_in_terminal=true + bind_new_terminals=true → inject into PTY
+            //   exec_in_terminal=true + bind_new_terminals=false → skip
+            //   exec_in_terminal=false → background fire_event
+            // Per-session overrides (stored as exec_in_terminal) take priority.
             let sid = session_id.to_string();
             let (in_terminal, background): (Vec<_>, Vec<_>) = {
                 let mut in_t = Vec::new();
@@ -3193,9 +3224,12 @@ async fn handle_terminal_close(state: &DaemonState, params: &serde_json::Value) 
                         .terminal_manager
                         .get_trigger_override(&sid, &t.id)
                         .await;
-                    let use_in_terminal = override_val.unwrap_or(t.exec_in_terminal);
-                    if use_in_terminal {
-                        in_t.push(t);
+                    let effective_exec_in_terminal =
+                        override_val.unwrap_or(t.exec_in_terminal);
+                    if effective_exec_in_terminal {
+                        if override_val.is_some() || t.bind_new_terminals {
+                            in_t.push(t);
+                        }
                     } else {
                         bg.push(t);
                     }

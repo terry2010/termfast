@@ -7,6 +7,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useServerStore } from "@/stores/serverStore";
 import { useLogStore } from "@/stores/logStore";
+import { useTriggerStore } from "@/stores/triggerStore";
 import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
 import { openTerminalWithChannel } from "@/lib/terminal";
 import { AddServerDialog } from "@/components/shared/AddServerDialog";
@@ -45,8 +46,14 @@ async function openLocalTerminalFromList() {
   const store = useServerStore.getState();
   const serverId = "__local__";
   store.selectServer(serverId);
+  // Read trigger overrides before opening terminal (passed to daemon
+  // in the same call to avoid race condition with terminal event consumer).
+  const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
   try {
-    const result = await openTerminalWithChannel(serverId, 80, 24, { backend: "local" });
+    const result = await openTerminalWithChannel(serverId, 80, 24, {
+      backend: "local",
+      triggerOverrides: triggerOverrides && Object.keys(triggerOverrides).length > 0 ? triggerOverrides : undefined,
+    });
     const sessionId = result.session_id;
     const tabId = `term:${sessionId}`;
     const currentTabs = store.terminal_tabs_by_server[serverId] || [];
@@ -244,7 +251,10 @@ export function ServerList({
 
         // SSH connected — now open terminal session
         try {
-          const result = await openTerminalWithChannel(serverId);
+          const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
+          const result = await openTerminalWithChannel(serverId, 80, 24, {
+            triggerOverrides: triggerOverrides && Object.keys(triggerOverrides).length > 0 ? triggerOverrides : undefined,
+          });
           const sessionId = result.session_id;
           const initialOutput = result.initial_output || "";
           const tabId = `term:${sessionId}`;
