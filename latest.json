@@ -1,15 +1,15 @@
 {
-  "version": "0.3.13",
-  "notes": "See the assets below to download this version.\n\n**Android APK SHA-256:** `54b3577bd7b66feb237bfa3242c25016489d2688221b320b1f099f6c2d0b8d58`\n",
-  "pub_date": "2026-07-31T10:08:28.831Z",
+  "version": "0.4.0",
+  "notes": "See the assets below to download this version.\n\n**Android APK SHA-256:** `c7d075cdf54b1dd72481cb9ec2c4550fc9a9cf30bc6daa6c13142b6c5f6ba330`\n",
+  "pub_date": "2026-08-02T04:52:35.419Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSZkdZaUk1UWpPbithcTBlMldqS2pEcUFka2RKQTExOGZDRmZKZE9qMm1aMUFxcE0zYi9CRzdEUXhJVnlZbVdJOFo5eDl5Y2QxcDlTdS9vb0Z6TlFBa3dhSjc1N2NjM2cwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NDkyMDIxCWZpbGU6VGVybUZhc3QuYXBwLnRhci5negpGZjlwSDk5SUUvRXlzV0Q3S1VtTmlGbWVSOGFsWUxhcXBtUjVHamdTeHFzcFFoWmw4RG9Jek5pUlp3bE1wN1BrWlRWRDZDYlF1NDdnOC9qaFQ5L2ZDQT09Cg==",
-      "url": "https://github.com/terry2010/termfast/releases/download/v0.3.13/TermFast_0.3.13_aarch64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSZkdZaUk1UWpPbjlaRmoyK3pSSlZSNmJQVHBtRnB6MC9LeDNVaGNxT0xnQ0ZZYkxaMUszTUROaDZVallsT0hmWVA2THA4UTZZMTNzclFGUXNRdG1kNTNmemxyaEdPekFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NjQ2MjAwCWZpbGU6VGVybUZhc3QuYXBwLnRhci5negozU0lNTDRQVHp1UDdyaW15K1E0V0RCSkN0SGZRbzZKUmZsM1FkWDVPd2luQzllRHNqQ1dmVEo4ZFAybTlrczZMRGQrbEwzREdjcjJ3b2lyRm9KVWpDdz09Cg==",
+      "url": "https://github.com/terry2010/termfast/releases/download/v0.4.0/TermFast_0.4.0_aarch64.app.tar.gz"
     },
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSZkdZaUk1UWpPbncwWTdTNnM5WFpXQ05ob29UMk1Kb1M0UFpLQTFISkk1WU82ZlMxSXRwaU9NUlVxOWZoRDVUQzFYZDAyS1A0YnlabGIyZVowa2tBdWJWRlpuQXM5dkFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NDkyNDU5CWZpbGU6VGVybUZhc3RfMC4zLjEzX3g2NC1zZXR1cC5leGUKT0NoTlNHYXc3aUdaR2F5TUlFNklaZXg4bVB6blNTQURxaGNYTmNRRzY0WWMrcXpHWGUvcWkvTFR4Ukloc0k1M3dFRTNkQmx2eURiVmptL09nNUlrQWc9PQo=",
-      "url": "https://github.com/terry2010/termfast/releases/download/v0.3.13/TermFast_0.3.13_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSZkdZaUk1UWpPbjEzOG0wV0JWMEJMditjMFBKa3B2Y2Y0Q2NnNkRaQWNOK0lrelh5QkRhVkJ0Qm5HNk82bHpxVzFJMGh4aDVyWnVvV2ZMUjB3VzZZV1RLcGhoUEVxY0EwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NjQ2MzIzCWZpbGU6VGVybUZhc3RfMC40LjBfeDY0LXNldHVwLmV4ZQo0NlgzL3VyVzBjZC8wMTlQUUdZQlFrWnZZS1hvaE1aR3ZWVWVVd0hCL0xUSi82Y0N4RTBWTGhHc2pLVVlQZnFzRlkrNnY1bmcvQzRhRVMvbjM0eWpBUT09Cg==",
+      "url": "https://github.com/terry2010/termfast/releases/download/v0.4.0/TermFast_0.4.0_x64-setup.exe"
     }
   }
 }
