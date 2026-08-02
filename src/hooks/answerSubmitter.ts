@@ -373,6 +373,8 @@ function submitOpenCode(option: string, index: number, optionCount?: number): st
 // ── Claude Code ────────────────────────────────────────────────────────────────
 // Claude Code selection widget uses ↑/↓ to navigate and Space/Enter to select.
 // For Yes/No prompts, "Yes" is typically first (index 0), "No" is second.
+// Multi-question dialog (v2.1+): tab row "←  ☐ label  ...  ✔ Submit  →"
+// Right arrow switches to next question tab; on Submit tab, Enter submits.
 function submitClaudeCode(option: string, index: number): string {
   const normalized = option.toLowerCase().trim();
 
@@ -393,6 +395,25 @@ function submitClaudeCode(option: string, index: number): string {
   }
   keys += "\r"; // Enter to confirm
   return keys;
+}
+
+/**
+ * Confirm a Claude Code multi-question dialog.
+ * Navigates to the Submit tab (last tab) using → arrow keys, then Enter.
+ * Same logic as OpenCode/Devin: → arrows (confirmIndex - activeIndex) % totalTabs times + Enter.
+ */
+export function submitClaudeCodeConfirm(hasOptions: boolean, activeIndex: number, totalTabs: number): string {
+  if (!hasOptions) {
+    // Already on Submit tab — just Enter
+    return "\r";
+  }
+  if (totalTabs <= 0) {
+    return "\r";
+  }
+  const confirmIndex = totalTabs - 1;
+  const currentTab = activeIndex >= 0 ? activeIndex : 0;
+  const arrowsNeeded = (confirmIndex - currentTab + totalTabs) % totalTabs;
+  return "\x1b[C".repeat(arrowsNeeded) + "\r";
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────────

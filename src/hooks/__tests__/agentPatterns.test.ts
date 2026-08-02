@@ -413,6 +413,72 @@ describe("extractOptions — Claude Code", () => {
   });
 });
 
+describe("Claude Code v2.1 multi-question dialog", () => {
+  // Screen capture from Claude Code v2.1.220 multi-question (4 questions, single-select)
+  const multiQScreen = [
+    " successfully\" || echo \"FCC server failed to start\")",
+    "FCC server is running",
+    "terry@mac-mini ~ % cd /Volumes/2t/code/ssh-proxy",
+    "terry@mac-mini ssh-proxy % fcc-claude",
+    "╭───ClaudeCodev2.1.220───╮",
+    "│ Tips for getting started │",
+    "│ Welcome back! │",
+    "│ ▐▛███▜▌ │ What's new │",
+    "│ ▝▜█████▛▘ │ Bug fixes and reliability improvements │",
+    "│ ▘▘▝▝ │ Added Claude Opus 5 │",
+    "│ Opus 5 (1M context) · API Usage Billing │",
+    "│ /Volumes/2t/code/ssh-proxy │",
+    "╰───────────────────────────────────────────────────────────╯",
+    "❯ 我在测试claude 交互， 你创建一个弹窗， 4个问题， 单选",
+    "  Thought for 3s (ctrl+o to expand)",
+    "───────────────────────────────────────────────────────────",
+    "←  ☐ 编程语言  ☐ 操作系统  ☐ 编辑器  ☐ 弹窗体验  ✔ Submit  →",
+    "你最喜欢哪种编程语言？",
+    "❯ 1. Rust",
+    "   高性能、内存安全，适合系统级开发",
+    "  2. Python",
+    "   简洁易读，生态丰富，适合快速开发",
+    "3.TypeScript",
+    "类型安全的JavaScript超集，前端主流",
+    "4.Go",
+    "简单高效，并发能力强，适合后端服务",
+    "5. Type something.",
+    "───────────────────────────────────────────────────────────",
+    "6. Chat about this",
+    "Entertoselect·Tab/Arrowkeystonavigate·Esctocancel",
+  ].join("\n");
+
+  it("detects blocked status from multi-question footer", () => {
+    const status = detectStatusFromScreen("claude-code", multiQScreen);
+    expect(status).toBe("blocked");
+  });
+
+  it("detects multi-question from tab row with Submit", () => {
+    expect(detectMultiQuestion("claude-code", multiQScreen)).toBe(true);
+  });
+
+  it("extracts question text from multi-question dialog", () => {
+    const q = extractQuestion("claude-code", multiQScreen);
+    expect(q).toBe("你最喜欢哪种编程语言？");
+  });
+
+  it("extracts all 6 options from multi-question dialog", () => {
+    const opts = extractOptions("claude-code", multiQScreen);
+    expect(opts).toEqual([
+      "1. Rust",
+      "2. Python",
+      "3. TypeScript",
+      "4. Go",
+      "5. Type something.",
+      "6. Chat about this",
+    ]);
+  });
+
+  it("is not multi-select (single-select dialog)", () => {
+    expect(detectMultiSelect("claude-code", multiQScreen)).toBe(false);
+  });
+});
+
 describe("extractQuestion — Codex", () => {
   it("extracts Approve prompt", () => {
     const screen = "Approve command? (y/n)";

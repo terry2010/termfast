@@ -88,7 +88,11 @@ export function detectCliFromScreen(screenText: string): CliType {
   if (/[✶✢✽✻✳·*][^\n]*…/.test(screenText) && /[>❯][\s\xa0]/.test(screenText)) {
     return "claude-code";
   }
-  // Claude Code: selection widget footer
+  // Claude Code: multi-question selection widget footer (v2.1+)
+  if (/Enter\s*to\s*select.*(?:Tab\/Arrow|Tab).*Esc\s*to\s*cancel/i.test(screenText)) {
+    return "claude-code";
+  }
+  // Claude Code: selection widget footer (older)
   if (/↑\/↓\s+to\s+navigate/.test(screenText)) {
     return "claude-code";
   }

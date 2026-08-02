@@ -405,7 +405,12 @@ const opencodePatterns: CliPatterns = {
 
 const claudeCodePatterns: CliPatterns = {
   statusPatterns: [
+    // Multi-question selection widget footer (newer Claude Code v2.1+):
+    // "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
+    // The screen scraper may strip some spaces, so match flexibly.
+    { status: "blocked", pattern: /Enter\s*to\s*select.*(?:Tab\/Arrow|Tab).*Esc\s*to\s*cancel/i, priority: 11 },
     // Selection widget footer — blocked (user must choose)
+    // Older Claude Code: "↑/↓ to navigate"
     { status: "blocked", pattern: /↑\/↓\s+to\s+navigate/, priority: 10 },
     // Plan approval prompt
     { status: "blocked", pattern: /Would you like to proceed\?/, priority: 9 },
@@ -433,6 +438,37 @@ const claudeCodePatterns: CliPatterns = {
       if (/Yes,\s+I\s+trust\s+this\s+folder/.test(line)) {
         return "Do you trust this folder?";
       }
+    }
+    // Multi-question selection widget (newer Claude Code v2.1+):
+    // Footer: "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
+    // Tab row: "←  ☐ 编程语言  ☐ 操作系统  ...  ✔ Submit  →"
+    // Question text is on a line between the tab row and the first option.
+    const multiQFooterIdx = lines.findIndex((l) =>
+      /Enter\s*to\s*select.*(?:Tab\/Arrow|Tab).*Esc\s*to\s*cancel/i.test(l));
+    if (multiQFooterIdx >= 0) {
+      // Find the first numbered option line above the footer.
+      // Format: "❯ 1. Rust" (selected) or "  2. Python" (unselected)
+      const optionPattern = /^\s*[❯>]\s*(\d+)\.\s+(.+)/;
+      let firstOptionIdx = -1;
+      for (let i = 0; i < multiQFooterIdx; i++) {
+        if (optionPattern.test(lines[i])) {
+          firstOptionIdx = i;
+          break;
+        }
+      }
+      if (firstOptionIdx >= 0) {
+        // Walk upward from firstOptionIdx-1 to find the question text.
+        for (let i = firstOptionIdx - 1; i >= 0; i--) {
+          const trimmed = lines[i].trim();
+          if (!trimmed) continue;
+          // Skip tab row (contains ☐ and ✔)
+          if (/☐.*✔\s*Submit/.test(trimmed) || /^[←→]/.test(trimmed)) continue;
+          // Skip separator lines
+          if (/^[─━]+$/.test(trimmed)) continue;
+          return trimmed;
+        }
+      }
+      return "Claude Code is asking a question";
     }
     // Selection widget — find the question text above the "↑/↓ to navigate" footer
     for (let i = 0; i < lines.length; i++) {
@@ -463,6 +499,25 @@ const claudeCodePatterns: CliPatterns = {
         return ["Yes, I trust this folder", "No, I don't trust this folder"];
       }
     }
+    // Multi-question selection widget (newer Claude Code v2.1+):
+    // Options: "❯ 1. Rust" (selected), "  2. Python" (unselected)
+    // Also: "5. Type something." and "6. Chat about this" (no prefix marker)
+    const multiQFooterIdx = lines.findIndex((l) =>
+      /Enter\s*to\s*select.*(?:Tab\/Arrow|Tab).*Esc\s*to\s*cancel/i.test(l));
+    if (multiQFooterIdx >= 0) {
+      const options: string[] = [];
+      // Match numbered options: "❯ 1. Rust", "  2. Python", "3. TypeScript"
+      // The selected item has "❯" prefix, others have spaces or nothing.
+      // Note: some options have no space after the dot (e.g. "3.TypeScript").
+      const optionPattern = /^\s*[❯>]?\s*(\d+)\.\s*(.+)/;
+      for (let i = 0; i < multiQFooterIdx; i++) {
+        const m = lines[i].match(optionPattern);
+        if (m) {
+          options.push(`${m[1]}. ${m[2].trim()}`);
+        }
+      }
+      if (options.length > 0) return options;
+    }
     // Selection widget — options are listed above the "↑/↓ to navigate" footer
     for (let i = 0; i < lines.length; i++) {
       if (/↑\/↓\s+to\s+navigate/.test(lines[i])) {
@@ -480,6 +535,11 @@ const claudeCodePatterns: CliPatterns = {
       }
     }
     return null;
+  },
+  // Multi-question detection: tab row with "Submit" button.
+  // Format: "←  ☐ 编程语言  ☐ 操作系统  ☐ 编辑器  ☐ 弹窗体验  ✔ Submit  →"
+  multiQuestionDetector: (text) => {
+    return /☐.*✔\s*Submit/.test(text) || /←.*☐.*Submit.*→/.test(text);
   },
 };
 

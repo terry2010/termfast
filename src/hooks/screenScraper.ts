@@ -175,6 +175,48 @@ export function extractTabInfo(term: Terminal): { labels: string[]; activeIndex:
       return { labels, activeIndex };
     }
 
+    // ── Claude Code format: "←  ☐ label  ☐ label  ...  ✔ Submit  →" ──
+    // Tab row wrapped with ← and → arrows. Tabs separated by 2+ spaces.
+    // Each tab has a checkbox prefix: ☐ = unanswered, ✔ = answered.
+    // Last entry is "Submit" button (always has ✔ prefix).
+    if (/^[←]\s+☐.*✔\s*Submit\s*→/.test(trimmed)) {
+      // Strip the leading "←" and trailing "→"
+      const content = trimmed.replace(/^[←]\s+/, "").replace(/\s*→$/, "").trim();
+      // Split by 2+ spaces
+      const parts = content.split(/\s{2,}/);
+      if (parts.length < 2) continue;
+      // Extract labels by stripping ☐/✔ prefix
+      const labels = parts.map((p) => p.replace(/^[☐✔]\s*/, "").trim());
+      // Detect active tab by checking cell bg colors (bright = active)
+      let activeIndex = -1;
+      let searchStart = 0;
+      for (let j = 0; j < labels.length; j++) {
+        const label = labels[j];
+        const charPos = text.indexOf(label, searchStart);
+        if (charPos < 0) {
+          searchStart += label.length;
+          continue;
+        }
+        const cellPos = charToCell[charPos] ?? charPos;
+        const cell = line.getCell(cellPos);
+        if (cell) {
+          const bgMode = cell.getBgColorMode();
+          const bgColor = cell.getBgColor();
+          if (bgMode === 0x03000000) {
+            const r = (bgColor >> 16) & 0xff;
+            const g = (bgColor >> 8) & 0xff;
+            const b = bgColor & 0xff;
+            if (r + g + b > 200) {
+              activeIndex = j;
+              break;
+            }
+          }
+        }
+        searchStart = charPos + label.length;
+      }
+      return { labels, activeIndex };
+    }
+
     // ── Devin format: "── label · label · ... ──" ──
     // Line starts with "──", contains " · " separators, and ends with "──"
     if (/^──\s+.+\s·\s.+\s──/.test(trimmed)) {

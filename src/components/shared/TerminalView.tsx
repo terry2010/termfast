@@ -17,7 +17,7 @@ import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
 import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { shouldResetOverlay } from "@/hooks/overlayReset";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, navigatePrevQuestion, navigateNextQuestion } from "@/hooks/answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, navigatePrevQuestion, navigateNextQuestion } from "@/hooks/answerSubmitter";
 import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
 import {
   initTerminalLog,
@@ -543,6 +543,12 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     } else if (agentCli === "devin") {
       const hasOptions = !!(agentOptions && agentOptions.length > 0);
       const keystrokes = submitDevinConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs, agentIsMultiSelect, hasAnswers);
+      const bytes = new TextEncoder().encode(keystrokes);
+      logTerminalInput(sessionIdRef.current, bytes);
+      sendToBackendRef.current(bytes);
+    } else if (agentCli === "claude-code") {
+      const hasOptions = !!(agentOptions && agentOptions.length > 0);
+      const keystrokes = submitClaudeCodeConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs);
       const bytes = new TextEncoder().encode(keystrokes);
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
