@@ -145,6 +145,22 @@ jobs:
           rm -f "$RW_DMG"
           echo "✅ README and fix-quarantine.command added to DMG"
 
+      - name: Re-upload DMG with README to Release
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::warning::No DMG found, skipping re-upload"
+            exit 0
+          fi
+          DMG_NAME=$(basename "$DMG")
+          echo "Re-uploading $DMG_NAME to release ${{ inputs.tag || github.ref_name }}"
+          gh release upload "${{ inputs.tag || github.ref_name }}" "$DMG" --clobber
+
   # === Build signed Android APK ===
   build-android:
     permissions:
