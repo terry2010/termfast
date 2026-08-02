@@ -77,6 +77,8 @@ export interface AgentStatusInfo {
   totalTabs: number;
   /** Review answers extracted from the Confirm tab (null if not on Confirm tab). */
   reviewAnswers: string[] | null;
+  /** True if Devin's "Other" option is in "└ e" text editing mode (user pressed 'e' to type). */
+  otherExpanded: boolean;
 }
 
 /**
@@ -101,6 +103,7 @@ export function useAgentStatus(
     activeTabIndex: -1,
     totalTabs: 0,
     reviewAnswers: null,
+    otherExpanded: false,
   });
 
   // State machine lives in a ref — mutated in place, no re-allocation per tick.
@@ -130,6 +133,7 @@ export function useAgentStatus(
       let activeTabIndex = -1;
       let totalTabs = 0;
       let reviewAnswers: string[] | null = null;
+      let otherExpanded = false;
 
       // Only scrape screen for question/options when blocked
       if (state.status === "blocked" && state.cli !== "unknown") {
@@ -140,6 +144,20 @@ export function useAgentStatus(
           options = extractOptions(state.cli, screenText);
           isMultiSelect = detectMultiSelect(state.cli, screenText);
           isMultiQuestion = detectMultiQuestion(state.cli, screenText);
+          // Detect "└" expanded state on Other option (Devin multi-select).
+          // When the cursor is on "Other (type your own)" and it's expanded,
+          // Devin shows "└ e" (editing) or "└ text" (display) or "└" (empty).
+          // In all these states, ←→ moves the text cursor, not switches tabs.
+          // We need to send Up first to exit this state before switching tabs.
+          // The "└" line is indented (starts with whitespace) and is the only
+          // place "└" appears in the dialog.
+          if (state.cli === "devin" && isMultiSelect) {
+            otherExpanded = /^\s+└/m.test(screenText);
+          }
+          // Debug: log screenText when multiSelect/multiQuestion detected
+          if (isMultiSelect || isMultiQuestion) {
+            logTerminalDebug(sessionId, `screenText for multiSelect=${isMultiSelect} multiQuestion=${isMultiQuestion}: ${JSON.stringify(screenText.slice(-500))}`);
+          }
           // Extract tab info for multi-question dialogs (active tab detection)
           if (isMultiQuestion) {
             const tabInfo = extractTabInfo(term);
@@ -173,9 +191,17 @@ export function useAgentStatus(
           const extractMsg = `blocked extraction: cli=${state.cli} question=${JSON.stringify(question)} options=${JSON.stringify(options)} multiSelect=${isMultiSelect} multiQuestion=${isMultiQuestion} activeTab=${activeTabIndex} totalTabs=${totalTabs} reviewAnswers=${JSON.stringify(reviewAnswers)}`;
           console.log(`[agentStatus] ${extractMsg}`);
           logTerminalDebug(sessionId, extractMsg);
+          // Debug: log raw screen lines for option extraction diagnosis
+          if (state.cli === "devin" && isMultiSelect && options && options.length > 3) {
+            const nonEmpty = lines.map((l, i) => ({ i, l })).filter((x) => x.l.trim());
+            logTerminalDebug(sessionId, `screenLines(${nonEmpty.length}): ${JSON.stringify(nonEmpty)}`);
+          }
         } catch {
           // Screen scrape can fail if terminal is in a weird state — ignore
         }
+      } else if (state.status !== "blocked") {
+        // Not blocked: clear cached options so next dialog starts fresh
+        cachedOptionsRef.current.clear();
       }
 
       setInfo({
@@ -189,6 +215,7 @@ export function useAgentStatus(
         activeTabIndex,
         totalTabs,
         reviewAnswers,
+        otherExpanded,
       });
     };
 

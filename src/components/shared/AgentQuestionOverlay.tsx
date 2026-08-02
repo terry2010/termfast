@@ -62,8 +62,8 @@ interface AgentQuestionOverlayProps {
   onPrevQuestion: () => void;
   /** Called when user clicks "Next question" (multi-question mode). */
   onNextQuestion: () => void;
-  /** Called when user clicks "Confirm" (multi-question mode, final submit). */
-  onConfirm: () => void;
+  /** Called when user clicks the final action, with whether any answer was entered. */
+  onConfirm: (hasAnswers: boolean) => void;
   /** Called when user dismisses the overlay without answering. */
   onDismiss: () => void;
 }
@@ -116,6 +116,10 @@ function AgentQuestionOverlayImpl({
   // the previously checked options and text answers.
   const tabStateRef = useRef<Map<number, { checked: Set<number>; textAnswers: Map<number, string> }>>(new Map());
   const prevTabRef = useRef<number>(-1);
+  // Single-select answers submit immediately and advance tabs, so track them
+  // separately from the per-tab multi-select state.
+  // Map: tabIndex → optionIndex (which option was selected on that tab)
+  const answeredTabsRef = useRef<Map<number, number>>(new Map());
 
   // In multi-question mode, determine which tab is the "last question" tab.
   // OpenCode has a separate "Confirm" tab at the end (totalTabs - 1),
@@ -149,6 +153,33 @@ function AgentQuestionOverlayImpl({
   // A real question change (next question in multi-question mode) will have
   // a non-empty, non-fallback questionKey and will correctly reset textMode.
   const questionKey = question ?? blockedMessage ?? "";
+
+  // Clear all cached state when the overlay closes.
+  // The overlay is "closed" when either:
+  //   1. visible becomes false (dismissed by user or after submit), OR
+  //   2. status becomes non-blocked (AI resumed working)
+  // This ensures the next dialog starts fresh, regardless of how the
+  // previous dialog ended.
+  const prevVisibleRef = useRef(false);
+  const prevStatusRef = useRef<AgentStatus>("unknown");
+  useEffect(() => {
+    const closed = (!visible && prevVisibleRef.current) ||
+      (status !== "blocked" && prevStatusRef.current === "blocked");
+    if (closed) {
+      tabStateRef.current = new Map();
+      prevTabRef.current = -1;
+      answeredTabsRef.current = new Map();
+      setChecked(new Set());
+      setTextAnswers(new Map());
+      setTextMode(false);
+      setTextModeIndex(-1);
+      setTextOption("");
+      setTextValue("");
+      textModeRef.current = false;
+    }
+    prevVisibleRef.current = visible;
+    prevStatusRef.current = status;
+  }, [visible, status]);
 
   // When activeTabIndex changes in multi-question mode, cache the old tab's
   // state and restore the new tab's cached state (if any).
@@ -200,6 +231,8 @@ function AgentQuestionOverlayImpl({
 
   const cliName = CLI_NAMES[cli] ?? "AI";
   const displayQuestion = question || blockedMessage || t("server.agent_question_default");
+  const hasAnyAnswers = answeredTabsRef.current.size > 0 || checked.size > 0 || textAnswers.size > 0 ||
+    [...tabStateRef.current.values()].some((state) => state.checked.size > 0 || state.textAnswers.size > 0);
 
   // ── Single-select: click option → submit ──────────────────────────
   const handleSingleSelect = (option: string, index: number) => {
@@ -210,6 +243,9 @@ function AgentQuestionOverlayImpl({
       setTextMode(true);
       setTextValue("");
       return;
+    }
+    if (isMultiQuestion && activeTabIndex >= 0) {
+      answeredTabsRef.current.set(activeTabIndex, index);
     }
     onAnswer(option, index);
   };
@@ -248,6 +284,9 @@ function AgentQuestionOverlayImpl({
   // ── Text answer: Send ──────────────────────────────────────────────
   const handleTextSubmit = () => {
     if (textValue.trim()) {
+      if (isMultiQuestion && activeTabIndex >= 0) {
+        answeredTabsRef.current.set(activeTabIndex, textModeIndex);
+      }
       onTextAnswer(textOption, textValue.trim(), textModeIndex);
       // Mark the option as checked and store the text answer
       setChecked((prev) => new Set(prev).add(textModeIndex));
@@ -380,10 +419,34 @@ function AgentQuestionOverlayImpl({
                     {t("server.agent_next_question")} →
                   </button>
                 )}
-                {isLastQuestion && (
+                {isLastQuestion && isMultiSelect && (
                   <button
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
-                    onClick={onConfirm}
+                    onClick={() => onConfirm(hasAnyAnswers)}
+                  >
+                    ✓ {t("server.agent_confirm")}
+                  </button>
+                )}
+                {isLastQuestion && !isMultiSelect && cli === "devin" && !hasAnyAnswers && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-600 hover:bg-gray-500 text-gray-200 transition-colors"
+                    onClick={() => onConfirm(hasAnyAnswers)}
+                  >
+                    {t("server.agent_skip")} (Esc)
+                  </button>
+                )}
+                {isLastQuestion && !isMultiSelect && cli === "devin" && hasAnyAnswers && (
+                  <div
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed text-center"
+                    title={t("server.agent_last_question_hint")}
+                  >
+                    {t("server.agent_select_to_submit")}
+                  </div>
+                )}
+                {isLastQuestion && !isMultiSelect && cli !== "devin" && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
+                    onClick={() => onConfirm(hasAnyAnswers)}
                   >
                     ✓ {t("server.agent_confirm")}
                   </button>
@@ -403,15 +466,23 @@ function AgentQuestionOverlayImpl({
         {/* Options — single-select mode (click to submit) */}
         {!textMode && !isMultiSelect && options && options.length > 0 && (
           <div className="px-4 pb-3 flex flex-col gap-2">
-            {options.map((option, index) => (
-              <button
-                key={index}
-                className="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-100 border border-gray-700 hover:border-gray-600 transition-colors text-left"
-                onClick={() => handleSingleSelect(option, index)}
-              >
-                {option}
-              </button>
-            ))}
+            {options.map((option, index) => {
+              const selectedAnswer = isMultiQuestion ? answeredTabsRef.current.get(activeTabIndex) : undefined;
+              const isSelected = selectedAnswer === index;
+              return (
+                <button
+                  key={index}
+                  className={`px-4 py-2 text-sm rounded-lg border transition-colors text-left ${
+                    isSelected
+                      ? "bg-blue-900 border-blue-500 text-blue-100"
+                      : "bg-gray-800 hover:bg-gray-700 text-gray-100 border-gray-700 hover:border-gray-600"
+                  }`}
+                  onClick={() => handleSingleSelect(option, index)}
+                >
+                  {isSelected && "✓ "}{option}
+                </button>
+              );
+            })}
             {/* Multi-question navigation + Confirm */}
             {isMultiQuestion && (
               <div className="flex gap-2 mt-2">
@@ -431,10 +502,34 @@ function AgentQuestionOverlayImpl({
                     {t("server.agent_next_question")} →
                   </button>
                 )}
-                {isLastQuestion && (
+                {isLastQuestion && isMultiSelect && (
                   <button
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
-                    onClick={onConfirm}
+                    onClick={() => onConfirm(hasAnyAnswers)}
+                  >
+                    ✓ {t("server.agent_confirm")}
+                  </button>
+                )}
+                {isLastQuestion && !isMultiSelect && cli === "devin" && !hasAnyAnswers && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-600 hover:bg-gray-500 text-gray-200 transition-colors"
+                    onClick={() => onConfirm(hasAnyAnswers)}
+                  >
+                    {t("server.agent_skip")} (Esc)
+                  </button>
+                )}
+                {isLastQuestion && !isMultiSelect && cli === "devin" && hasAnyAnswers && (
+                  <div
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed text-center"
+                    title={t("server.agent_last_question_hint")}
+                  >
+                    {t("server.agent_select_to_submit")}
+                  </div>
+                )}
+                {isLastQuestion && !isMultiSelect && cli !== "devin" && (
+                  <button
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
+                    onClick={() => onConfirm(hasAnyAnswers)}
                   >
                     ✓ {t("server.agent_confirm")}
                   </button>
@@ -479,7 +574,7 @@ function AgentQuestionOverlayImpl({
                     ? "bg-green-600 hover:bg-green-500"
                     : "bg-blue-600 hover:bg-blue-500"
                 }`}
-                onClick={isMultiQuestion ? onConfirm : onDismiss}
+                onClick={isMultiQuestion ? () => onConfirm(hasAnyAnswers) : onDismiss}
               >
                 {isMultiQuestion ? `✓ ${t("server.agent_confirm")}` : t("server.agent_go_to_terminal")}
               </button>

@@ -438,9 +438,11 @@ describe("AgentQuestionOverlay — question change reset", () => {
     expect(queryByText(/server.agent_confirm/)).toBeNull();
   });
 
-  it("Devin: shows Confirm button when on last question (totalTabs-1, no Confirm tab)", () => {
+  it("Devin: shows Skip button (not Confirm) when on last question (single-select)", () => {
     // Devin has NO separate Confirm tab — all tabs are question tabs.
     // Last question = totalTabs - 1 (not totalTabs - 2 like OpenCode).
+    // Single-select: shows "Skip (Esc)" instead of "Confirm" because
+    // Enter would select the first option (cursor default).
     const { getByText, queryByText } = render(
       <AgentQuestionOverlay
         {...defaultProps}
@@ -455,7 +457,46 @@ describe("AgentQuestionOverlay — question change reset", () => {
     expect(getByText(/server.agent_prev_question/)).toBeTruthy();
     // Next button should be hidden on last question (prevent wrap)
     expect(queryByText(/server.agent_next_question/)).toBeNull();
-    expect(getByText(/server.agent_confirm/)).toBeTruthy();
+    // Single-select: Skip button shown, Confirm NOT shown
+    expect(getByText(/server.agent_skip/)).toBeTruthy();
+    expect(queryByText(/server.agent_confirm/)).toBeNull();
+  });
+
+  it("Devin: shows disabled hint on last question after an earlier answer", () => {
+    const onConfirm = vi.fn();
+    const { getByText, queryByText, rerender, container } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="Q2?"
+        options={["1. A", "2. B"]}
+        isMultiQuestion={true}
+        activeTabIndex={1}
+        totalTabs={4}
+        onConfirm={onConfirm}
+      />,
+    );
+    fireEvent.click(getByText("1. A"));
+    rerender(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="Q4?"
+        options={["1. A", "2. B"]}
+        isMultiQuestion={true}
+        activeTabIndex={3}
+        totalTabs={4}
+        onConfirm={onConfirm}
+      />,
+    );
+    // Should show disabled hint, not Confirm or Skip
+    expect(getByText(/server.agent_select_to_submit/)).toBeTruthy();
+    expect(queryByText(/server.agent_confirm/)).toBeNull();
+    expect(queryByText(/server.agent_skip/)).toBeNull();
+    // Should have cursor-not-allowed and title tooltip
+    const hint = container.querySelector(".cursor-not-allowed");
+    expect(hint).toBeTruthy();
+    expect(hint?.getAttribute("title")).toBeTruthy();
   });
 
   it("Devin: does not show Confirm button when not on last question", () => {

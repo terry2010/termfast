@@ -76,14 +76,24 @@ describe("submitDevinConfirm — Devin multi-question confirm", () => {
     expect(submitDevinConfirm(true, 1, 3)).toBe("\x1b[C\r");
   });
 
-  it("sends just Enter when already on confirm tab (activeIndex === confirmIndex)", () => {
-    // 3 tabs, currently on tab 2 (confirm), need 0 arrows
-    expect(submitDevinConfirm(true, 2, 3)).toBe("\r");
+  it("sends Esc when on last tab (single-select, arrowsNeeded=0)", () => {
+    // 3 tabs, currently on tab 2 (last), single-select → Esc (not Enter)
+    expect(submitDevinConfirm(true, 2, 3)).toBe("\x1b");
   });
 
   it("wraps around with modulo when activeIndex > confirmIndex", () => {
     // 4 tabs, currently on tab 3, confirm is tab 3 → 0 arrows
-    expect(submitDevinConfirm(true, 3, 4)).toBe("\r");
+    // Single-select (no isMultiSelect) → Esc
+    expect(submitDevinConfirm(true, 3, 4)).toBe("\x1b");
+  });
+
+  it("sends Enter when on last tab (multi-select, arrowsNeeded=0)", () => {
+    // 3 tabs, currently on tab 2 (last), multi-select → Enter (submit)
+    expect(submitDevinConfirm(true, 2, 3, true)).toBe("\r");
+  });
+
+  it("sends Enter on the last single-select tab when an earlier answer exists", () => {
+    expect(submitDevinConfirm(true, 3, 4, false, true)).toBe("\r");
   });
 
   it("falls back to Enter when totalTabs is 0", () => {
@@ -95,7 +105,7 @@ describe("submitDevinTextAnswer — Devin text answer", () => {
   it("sends number + 'e' for navigate, text + Enter for type (numbered option)", () => {
     const parts = submitDevinTextAnswer("5. Other (type your own)", "custom text");
     expect(parts.navigate).toBe("5e");
-    expect(parts.type).toBe("custom text\r");
+    expect(parts.type).toBe("\x15custom text\r");
   });
 
   it("sends relative Down navigation + 'e' when target is below current pos", () => {
@@ -103,7 +113,7 @@ describe("submitDevinTextAnswer — Devin text answer", () => {
     const parts = submitDevinTextAnswer("Other (type your own)", "hello", false, 4, 5, 1);
     // Down 3 times (from pos 1 to pos 4) + 'e'
     expect(parts.navigate).toBe("\x1b[B\x1b[B\x1b[B" + "e");
-    expect(parts.type).toBe("hello\r");
+    expect(parts.type).toBe("\x15hello\r");
   });
 
   it("sends relative Up navigation + 'e' when target is above current pos", () => {
@@ -111,20 +121,20 @@ describe("submitDevinTextAnswer — Devin text answer", () => {
     const parts = submitDevinTextAnswer("Other (type your own)", "hello", false, 0, 5, 3);
     // Up 3 times (from pos 3 to pos 0) + 'e'
     expect(parts.navigate).toBe("\x1b[A\x1b[A\x1b[A" + "e");
-    expect(parts.type).toBe("hello\r");
+    expect(parts.type).toBe("\x15hello\r");
   });
 
   it("sends only 'e' when already at target position", () => {
     const parts = submitDevinTextAnswer("Other (type your own)", "hello", false, 2, 5, 2);
     expect(parts.navigate).toBe("e");
-    expect(parts.type).toBe("hello\r");
+    expect(parts.type).toBe("\x15hello\r");
   });
 
   it("defaults to currentPos=0 when not provided", () => {
     const parts = submitDevinTextAnswer("Other (type your own)", "hello", false, 2, 5);
     // Down 2 times (from pos 0 to pos 2) + 'e'
     expect(parts.navigate).toBe("\x1b[B\x1b[B" + "e");
-    expect(parts.type).toBe("hello\r");
+    expect(parts.type).toBe("\x15hello\r");
   });
 });
 

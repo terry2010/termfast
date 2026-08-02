@@ -351,7 +351,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
 
   // AI CLI agent status — binds OSC handlers + output monitoring to the terminal
   const [agentTerm, setAgentTerm] = useState<Terminal | null>(null);
-  const { status: agentStatus, cli: agentCli, blockedMessage: agentBlockedMessage, question: agentQuestion, options: agentOptions, isMultiSelect: agentIsMultiSelect, isMultiQuestion: agentIsMultiQuestion, activeTabIndex: agentActiveTabIndex, totalTabs: agentTotalTabs, reviewAnswers: agentReviewAnswers } = useAgentStatus(agentTerm, sessionId);
+  const { status: agentStatus, cli: agentCli, blockedMessage: agentBlockedMessage, question: agentQuestion, options: agentOptions, isMultiSelect: agentIsMultiSelect, isMultiQuestion: agentIsMultiQuestion, activeTabIndex: agentActiveTabIndex, totalTabs: agentTotalTabs, reviewAnswers: agentReviewAnswers, otherExpanded: agentOtherEditing } = useAgentStatus(agentTerm, sessionId);
   const setTerminalTabAgentStatus = useServerStore((s) => s.setTerminalTabAgentStatus);
   const [agentOverlayDismissed, setAgentOverlayDismissed] = useState(false);
 
@@ -370,6 +370,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   useEffect(() => {
     if (shouldResetOverlay(agentStatusRef.current, agentStatus, agentQuestionRef.current, agentQuestion)) {
       setAgentOverlayDismissed(false);
+      devinCursorPosRef.current = 0;
     }
     agentStatusRef.current = agentStatus;
     agentQuestionRef.current = agentQuestion;
@@ -381,7 +382,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   const handleAgentAnswer = useCallback((option: string, index: number) => {
     if (!termRef.current || agentCli === "unknown") return;
     const optionCount = agentOptions?.length;
-    const keystrokes = submitAnswer(agentCli, option, index, optionCount);
+    const keystrokes = submitAnswer(agentCli, option, index, optionCount, agentIsMultiQuestion);
     const bytes = new TextEncoder().encode(keystrokes);
     logTerminalInput(sessionIdRef.current, bytes);
     sendToBackendRef.current(bytes);
@@ -454,9 +455,10 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         logTerminalInput(sessionIdRef.current, bytes);
         sendToBackendRef.current(bytes);
       });
-      // Update cursor position: submitDevinTextAnswer navigates to the option
-      // (via number key or arrows), so the cursor ends up at this option index.
-      devinCursorPosRef.current = index;
+      // After Enter submits the text, Devin resets the cursor to the first
+      // option (index 0). Reset our tracking accordingly so subsequent toggles
+      // compute relative movement from the correct position.
+      devinCursorPosRef.current = 0;
     }
     if (!agentIsMultiQuestion) {
       setAgentOverlayDismissed(true);
@@ -480,27 +482,22 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
 
   // Handle navigate to previous question tab (multi-question mode)
   // Devin and OpenCode both bind ← to switch to previous tab.
-  // For Devin: When returning to a question with a text answer, Devin shows
-  // "└ e..." text editing state where ←→ moves the text cursor.
-  // Send Up arrow first to move focus to the option above (exiting text mode),
-  // then after a delay, send Left/Right to switch tabs.
-  // The delay is needed because Devin redraws the screen after exiting text
-  // mode, and if Left/Right arrives during the redraw, it gets swallowed.
-  // Note: When NOT in "└ e" state, Up just moves the option cursor (harmless),
-  // and Left/Right still switches tabs.
+  // For Devin: Only when in "└ e" text editing mode (user pressed 'e' on Other),
+  // ←→ moves the text cursor instead of switching tabs. In that case, send Up
+  // first to exit editing mode, then Left/Right. Otherwise, send Left/Right
+  // directly — sending Up when not in editing mode would move the option cursor.
   const handleAgentPrevQuestion = useCallback(() => {
     if (!termRef.current || agentCli === "unknown") return;
-    if (agentCli === "devin") {
-      // Send Up first to exit "└ e" text editing mode
+    if (agentCli === "devin" && agentOtherEditing) {
+      // Exit "└ e" editing mode first, then switch tab
       const upBytes = new TextEncoder().encode("\x1b[A");
       logTerminalInput(sessionIdRef.current, upBytes);
       sendToBackendRef.current(upBytes);
-      // Then after delay, send Left to switch tab
       setTimeout(() => {
         const leftBytes = new TextEncoder().encode("\x1b[D");
         logTerminalInput(sessionIdRef.current, leftBytes);
         sendToBackendRef.current(leftBytes);
-      }, 100);
+      }, 200);
     } else {
       const keystroke = navigatePrevQuestion(agentCli);
       const bytes = new TextEncoder().encode(keystroke);
@@ -508,24 +505,22 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       sendToBackendRef.current(bytes);
     }
     devinCursorPosRef.current = 0;
-  }, [agentCli]);
+  }, [agentCli, agentOtherEditing]);
 
   // Handle navigate to next question tab (multi-question mode)
   // Devin and OpenCode both bind → to switch to next tab.
-  // For Devin: same Up-arrow-first-with-delay logic as Prev.
   const handleAgentNextQuestion = useCallback(() => {
     if (!termRef.current || agentCli === "unknown") return;
-    if (agentCli === "devin") {
-      // Send Up first to exit "└ e" text editing mode
+    if (agentCli === "devin" && agentOtherEditing) {
+      // Exit "└ e" editing mode first, then switch tab
       const upBytes = new TextEncoder().encode("\x1b[A");
       logTerminalInput(sessionIdRef.current, upBytes);
       sendToBackendRef.current(upBytes);
-      // Then after delay, send Right to switch tab
       setTimeout(() => {
         const rightBytes = new TextEncoder().encode("\x1b[C");
         logTerminalInput(sessionIdRef.current, rightBytes);
         sendToBackendRef.current(rightBytes);
-      }, 100);
+      }, 200);
     } else {
       const keystroke = navigateNextQuestion(agentCli);
       const bytes = new TextEncoder().encode(keystroke);
@@ -533,11 +528,11 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       sendToBackendRef.current(bytes);
     }
     devinCursorPosRef.current = 0;
-  }, [agentCli]);
+  }, [agentCli, agentOtherEditing]);
 
   // Handle confirm in multi-question mode.
   // Navigates to the last tab (submit/confirm), then Enter to submit.
-  const handleAgentConfirm = useCallback(() => {
+  const handleAgentConfirm = useCallback((hasAnswers = false) => {
     if (!termRef.current || agentCli === "unknown") return;
     if (agentCli === "opencode") {
       const hasOptions = !!(agentOptions && agentOptions.length > 0);
@@ -547,13 +542,13 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       sendToBackendRef.current(bytes);
     } else if (agentCli === "devin") {
       const hasOptions = !!(agentOptions && agentOptions.length > 0);
-      const keystrokes = submitDevinConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs);
+      const keystrokes = submitDevinConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs, agentIsMultiSelect, hasAnswers);
       const bytes = new TextEncoder().encode(keystrokes);
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
     }
     setAgentOverlayDismissed(true);
-  }, [agentCli, agentOptions, agentActiveTabIndex, agentTotalTabs]);
+  }, [agentCli, agentOptions, agentActiveTabIndex, agentTotalTabs, agentIsMultiSelect]);
 
   // Terminal appearance from config
   const config = useConfigStore((s) => s.config);

@@ -20,10 +20,10 @@ import type { CliType } from "./oscParser";
  * @returns a string of characters to send to the terminal (via term.onData
  *          or the PTY input path).
  */
-export function submitAnswer(cli: CliType, option: string, index: number, optionCount?: number): string {
+export function submitAnswer(cli: CliType, option: string, index: number, optionCount?: number, isMultiQuestion?: boolean): string {
   switch (cli) {
     case "devin":
-      return submitDevin(option, index);
+      return submitDevin(option, index, isMultiQuestion);
     case "opencode":
       return submitOpenCode(option, index, optionCount);
     case "claude-code":
@@ -90,7 +90,7 @@ export function submitDevinMultiSelect(): string {
  * Uses → arrow keys to switch to the last question tab, then Enter to submit.
  * Same as OpenCode: → arrows (confirmIndex - activeIndex) mod totalTabs times + Enter.
  */
-export function submitDevinConfirm(hasOptions: boolean, activeIndex: number, totalTabs: number): string {
+export function submitDevinConfirm(hasOptions: boolean, activeIndex: number, totalTabs: number, isMultiSelect?: boolean, hasAnswers = false): string {
   if (!hasOptions) {
     // Already on the last tab — just Enter
     return "\r";
@@ -103,6 +103,14 @@ export function submitDevinConfirm(hasOptions: boolean, activeIndex: number, tot
   const confirmIndex = totalTabs - 1;
   const currentTab = activeIndex >= 0 ? activeIndex : 0;
   const arrowsNeeded = (confirmIndex - currentTab + totalTabs) % totalTabs;
+  // For single-select multi-question: if we're on the last question tab
+  // (arrowsNeeded === 0), pressing Enter would select the first option
+  // (cursor default). Instead, send Esc to close the dialog without
+  // selecting any option. The user should select an option first (which
+  // auto-advances), or press Esc to skip.
+  if (arrowsNeeded === 0 && !isMultiSelect && !hasAnswers) {
+    return "\x1b";
+  }
   return "\x1b[C".repeat(arrowsNeeded) + "\r";
 }
 
@@ -116,6 +124,9 @@ export function submitDevinConfirm(hasOptions: boolean, activeIndex: number, tot
  * For "Other (type your own)" (no number): use relative arrow navigation from
  * the current cursor position (Devin's list is circular, so we can't use ↑N
  * to go to the top). The caller must track and pass the current cursor position.
+ *
+ * The type string starts with Ctrl+U (\x15) to clear any existing text in the
+ * input field (e.g. when re-editing a previously answered "Other" option).
  */
 export function submitDevinTextAnswer(
   option: string,
@@ -131,7 +142,7 @@ export function submitDevinTextAnswer(
     const num = parseInt(numMatch[1], 10);
     return {
       navigate: String(num) + "e",
-      type: text + "\r",
+      type: "\x15" + text + "\r",
     };
   }
   // No number (e.g. "Other (type your own)"): use relative arrow navigation
@@ -147,16 +158,21 @@ export function submitDevinTextAnswer(
   }
   return {
     navigate: nav,
-    type: text + "\r",
+    type: "\x15" + text + "\r",
   };
 }
 
-function submitDevin(option: string, index: number): string {
+function submitDevin(option: string, index: number, isMultiQuestion?: boolean): string {
   // Extract the number from the option string (e.g. "1. Yes" → "1")
   const match = option.match(/^(\d+)/);
   if (match) {
-    // Permission dialog: number + Enter
-    // ask_user_question single-select: number key navigates + Enter selects
+    // Permission dialog (single-question): number + Enter to confirm.
+    // ask_user_question single-select multi-question: number key selects
+    // and auto-advances to next question — NO Enter needed (Enter would
+    // skip an extra question).
+    if (isMultiQuestion) {
+      return match[1];
+    }
     return match[1] + "\r";
   }
   // "Other (type your own)" — no number, use 'e' to enter text mode
@@ -164,6 +180,9 @@ function submitDevin(option: string, index: number): string {
     return "e";
   }
   // Fallback: send the index + 1 as a number
+  if (isMultiQuestion) {
+    return String(index + 1);
+  }
   return String(index + 1) + "\r";
 }
 
