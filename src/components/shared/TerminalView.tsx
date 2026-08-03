@@ -17,7 +17,7 @@ import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
 import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { shouldResetOverlay } from "@/hooks/overlayReset";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, TEXT_ANSWER_SUBMIT_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, toggleClaudeCodeOption, submitClaudeCodeMultiSelect, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "@/hooks/answerSubmitter";
+import { getBehavior, executeSteps, type BehaviorContext } from "@/hooks/cliBehavior";
 import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
 import {
   initTerminalLog,
@@ -381,97 +381,63 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // question tab and the overlay should stay for the next question.
   const handleAgentAnswer = useCallback((option: string, index: number) => {
     if (!termRef.current || agentCli === "unknown") return;
-    const optionCount = agentOptions?.length;
-    // Claude Code Plan Mode: send Down arrows and Enter with a delay.
-    // If sent together, the Ink TUI may not process Down before Enter,
-    // causing Enter to confirm the default option (1) instead.
-    if (agentCli === "claude-code" && isClaudeCodePlanModeOption(option)) {
-      const navKeys = buildClaudeCodePlanModeNavigate(index);
-      sendTextAnswerWithDelay(
-        { navigate: navKeys, type: "\r" },
-        (bytes) => {
-          logTerminalInput(sessionIdRef.current, bytes);
-          sendToBackendRef.current(bytes);
-        },
-      );
-      setAgentOverlayDismissed(true);
-      return;
-    }
-    const keystrokes = submitAnswer(agentCli, option, index, optionCount, agentIsMultiQuestion);
-    const bytes = new TextEncoder().encode(keystrokes);
-    logTerminalInput(sessionIdRef.current, bytes);
-    sendToBackendRef.current(bytes);
-    // For OpenCode permission dialogs (single-select, not multi-question),
-    // DON'T dismiss the overlay — the status change from "blocked" to
-    // "working" will naturally hide it. This way, if the click didn't
-    // activate the correct button (e.g. mouse hover changed the focus),
-    // the user can try again.
-    if (!agentIsMultiQuestion && agentCli !== "opencode") {
-      setAgentOverlayDismissed(true);
-    }
-  }, [agentCli, agentOptions, agentIsMultiQuestion]);
+    const ctx: BehaviorContext = {
+      options: agentOptions,
+      isMultiSelect: agentIsMultiSelect,
+      isMultiQuestion: agentIsMultiQuestion,
+      activeTabIndex: agentActiveTabIndex,
+      totalTabs: agentTotalTabs,
+      cursorPos: devinCursorPosRef.current,
+      otherEditing: agentOtherEditing,
+    };
+    const result = getBehavior(agentCli).answer(option, index, ctx);
+    executeSteps(result.steps, (bytes) => {
+      logTerminalInput(sessionIdRef.current, bytes);
+      sendToBackendRef.current(bytes);
+    });
+    if (result.dismiss) setAgentOverlayDismissed(true);
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
   // Handle multi-select toggle — send toggle keystrokes but DON'T dismiss
   const handleAgentToggle = useCallback((option: string, index: number) => {
     if (!termRef.current || agentCli === "unknown") return;
-    const optionCount = agentOptions?.length;
-    if (agentCli === "opencode") {
-      const keystrokes = toggleOpenCodeOption(option, optionCount);
-      const bytes = new TextEncoder().encode(keystrokes);
+    const ctx: BehaviorContext = {
+      options: agentOptions,
+      isMultiSelect: agentIsMultiSelect,
+      isMultiQuestion: agentIsMultiQuestion,
+      activeTabIndex: agentActiveTabIndex,
+      totalTabs: agentTotalTabs,
+      cursorPos: devinCursorPosRef.current,
+      otherEditing: agentOtherEditing,
+    };
+    const result = getBehavior(agentCli).toggle(option, index, ctx);
+    executeSteps(result.steps, (bytes) => {
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
-    } else if (agentCli === "devin") {
-      // Use relative navigation from current cursor position (Devin list is circular)
-      const keystrokes = toggleDevinOption(option, index, devinCursorPosRef.current);
-      const bytes = new TextEncoder().encode(keystrokes);
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
-      // Update cursor position after toggle
-      devinCursorPosRef.current = index;
-    } else if (agentCli === "claude-code") {
-      // Multi-select: number key toggles the checkbox
-      const keystrokes = toggleClaudeCodeOption(option);
-      const bytes = new TextEncoder().encode(keystrokes);
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
-    }
+    });
+    if (result.newCursorPos !== undefined) devinCursorPosRef.current = result.newCursorPos;
     // Don't dismiss — user may want to toggle more options
-  }, [agentCli, agentOptions]);
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
   // Handle multi-select submit — send confirm keystrokes, then dismiss
   const handleAgentSubmitMultiSelect = useCallback(() => {
     if (!termRef.current || agentCli === "unknown") return;
-    if (agentCli === "opencode") {
-      const keystrokes = submitOpenCodeMultiSelect();
-      const bytes = new TextEncoder().encode(keystrokes);
+    const ctx: BehaviorContext = {
+      options: agentOptions,
+      isMultiSelect: agentIsMultiSelect,
+      isMultiQuestion: agentIsMultiQuestion,
+      activeTabIndex: agentActiveTabIndex,
+      totalTabs: agentTotalTabs,
+      cursorPos: devinCursorPosRef.current,
+      otherEditing: agentOtherEditing,
+    };
+    const result = getBehavior(agentCli).submitMultiSelect(ctx);
+    executeSteps(result.steps, (bytes) => {
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
-    } else if (agentCli === "devin") {
-      const keystrokes = submitDevinMultiSelect();
-      const bytes = new TextEncoder().encode(keystrokes);
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
-    } else if (agentCli === "claude-code") {
-      // Tab to "Submit" tab + Enter to confirm.
-      // Tab and Enter must be sent SEPARATELY with a delay because
-      // Claude Code's SelectMulti uses setIsSubmitFocused (async React
-      // state). If Enter arrives in the same tick as Tab,
-      // isSubmitFocused is still false and Enter toggles the option
-      // instead of submitting.
-      const encoder = new TextEncoder();
-      // Send Tab immediately
-      const tabBytes = encoder.encode("\t");
-      logTerminalInput(sessionIdRef.current, tabBytes);
-      sendToBackendRef.current(tabBytes);
-      // Send Enter after 300ms delay
-      setTimeout(() => {
-        const enterBytes = encoder.encode("\r");
-        logTerminalInput(sessionIdRef.current, enterBytes);
-        sendToBackendRef.current(enterBytes);
-      }, TEXT_ANSWER_SUBMIT_DELAY_MS);
-    }
+    });
     setAgentOverlayDismissed(true);
-  }, [agentCli]);
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
   // Handle text answer (Type your own answer) — navigate + type + submit
   // Split into two sends: first navigate to option + Enter (enter text mode),
@@ -480,35 +446,24 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // after Enter — if we send text immediately, it gets lost.
   const handleAgentTextAnswer = useCallback((option: string, text: string, index: number, hasExistingText?: boolean) => {
     if (!termRef.current || agentCli === "unknown") return;
-    if (agentCli === "opencode") {
-      const optionCount = agentOptions?.length;
-      const parts = submitOpenCodeTextAnswer(option, text, agentIsMultiSelect, optionCount);
-      sendTextAnswerWithDelay(parts, (bytes) => {
-        logTerminalInput(sessionIdRef.current, bytes);
-        sendToBackendRef.current(bytes);
-      });
-    } else if (agentCli === "devin") {
-      const optionCount = agentOptions?.length;
-      const parts = submitDevinTextAnswer(option, text, agentIsMultiSelect, index, optionCount, devinCursorPosRef.current);
-      sendTextAnswerWithDelay(parts, (bytes) => {
-        logTerminalInput(sessionIdRef.current, bytes);
-        sendToBackendRef.current(bytes);
-      });
-      // After Enter submits the text, Devin resets the cursor to the first
-      // option (index 0). Reset our tracking accordingly so subsequent toggles
-      // compute relative movement from the correct position.
-      devinCursorPosRef.current = 0;
-    } else if (agentCli === "claude-code") {
-      const parts = submitClaudeCodeTextAnswer(option, text, index, agentIsMultiSelect, hasExistingText);
-      sendTextAnswerWithDelay(parts, (bytes) => {
-        logTerminalInput(sessionIdRef.current, bytes);
-        sendToBackendRef.current(bytes);
-      });
-    }
-    if (!agentIsMultiQuestion) {
-      setAgentOverlayDismissed(true);
-    }
-  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion]);
+    const ctx: BehaviorContext = {
+      options: agentOptions,
+      isMultiSelect: agentIsMultiSelect,
+      isMultiQuestion: agentIsMultiQuestion,
+      activeTabIndex: agentActiveTabIndex,
+      totalTabs: agentTotalTabs,
+      cursorPos: devinCursorPosRef.current,
+      otherEditing: agentOtherEditing,
+      hasExistingText,
+    };
+    const result = getBehavior(agentCli).textAnswer(option, text, index, ctx);
+    executeSteps(result.steps, (bytes) => {
+      logTerminalInput(sessionIdRef.current, bytes);
+      sendToBackendRef.current(bytes);
+    });
+    if (result.newCursorPos !== undefined) devinCursorPosRef.current = result.newCursorPos;
+    if (result.dismiss) setAgentOverlayDismissed(true);
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
   // Handle text cancel — send Escape to exit CLI's text editing mode
   // (e.g. Devin's 'e' select+type mode). Without this, the CLI stays in
@@ -516,14 +471,21 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // instead of switching questions.
   const handleAgentTextCancel = useCallback(() => {
     if (!termRef.current || agentCli === "unknown") return;
-    // Only Devin has a text editing mode that needs Escape to exit.
-    // OpenCode's text mode is handled internally (number key + selectOption).
-    if (agentCli === "devin") {
-      const bytes = new TextEncoder().encode("\x1b"); // Escape
+    const ctx: BehaviorContext = {
+      options: agentOptions,
+      isMultiSelect: agentIsMultiSelect,
+      isMultiQuestion: agentIsMultiQuestion,
+      activeTabIndex: agentActiveTabIndex,
+      totalTabs: agentTotalTabs,
+      cursorPos: devinCursorPosRef.current,
+      otherEditing: agentOtherEditing,
+    };
+    const result = getBehavior(agentCli).textCancel(ctx);
+    executeSteps(result.steps, (bytes) => {
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
-    }
-  }, [agentCli]);
+    });
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
   // Handle navigate to previous question tab (multi-question mode)
   // Devin and OpenCode both bind ← to switch to previous tab.
@@ -533,84 +495,64 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // directly — sending Up when not in editing mode would move the option cursor.
   const handleAgentPrevQuestion = useCallback(() => {
     if (!termRef.current || agentCli === "unknown") return;
-    if (agentCli === "devin" && agentOtherEditing) {
-      // Exit "└ e" editing mode first, then switch tab
-      const upBytes = new TextEncoder().encode("\x1b[A");
-      logTerminalInput(sessionIdRef.current, upBytes);
-      sendToBackendRef.current(upBytes);
-      setTimeout(() => {
-        const leftBytes = new TextEncoder().encode("\x1b[D");
-        logTerminalInput(sessionIdRef.current, leftBytes);
-        sendToBackendRef.current(leftBytes);
-      }, 200);
-    } else {
-      const keystroke = navigatePrevQuestion(agentCli);
-      const bytes = new TextEncoder().encode(keystroke);
+    const ctx: BehaviorContext = {
+      options: agentOptions,
+      isMultiSelect: agentIsMultiSelect,
+      isMultiQuestion: agentIsMultiQuestion,
+      activeTabIndex: agentActiveTabIndex,
+      totalTabs: agentTotalTabs,
+      cursorPos: devinCursorPosRef.current,
+      otherEditing: agentOtherEditing,
+    };
+    const result = getBehavior(agentCli).prevQuestion(ctx);
+    executeSteps(result.steps, (bytes) => {
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
-    }
-    devinCursorPosRef.current = 0;
-  }, [agentCli, agentOtherEditing]);
+    });
+    if (result.newCursorPos !== undefined) devinCursorPosRef.current = result.newCursorPos;
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
   // Handle navigate to next question tab (multi-question mode)
   // Devin and OpenCode both bind → to switch to next tab.
   const handleAgentNextQuestion = useCallback(() => {
     if (!termRef.current || agentCli === "unknown") return;
-    if (agentCli === "devin" && agentOtherEditing) {
-      // Exit "└ e" editing mode first, then switch tab
-      const upBytes = new TextEncoder().encode("\x1b[A");
-      logTerminalInput(sessionIdRef.current, upBytes);
-      sendToBackendRef.current(upBytes);
-      setTimeout(() => {
-        const rightBytes = new TextEncoder().encode("\x1b[C");
-        logTerminalInput(sessionIdRef.current, rightBytes);
-        sendToBackendRef.current(rightBytes);
-      }, 200);
-    } else {
-      const keystroke = navigateNextQuestion(agentCli);
-      const bytes = new TextEncoder().encode(keystroke);
+    const ctx: BehaviorContext = {
+      options: agentOptions,
+      isMultiSelect: agentIsMultiSelect,
+      isMultiQuestion: agentIsMultiQuestion,
+      activeTabIndex: agentActiveTabIndex,
+      totalTabs: agentTotalTabs,
+      cursorPos: devinCursorPosRef.current,
+      otherEditing: agentOtherEditing,
+    };
+    const result = getBehavior(agentCli).nextQuestion(ctx);
+    executeSteps(result.steps, (bytes) => {
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
-    }
-    devinCursorPosRef.current = 0;
-  }, [agentCli, agentOtherEditing]);
+    });
+    if (result.newCursorPos !== undefined) devinCursorPosRef.current = result.newCursorPos;
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
   // Handle confirm in multi-question mode.
   // Navigates to the last tab (submit/confirm), then Enter to submit.
   const handleAgentConfirm = useCallback((hasAnswers = false) => {
     if (!termRef.current || agentCli === "unknown") return;
-    if (agentCli === "opencode") {
-      const hasOptions = !!(agentOptions && agentOptions.length > 0);
-      const keystrokes = submitOpenCodeConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs);
-      const bytes = new TextEncoder().encode(keystrokes);
+    const ctx: BehaviorContext = {
+      options: agentOptions,
+      isMultiSelect: agentIsMultiSelect,
+      isMultiQuestion: agentIsMultiQuestion,
+      activeTabIndex: agentActiveTabIndex,
+      totalTabs: agentTotalTabs,
+      cursorPos: devinCursorPosRef.current,
+      otherEditing: agentOtherEditing,
+    };
+    const result = getBehavior(agentCli).confirm(hasAnswers, ctx);
+    executeSteps(result.steps, (bytes) => {
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
-    } else if (agentCli === "devin") {
-      const hasOptions = !!(agentOptions && agentOptions.length > 0);
-      const keystrokes = submitDevinConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs, agentIsMultiSelect, hasAnswers);
-      const bytes = new TextEncoder().encode(keystrokes);
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
-    } else if (agentCli === "claude-code") {
-      // For Claude Code multi-select, use Tab + Enter (submitClaudeCodeMultiSelect)
-      // instead of Right arrow + Enter (submitClaudeCodeConfirm).
-      // Tab reliably navigates to the Submit tab, while Right arrow may not
-      // work in application cursor key mode.
-      if (agentIsMultiSelect) {
-        const keystrokes = submitClaudeCodeMultiSelect();
-        const bytes = new TextEncoder().encode(keystrokes);
-        logTerminalInput(sessionIdRef.current, bytes);
-        sendToBackendRef.current(bytes);
-      } else {
-        const hasOptions = !!(agentOptions && agentOptions.length > 0);
-        const keystrokes = submitClaudeCodeConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs);
-        const bytes = new TextEncoder().encode(keystrokes);
-        logTerminalInput(sessionIdRef.current, bytes);
-        sendToBackendRef.current(bytes);
-      }
-    }
+    });
     setAgentOverlayDismissed(true);
-  }, [agentCli, agentOptions, agentActiveTabIndex, agentTotalTabs, agentIsMultiSelect]);
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
   // Terminal appearance from config
   const config = useConfigStore((s) => s.config);

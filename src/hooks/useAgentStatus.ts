@@ -33,6 +33,7 @@ import {
 import { scrapeScreen, joinLines, extractTabInfo } from "./screenScraper";
 import { detectCli, detectStatus, prepareScreenText } from "./cliDetector";
 import { extractQuestion, extractOptions, detectMultiSelect, detectMultiQuestion, extractReviewAnswers } from "./agentPatterns";
+import { getBehavior } from "./cliBehavior";
 import { logTerminalDebug } from "./terminalLogger";
 
 /** Tick interval for time-based transitions + screen scraping. */
@@ -146,17 +147,11 @@ export function useAgentStatus(
           isMultiQuestion = detectMultiQuestion(state.cli, screenText);
           // Detect "└" expanded state on Other option (Devin).
           // When the cursor is on "Other (type your own)" and it's expanded,
+          // Detect "Other" text editing mode — delegated to behavior.
           // Devin shows "└ e" (editing) or "└ text" (display) or "└" (empty).
           // In all these states, ←→ moves the text cursor, not switches tabs.
-          // We need to send Up first to exit this state before switching tabs.
-          // The "└" line is indented (starts with whitespace) and is the only
-          // place "└" appears in the dialog.
-          // This applies to both multiSelect and multiQuestion (single-select
-          // multi-question) modes — both can have the "Other" option with
-          // text editing mode.
-          if (state.cli === "devin" && (isMultiSelect || isMultiQuestion)) {
-            otherExpanded = /^\s+└/m.test(screenText);
-          }
+          const behavior = getBehavior(state.cli);
+          otherExpanded = behavior.detectOtherExpanded(screenText, isMultiSelect, isMultiQuestion);
           // Debug: log screenText when multiSelect/multiQuestion detected
           if (isMultiSelect || isMultiQuestion) {
             logTerminalDebug(sessionId, `screenText for multiSelect=${isMultiSelect} multiQuestion=${isMultiQuestion}: ${JSON.stringify(screenText.slice(-500))}`);
@@ -175,16 +170,15 @@ export function useAgentStatus(
               reviewAnswers = extractReviewAnswers(state.cli, screenText);
             }
           }
-          // Devin multi-select: when cursor is on "Other (type your own)",
-          // the terminal shows a text input and the option list disappears.
-          // extractOptions returns only ["Other (type your own)"].
-          // Use cached options for this tab to keep the overlay stable.
-          if (state.cli === "devin" && isMultiSelect && options && options.length === 1 && /other/i.test(options[0])) {
+          // Cache options for CLIs that need it (Devin: when cursor is on
+          // "Other (type your own)", the option list disappears — use cached
+          // options to keep the overlay stable).
+          if (behavior.cacheOptionsOnOther && isMultiSelect && options && options.length === 1 && /other/i.test(options[0])) {
             const cached = cachedOptionsRef.current.get(activeTabIndex);
             if (cached && cached.length > 1) {
               options = cached;
             }
-          } else if (state.cli === "devin" && isMultiSelect && options && options.length > 1) {
+          } else if (behavior.cacheOptionsOnOther && isMultiSelect && options && options.length > 1) {
             // Cache the full option list for this tab
             cachedOptionsRef.current.set(activeTabIndex, options);
           }
@@ -195,7 +189,7 @@ export function useAgentStatus(
           console.log(`[agentStatus] ${extractMsg}`);
           logTerminalDebug(sessionId, extractMsg);
           // Debug: log raw screen lines for option extraction diagnosis
-          if (state.cli === "devin" && isMultiSelect && options && options.length > 3) {
+          if (behavior.cacheOptionsOnOther && isMultiSelect && options && options.length > 3) {
             const nonEmpty = lines.map((l, i) => ({ i, l })).filter((x) => x.l.trim());
             logTerminalDebug(sessionId, `screenLines(${nonEmpty.length}): ${JSON.stringify(nonEmpty)}`);
           }
@@ -235,9 +229,11 @@ export function useAgentStatus(
           setCliType(state, signal.cli);
           changed = true;
         }
-        // For Codex, "Action Required" title = blocked
-        if (signal.cli === "codex" && signal.title === "Action Required") {
-          applyScreenStatus(state, "blocked", "Action required", performance.now());
+        // Handle CLI-specific title signals (e.g. Codex "Action Required" = blocked)
+        const titleBehavior = getBehavior(signal.cli);
+        const titleResult = titleBehavior.handleOscTitle(signal.title);
+        if (titleResult) {
+          applyScreenStatus(state, titleResult.status, titleResult.message, performance.now());
           changed = true;
         }
         if (changed) syncToReact();

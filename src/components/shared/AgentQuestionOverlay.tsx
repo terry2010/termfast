@@ -19,6 +19,7 @@
 import { memo, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentStatus, CliType } from "@/hooks/agentStateMachine";
+import { getBehavior } from "@/hooks/cliBehavior";
 
 interface AgentQuestionOverlayProps {
   /** Whether the overlay should be visible. */
@@ -125,6 +126,7 @@ function AgentQuestionOverlayImpl({
   onDismiss,
 }: AgentQuestionOverlayProps) {
   const { t } = useTranslation();
+  const behavior = getBehavior(cli);
   // Multi-select: track which options are checked locally
   const [checked, setChecked] = useState<Set<number>>(new Set());
   // Track text answers typed via "Type your own answer" (option index → text)
@@ -141,27 +143,14 @@ function AgentQuestionOverlayImpl({
   const answeredTabsRef = useRef<Map<number, number>>(new Map());
 
   // In multi-question mode, determine which tab is the "last question" tab.
-  // OpenCode has a separate "Confirm" tab at the end (totalTabs - 1),
-  // so the last question is at totalTabs - 2.
-  // Devin has NO Confirm tab — all tabs are question tabs,
-  // so the last question is at totalTabs - 1.
-  // Claude Code has a "Submit" tab at the end (totalTabs - 1),
-  // so the last question is at totalTabs - 2 (same as OpenCode).
-  const lastQuestionIndex = cli === "devin" ? totalTabs - 1 : totalTabs - 2;
+  // Each CLI has different tab layout — delegated to behavior.
+  const lastQuestionIndex = behavior.lastQuestionIndex(totalTabs);
   const isLastQuestion = isMultiQuestion && totalTabs > 0 && activeTabIndex === lastQuestionIndex;
-  // First/last question detection for Devin — hide Prev/Next to prevent wrap.
-  // Devin's ←→ is circular (wraps around), and there's no Confirm tab.
-  // OpenCode has a Confirm tab at the end, so Next on last question is useful.
   const isFirstQuestion = isMultiQuestion && totalTabs > 0 && activeTabIndex === 0;
-  // For Claude Code multi-select with only 1 question tab + Submit tab
-  // (totalTabs === 2), hide both Prev and Next — there's only one question,
-  // so navigation buttons are meaningless. The "确认提交" button is enough.
-  const isSingleQuestionMultiSelect = cli === "claude-code" && isMultiSelect && totalTabs === 2;
-  // Submit tab (last tab): keep Prev (to go back and modify answers),
-  // hide Next (there's nothing after Submit).
-  const isSubmitTab = cli === "claude-code" && isMultiQuestion && activeTabIndex === totalTabs - 1;
-  const hidePrev = (cli === "devin" && isFirstQuestion) || isSingleQuestionMultiSelect;
-  const hideNext = (cli === "devin" && isLastQuestion) || isSingleQuestionMultiSelect || isSubmitTab;
+  // Prev/Next button visibility — delegated to behavior.
+  const uiState = { isFirstQuestion, isLastQuestion, isMultiSelect, totalTabs, activeTabIndex };
+  const hidePrev = behavior.hidePrev(uiState);
+  const hideNext = behavior.hideNext(uiState);
   // Text input mode: when user clicks "Type your own answer"
   const [textMode, setTextMode] = useState(false);
   const [textModeIndex, setTextModeIndex] = useState(-1);
@@ -269,7 +258,7 @@ function AgentQuestionOverlayImpl({
   // nothing as checked even though Devin's dialog shows the selection.
   // OpenCode and Codex don't use [✔] markers either.
   useEffect(() => {
-    if (cli !== "claude-code" || !isMultiSelect || !options || textModeRef.current) return;
+    if (!behavior.syncCheckedFromScreen || !isMultiSelect || !options || textModeRef.current) return;
     const screenChecked = new Set<number>();
     options.forEach((option, index) => {
       if (isCheckedOnScreen(option)) {
@@ -495,7 +484,7 @@ function AgentQuestionOverlayImpl({
                     ✓ {t("server.agent_confirm")}
                   </button>
                 )}
-                {isLastQuestion && !isMultiSelect && cli === "devin" && !hasAnyAnswers && (
+                {isLastQuestion && !isMultiSelect && behavior.hasSkipOnLastQuestion && !hasAnyAnswers && (
                   <button
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-600 hover:bg-gray-500 text-gray-200 transition-colors"
                     onClick={() => onConfirm(hasAnyAnswers)}
@@ -503,7 +492,7 @@ function AgentQuestionOverlayImpl({
                     {t("server.agent_skip")} (Esc)
                   </button>
                 )}
-                {isLastQuestion && !isMultiSelect && cli === "devin" && hasAnyAnswers && (
+                {isLastQuestion && !isMultiSelect && behavior.hasSkipOnLastQuestion && hasAnyAnswers && (
                   <div
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed text-center"
                     title={t("server.agent_last_question_hint")}
@@ -511,7 +500,7 @@ function AgentQuestionOverlayImpl({
                     {t("server.agent_select_to_submit")}
                   </div>
                 )}
-                {isLastQuestion && !isMultiSelect && cli !== "devin" && (
+                {isLastQuestion && !isMultiSelect && !behavior.hasSkipOnLastQuestion && (
                   <button
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
                     onClick={() => onConfirm(hasAnyAnswers)}
@@ -578,7 +567,7 @@ function AgentQuestionOverlayImpl({
                     ✓ {t("server.agent_confirm")}
                   </button>
                 )}
-                {isLastQuestion && !isMultiSelect && cli === "devin" && !hasAnyAnswers && (
+                {isLastQuestion && !isMultiSelect && behavior.hasSkipOnLastQuestion && !hasAnyAnswers && (
                   <button
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-600 hover:bg-gray-500 text-gray-200 transition-colors"
                     onClick={() => onConfirm(hasAnyAnswers)}
@@ -586,7 +575,7 @@ function AgentQuestionOverlayImpl({
                     {t("server.agent_skip")} (Esc)
                   </button>
                 )}
-                {isLastQuestion && !isMultiSelect && cli === "devin" && hasAnyAnswers && (
+                {isLastQuestion && !isMultiSelect && behavior.hasSkipOnLastQuestion && hasAnyAnswers && (
                   <div
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed text-center"
                     title={t("server.agent_last_question_hint")}
@@ -594,7 +583,7 @@ function AgentQuestionOverlayImpl({
                     {t("server.agent_select_to_submit")}
                   </div>
                 )}
-                {isLastQuestion && !isMultiSelect && cli !== "devin" && (
+                {isLastQuestion && !isMultiSelect && !behavior.hasSkipOnLastQuestion && (
                   <button
                     className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors font-medium"
                     onClick={() => onConfirm(hasAnyAnswers)}
