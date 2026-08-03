@@ -92,6 +92,15 @@ export function detectCliFromScreen(screenText: string): CliType {
   if (/Enter\s*to\s*select.*(?:Tab\/Arrow|Tab).*Esc\s*to\s*cancel/i.test(screenText)) {
     return "claude-code";
   }
+  // Claude Code: permission dialog footer (v2.1+)
+  // "Esc to cancel · Tab to amend · ctrl+e to explain"
+  if (/Esc\s*to\s*cancel.*Tab\s*to\s*amend.*ctrl\+e\s*to\s*explain/i.test(screenText)) {
+    return "claude-code";
+  }
+  // Claude Code: multi-question tab row (v2.1+)
+  if (/←\s+[☐☒].*✔\s*Submit\s*→/.test(screenText)) {
+    return "claude-code";
+  }
   // Claude Code: selection widget footer (older)
   if (/↑\/↓\s+to\s+navigate/.test(screenText)) {
     return "claude-code";

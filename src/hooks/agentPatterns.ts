@@ -409,6 +409,12 @@ const claudeCodePatterns: CliPatterns = {
     // "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
     // The screen scraper may strip some spaces, so match flexibly.
     { status: "blocked", pattern: /Enter\s*to\s*select.*(?:Tab\/Arrow|Tab).*Esc\s*to\s*cancel/i, priority: 11 },
+    // Permission dialog footer (Claude Code v2.1+):
+    // "Esc to cancel · Tab to amend · ctrl+e to explain"
+    // This appears when Claude Code asks for permission to run a command.
+    // No "Enter to select" or "↑/↓ to navigate" — just Esc/Tab/ctrl+e.
+    // Screen scrape may eat spaces, so use \s* (not \s+).
+    { status: "blocked", pattern: /Esc\s*to\s*cancel.*Tab\s*to\s*amend.*ctrl\+e\s*to\s*explain/i, priority: 10 },
     // Multi-question Submit tab: tab row "←  ☐ label  ...  ✔ Submit  →"
     // On the Submit tab, the footer may not include "Enter to select"
     // (there are no options to select). Match the tab row itself as a
@@ -437,6 +443,14 @@ const claudeCodePatterns: CliPatterns = {
     for (const line of lines) {
       if (/Would you like to proceed\?/.test(line)) {
         return "Would you like to proceed?";
+      }
+    }
+    // Permission dialog (Claude Code v2.1+):
+    // "Do you want to proceed?" (screen scrape may eat spaces: "Doyouwanttoproceed?")
+    // Footer: "Esc to cancel · Tab to amend · ctrl+e to explain"
+    for (const line of lines) {
+      if (/Do\s*you\s*want\s*to\s*proceed\?/i.test(line)) {
+        return "Do you want to proceed?";
       }
     }
     // Trust dialog
@@ -498,6 +512,23 @@ const claudeCodePatterns: CliPatterns = {
       if (/Would you like to proceed\?/.test(line)) {
         return ["Yes", "No"];
       }
+    }
+    // Permission dialog (Claude Code v2.1+):
+    // Footer: "Esc to cancel · Tab to amend · ctrl+e to explain"
+    // Options: "❯ 1. Yes", "2. Yes, and always allow...", "3. No"
+    // Screen scrape may eat spaces (e.g. "Doyouwanttoproceed?", "❯1.Yes")
+    const permFooterIdx = lines.findIndex((l) =>
+      /Esc\s*to\s*cancel.*Tab\s*to\s*amend.*ctrl\+e\s*to\s*explain/i.test(l));
+    if (permFooterIdx >= 0) {
+      const options: string[] = [];
+      const optionPattern = /^\s*[❯>]?\s*(\d+)\.\s*(.+)/;
+      for (let i = 0; i < permFooterIdx; i++) {
+        const m = lines[i].match(optionPattern);
+        if (m) {
+          options.push(`${m[1]}. ${m[2].trim()}`);
+        }
+      }
+      if (options.length > 0) return options;
     }
     // Trust dialog
     for (const line of lines) {

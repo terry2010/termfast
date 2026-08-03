@@ -518,6 +518,53 @@ describe("Claude Code multi-question — Submit tab", () => {
   });
 });
 
+describe("Claude Code — permission dialog (v2.1+)", () => {
+  // Permission dialog when Claude Code wants to run a command.
+  // Footer: "Esc to cancel · Tab to amend · ctrl+e to explain"
+  // Screen scrape may eat spaces: "Doyouwanttoproceed?", "❯1.Yes"
+  const permScreen = [
+    "⏺ Bash(echo \"授权弹窗测试\" > /tmp/claude-auth-test-2.txt)",
+    "  ⎿  Waiting…",
+    "───────────────────────────────────────────────────────────",
+    " Bash command",
+    " echo \"授权弹窗测试\" > /tmp/claude-auth-test-2.txt",
+    "写入测试文件以触发授权弹窗",
+    "Doyouwanttoproceed?",
+    "❯1.Yes",
+    "2.Yes,andalwaysallowaccesstotmp/fromthisproject",
+    "3.No",
+    "Esctocancel·Tabtoamend·ctrl+etoexplain",
+  ].join("\n");
+
+  it("detects blocked status from permission footer", () => {
+    const status = detectStatusFromScreen("claude-code", permScreen);
+    expect(status).toBe("blocked");
+  });
+
+  it("extracts question from permission dialog", () => {
+    const q = extractQuestion("claude-code", permScreen);
+    expect(q).toBe("Do you want to proceed?");
+  });
+
+  it("extracts all 3 options from permission dialog", () => {
+    const opts = extractOptions("claude-code", permScreen);
+    // Screen scrape eats spaces, so options have no spaces between words.
+    expect(opts).toEqual([
+      "1. Yes",
+      "2. Yes,andalwaysallowaccesstotmp/fromthisproject",
+      "3. No",
+    ]);
+  });
+
+  it("is not multi-select", () => {
+    expect(detectMultiSelect("claude-code", permScreen)).toBe(false);
+  });
+
+  it("is not multi-question", () => {
+    expect(detectMultiQuestion("claude-code", permScreen)).toBe(false);
+  });
+});
+
 describe("extractQuestion — Codex", () => {
   it("extracts Approve prompt", () => {
     const screen = "Approve command? (y/n)";
