@@ -479,6 +479,56 @@ describe("Claude Code v2.1 multi-question dialog", () => {
   });
 });
 
+describe("Claude Code AskUserQuestion — ↑/↓ navigate footer", () => {
+  // AskUserQuestion dialog with 5 options, descriptions, separator, and
+  // "Chat about this" below the separator. Footer uses ↑/↓ (not Tab/Arrow).
+  const askUserScreen = [
+    "✻ Crunched for 28s",
+    "❯ 你激活的前两个选项还是yes",
+    "  Thought for 48s (ctrl+o to expand)",
+    "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "Planning: /Users/terry/.claude/plans/modular-churning-pearl.md",
+    "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    " ☐ 下一步",
+    "ExitPlanMode 弹窗前两个选项都是「是」（CLI 渲染，我无法改）。接下来怎么继续测试「否」？",
+    "❯ 1. 重新触发弹窗",
+    "     再次调用 ExitPlanMode，让工具重新扫描弹窗的全部选项，看看「否」是否在后面的位置",
+    "  2. 先退出 plan mode",
+    "     结束本次弹窗测试，由你在工具侧调整选项提取逻辑后再测",
+    "  3. 我描述弹窗结构",
+    "     由你告诉我工具当前检测到的选项列表，我据此判断「否」在哪里、需要怎么选择",
+    "  4. Type something.",
+    "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  5. Chat about this",
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+  ].join("\n");
+
+  it("detects blocked status from ↑/↓ navigate footer", () => {
+    const status = detectStatusFromScreen("claude-code", askUserScreen);
+    expect(status).toBe("blocked");
+  });
+
+  it("extracts question text (not option 5)", () => {
+    const q = extractQuestion("claude-code", askUserScreen);
+    expect(q).toBe("ExitPlanMode 弹窗前两个选项都是「是」（CLI 渲染，我无法改）。接下来怎么继续测试「否」？");
+  });
+
+  it("extracts all 5 options crossing separator", () => {
+    const opts = extractOptions("claude-code", askUserScreen);
+    expect(opts).toEqual([
+      "1. 重新触发弹窗",
+      "2. 先退出 plan mode",
+      "3. 我描述弹窗结构",
+      "4. Type something.",
+      "5. Chat about this",
+    ]);
+  });
+
+  it("is not multi-select", () => {
+    expect(detectMultiSelect("claude-code", askUserScreen)).toBe(false);
+  });
+});
+
 describe("Claude Code multi-question — Submit tab", () => {
   // On the Submit tab, the footer may not include "Enter to select"
   // (there are no options to select). The tab row is still visible.

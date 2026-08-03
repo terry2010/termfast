@@ -503,12 +503,24 @@ const claudeCodePatterns: CliPatterns = {
     // Selection widget — find the question text above the "↑/↓ to navigate" footer
     for (let i = 0; i < lines.length; i++) {
       if (/↑\/↓\s+to\s+navigate/.test(lines[i])) {
-        // Look backwards for the question text
-        for (let j = i - 1; j >= 0 && j >= i - 10; j--) {
-          const trimmed = lines[j].trim();
-          if (trimmed && !/^[✶✢✽✻✳·*]/.test(trimmed) && !/^[>❯]/.test(trimmed)) {
-            return trimmed;
-          }
+        // Look backwards for the question text, skipping:
+        // - numbered option lines ("1. label", "2. label", etc.)
+        // - description lines (indent 5+ spaces)
+        // - separator lines (─────)
+        // - spinner lines (✶, ✻, etc.)
+        // - prompt lines (❯)
+        for (let j = i - 1; j >= 0 && j >= i - 20; j--) {
+          const raw = lines[j];
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+          if (/^[✶✢✽✻✳·*]/.test(trimmed)) continue;
+          if (/^[>❯]/.test(trimmed)) continue;
+          if (/^─+$/.test(trimmed)) continue;
+          if (/^\d+\.\s/.test(trimmed)) continue;
+          // Skip description lines (indent 5+ spaces)
+          if (/^\s{5,}\S/.test(raw)) continue;
+          // Found the question text
+          return trimmed;
         }
         return "Select an option";
       }
@@ -588,17 +600,35 @@ const claudeCodePatterns: CliPatterns = {
       if (options.length > 0) return options;
     }
     // Selection widget — options are listed above the "↑/↓ to navigate" footer
+    // AskUserQuestion format: "❯ 1. label" / "  2. label" with description lines,
+    // optional separator, and "  5. Chat about this" below the separator.
     for (let i = 0; i < lines.length; i++) {
       if (/↑\/↓\s+to\s+navigate/.test(lines[i])) {
         const options: string[] = [];
-        // Look backwards for option lines (often indented with ○ or ●)
-        for (let j = i - 1; j >= 0 && j >= i - 15; j--) {
-          const trimmed = lines[j].trim();
-          if (/^[○●]\s+/.test(trimmed)) {
-            options.unshift(trimmed.replace(/^[○●]\s+/, ""));
-          } else if (options.length > 0) {
-            break; // Found options, stop when hitting non-option line
+        // Look backwards for numbered option lines, crossing separators.
+        // Use original (untrimmed) line to check indentation:
+        // - Option lines: indent 0-3 spaces ("❯ 1. label" or "  2. label")
+        // - Description lines: indent 5+ spaces ("     description")
+        // - Question/tab row: indent 0 or "☐"
+        for (let j = i - 1; j >= 0 && j >= i - 20; j--) {
+          const raw = lines[j];
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+          // Skip separator lines (─────)
+          if (/^─+$/.test(trimmed)) continue;
+          // Check if this is a numbered option (indent 0-3 spaces, optional ❯)
+          const m = raw.match(/^\s{0,3}[❯>]?\s*(\d+)\.\s*(.+)/);
+          if (m) {
+            options.unshift(`${m[1]}. ${m[2].trim()}`);
+            continue;
           }
+          // Skip description lines (indent 5+ spaces)
+          if (/^\s{5,}\S/.test(raw)) continue;
+          // Skip spinner/prompt lines
+          if (/^[✶✢✽✻✳·*]/.test(trimmed)) continue;
+          if (/^[>❯]/.test(trimmed)) continue;
+          // Anything else (question text, tab row) — stop
+          if (options.length > 0) break;
         }
         return options.length > 0 ? options : null;
       }
