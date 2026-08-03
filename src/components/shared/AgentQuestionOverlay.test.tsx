@@ -149,6 +149,66 @@ describe("AgentQuestionOverlay — multi-select", () => {
     fireEvent.click(getByText("server.agent_submit"));
     expect(onSubmitMultiSelect).toHaveBeenCalled();
   });
+
+  it("Devin: toggle preserves checked state across options prop changes (no [✔] sync)", () => {
+    // Regression: the sync-from-screen effect was running for all CLIs,
+    // but isCheckedOnScreen only matches Claude Code's [✓] markers.
+    // Devin's options extractor strips ■/□ markers, so the effect cleared
+    // the checked Set on every tick. This test verifies that after
+    // toggling an option and re-rendering with a new options array
+    // (simulating a screen-scrape tick), the checked state persists.
+    const onToggle = vi.fn();
+    const { container, getByText, rerender } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="测试策略？"
+        options={["1. 单元测试", "2. 集成测试", "3. E2E 测试"]}
+        isMultiSelect={true}
+        onToggle={onToggle}
+      />,
+    );
+    // Click option 1 → toggle it on
+    fireEvent.click(getByText("1. 单元测试"));
+    expect(onToggle).toHaveBeenCalledWith("1. 单元测试", 0);
+    // Re-render with a new options array (same content, new reference)
+    // This simulates useAgentStatus creating a new state object each tick.
+    rerender(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="devin"
+        question="测试策略？"
+        options={["1. 单元测试", "2. 集成测试", "3. E2E 测试"]}
+        isMultiSelect={true}
+        onToggle={onToggle}
+      />,
+    );
+    // The checkbox SVG (checkmark path) should still be present for option 1.
+    // If the sync effect wrongly cleared checked, the SVG would be gone.
+    const svgs = container.querySelectorAll("svg");
+    // At least one SVG (the checkmark) should be present
+    expect(svgs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("Claude Code: syncs checked state from [✔] markers in options", () => {
+    // Claude Code includes [✔] (U+2714) markers in option labels.
+    // The sync effect should parse these and set the checked Set accordingly.
+    // Note: isCheckedOnScreen uses ✔ (U+2714), stripCheckbox uses ✓ (U+2713).
+    // stripCheckbox doesn't strip [✔], so displayed text includes the marker,
+    // but that's a pre-existing issue — here we only verify the sync logic.
+    const { container } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="claude-code"
+        question="Which features?"
+        options={["1. [✔] Feature A", "2. [ ] Feature B", "3. [✔] Feature C"]}
+        isMultiSelect={true}
+      />,
+    );
+    // 2 options have [✔] → 2 SVG checkmark icons should be rendered
+    const svgs = container.querySelectorAll("svg");
+    expect(svgs.length).toBe(2);
+  });
 });
 
 // ── Type your own answer tests ────────────────────────────────────────

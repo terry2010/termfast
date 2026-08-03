@@ -261,8 +261,15 @@ function AgentQuestionOverlayImpl({
   // these markers so the overlay reflects the real state (e.g. after the
   // user toggles options directly in the terminal, or after text input
   // changes the screen state).
+  //
+  // IMPORTANT: Only run for Claude Code. Devin's options extractor strips
+  // the ■/□ markers, so isCheckedOnScreen always returns false for Devin.
+  // Running this effect for Devin would clear the local `checked` Set on
+  // every tick (after the user clicks a toggle), making the overlay show
+  // nothing as checked even though Devin's dialog shows the selection.
+  // OpenCode and Codex don't use [✔] markers either.
   useEffect(() => {
-    if (!isMultiSelect || !options || textModeRef.current) return;
+    if (cli !== "claude-code" || !isMultiSelect || !options || textModeRef.current) return;
     const screenChecked = new Set<number>();
     options.forEach((option, index) => {
       if (isCheckedOnScreen(option)) {
@@ -270,7 +277,7 @@ function AgentQuestionOverlayImpl({
       }
     });
     setChecked(screenChecked);
-  }, [options, isMultiSelect]);
+  }, [options, isMultiSelect, cli]);
 
   if (!visible || status !== "blocked") return null;
 
