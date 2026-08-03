@@ -521,7 +521,8 @@ describe("Claude Code multi-question — Submit tab", () => {
 describe("Claude Code — permission dialog (v2.1+)", () => {
   // Permission dialog when Claude Code wants to run a command.
   // Footer: "Esc to cancel · Tab to amend · ctrl+e to explain"
-  // Screen scrape may eat spaces: "Doyouwanttoproceed?", "❯1.Yes"
+  // After the extractLineText fix, spaces between cursor-positioned
+  // words are now preserved (empty cells padded with spaces).
   const permScreen = [
     "⏺ Bash(echo \"授权弹窗测试\" > /tmp/claude-auth-test-2.txt)",
     "  ⎿  Waiting…",
@@ -529,11 +530,11 @@ describe("Claude Code — permission dialog (v2.1+)", () => {
     " Bash command",
     " echo \"授权弹窗测试\" > /tmp/claude-auth-test-2.txt",
     "写入测试文件以触发授权弹窗",
-    "Doyouwanttoproceed?",
-    "❯1.Yes",
-    "2.Yes,andalwaysallowaccesstotmp/fromthisproject",
-    "3.No",
-    "Esctocancel·Tabtoamend·ctrl+etoexplain",
+    "Do you want to proceed?",
+    "❯ 1. Yes",
+    "  2. Yes, and always allow access to tmp/ from this project",
+    "  3. No",
+    "Esc to cancel · Tab to amend · ctrl+e to explain",
   ].join("\n");
 
   it("detects blocked status from permission footer", () => {
@@ -548,10 +549,9 @@ describe("Claude Code — permission dialog (v2.1+)", () => {
 
   it("extracts all 3 options from permission dialog", () => {
     const opts = extractOptions("claude-code", permScreen);
-    // Screen scrape eats spaces, so options have no spaces between words.
     expect(opts).toEqual([
       "1. Yes",
-      "2. Yes,andalwaysallowaccesstotmp/fromthisproject",
+      "2. Yes, and always allow access to tmp/ from this project",
       "3. No",
     ]);
   });

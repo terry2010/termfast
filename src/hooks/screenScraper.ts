@@ -52,6 +52,13 @@ export function scrapeScreen(term: Terminal): string[] {
 /**
  * Extract text content from a single buffer line.
  * Handles wide characters (CJK, emoji) by skipping continuation cells.
+ *
+ * Claude Code's Ink TUI uses absolute cursor positioning (CSI G) to lay out
+ * text — e.g. "2." at column 4, "Yes," at column 7, "and" at column 12.
+ * xterm.js stores these as separate cell runs with empty cells in between.
+ * getChars() returns "" for empty cells, so we must pad with spaces to
+ * preserve the visual layout. Without this, "2.  Yes,  and  always"
+ * becomes "2.Yes,andalways" and option/question extraction breaks.
  */
 function extractLineText(line: IBufferLine): string {
   let text = "";
@@ -62,7 +69,13 @@ function extractLineText(line: IBufferLine): string {
     if (!cell) continue;
     // Skip wide-char continuation cells (width 0)
     if (cell.getWidth() === 0) continue;
-    text += cell.getChars();
+    const chars = cell.getChars();
+    if (chars) {
+      text += chars;
+    } else {
+      // Empty cell — pad with a space to preserve cursor-positioned layout
+      text += " ";
+    }
   }
 
   // Trim trailing whitespace (xterm pads lines with spaces)
