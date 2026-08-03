@@ -280,12 +280,19 @@ function AgentQuestionOverlayImpl({
 
   // ── Single-select: click option → submit ──────────────────────────
   const handleSingleSelect = (option: string, index: number) => {
-    if (isTypeYourOwnAnswer(option)) {
+    // Detect "Type something" input option:
+    // 1. By keyword ("Type something" / "Type your own answer")
+    // 2. By textAnswers — if user previously typed text on this option,
+    //    the screen label changes to the typed value (e.g. "钱钱钱 ✔"),
+    //    so keyword detection fails. textAnswers remembers which index
+    //    is the text input option.
+    if (isTypeYourOwnAnswer(option) || textAnswers.has(index)) {
       // Switch to text input mode
       setTextOption(option);
       setTextModeIndex(index);
       setTextMode(true);
-      setTextValue("");
+      // Pre-fill with existing text answer if any
+      setTextValue(textAnswers.get(index) ?? "");
       return;
     }
     if (isMultiQuestion && activeTabIndex >= 0) {

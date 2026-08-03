@@ -332,14 +332,16 @@ describe("submitClaudeCodeTextAnswer", () => {
   it("sends number key + text + single Enter for multi-question 'Type something.'", () => {
     const result = submitClaudeCodeTextAnswer("5. Type something.", "my custom answer");
     expect(result.navigate).toBe("5");
-    expect(result.type).toBe("my custom answer");
+    // Ctrl+U (\x15) clears old text before typing new text
+    expect(result.type).toBe("\x15my custom answer");
     expect(result.submit).toBe("\r");
   });
 
   it("sends number key + text + double Enter for Plan Mode 'Tell Claude what to change'", () => {
     const result = submitClaudeCodeTextAnswer("3. Tell Claude what to change", "please refine the plan");
     expect(result.navigate).toBe("3");
-    expect(result.type).toBe("please refine the plan");
+    // Ctrl+U (\x15) clears old text before typing new text
+    expect(result.type).toBe("\x15please refine the plan");
     // Two Enters: first submits text into field, second approves the feedback
     expect(result.submit).toBe("\r\r");
   });
@@ -347,7 +349,8 @@ describe("submitClaudeCodeTextAnswer", () => {
   it("defaults to number 5 when no number prefix", () => {
     const result = submitClaudeCodeTextAnswer("Type something.", "test");
     expect(result.navigate).toBe("5");
-    expect(result.type).toBe("test");
+    // Ctrl+U (\x15) clears old text before typing new text
+    expect(result.type).toBe("\x15test");
     expect(result.submit).toBe("\r");
   });
 
@@ -527,10 +530,10 @@ describe("sendTextAnswerWithDelay", () => {
     expect(sends).toHaveLength(1);
     expect(new TextDecoder().decode(sends[0])).toBe("4");
 
-    // After TEXT_ANSWER_DELAY_MS: type sent (no Enter)
+    // After TEXT_ANSWER_DELAY_MS: type sent (Ctrl+U + text, no Enter)
     vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS);
     expect(sends).toHaveLength(2);
-    expect(new TextDecoder().decode(sends[1])).toBe("my text");
+    expect(new TextDecoder().decode(sends[1])).toBe("\x15my text");
 
     // Before submit delay: still 2 sends
     vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS - 1);
@@ -554,7 +557,7 @@ describe("sendTextAnswerWithDelay", () => {
 
     vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS);
     expect(sends).toHaveLength(2);
-    expect(new TextDecoder().decode(sends[1])).toBe("feedback");
+    expect(new TextDecoder().decode(sends[1])).toBe("\x15feedback");
 
     // First Enter after submit delay
     vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS);

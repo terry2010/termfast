@@ -575,7 +575,9 @@ export function submitClaudeCodeTextAnswer(option: string, text: string, index?:
   }
   return {
     navigate: numKey,
-    type: text,
+    // Ctrl+U clears old text before typing new text (in case user is
+    // re-editing after navigating back to this question tab).
+    type: "\x15" + text,
     submit: isPlanModeFeedback ? "\r\r" : "\r",
   };
 }
