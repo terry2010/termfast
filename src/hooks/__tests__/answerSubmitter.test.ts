@@ -355,17 +355,19 @@ describe("submitClaudeCodeTextAnswer", () => {
     const result = submitClaudeCodeTextAnswer("5. Type something", "my text", 4, true);
     // In multi-select, number key only toggles checkbox — need Down arrows
     // to navigate. When focused, TextInput auto-renders — no Enter needed.
+    // Ctrl+U (\x15) clears old text before typing new text.
     // Submit: Tab + Enter (sent separately with delay by sendTextAnswerWithDelay)
     expect(result.navigate).toBe("\x1b[B\x1b[B\x1b[B\x1b[B");
-    expect(result.type).toBe("my text");
+    expect(result.type).toBe("\x15my text");
     expect(result.submit).toBe("\t\r");
   });
 
   it("uses empty navigate for multi-select when index is 0 (already focused)", () => {
     const result = submitClaudeCodeTextAnswer("1. Type something", "my text", 0, true);
     // Index 0 means option is already focused — no navigation needed
+    // Ctrl+U (\x15) clears old text before typing new text
     expect(result.navigate).toBe("");
-    expect(result.type).toBe("my text");
+    expect(result.type).toBe("\x15my text");
     expect(result.submit).toBe("\t\r");
   });
 });
@@ -576,10 +578,10 @@ describe("sendTextAnswerWithDelay", () => {
     expect(sends).toHaveLength(1);
     expect(new TextDecoder().decode(sends[0])).toBe("\x1b[B\x1b[B\x1b[B\x1b[B");
 
-    // After delay: text sent
+    // After delay: Ctrl+U + text sent
     vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS);
     expect(sends).toHaveLength(2);
-    expect(new TextDecoder().decode(sends[1])).toBe("my text");
+    expect(new TextDecoder().decode(sends[1])).toBe("\x15my text");
 
     // After submit delay: Tab sent (first char of submit)
     vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS);

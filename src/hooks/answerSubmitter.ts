@@ -551,6 +551,9 @@ export function submitClaudeCodeTextAnswer(option: string, text: string, index?:
   // Multi-select: number key only toggles checkbox, need Down arrows to
   // navigate to the option. When focused, TextInput auto-renders and
   // captures character input — no Enter needed to enter text mode.
+  // If the option already has a value (e.g. user typed text, navigated
+  // away, then came back), the TextInput contains the old text. We send
+  // Ctrl+U (killToLineStart) before typing to clear the old text.
   // Submit: Tab to Submit button + Enter. Tab and Enter must be sent
   // separately (with delay) because setIsSubmitFocused is async React
   // state — if Enter arrives in the same tick, isSubmitFocused is still
@@ -558,7 +561,7 @@ export function submitClaudeCodeTextAnswer(option: string, text: string, index?:
   if (isMultiSelect && index !== undefined && index > 0) {
     return {
       navigate: "\x1b[B".repeat(index),
-      type: text,
+      type: "\x15" + text, // Ctrl+U clears old text, then type new text
       submit: "\t\r",
     };
   }
@@ -566,7 +569,7 @@ export function submitClaudeCodeTextAnswer(option: string, text: string, index?:
   if (isMultiSelect && index === 0) {
     return {
       navigate: "",
-      type: text,
+      type: "\x15" + text, // Ctrl+U clears old text, then type new text
       submit: "\t\r",
     };
   }
