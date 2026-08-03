@@ -313,31 +313,52 @@ export function submitOpenCodeTextAnswer(option: string, text: string, _isMultiS
 export const TEXT_ANSWER_DELAY_MS = 300;
 
 /**
- * Send a text answer in two parts with a delay between them.
+ * Delay (ms) between sending the text and the submit (Enter) keystroke.
+ *
+ * Claude Code's Ink TextInput updates `textInputValue` via React state
+ * (onChange). If text + Enter arrive in the same event loop tick, the
+ * onSubmit handler reads stale state and the tool result becomes
+ * "__other__" instead of the user's text. This delay gives React time
+ * to flush the state update before Enter is processed.
+ */
+export const TEXT_ANSWER_SUBMIT_DELAY_MS = 300;
+
+/**
+ * Send a text answer in parts with delays between them.
  *
  * Part 1 (navigate): sent immediately — navigates to the "Type your own
  *   answer" option and presses Enter to enter text input mode.
- * Part 2 (type): sent after TEXT_ANSWER_DELAY_MS — types the answer text
- *   and submits. The delay gives OpenCode time to redraw the text input UI.
+ * Part 2 (type): sent after TEXT_ANSWER_DELAY_MS — types the answer text.
+ * Part 3 (submit): sent after TEXT_ANSWER_SUBMIT_DELAY_MS (if provided) —
+ *   presses Enter to submit. The extra delay gives Ink's TextInput time
+ *   to flush React state (onChange → textInputValue) before onSubmit
+ *   reads it. Without this, the tool result is "__other__" (empty text).
  *
- * @param parts     the { navigate, type } from submitOpenCodeTextAnswer
+ * @param parts     the { navigate, type, submit? } from submitXxxTextAnswer
  * @param send      function that sends bytes to the PTY
- * @returns a cleanup function that clears the timeout (for unmount safety)
+ * @returns a cleanup function that clears the timeouts (for unmount safety)
  */
 export function sendTextAnswerWithDelay(
-  parts: { navigate: string; type: string },
+  parts: { navigate: string; type: string; submit?: string },
   send: (bytes: Uint8Array) => void,
 ): () => void {
   const encoder = new TextEncoder();
+  const timers: ReturnType<typeof setTimeout>[] = [];
   // Part 1: send navigate immediately
   if (parts.navigate) {
     send(encoder.encode(parts.navigate));
   }
   // Part 2: send type after delay
-  const timer = setTimeout(() => {
+  timers.push(setTimeout(() => {
     send(encoder.encode(parts.type));
-  }, TEXT_ANSWER_DELAY_MS);
-  return () => clearTimeout(timer);
+  }, TEXT_ANSWER_DELAY_MS));
+  // Part 3: send submit after another delay (if provided)
+  if (parts.submit) {
+    timers.push(setTimeout(() => {
+      send(encoder.encode(parts.submit));
+    }, TEXT_ANSWER_DELAY_MS + TEXT_ANSWER_SUBMIT_DELAY_MS));
+  }
+  return () => timers.forEach(clearTimeout);
 }
 
 function submitOpenCode(option: string, index: number, optionCount?: number): string {
@@ -470,7 +491,14 @@ export function submitClaudeCodeConfirm(hasOptions: boolean, activeIndex: number
  * Submit "Type your own answer" for Claude Code.
  * Claude Code's "Type something." option (number 5) enters a text input
  * mode when selected. We send the number key to select it, then after a
- * delay, type the text + Enter to submit.
+ * delay, type the text, then after another delay, press Enter to submit.
+ *
+ * The text and Enter must be sent separately because Ink's TextInput
+ * updates `textInputValue` via React state (onChange). If text + Enter
+ * arrive in the same event loop tick, the onSubmit handler reads stale
+ * state (empty string) and the tool result becomes "__other__" instead
+ * of the user's text. Sending Enter after a delay gives React time to
+ * flush the state update.
  *
  * Plan Mode's "Tell Claude what to change" option works differently:
  * after typing the text + Enter, the text fills into the option label
@@ -478,18 +506,20 @@ export function submitClaudeCodeConfirm(hasOptions: boolean, activeIndex: number
  * "shift+tab to approve with this feedback". The user must press Enter
  * AGAIN to actually submit/approve. So we send text + "\r\r" (two Enters).
  *
- * @returns two-part keystroke sequence:
+ * @returns three-part keystroke sequence:
  *   - navigate: number key to select the text-input option
- *   - type: text + Enter (one Enter for multi-question, two for Plan Mode)
+ *   - type: the text to type (no Enter)
+ *   - submit: Enter key(s) to submit ("\r" for single-question, "\r\r" for Plan Mode)
  */
-export function submitClaudeCodeTextAnswer(option: string, text: string): { navigate: string; type: string } {
+export function submitClaudeCodeTextAnswer(option: string, text: string): { navigate: string; type: string; submit: string } {
   const numMatch = option.match(/^(\d+)/);
   const numKey = numMatch ? numMatch[1] : "5";
   // Plan Mode "Tell Claude what to change" needs an extra Enter to approve
   const isPlanModeFeedback = /tell\s+\S+\s+what\s+to\s+change/i.test(option);
   return {
     navigate: numKey,
-    type: text + (isPlanModeFeedback ? "\r\r" : "\r"),
+    type: text,
+    submit: isPlanModeFeedback ? "\r\r" : "\r",
   };
 }
 

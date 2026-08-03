@@ -1,6 +1,6 @@
 // Unit tests for answerSubmitter — per-CLI answer submission strategies
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "../answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, TEXT_ANSWER_SUBMIT_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "../answerSubmitter";
 
 describe("submitAnswer — Devin", () => {
   it("sends number + Enter for numbered option (permission dialog)", () => {
@@ -332,20 +332,23 @@ describe("submitClaudeCodeTextAnswer", () => {
   it("sends number key + text + single Enter for multi-question 'Type something.'", () => {
     const result = submitClaudeCodeTextAnswer("5. Type something.", "my custom answer");
     expect(result.navigate).toBe("5");
-    expect(result.type).toBe("my custom answer\r");
+    expect(result.type).toBe("my custom answer");
+    expect(result.submit).toBe("\r");
   });
 
   it("sends number key + text + double Enter for Plan Mode 'Tell Claude what to change'", () => {
     const result = submitClaudeCodeTextAnswer("3. Tell Claude what to change", "please refine the plan");
     expect(result.navigate).toBe("3");
+    expect(result.type).toBe("please refine the plan");
     // Two Enters: first submits text into field, second approves the feedback
-    expect(result.type).toBe("please refine the plan\r\r");
+    expect(result.submit).toBe("\r\r");
   });
 
   it("defaults to number 5 when no number prefix", () => {
     const result = submitClaudeCodeTextAnswer("Type something.", "test");
     expect(result.navigate).toBe("5");
-    expect(result.type).toBe("test\r");
+    expect(result.type).toBe("test");
+    expect(result.submit).toBe("\r");
   });
 });
 
@@ -474,6 +477,65 @@ describe("sendTextAnswerWithDelay", () => {
     vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS);
     expect(sends).toHaveLength(2);
     expect(new TextDecoder().decode(sends[1])).toBe("hello\r");
+  });
+
+  it("sends navigate, type, and submit as three separate sends for Claude Code", () => {
+    const sends: Uint8Array[] = [];
+    const send = (bytes: Uint8Array) => sends.push(bytes);
+    const parts = submitClaudeCodeTextAnswer("4. Type something.", "my text");
+
+    sendTextAnswerWithDelay(parts, send);
+
+    // Immediately: navigate sent
+    expect(sends).toHaveLength(1);
+    expect(new TextDecoder().decode(sends[0])).toBe("4");
+
+    // After TEXT_ANSWER_DELAY_MS: type sent (no Enter)
+    vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS);
+    expect(sends).toHaveLength(2);
+    expect(new TextDecoder().decode(sends[1])).toBe("my text");
+
+    // Before submit delay: still 2 sends
+    vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS - 1);
+    expect(sends).toHaveLength(2);
+
+    // After submit delay: Enter sent
+    vi.advanceTimersByTime(1);
+    expect(sends).toHaveLength(3);
+    expect(new TextDecoder().decode(sends[2])).toBe("\r");
+  });
+
+  it("sends double Enter for Plan Mode feedback (submit has \\r\\r)", () => {
+    const sends: Uint8Array[] = [];
+    const send = (bytes: Uint8Array) => sends.push(bytes);
+    const parts = submitClaudeCodeTextAnswer("3. Tell Claude what to change", "feedback");
+
+    sendTextAnswerWithDelay(parts, send);
+
+    expect(sends).toHaveLength(1);
+    expect(new TextDecoder().decode(sends[0])).toBe("3");
+
+    vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS);
+    expect(sends).toHaveLength(2);
+    expect(new TextDecoder().decode(sends[1])).toBe("feedback");
+
+    vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS);
+    expect(sends).toHaveLength(3);
+    expect(new TextDecoder().decode(sends[2])).toBe("\r\r");
+  });
+
+  it("cleanup function clears all timeouts (navigate + type + submit)", () => {
+    const sends: Uint8Array[] = [];
+    const send = (bytes: Uint8Array) => sends.push(bytes);
+    const parts = submitClaudeCodeTextAnswer("4. Type something.", "my text");
+
+    const cleanup = sendTextAnswerWithDelay(parts, send);
+    expect(sends).toHaveLength(1); // navigate sent immediately
+
+    cleanup(); // clear all timeouts
+
+    vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS + TEXT_ANSWER_SUBMIT_DELAY_MS + 100);
+    expect(sends).toHaveLength(1); // neither type nor submit sent
   });
 });
 
