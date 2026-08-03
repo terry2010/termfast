@@ -572,14 +572,14 @@ describe("Claude Code AskUserQuestion — multi-select with ↑/↓ footer", () 
     expect(q).toBe("请多选若干选项，测试完成后我会告诉你选了哪几个（第几个）？");
   });
 
-  it("extracts all 6 options crossing separator and descriptions (checkboxes stripped)", () => {
+  it("extracts all 6 options crossing separator and descriptions (with [✔] markers)", () => {
     const opts = extractOptions("claude-code", multiSelectScreen);
     expect(opts).toEqual([
-      "1. 选项一",
-      "2. 选项二",
-      "3. 选项三",
-      "4. 选项四",
-      "5. Type something",
+      "1. [ ] 选项一",
+      "2. [ ] 选项二",
+      "3. [ ] 选项三",
+      "4. [ ] 选项四",
+      "5. [ ] Type something",
       "6. Chat about this",
     ]);
   });

@@ -89,6 +89,18 @@ function isTypeYourOwnAnswer(option: string): boolean {
     || /tell\s+\S+\s+what\s+to\s+change/i.test(option);
 }
 
+/** Strip "[ ]" or "[✔]" checkbox prefix from a multi-select option label.
+ *  "1. [✔] 选项A" → "1. 选项A"
+ *  "5. [ ] Type something" → "5. Type something" */
+function stripCheckbox(option: string): string {
+  return option.replace(/^(\d+\.\s*)\[[\s✓]\]\s*/, "$1");
+}
+
+/** Check if a multi-select option has a [✔] checkbox (is checked on screen). */
+function isCheckedOnScreen(option: string): boolean {
+  return /^\d+\.\s*\[✔\]/.test(option);
+}
+
 function AgentQuestionOverlayImpl({
   visible,
   status,
@@ -132,14 +144,20 @@ function AgentQuestionOverlayImpl({
   // so the last question is at totalTabs - 2.
   // Devin has NO Confirm tab — all tabs are question tabs,
   // so the last question is at totalTabs - 1.
+  // Claude Code has a "Submit" tab at the end (totalTabs - 1),
+  // so the last question is at totalTabs - 2 (same as OpenCode).
   const lastQuestionIndex = cli === "devin" ? totalTabs - 1 : totalTabs - 2;
   const isLastQuestion = isMultiQuestion && totalTabs > 0 && activeTabIndex === lastQuestionIndex;
   // First/last question detection for Devin — hide Prev/Next to prevent wrap.
   // Devin's ←→ is circular (wraps around), and there's no Confirm tab.
   // OpenCode has a Confirm tab at the end, so Next on last question is useful.
   const isFirstQuestion = isMultiQuestion && totalTabs > 0 && activeTabIndex === 0;
-  const hidePrev = cli === "devin" && isFirstQuestion;
-  const hideNext = cli === "devin" && isLastQuestion;
+  // For Claude Code multi-select with only 1 question tab + Submit tab
+  // (totalTabs === 2), hide both Prev and Next — there's only one question,
+  // so navigation buttons are meaningless. The "确认提交" button is enough.
+  const isSingleQuestionMultiSelect = cli === "claude-code" && isMultiSelect && totalTabs === 2;
+  const hidePrev = (cli === "devin" && isFirstQuestion) || isSingleQuestionMultiSelect;
+  const hideNext = (cli === "devin" && isLastQuestion) || isSingleQuestionMultiSelect;
   // Text input mode: when user clicks "Type your own answer"
   const [textMode, setTextMode] = useState(false);
   const [textModeIndex, setTextModeIndex] = useState(-1);
@@ -232,6 +250,23 @@ function AgentQuestionOverlayImpl({
     setTextMode(false);
     setTextValue("");
   }, [questionKey]);
+
+  // Sync checked state from screen for Claude Code multi-select.
+  // Claude Code's options include [✔] markers that indicate which options
+  // are actually checked on screen. We sync our local `checked` Set with
+  // these markers so the overlay reflects the real state (e.g. after the
+  // user toggles options directly in the terminal, or after text input
+  // changes the screen state).
+  useEffect(() => {
+    if (!isMultiSelect || !options || textModeRef.current) return;
+    const screenChecked = new Set<number>();
+    options.forEach((option, index) => {
+      if (isCheckedOnScreen(option)) {
+        screenChecked.add(index);
+      }
+    });
+    setChecked(screenChecked);
+  }, [options, isMultiSelect]);
 
   if (!visible || status !== "blocked") return null;
 
@@ -384,6 +419,7 @@ function AgentQuestionOverlayImpl({
           <div className="px-4 pb-3 flex flex-col gap-2">
             {options.map((option, index) => {
               const textAns = textAnswers.get(index);
+              const displayOption = stripCheckbox(option);
               return (
                 <button
                   key={index}
@@ -398,7 +434,7 @@ function AgentQuestionOverlayImpl({
                     )}
                   </span>
                   <span className="flex-1">
-                    {option}
+                    {displayOption}
                     {textAns && (
                       <span className="text-blue-400 ml-2">: {textAns}</span>
                     )}

@@ -580,11 +580,22 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
     } else if (agentCli === "claude-code") {
-      const hasOptions = !!(agentOptions && agentOptions.length > 0);
-      const keystrokes = submitClaudeCodeConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs);
-      const bytes = new TextEncoder().encode(keystrokes);
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
+      // For Claude Code multi-select, use Tab + Enter (submitClaudeCodeMultiSelect)
+      // instead of Right arrow + Enter (submitClaudeCodeConfirm).
+      // Tab reliably navigates to the Submit tab, while Right arrow may not
+      // work in application cursor key mode.
+      if (agentIsMultiSelect) {
+        const keystrokes = submitClaudeCodeMultiSelect();
+        const bytes = new TextEncoder().encode(keystrokes);
+        logTerminalInput(sessionIdRef.current, bytes);
+        sendToBackendRef.current(bytes);
+      } else {
+        const hasOptions = !!(agentOptions && agentOptions.length > 0);
+        const keystrokes = submitClaudeCodeConfirm(hasOptions, agentActiveTabIndex, agentTotalTabs);
+        const bytes = new TextEncoder().encode(keystrokes);
+        logTerminalInput(sessionIdRef.current, bytes);
+        sendToBackendRef.current(bytes);
+      }
     }
     setAgentOverlayDismissed(true);
   }, [agentCli, agentOptions, agentActiveTabIndex, agentTotalTabs, agentIsMultiSelect]);
