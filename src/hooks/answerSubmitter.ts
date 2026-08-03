@@ -543,7 +543,7 @@ export function submitClaudeCodeConfirm(hasOptions: boolean, activeIndex: number
  *   - type: the text to type (no Enter)
  *   - submit: Enter key(s) to submit ("\r" for single-question, "\r\r" for Plan Mode)
  */
-export function submitClaudeCodeTextAnswer(option: string, text: string, index?: number, isMultiSelect?: boolean): { navigate: string; type: string; submit: string } {
+export function submitClaudeCodeTextAnswer(option: string, text: string, index?: number, isMultiSelect?: boolean, hasExistingText?: boolean): { navigate: string; type: string; submit: string } {
   const numMatch = option.match(/^(\d+)/);
   const numKey = numMatch ? numMatch[1] : "5";
   // Plan Mode "Tell Claude what to change" needs an extra Enter to approve
@@ -571,6 +571,27 @@ export function submitClaudeCodeTextAnswer(option: string, text: string, index?:
       navigate: "",
       type: "\x15" + text, // Ctrl+U clears old text, then type new text
       submit: "\t\r",
+    };
+  }
+  // Single-select: if the option already has a text value (user is
+  // re-editing), use Down arrows to navigate instead of number key.
+  // Claude Code's use-select-input.ts auto-submits pre-filled input
+  // options on number key press (line 267-270: "Pre-filled input:
+  // auto-submit"). Down arrow focuses the option without auto-submitting,
+  // allowing the user to edit the text.
+  if (hasExistingText && index !== undefined && index > 0) {
+    return {
+      navigate: "\x1b[B".repeat(index),
+      // Ctrl+U clears old text, then type new text
+      type: "\x15" + text,
+      submit: "\r",
+    };
+  }
+  if (hasExistingText && index === 0) {
+    return {
+      navigate: "",
+      type: "\x15" + text,
+      submit: "\r",
     };
   }
   return {

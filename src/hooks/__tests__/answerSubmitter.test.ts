@@ -373,6 +373,24 @@ describe("submitClaudeCodeTextAnswer", () => {
     expect(result.type).toBe("\x15my text");
     expect(result.submit).toBe("\t\r");
   });
+
+  it("uses Down arrows for single-select re-edit with hasExistingText (index 4)", () => {
+    // When re-editing a pre-filled input option in single-select mode,
+    // number key would auto-submit the old value (Claude Code's
+    // use-select-input.ts line 267-270). Use Down arrows to focus
+    // without auto-submitting, then Ctrl+U + type new text + Enter.
+    const result = submitClaudeCodeTextAnswer("5. 11111 ✔", "new text", 4, false, true);
+    expect(result.navigate).toBe("\x1b[B\x1b[B\x1b[B\x1b[B");
+    expect(result.type).toBe("\x15new text");
+    expect(result.submit).toBe("\r");
+  });
+
+  it("uses empty navigate for single-select re-edit with hasExistingText (index 0)", () => {
+    const result = submitClaudeCodeTextAnswer("1. 11111 ✔", "new text", 0, false, true);
+    expect(result.navigate).toBe("");
+    expect(result.type).toBe("\x15new text");
+    expect(result.submit).toBe("\r");
+  });
 });
 
 describe("toggleClaudeCodeOption", () => {

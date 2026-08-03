@@ -478,7 +478,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // then after 300ms delay, type the text + Enter (submit).
   // The delay is needed because the CLI needs time to redraw the text input
   // after Enter — if we send text immediately, it gets lost.
-  const handleAgentTextAnswer = useCallback((option: string, text: string, index: number) => {
+  const handleAgentTextAnswer = useCallback((option: string, text: string, index: number, hasExistingText?: boolean) => {
     if (!termRef.current || agentCli === "unknown") return;
     if (agentCli === "opencode") {
       const optionCount = agentOptions?.length;
@@ -499,7 +499,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       // compute relative movement from the correct position.
       devinCursorPosRef.current = 0;
     } else if (agentCli === "claude-code") {
-      const parts = submitClaudeCodeTextAnswer(option, text, index, agentIsMultiSelect);
+      const parts = submitClaudeCodeTextAnswer(option, text, index, agentIsMultiSelect, hasExistingText);
       sendTextAnswerWithDelay(parts, (bytes) => {
         logTerminalInput(sessionIdRef.current, bytes);
         sendToBackendRef.current(bytes);

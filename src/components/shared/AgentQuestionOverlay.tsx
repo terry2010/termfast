@@ -52,8 +52,9 @@ interface AgentQuestionOverlayProps {
    *  The parent sends the confirm keystrokes (Tab + Enter) to the PTY. */
   onSubmitMultiSelect: () => void;
   /** Called when user submits a text answer (Type your own answer).
-   *  The parent navigates to the option, enters text mode, and types. */
-  onTextAnswer: (option: string, text: string, index: number) => void;
+   *  The parent navigates to the option, enters text mode, and types.
+   *  hasExistingText is true when re-editing a previously submitted text. */
+  onTextAnswer: (option: string, text: string, index: number, hasExistingText?: boolean) => void;
   /** Called when user cancels text input mode ("Back to options").
    *  The parent sends Escape to the terminal to exit the CLI's text editing
    *  mode (Devin's 'e' select+type mode). */
@@ -344,7 +345,9 @@ function AgentQuestionOverlayImpl({
       if (isMultiQuestion && activeTabIndex >= 0) {
         answeredTabsRef.current.set(activeTabIndex, textModeIndex);
       }
-      onTextAnswer(textOption, textValue.trim(), textModeIndex);
+      // Check if we're re-editing an existing text answer
+      const hasExistingText = textAnswers.has(textModeIndex);
+      onTextAnswer(textOption, textValue.trim(), textModeIndex, hasExistingText);
       // Mark the option as checked and store the text answer
       setChecked((prev) => new Set(prev).add(textModeIndex));
       setTextAnswers((prev) => new Map(prev).set(textModeIndex, textValue.trim()));
