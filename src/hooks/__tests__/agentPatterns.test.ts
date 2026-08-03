@@ -896,6 +896,133 @@ describe("detectStatusFromScreen — Codex new TUI", () => {
   });
 });
 
+describe("extractQuestion — Codex request_user_input", () => {
+  it("extracts question from Plan mode dialog", () => {
+    const screen = [
+      "  Question 1/2 (2 unanswered)",
+      "  你想测试哪类单选问题？",
+      "  › 1. 功能偏好 (Recommended)  询问功能偏好，用来测试弹窗交互。",
+      "    2. 技术选择                询问某个技术方案的选择。",
+      "    3. None of the above       Optionally, add details in notes (tab).",
+      "  tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt",
+    ].join("\n");
+    expect(extractQuestion("codex", screen)).toBe("你想测试哪类单选问题？");
+  });
+
+  it("extracts question from single question dialog", () => {
+    const screen = [
+      "  Question 1/1 (1 unanswered)",
+      "  What would you like to do next?",
+      "",
+      "    1. Discuss a code change (Recommended)  Walk through a plan and edit code together.",
+      "    2. Run tests                            Pick a crate and run its tests.",
+      "  › 4. Refactor                             Tighten structure and remove dead code.",
+      "    5. Ship it                              Finalize and open a PR.",
+      "",
+      "  tab to add notes | enter to submit answer | esc to interrupt",
+    ].join("\n");
+    expect(extractQuestion("codex", screen)).toBe("What would you like to do next?");
+  });
+
+  it("extracts question from freeform-only dialog", () => {
+    const screen = [
+      "  Question 1/1 (1 unanswered)",
+      "  Share details.",
+      "",
+      "  › Type your answer (optional)",
+      "",
+      "  enter to submit answer | esc to interrupt",
+    ].join("\n");
+    expect(extractQuestion("codex", screen)).toBe("Share details.");
+  });
+});
+
+describe("extractOptions — Codex request_user_input", () => {
+  it("extracts options with descriptions stripped", () => {
+    const screen = [
+      "  Question 1/2 (2 unanswered)",
+      "  你想测试哪类单选问题？",
+      "  › 1. 功能偏好 (Recommended)  询问功能偏好，用来测试弹窗交互。",
+      "    2. 技术选择                询问某个技术方案的选择。",
+      "    3. None of the above       Optionally, add details in notes (tab).",
+      "  tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toEqual([
+      "1. 功能偏好 (Recommended)",
+      "2. 技术选择",
+      "3. None of the above",
+    ]);
+  });
+
+  it("extracts options from scrolling options dialog", () => {
+    const screen = [
+      "  Question 1/1 (1 unanswered)",
+      "  What would you like to do next?",
+      "",
+      "    1. Discuss a code change (Recommended)  Walk through a plan and edit code together.",
+      "    2. Run tests                            Pick a crate and run its tests.",
+      "    3. Review a diff                        Summarize or review current changes.",
+      "  › 4. Refactor                             Tighten structure and remove dead code.",
+      "    5. Ship it                              Finalize and open a PR.",
+      "",
+      "  tab to add notes | enter to submit answer | esc to interrupt",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toEqual([
+      "1. Discuss a code change (Recommended)",
+      "2. Run tests",
+      "3. Review a diff",
+      "4. Refactor",
+      "5. Ship it",
+    ]);
+  });
+
+  it("returns null for freeform-only dialog (no options)", () => {
+    const screen = [
+      "  Question 1/1 (1 unanswered)",
+      "  Share details.",
+      "",
+      "  › Type your answer (optional)",
+      "",
+      "  enter to submit answer | esc to interrupt",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toBeNull();
+  });
+});
+
+describe("detectStatusFromScreen — Codex request_user_input", () => {
+  it("detects blocked from Question N/M header", () => {
+    const screen = [
+      "  Question 1/2 (2 unanswered)",
+      "  你想测试哪类单选问题？",
+      "  › 1. 功能偏好 (Recommended)  询问功能偏好，用来测试弹窗交互。",
+      "    2. 技术选择                询问某个技术方案的选择。",
+      "  tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt",
+    ].join("\n");
+    expect(detectStatusFromScreen("codex", screen)).toBe("blocked");
+  });
+
+  it("detects blocked from footer 'tab to add notes'", () => {
+    const screen = [
+      "  Question 1/1 (1 unanswered)",
+      "  What would you like to do next?",
+      "    1. Option 1  First choice.",
+      "  › 2. Option 2  Second choice.",
+      "  tab to add notes | enter to submit answer | esc to interrupt",
+    ].join("\n");
+    expect(detectStatusFromScreen("codex", screen)).toBe("blocked");
+  });
+
+  it("detects blocked from 'enter to submit all' (last question)", () => {
+    const screen = [
+      "  Question 2/2 (2 unanswered)",
+      "  Share details.",
+      "  › Type your answer (optional)",
+      "  enter to submit all | ctrl + p / ctrl + n change question | esc to interrupt",
+    ].join("\n");
+    expect(detectStatusFromScreen("codex", screen)).toBe("blocked");
+  });
+});
+
 describe("detectStatusFromScreen — priority ordering", () => {
   it("blocked has higher priority than working", () => {
     // OpenCode: both spinner (working) and "△ Permission required" (blocked) present

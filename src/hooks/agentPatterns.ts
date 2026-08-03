@@ -684,29 +684,47 @@ const claudeCodePatterns: CliPatterns = {
 
 // ── Codex patterns ────────────────────────────────────────────────────────────
 // Based on Codex TUI source code (codex-rs/tui/src):
-// - approval_overlay.rs: renders selection list with › prefix and (shortcut) suffix
-// - list_selection_view.rs: "› 1. label" format, number keys + shortcut keys
-// - keymap.rs: approve=y, approve_for_session=a, approve_for_prefix=p,
-//   deny=d, decline=esc/n, cancel=c
-// - onboarding/trust_directory.rs: trust prompt with "Yes, continue" / "No, quit"
-// - popup_consts.rs: footer "Press enter to confirm or esc to cancel"
 //
-// Screen format (approval overlay):
-//   Would you like to run the following command?
-//   ...
-// › 1. Yes, proceed (y)
-//   2. No, and tell Codex what to do differently (esc)
-//   Press enter to confirm or esc to cancel
+// 1. Approval overlay (approval_overlay.rs):
+//    - Renders selection list with › prefix and (shortcut) suffix
+//    - keymap.rs: approve=y, approve_for_session=a, approve_for_prefix=p,
+//      deny=d, decline=esc/n, cancel=c
+//    - Footer: "Press enter to confirm or esc to cancel"
+//    Format:
+//      Would you like to run the following command?
+//     › 1. Yes, proceed (y)
+//      2. No, and tell Codex what to do differently (esc)
+//      Press enter to confirm or esc to cancel
 //
-// Screen format (trust prompt):
-//   Do you trust the contents of this directory? ...
-// › 1. Yes, continue
-//   2. No, quit
-//   Press enter to continue
+// 2. request_user_input (Plan mode, request_user_input/mod.rs):
+//    - Multi-question dialog with "Question N/M" header
+//    - Options have label + description in two columns (2+ space gap)
+//    - Number keys 1-9 select option AND advance/submit
+//    - Enter selects highlighted option + advance/submit
+//    - Footer: "tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt"
+//    Format:
+//      Question 1/2 (2 unanswered)
+//      你想测试哪类单选问题？
+//     › 1. 功能偏好 (Recommended)  询问功能偏好，用来测试弹窗交互。
+//      2. 技术选择                询问某个技术方案的选择。
+//      tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt
+//
+// 3. Trust prompt (onboarding/trust_directory.rs):
+//    - "Do you trust the contents of this directory?"
+//    - Options: "Yes, continue" / "No, quit"
+//    - Footer: "Press enter to continue"
+//
+// 4. Legacy y/n text prompt
 
 const codexPatterns: CliPatterns = {
   statusPatterns: [
-    // New TUI approval overlay — footer "Press enter to confirm or esc to cancel"
+    // request_user_input: "Question N/M" header (Plan mode user input dialog)
+    { status: "blocked", pattern: /^\s*Question\s+\d+\/\d+/m, priority: 10 },
+    // request_user_input: footer "tab to add notes" / "enter to submit answer"
+    { status: "blocked", pattern: /tab\s+to\s+add\s+notes.*enter\s+to\s+submit/i, priority: 10 },
+    // request_user_input: footer "enter to submit all" (last question)
+    { status: "blocked", pattern: /enter\s+to\s+submit\s+all/i, priority: 10 },
+    // Approval overlay — footer "Press enter to confirm or esc to cancel"
     { status: "blocked", pattern: /Press\s+enter\s+to\s+(?:confirm|continue)\s+or\s+esc\s+to\s+(?:cancel|go\s+back)/i, priority: 10 },
     // Approval prompt — legacy y/n text mode
     { status: "blocked", pattern: /^(?:Approve|Allow)\b.*\b(?:y\/n|yes\/no|yes|no)\b/im, priority: 9 },
@@ -721,7 +739,16 @@ const codexPatterns: CliPatterns = {
   ],
   questionExtractor: (text) => {
     const lines = text.split("\n");
-    // New TUI approval overlay: title line like "Would you like to ..."
+    // request_user_input: question text is on the line after "Question N/M"
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*Question\s+\d+\/\d+/i.test(lines[i])) {
+        for (let j = i + 1; j < lines.length; j++) {
+          const trimmed = lines[j].trim();
+          if (trimmed) return trimmed;
+        }
+      }
+    }
+    // Approval overlay: title line like "Would you like to ..."
     for (const line of lines) {
       const m = line.match(/^\s*(Would you like to .+)$/i);
       if (m) return m[1].trim();
@@ -750,12 +777,18 @@ const codexPatterns: CliPatterns = {
   },
   optionsExtractor: (text) => {
     const lines = text.split("\n");
-    // New TUI selection list: "› 1. label (shortcut)" or "  2. label (shortcut)"
+    // TUI selection list (both approval overlay and request_user_input):
+    // "› 1. label (shortcut)" or "  2. label  description"
     const opts: string[] = [];
     for (const line of lines) {
       const m = line.match(/^\s*[› ]\s*(\d+\.\s+.+)$/);
       if (m) {
-        opts.push(m[1].trim());
+        const full = m[1].trim();
+        // Strip description column (separated by 2+ spaces) for cleaner display.
+        // This only affects request_user_input options; approval overlay options
+        // have no 2+ space gap so they remain unchanged.
+        const labelOnly = full.replace(/\s{2,}.+$/, "").trim();
+        opts.push(labelOnly || full);
       }
     }
     if (opts.length > 0) return opts;

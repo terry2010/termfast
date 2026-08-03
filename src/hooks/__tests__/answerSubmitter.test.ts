@@ -484,6 +484,19 @@ describe("submitAnswer — Codex", () => {
     expect(submitAnswer("codex", "1. Yes, continue", 0)).toBe("1");
     expect(submitAnswer("codex", "2. No, quit", 1)).toBe("2");
   });
+
+  it("sends number key for request_user_input options (no shortcut)", () => {
+    // request_user_input options have (Recommended) tag, not a shortcut
+    expect(submitAnswer("codex", "1. 功能偏好 (Recommended)", 0)).toBe("1");
+    expect(submitAnswer("codex", "2. 技术选择", 1)).toBe("2");
+    expect(submitAnswer("codex", "3. None of the above", 2)).toBe("3");
+  });
+
+  it("sends number key for request_user_input with 5 options", () => {
+    expect(submitAnswer("codex", "1. Discuss a code change (Recommended)", 0)).toBe("1");
+    expect(submitAnswer("codex", "4. Refactor", 3)).toBe("4");
+    expect(submitAnswer("codex", "5. Ship it", 4)).toBe("5");
+  });
 });
 
 describe("submitAnswer — fallback", () => {

@@ -604,22 +604,23 @@ export function submitClaudeCodeTextAnswer(option: string, text: string, index?:
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────────
-// Codex TUI uses a selection list (ratatui) with keyboard shortcuts.
-// Source: codex-rs/tui/src/bottom_pane/approval_overlay.rs + keymap.rs
+// Codex TUI has two dialog types that use selection lists:
 //
-// Options are rendered as "› 1. Yes, proceed (y)" / "  2. No, ... (esc)"
-// The shortcut in parentheses is the keybinding from ApprovalKeymap:
-//   y = approve, a = approve_for_session, p = approve_for_prefix,
-//   d = deny, n/esc = decline, c = cancel
+// 1. Approval overlay (approval_overlay.rs):
+//    - Options: "1. Yes, proceed (y)" / "2. No, ... (esc)"
+//    - Shortcut in parentheses: y/a/p/d/n/r/esc (1-3 chars)
+//    - Pressing the shortcut key selects AND accepts
+//    - Number keys 1-9 also select AND accept
 //
-// Selection methods (list_selection_view.rs handle_key_event):
-// 1. Shortcut key: press y/a/p/d/n/esc directly → selects + accepts
-// 2. Number key: press 1-9 → selects + accepts
-// 3. Enter: accepts currently highlighted option
+// 2. request_user_input (Plan mode, request_user_input/mod.rs):
+//    - Options: "1. 功能偏好 (Recommended)" / "2. 技术选择"
+//    - No shortcut in parentheses — (Recommended) is a tag, not a key
+//    - Number keys 1-9 select option AND advance/submit
+//    - Enter selects highlighted option + advance/submit
 //
-// We extract the shortcut from parentheses (e.g. "(y)" → "y") and send it.
-// If no shortcut found, fall back to number key (index + 1).
-// For legacy y/n text prompts, keep the old y/n behavior.
+// For approval overlay: extract shortcut from (y)/(a)/(p)/(d)/(r)/(esc) and send it.
+// For request_user_input: send number key (1-9).
+// Legacy y/n text prompts: send 'y\r' / 'n\r'.
 function submitCodex(option: string, index: number): string {
   const normalized = option.toLowerCase().trim();
   // Check if this is a new TUI selection list option (has "N. " prefix)
@@ -629,7 +630,9 @@ function submitCodex(option: string, index: number): string {
   // This takes priority over trust/allow detection because new TUI options
   // may contain "allow" in their label (e.g. "Yes, and allow this host...").
   if (hasNumberPrefix) {
-    const shortcutMatch = option.match(/\(([a-z]+)\)\s*$/i);
+    // Only match 1-3 char shortcuts (y/a/p/d/n/r/esc).
+    // This avoids matching (Recommended), (optional), etc.
+    const shortcutMatch = option.match(/\(([a-z]{1,3})\)\s*$/i);
     if (shortcutMatch) {
       const key = shortcutMatch[1].toLowerCase();
       // "esc" is a special key, send Escape
@@ -637,6 +640,7 @@ function submitCodex(option: string, index: number): string {
       return key;
     }
     // No shortcut in parentheses — use number key (1-based)
+    // This handles request_user_input options like "1. 功能偏好 (Recommended)"
     const numMatch = option.match(/^(\d+)\./);
     if (numMatch) return numMatch[1];
   }
