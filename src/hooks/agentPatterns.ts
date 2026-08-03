@@ -777,16 +777,20 @@ const codexPatterns: CliPatterns = {
   },
   optionsExtractor: (text) => {
     const lines = text.split("\n");
-    // For request_user_input: only extract options after "Question N/M" header
-    // to avoid matching numbered lists in AI conversation history.
-    let questionStartIdx = -1;
+    // Find the start of the dialog content to avoid matching numbered lists
+    // in AI conversation history above the dialog.
+    // - request_user_input: starts at "Question N/M" header
+    // - approval overlay: starts at "Would you like to..." / "Do you want to approve..." title
+    let contentStartIdx = -1;
     for (let i = 0; i < lines.length; i++) {
-      if (/^\s*Question\s+\d+\/\d+/i.test(lines[i])) {
-        questionStartIdx = i;
+      if (/^\s*Question\s+\d+\/\d+/i.test(lines[i]) ||
+          /^\s*Would you like to /i.test(lines[i]) ||
+          /^\s*Do you want to approve /i.test(lines[i])) {
+        contentStartIdx = i;
         break;
       }
     }
-    const startIdx = questionStartIdx >= 0 ? questionStartIdx : 0;
+    const startIdx = contentStartIdx >= 0 ? contentStartIdx : 0;
 
     // TUI selection list (both approval overlay and request_user_input):
     // "› 1. label (shortcut)" or "  2. label  description"

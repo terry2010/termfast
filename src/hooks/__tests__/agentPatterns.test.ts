@@ -821,6 +821,33 @@ describe("extractOptions — Codex", () => {
     ]);
   });
 
+  it("ignores numbered lists in AI conversation history above approval title", () => {
+    // Real-world screen: AI response contains "1. 直接回复在对话框..." etc.
+    const screen = [
+      "• 目前我知道的情况来说：",
+      "  - 直接提问：就是我刚才那样在回复里发问题。",
+      "  1. 直接回复在对话框",
+      "  2. 写入仓库文档（docs/ 目录，不入库）",
+      "  3. 其他（请直接输入）",
+      "› 你激活 审批 弹窗",
+      "• 好的，我来触发一次权限审批弹窗。",
+      "• Running echo approval-test-123",
+      "  Would you like to run the following command?",
+      "  Environment: local",
+      "  Reason: 这只是一个无害命令，用来触发系统权限审批弹窗。",
+      "  $ echo approval-test-123",
+      "› 1. Yes, proceed (y)",
+      "  2. Yes, and don't ask again for commands that start with `echo approval-test-123` (p)",
+      "  3. No, and tell Codex what to do differently (esc)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toEqual([
+      "1. Yes, proceed (y)",
+      "2. Yes, and don't ask again for commands that start with `echo approval-test-123` (p)",
+      "3. No, and tell Codex what to do differently (esc)",
+    ]);
+  });
+
   it("extracts new TUI patch approval options (3 options)", () => {
     const screen = [
       "  Would you like to make the following edits?",
