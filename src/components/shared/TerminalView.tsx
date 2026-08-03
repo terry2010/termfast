@@ -17,7 +17,7 @@ import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
 import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { shouldResetOverlay } from "@/hooks/overlayReset";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, toggleClaudeCodeOption, submitClaudeCodeMultiSelect, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "@/hooks/answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, TEXT_ANSWER_SUBMIT_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, toggleClaudeCodeOption, submitClaudeCodeMultiSelect, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "@/hooks/answerSubmitter";
 import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
 import {
   initTerminalLog,
@@ -452,11 +452,23 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
     } else if (agentCli === "claude-code") {
-      // Tab to "Submit" tab + Enter to confirm
-      const keystrokes = submitClaudeCodeMultiSelect();
-      const bytes = new TextEncoder().encode(keystrokes);
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
+      // Tab to "Submit" tab + Enter to confirm.
+      // Tab and Enter must be sent SEPARATELY with a delay because
+      // Claude Code's SelectMulti uses setIsSubmitFocused (async React
+      // state). If Enter arrives in the same tick as Tab,
+      // isSubmitFocused is still false and Enter toggles the option
+      // instead of submitting.
+      const encoder = new TextEncoder();
+      // Send Tab immediately
+      const tabBytes = encoder.encode("\t");
+      logTerminalInput(sessionIdRef.current, tabBytes);
+      sendToBackendRef.current(tabBytes);
+      // Send Enter after 300ms delay
+      setTimeout(() => {
+        const enterBytes = encoder.encode("\r");
+        logTerminalInput(sessionIdRef.current, enterBytes);
+        sendToBackendRef.current(enterBytes);
+      }, TEXT_ANSWER_SUBMIT_DELAY_MS);
     }
     setAgentOverlayDismissed(true);
   }, [agentCli]);

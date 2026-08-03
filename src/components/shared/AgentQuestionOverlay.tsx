@@ -156,8 +156,10 @@ function AgentQuestionOverlayImpl({
   // (totalTabs === 2), hide both Prev and Next — there's only one question,
   // so navigation buttons are meaningless. The "确认提交" button is enough.
   const isSingleQuestionMultiSelect = cli === "claude-code" && isMultiSelect && totalTabs === 2;
-  const hidePrev = (cli === "devin" && isFirstQuestion) || isSingleQuestionMultiSelect;
-  const hideNext = (cli === "devin" && isLastQuestion) || isSingleQuestionMultiSelect;
+  // Submit tab (last tab) doesn't need Prev/Next — it's the final review.
+  const isSubmitTab = cli === "claude-code" && isMultiQuestion && activeTabIndex === totalTabs - 1;
+  const hidePrev = (cli === "devin" && isFirstQuestion) || isSingleQuestionMultiSelect || isSubmitTab;
+  const hideNext = (cli === "devin" && isLastQuestion) || isSingleQuestionMultiSelect || isSubmitTab;
   // Text input mode: when user clicks "Type your own answer"
   const [textMode, setTextMode] = useState(false);
   const [textModeIndex, setTextModeIndex] = useState(-1);

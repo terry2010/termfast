@@ -618,9 +618,14 @@ describe("Claude Code multi-question — Submit tab", () => {
     expect(detectMultiQuestion("claude-code", submitTabScreen)).toBe(true);
   });
 
-  it("extracts no options on Submit tab", () => {
+  it("extracts Submit answers and Cancel options on Submit tab", () => {
     const opts = extractOptions("claude-code", submitTabScreen);
-    expect(opts).toBe(null);
+    expect(opts).toEqual(["1. Submit answers", "2. Cancel"]);
+  });
+
+  it("extracts 'Ready to submit your answers?' as question on Submit tab", () => {
+    const q = extractQuestion("claude-code", submitTabScreen);
+    expect(q).toBe("Ready to submit your answers?");
   });
 });
 

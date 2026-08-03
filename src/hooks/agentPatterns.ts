@@ -500,10 +500,17 @@ const claudeCodePatterns: CliPatterns = {
       }
       return "Claude Code is asking a question";
     }
+    // Submit tab (multi-question SubmitQuestionsView):
+    // "Ready to submit your answers?" with "❯ 1. Submit answers" / "  2. Cancel"
+    // No "↑/↓ to navigate" footer — this is a regular Select, not SelectMulti.
+    for (const line of lines) {
+      if (/Ready\s+to\s+submit\s+your\s+answers\?/i.test(line)) {
+        return "Ready to submit your answers?";
+      }
+    }
     // Selection widget — find the question text above the "↑/↓ to navigate" footer
     for (let i = 0; i < lines.length; i++) {
       if (/↑\/↓\s+to\s+navigate/.test(lines[i])) {
-        // Find the first (topmost) numbered option line above the footer.
         // Options may have description lines between them (indent 2-5 spaces).
         // The question text is above the first option, usually separated by a blank line.
         let firstOptionIdx = -1;
@@ -599,6 +606,22 @@ const claudeCodePatterns: CliPatterns = {
       // Note: some options have no space after the dot (e.g. "3.TypeScript").
       const optionPattern = /^\s*[❯>]?\s*(\d+)\.\s*(.+)/;
       for (let i = 0; i < multiQFooterIdx; i++) {
+        const m = lines[i].match(optionPattern);
+        if (m) {
+          options.push(`${m[1]}. ${m[2].trim()}`);
+        }
+      }
+      if (options.length > 0) return options;
+    }
+    // Submit tab (multi-question SubmitQuestionsView):
+    // "Ready to submit your answers?" with "❯ 1. Submit answers" / "  2. Cancel"
+    // No "↑/↓ to navigate" footer — this is a regular Select, not SelectMulti.
+    const submitTabIdx = lines.findIndex((l) =>
+      /Ready\s+to\s+submit\s+your\s+answers\?/i.test(l));
+    if (submitTabIdx >= 0) {
+      const options: string[] = [];
+      const optionPattern = /^\s*[❯>]?\s*(\d+)\.\s*(.+)/;
+      for (let i = submitTabIdx + 1; i < lines.length; i++) {
         const m = lines[i].match(optionPattern);
         if (m) {
           options.push(`${m[1]}. ${m[2].trim()}`);
