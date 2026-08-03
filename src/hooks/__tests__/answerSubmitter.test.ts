@@ -312,6 +312,16 @@ describe("submitAnswer — Claude Code", () => {
     expect(submitAnswer("claude-code", "6. Chat about this", 5)).toBe("6");
   });
 
+  it("sends Down*index + Enter for Plan Mode options (no number keys)", () => {
+    // Plan Mode dialog does NOT support number-key selection.
+    // Option 1 (index 0): just Enter (default selected)
+    expect(submitAnswer("claude-code", "1. Yes, and use auto mode", 0)).toBe("\r");
+    // Option 2 (index 1): Down + Enter
+    expect(submitAnswer("claude-code", "2. Yes, manually approve edits", 1)).toBe("\x1b[B\r");
+    // Option 3 (index 2): Down*2 + Enter
+    expect(submitAnswer("claude-code", "3. Tell Claude what to change", 2)).toBe("\x1b[B\x1b[B\r");
+  });
+
   it("sends Down*index + Enter for non-numbered selection widget", () => {
     // No number prefix → fallback to arrow navigation
     expect(submitAnswer("claude-code", "Option C", 2)).toBe("\x1b[B\x1b[B\r");

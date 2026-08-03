@@ -390,6 +390,23 @@ function submitClaudeCode(option: string, index: number): string {
     return "\x1b[B\r"; // Down arrow + Enter
   }
 
+  // Plan Mode (ExitPlanMode) dialog: "1. Yes, and use auto mode",
+  // "2. Yes, manually approve edits", "3. Tell Claude what to change".
+  // This dialog does NOT support number-key selection — pressing a
+  // number key is interpreted as a regular character and triggers the
+  // default action (approve option 1). We must use arrow navigation:
+  // Down*index + Enter to select the desired option.
+  if (/yes, and use auto mode/i.test(option)
+    || /yes, manually approve edits/i.test(option)
+    || /tell\s+\S+\s+what\s+to\s+change/i.test(option)) {
+    let keys = "";
+    for (let i = 0; i < index; i++) {
+      keys += "\x1b[B"; // Down arrow
+    }
+    keys += "\r"; // Enter to confirm
+    return keys;
+  }
+
   // Multi-question selection widget: send the number key directly.
   // Options are "1. Rust", "2. Python", "3. TypeScript", etc.
   // Pressing the number key selects the option and auto-advances to
