@@ -736,12 +736,163 @@ describe("extractQuestion — Codex", () => {
     const screen = "allow Codex to work in this folder";
     expect(extractQuestion("codex", screen)).toBe("Allow Codex to work in this folder?");
   });
+
+  it("extracts trust prompt v2", () => {
+    const screen = "Do you trust the contents of this directory? Working with untrusted...";
+    expect(extractQuestion("codex", screen)).toBe("Do you trust the contents of this directory?");
+  });
+
+  it("extracts new TUI exec approval title", () => {
+    const screen = [
+      "  Would you like to run the following command?",
+      "",
+      "  $ echo hello world",
+      "",
+      "› 1. Yes, proceed (y)",
+      "  2. No, and tell Codex what to do differently (esc)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractQuestion("codex", screen)).toBe("Would you like to run the following command?");
+  });
+
+  it("extracts new TUI patch approval title", () => {
+    const screen = [
+      "  Would you like to make the following edits?",
+      "",
+      "› 1. Yes, proceed (y)",
+      "  2. Yes, and don't ask again for these files (a)",
+      "  3. No, and tell Codex what to do differently (esc)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractQuestion("codex", screen)).toBe("Would you like to make the following edits?");
+  });
+
+  it("extracts new TUI network approval title", () => {
+    const screen = [
+      '  Do you want to approve network access to "example.com"?',
+      "",
+      "› 1. Yes, just this once (y)",
+      "  2. Yes, and allow this host for this conversation (a)",
+      "  3. Yes, and allow this host in the future (p)",
+      "  4. No, and tell Codex what to do differently (esc)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractQuestion("codex", screen)).toBe('Do you want to approve network access to "example.com"?');
+  });
+
+  it("extracts new TUI permissions approval title", () => {
+    const screen = [
+      "  Would you like to grant these permissions?",
+      "",
+      "› 1. Yes, grant these permissions for this turn (y)",
+      "  2. Yes, grant for this turn with strict auto review (r)",
+      "  3. Yes, grant these permissions for this session (a)",
+      "  4. No, continue without permissions (d)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractQuestion("codex", screen)).toBe("Would you like to grant these permissions?");
+  });
 });
 
 describe("extractOptions — Codex", () => {
   it("returns Yes/No for y/n prompt", () => {
     const screen = "Approve command? (y/n)";
     expect(extractOptions("codex", screen)).toEqual(["Yes (y)", "No (n)"]);
+  });
+
+  it("returns Yes/No for trust prompt", () => {
+    const screen = "Do you trust the contents of this directory?";
+    expect(extractOptions("codex", screen)).toEqual(["Yes, continue", "No, quit"]);
+  });
+
+  it("extracts new TUI exec approval options", () => {
+    const screen = [
+      "  Would you like to run the following command?",
+      "",
+      "  $ echo hello world",
+      "",
+      "› 1. Yes, proceed (y)",
+      "  2. No, and tell Codex what to do differently (esc)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toEqual([
+      "1. Yes, proceed (y)",
+      "2. No, and tell Codex what to do differently (esc)",
+    ]);
+  });
+
+  it("extracts new TUI patch approval options (3 options)", () => {
+    const screen = [
+      "  Would you like to make the following edits?",
+      "",
+      "› 1. Yes, proceed (y)",
+      "  2. Yes, and don't ask again for these files (a)",
+      "  3. No, and tell Codex what to do differently (esc)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toEqual([
+      "1. Yes, proceed (y)",
+      "2. Yes, and don't ask again for these files (a)",
+      "3. No, and tell Codex what to do differently (esc)",
+    ]);
+  });
+
+  it("extracts new TUI network approval options (4 options)", () => {
+    const screen = [
+      '  Do you want to approve network access to "example.com"?',
+      "",
+      "› 1. Yes, just this once (y)",
+      "  2. Yes, and allow this host for this conversation (a)",
+      "  3. Yes, and allow this host in the future (p)",
+      "  4. No, and tell Codex what to do differently (esc)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toEqual([
+      "1. Yes, just this once (y)",
+      "2. Yes, and allow this host for this conversation (a)",
+      "3. Yes, and allow this host in the future (p)",
+      "4. No, and tell Codex what to do differently (esc)",
+    ]);
+  });
+
+  it("extracts new TUI permissions approval options", () => {
+    const screen = [
+      "  Would you like to grant these permissions?",
+      "",
+      "› 1. Yes, grant these permissions for this turn (y)",
+      "  2. Yes, grant for this turn with strict auto review (r)",
+      "  3. Yes, grant these permissions for this session (a)",
+      "  4. No, continue without permissions (d)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toEqual([
+      "1. Yes, grant these permissions for this turn (y)",
+      "2. Yes, grant for this turn with strict auto review (r)",
+      "3. Yes, grant these permissions for this session (a)",
+      "4. No, continue without permissions (d)",
+    ]);
+  });
+});
+
+describe("detectStatusFromScreen — Codex new TUI", () => {
+  it("detects blocked from new TUI footer", () => {
+    const screen = [
+      "  Would you like to run the following command?",
+      "› 1. Yes, proceed (y)",
+      "  2. No, and tell Codex what to do differently (esc)",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    expect(detectStatusFromScreen("codex", screen)).toBe("blocked");
+  });
+
+  it("detects blocked from trust prompt footer", () => {
+    const screen = [
+      "  Do you trust the contents of this directory?",
+      "› 1. Yes, continue",
+      "  2. No, quit",
+      "  Press enter to continue",
+    ].join("\n");
+    expect(detectStatusFromScreen("codex", screen)).toBe("blocked");
   });
 });
 

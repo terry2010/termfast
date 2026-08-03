@@ -683,63 +683,93 @@ const claudeCodePatterns: CliPatterns = {
 };
 
 // ── Codex patterns ────────────────────────────────────────────────────────────
-// Sourced from cli-agent-orchestrator production code.
-// Codex uses "Approve/Allow ... y/n" prompts and TUI footer indicators.
+// Based on Codex TUI source code (codex-rs/tui/src):
+// - approval_overlay.rs: renders selection list with › prefix and (shortcut) suffix
+// - list_selection_view.rs: "› 1. label" format, number keys + shortcut keys
+// - keymap.rs: approve=y, approve_for_session=a, approve_for_prefix=p,
+//   deny=d, decline=esc/n, cancel=c
+// - onboarding/trust_directory.rs: trust prompt with "Yes, continue" / "No, quit"
+// - popup_consts.rs: footer "Press enter to confirm or esc to cancel"
+//
+// Screen format (approval overlay):
+//   Would you like to run the following command?
+//   ...
+// › 1. Yes, proceed (y)
+//   2. No, and tell Codex what to do differently (esc)
+//   Press enter to confirm or esc to cancel
+//
+// Screen format (trust prompt):
+//   Do you trust the contents of this directory? ...
+// › 1. Yes, continue
+//   2. No, quit
+//   Press enter to continue
 
 const codexPatterns: CliPatterns = {
   statusPatterns: [
-    // Approval prompt — blocked
-    { status: "blocked", pattern: /^(?:Approve|Allow)\b.*\b(?:y\/n|yes\/no|yes|no)\b/im, priority: 10 },
+    // New TUI approval overlay — footer "Press enter to confirm or esc to cancel"
+    { status: "blocked", pattern: /Press\s+enter\s+to\s+(?:confirm|continue)\s+or\s+esc\s+to\s+(?:cancel|go\s+back)/i, priority: 10 },
+    // Approval prompt — legacy y/n text mode
+    { status: "blocked", pattern: /^(?:Approve|Allow)\b.*\b(?:y\/n|yes\/no|yes|no)\b/im, priority: 9 },
     // Trust prompt v1
     { status: "blocked", pattern: /allow\s+Codex\s+to\s+work\s+in\s+this\s+folder/i, priority: 10 },
     // Trust prompt v2
     { status: "blocked", pattern: /Do you trust the contents of this directory\?/i, priority: 10 },
     // TUI progress spinner: "• Working (0s • esc to interrupt)"
-    // This is the ONLY reliable working indicator for Codex. The prefix text
-    // varies ("• Thinking (2s ...)", "• Starting script creation (10s ...)")
-    // but the "(Ns • esc to interrupt)" format is consistent.
-    // Reference: cli-agent-orchestrator codex.py TUI_PROGRESS_PATTERN.
     { status: "working", pattern: /•.*\(\d+s\s*•\s*esc\s+to\s+interrupt\)/, priority: 8 },
-    // NOTE: A keyword-based pattern (\b(?:thinking|working|running|...)\b) was
-    // removed because it caused false positives — it matches "running" in
-    // "You are running Codex in..." (startup banner), "thinking" in user input
-    // ("I'm thinking about..."), and stale keywords in previous AI output.
-    // The reference project (cli-agent-orchestrator codex.py line 660-661)
-    // explicitly documents this issue and does NOT use keyword matching for
-    // status detection. The TUI spinner pattern above is sufficient.
-    // Idle prompt: "❯" or "›" or "codex>" (empty prompt only — text after
-    // the prompt means the user is typing, not idle)
+    // Idle prompt: "❯" or "›" or "codex>" (empty prompt only)
     { status: "idle", pattern: /^\s*(?:❯|›|codex>)\s*$/m, priority: 5 },
   ],
   questionExtractor: (text) => {
     const lines = text.split("\n");
-    // Approval prompt
+    // New TUI approval overlay: title line like "Would you like to ..."
     for (const line of lines) {
-      const m = line.match(/^(?:Approve|Allow)\b.*\b(?:y\/n|yes\/no)\b/i);
-      if (m) return line.trim();
+      const m = line.match(/^\s*(Would you like to .+)$/i);
+      if (m) return m[1].trim();
+    }
+    for (const line of lines) {
+      const m = line.match(/^\s*(Do you want to approve .+)$/i);
+      if (m) return m[1].trim();
     }
     // Trust prompt
+    for (const line of lines) {
+      if (/Do you trust the contents of this directory\?/i.test(line)) {
+        return "Do you trust the contents of this directory?";
+      }
+    }
     for (const line of lines) {
       if (/allow\s+Codex\s+to\s+work\s+in\s+this\s+folder/i.test(line)) {
         return "Allow Codex to work in this folder?";
       }
-      if (/Do you trust the contents of this directory\?/i.test(line)) {
-        return "Do you trust the contents of this directory?";
-      }
+    }
+    // Legacy approval prompt
+    for (const line of lines) {
+      const m = line.match(/^(?:Approve|Allow)\b.*\b(?:y\/n|yes\/no)\b/i);
+      if (m) return line.trim();
     }
     return null;
   },
   optionsExtractor: (text) => {
     const lines = text.split("\n");
+    // New TUI selection list: "› 1. label (shortcut)" or "  2. label (shortcut)"
+    const opts: string[] = [];
+    for (const line of lines) {
+      const m = line.match(/^\s*[› ]\s*(\d+\.\s+.+)$/);
+      if (m) {
+        opts.push(m[1].trim());
+      }
+    }
+    if (opts.length > 0) return opts;
+    // Legacy approval prompt
     for (const line of lines) {
       if (/^(?:Approve|Allow)\b.*\b(?:y\/n|yes\/no)\b/i.test(line)) {
         return ["Yes (y)", "No (n)"];
       }
     }
+    // Trust prompt
     for (const line of lines) {
       if (/allow\s+Codex\s+to\s+work\s+in\s+this\s+folder/i.test(line) ||
           /Do you trust the contents of this directory\?/i.test(line)) {
-        return ["Yes", "No"];
+        return ["Yes, continue", "No, quit"];
       }
     }
     return null;

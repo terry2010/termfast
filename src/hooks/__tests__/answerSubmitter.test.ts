@@ -444,16 +444,45 @@ describe("buildClaudeCodePlanModeNavigate", () => {
 });
 
 describe("submitAnswer — Codex", () => {
-  it("sends y+Enter for Yes", () => {
+  it("sends y+Enter for legacy Yes (y)", () => {
     expect(submitAnswer("codex", "Yes (y)", 0)).toBe("y\r");
   });
 
-  it("sends n+Enter for No", () => {
+  it("sends n+Enter for legacy No (n)", () => {
     expect(submitAnswer("codex", "No (n)", 1)).toBe("n\r");
   });
 
-  it("sends Enter for trust prompt", () => {
+  it("sends Enter for legacy trust prompt", () => {
     expect(submitAnswer("codex", "Yes, I trust this folder", 0)).toBe("\r");
+  });
+
+  it("sends 'y' for new TUI 'Yes, proceed (y)'", () => {
+    expect(submitAnswer("codex", "1. Yes, proceed (y)", 0)).toBe("y");
+  });
+
+  it("sends 'a' for new TUI 'Yes, and don't ask again (a)'", () => {
+    expect(submitAnswer("codex", "2. Yes, and don't ask again for these files (a)", 1)).toBe("a");
+  });
+
+  it("sends 'p' for new TUI 'Yes, and allow this host in the future (p)'", () => {
+    expect(submitAnswer("codex", "3. Yes, and allow this host in the future (p)", 2)).toBe("p");
+  });
+
+  it("sends 'd' for new TUI 'No, continue without permissions (d)'", () => {
+    expect(submitAnswer("codex", "4. No, continue without permissions (d)", 3)).toBe("d");
+  });
+
+  it("sends Escape for new TUI '(esc)' shortcut", () => {
+    expect(submitAnswer("codex", "2. No, and tell Codex what to do differently (esc)", 1)).toBe("\x1b");
+  });
+
+  it("sends 'r' for new TUI 'Yes, grant for this turn with strict auto review (r)'", () => {
+    expect(submitAnswer("codex", "2. Yes, grant for this turn with strict auto review (r)", 1)).toBe("r");
+  });
+
+  it("sends number key when no shortcut in parentheses", () => {
+    expect(submitAnswer("codex", "1. Yes, continue", 0)).toBe("1");
+    expect(submitAnswer("codex", "2. No, quit", 1)).toBe("2");
   });
 });
 

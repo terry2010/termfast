@@ -199,7 +199,7 @@ describe("AgentQuestionOverlay — type your own answer", () => {
     const input = getByPlaceholderText("server.agent_type_answer_placeholder");
     fireEvent.change(input, { target: { value: "My custom answer" } });
     fireEvent.click(getByText("server.agent_type_answer_submit"));
-    expect(onTextAnswer).toHaveBeenCalledWith("2. Type your own answer", "My custom answer", 1);
+    expect(onTextAnswer).toHaveBeenCalledWith("2. Type your own answer", "My custom answer", 1, false);
   });
 
   it("exits text mode when Cancel button is clicked", () => {
@@ -256,7 +256,7 @@ describe("AgentQuestionOverlay — type your own answer", () => {
     fireEvent.change(input, { target: { value: "my custom text" } });
     fireEvent.click(getByText("server.agent_type_answer_submit"));
     // onTextAnswer should be called
-    expect(onTextAnswer).toHaveBeenCalledWith("2. Type your own answer", "my custom text", 1);
+    expect(onTextAnswer).toHaveBeenCalledWith("2. Type your own answer", "my custom text", 1, false);
     // The checkbox for option 2 should be checked (blue bg)
     const buttons = container.querySelectorAll("button");
     const option2Btn = Array.from(buttons).find((b) => b.textContent?.includes("Type your own answer"));

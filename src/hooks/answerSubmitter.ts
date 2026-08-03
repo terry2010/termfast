@@ -604,19 +604,55 @@ export function submitClaudeCodeTextAnswer(option: string, text: string, index?:
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────────
-// Codex uses y/n key prompts. Just send 'y' or 'n'.
-function submitCodex(option: string, _index: number): string {
+// Codex TUI uses a selection list (ratatui) with keyboard shortcuts.
+// Source: codex-rs/tui/src/bottom_pane/approval_overlay.rs + keymap.rs
+//
+// Options are rendered as "› 1. Yes, proceed (y)" / "  2. No, ... (esc)"
+// The shortcut in parentheses is the keybinding from ApprovalKeymap:
+//   y = approve, a = approve_for_session, p = approve_for_prefix,
+//   d = deny, n/esc = decline, c = cancel
+//
+// Selection methods (list_selection_view.rs handle_key_event):
+// 1. Shortcut key: press y/a/p/d/n/esc directly → selects + accepts
+// 2. Number key: press 1-9 → selects + accepts
+// 3. Enter: accepts currently highlighted option
+//
+// We extract the shortcut from parentheses (e.g. "(y)" → "y") and send it.
+// If no shortcut found, fall back to number key (index + 1).
+// For legacy y/n text prompts, keep the old y/n behavior.
+function submitCodex(option: string, index: number): string {
   const normalized = option.toLowerCase().trim();
-  // Trust prompt: press Enter for default (usually "Yes")
+  // Check if this is a new TUI selection list option (has "N. " prefix)
+  const hasNumberPrefix = /^\d+\.\s/.test(option);
+
+  // New TUI selection list: extract shortcut from "(y)" / "(esc)" / "(a)" etc.
+  // This takes priority over trust/allow detection because new TUI options
+  // may contain "allow" in their label (e.g. "Yes, and allow this host...").
+  if (hasNumberPrefix) {
+    const shortcutMatch = option.match(/\(([a-z]+)\)\s*$/i);
+    if (shortcutMatch) {
+      const key = shortcutMatch[1].toLowerCase();
+      // "esc" is a special key, send Escape
+      if (key === "esc") return "\x1b";
+      return key;
+    }
+    // No shortcut in parentheses — use number key (1-based)
+    const numMatch = option.match(/^(\d+)\./);
+    if (numMatch) return numMatch[1];
+  }
+
+  // Legacy trust prompt: press Enter for default (usually "Yes")
   if (normalized.includes("trust") || normalized.includes("allow")) {
     return "\r";
   }
-  if (normalized.startsWith("yes") || normalized === "y") {
+
+  // Legacy y/n text prompt (no number prefix)
+  if (normalized.startsWith("yes") || normalized === "y" || normalized === "yes (y)") {
     return "y\r";
   }
-  if (normalized.startsWith("no") || normalized === "n") {
+  if (normalized.startsWith("no") || normalized === "n" || normalized === "no (n)") {
     return "n\r";
   }
   // Fallback: 'y' for first option, 'n' for second
-  return _index === 0 ? "y\r" : "n\r";
+  return index === 0 ? "y\r" : "n\r";
 }
