@@ -379,6 +379,22 @@ function submitOpenCode(option: string, index: number, optionCount?: number): st
 // making \x1b[B (CSI B) not recognized as Down arrow. Instead of relying
 // on arrow navigation, we use the NUMBER KEY from the option label to
 // directly select it. This is simpler and more reliable.
+
+/** Check if an option is a Claude Code Plan Mode (ExitPlanMode) option.
+ *  These options need arrow navigation + delayed Enter (not number keys).
+ *  Used by TerminalView to split the send into two parts with a delay. */
+export function isClaudeCodePlanModeOption(option: string): boolean {
+  return /yes, and use auto mode/i.test(option)
+    || /yes, manually approve edits/i.test(option)
+    || /tell\s+\S+\s+what\s+to\s+change/i.test(option);
+}
+
+/** Build keystrokes for Claude Code Plan Mode navigation (Down*index).
+ *  Returns the navigation part only (without Enter). */
+export function buildClaudeCodePlanModeNavigate(index: number): string {
+  return "\x1b[B".repeat(index);
+}
+
 function submitClaudeCode(option: string, index: number): string {
   const normalized = option.toLowerCase().trim();
 
@@ -396,6 +412,12 @@ function submitClaudeCode(option: string, index: number): string {
   // number key is interpreted as a regular character and triggers the
   // default action (approve option 1). We must use arrow navigation:
   // Down*index + Enter to select the desired option.
+  //
+  // IMPORTANT: Down and Enter must be sent with a delay between them.
+  // If sent together, the Ink TUI may not process the Down arrow before
+  // receiving Enter, causing Enter to confirm the default option (1)
+  // instead of the navigated-to option. The caller (TerminalView) uses
+  // isClaudeCodePlanModeOption to detect this and split the send.
   if (/yes, and use auto mode/i.test(option)
     || /yes, manually approve edits/i.test(option)
     || /tell\s+\S+\s+what\s+to\s+change/i.test(option)) {

@@ -17,7 +17,7 @@ import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
 import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { shouldResetOverlay } from "@/hooks/overlayReset";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion } from "@/hooks/answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "@/hooks/answerSubmitter";
 import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
 import {
   initTerminalLog,
@@ -382,6 +382,21 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   const handleAgentAnswer = useCallback((option: string, index: number) => {
     if (!termRef.current || agentCli === "unknown") return;
     const optionCount = agentOptions?.length;
+    // Claude Code Plan Mode: send Down arrows and Enter with a delay.
+    // If sent together, the Ink TUI may not process Down before Enter,
+    // causing Enter to confirm the default option (1) instead.
+    if (agentCli === "claude-code" && isClaudeCodePlanModeOption(option)) {
+      const navKeys = buildClaudeCodePlanModeNavigate(index);
+      sendTextAnswerWithDelay(
+        { navigate: navKeys, type: "\r" },
+        (bytes) => {
+          logTerminalInput(sessionIdRef.current, bytes);
+          sendToBackendRef.current(bytes);
+        },
+      );
+      setAgentOverlayDismissed(true);
+      return;
+    }
     const keystrokes = submitAnswer(agentCli, option, index, optionCount, agentIsMultiQuestion);
     const bytes = new TextEncoder().encode(keystrokes);
     logTerminalInput(sessionIdRef.current, bytes);

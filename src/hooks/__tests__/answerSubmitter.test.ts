@@ -1,6 +1,6 @@
 // Unit tests for answerSubmitter — per-CLI answer submission strategies
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion } from "../answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "../answerSubmitter";
 
 describe("submitAnswer — Devin", () => {
   it("sends number + Enter for numbered option (permission dialog)", () => {
@@ -346,6 +346,39 @@ describe("submitClaudeCodeTextAnswer", () => {
     const result = submitClaudeCodeTextAnswer("Type something.", "test");
     expect(result.navigate).toBe("5");
     expect(result.type).toBe("test\r");
+  });
+});
+
+describe("isClaudeCodePlanModeOption", () => {
+  it("detects 'Yes, and use auto mode'", () => {
+    expect(isClaudeCodePlanModeOption("1. Yes, and use auto mode")).toBe(true);
+  });
+
+  it("detects 'Yes, manually approve edits'", () => {
+    expect(isClaudeCodePlanModeOption("2. Yes, manually approve edits")).toBe(true);
+  });
+
+  it("detects 'Tell Claude what to change'", () => {
+    expect(isClaudeCodePlanModeOption("3. Tell Claude what to change")).toBe(true);
+  });
+
+  it("does not detect multi-question options", () => {
+    expect(isClaudeCodePlanModeOption("1. Rust")).toBe(false);
+    expect(isClaudeCodePlanModeOption("5. Type something.")).toBe(false);
+  });
+});
+
+describe("buildClaudeCodePlanModeNavigate", () => {
+  it("returns empty string for index 0 (default selected)", () => {
+    expect(buildClaudeCodePlanModeNavigate(0)).toBe("");
+  });
+
+  it("returns one Down arrow for index 1", () => {
+    expect(buildClaudeCodePlanModeNavigate(1)).toBe("\x1b[B");
+  });
+
+  it("returns two Down arrows for index 2", () => {
+    expect(buildClaudeCodePlanModeNavigate(2)).toBe("\x1b[B\x1b[B");
   });
 });
 
