@@ -1,6 +1,7 @@
 // Unit tests for answerSubmitter — per-CLI answer submission strategies
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, TEXT_ANSWER_SUBMIT_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, toggleClaudeCodeOption, submitClaudeCodeMultiSelect, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "../answerSubmitter";
+import { getBehavior } from "../cliBehavior";
 
 describe("submitAnswer — Devin", () => {
   it("sends number + Enter for numbered option (permission dialog)", () => {
@@ -139,51 +140,62 @@ describe("submitDevinTextAnswer — Devin text answer", () => {
 });
 
 describe("submitAnswer — OpenCode permission dialog", () => {
-  // Permission dialog cycles through all buttons with Tab to reset focus
-  // (mouse hover can change focus), then Tab (index) more times + Enter.
-  it("cycles 3 tabs + Enter for Allow once (first button, 3 options)", () => {
-    expect(submitAnswer("opencode", "Allow once", 0, 3)).toBe("\t\t\t\r");
+  // Permission dialog uses h/l for navigation (not Tab), default is "Allow once".
+  // "l" navigates to next option (circular), then Enter confirms.
+  it("sends just Enter for Allow once (first button, index 0)", () => {
+    expect(submitAnswer("opencode", "Allow once", 0, 3)).toBe("\r");
   });
 
-  it("cycles 3 tabs + 1 tab + Enter for Allow always (second button, 3 options)", () => {
-    expect(submitAnswer("opencode", "Allow always", 1, 3)).toBe("\t\t\t\t\r");
+  it("sends l + Enter for Allow always (second button, index 1)", () => {
+    expect(submitAnswer("opencode", "Allow always", 1, 3)).toBe("l\r");
   });
 
-  it("cycles 3 tabs + 2 tabs + Enter for Reject (third button, 3 options)", () => {
-    expect(submitAnswer("opencode", "Reject", 2, 3)).toBe("\t\t\t\t\t\r");
+  it("sends ll + Enter for Reject (third button, index 2)", () => {
+    expect(submitAnswer("opencode", "Reject", 2, 3)).toBe("ll\r");
   });
 
   it("sends just Enter for Allow once when optionCount not provided", () => {
     expect(submitAnswer("opencode", "Allow once", 0)).toBe("\r");
   });
 
-  it("sends Tab+Enter for Allow always when optionCount not provided", () => {
-    expect(submitAnswer("opencode", "Allow always", 1)).toBe("\t\r");
+  it("sends l + Enter for Allow always when optionCount not provided", () => {
+    expect(submitAnswer("opencode", "Allow always", 1)).toBe("l\r");
   });
 });
 
 describe("submitAnswer — OpenCode selector dialog (number keys)", () => {
   // OpenCode binds number keys 1-9 to directly select an option.
   // This avoids circular ↑↓ navigation issues in multi-question dialogs.
-  it("sends '1' for option 1", () => {
-    expect(submitAnswer("opencode", "1. Rust", 0, 5)).toBe("1");
+  // In single-question mode (no isMultiQuestion), number key + Enter to submit.
+  it("sends '1' + Enter for option 1 (single-question)", () => {
+    expect(submitAnswer("opencode", "1. Rust", 0, 5)).toBe("1\r");
   });
 
-  it("sends '2' for option 2", () => {
-    expect(submitAnswer("opencode", "2. TypeScript", 1, 5)).toBe("2");
+  it("sends '2' + Enter for option 2 (single-question)", () => {
+    expect(submitAnswer("opencode", "2. TypeScript", 1, 5)).toBe("2\r");
   });
 
-  it("sends '3' for option 3", () => {
-    expect(submitAnswer("opencode", "3. Python", 2, 5)).toBe("3");
+  it("sends '3' + Enter for option 3 (single-question)", () => {
+    expect(submitAnswer("opencode", "3. Python", 2, 5)).toBe("3\r");
   });
 
-  it("sends '5' for option 5 (Type your own answer)", () => {
-    expect(submitAnswer("opencode", "5. Type your own answer", 4, 5)).toBe("5");
+  it("sends '5' + Enter for option 5 (Type your own answer, single-question)", () => {
+    expect(submitAnswer("opencode", "5. Type your own answer", 4, 5)).toBe("5\r");
   });
 
   it("works without optionCount (number key doesn't need it)", () => {
-    expect(submitAnswer("opencode", "1. Rust", 0)).toBe("1");
-    expect(submitAnswer("opencode", "3. TypeScript", 2)).toBe("3");
+    expect(submitAnswer("opencode", "1. Rust", 0)).toBe("1\r");
+    expect(submitAnswer("opencode", "3. TypeScript", 2)).toBe("3\r");
+  });
+
+  // In multi-question mode, number key only selects (auto-advances to next
+  // tab) — NO Enter needed.
+  it("sends '1' without Enter for option 1 (multi-question)", () => {
+    expect(submitAnswer("opencode", "1. Rust", 0, 5, true)).toBe("1");
+  });
+
+  it("sends '3' without Enter for option 3 (multi-question)", () => {
+    expect(submitAnswer("opencode", "3. Python", 2, 5, true)).toBe("3");
   });
 });
 
@@ -274,6 +286,20 @@ describe("submitOpenCodeTextAnswer — single-select (default)", () => {
     expect(result.navigate).toBe("");
     expect(result.type).toBe("test\r");
   });
+
+  it("clears existing text with Ctrl+C when hasExistingText=true", () => {
+    const result = submitOpenCodeTextAnswer("5. Type your own answer", "hello", false, 5, true);
+    expect(result.navigate).toBe("5");
+    expect(result.type).toBe("hello\r");
+    expect(result.clear).toBe("\x03");
+  });
+
+  it("does not clear when hasExistingText=false (first input)", () => {
+    const result = submitOpenCodeTextAnswer("5. Type your own answer", "hello", false, 5, false);
+    expect(result.navigate).toBe("5");
+    expect(result.type).toBe("hello\r");
+    expect(result.clear).toBeUndefined();
+  });
 });
 
 describe("submitOpenCodeTextAnswer — multi-select", () => {
@@ -293,6 +319,13 @@ describe("submitOpenCodeTextAnswer — multi-select", () => {
     const result = submitOpenCodeTextAnswer("Type your own answer", "test", true);
     expect(result.navigate).toBe("");
     expect(result.type).toBe("test\r");
+  });
+
+  it("clears existing text with Ctrl+C when hasExistingText=true (multi-select)", () => {
+    const result = submitOpenCodeTextAnswer("5. Type your own answer", "hello", true, 5, true);
+    expect(result.navigate).toBe("5");
+    expect(result.type).toBe("hello\r");
+    expect(result.clear).toBe("\x03");
   });
 });
 
@@ -407,6 +440,31 @@ describe("toggleClaudeCodeOption", () => {
 describe("submitClaudeCodeMultiSelect", () => {
   it("sends Tab + Enter to navigate to Submit tab and confirm", () => {
     expect(submitClaudeCodeMultiSelect()).toBe("\t\r");
+  });
+});
+
+describe("submitClaudeCodeConfirm", () => {
+  it("sends just Enter when already on Submit tab (no options)", () => {
+    expect(submitClaudeCodeConfirm(false, 4, 5)).toBe("\r");
+  });
+
+  it("sends just Enter when totalTabs is 0", () => {
+    expect(submitClaudeCodeConfirm(true, 0, 0)).toBe("\r");
+  });
+
+  it("navigates 1 tab forward with Right arrow + Enter", () => {
+    // activeTab=3, totalTabs=5, confirmIndex=4 → 1 right arrow
+    expect(submitClaudeCodeConfirm(true, 3, 5)).toBe("\x1b[C\r");
+  });
+
+  it("navigates 2 tabs forward with Right arrows + Enter", () => {
+    // activeTab=2, totalTabs=5, confirmIndex=4 → 2 right arrows
+    expect(submitClaudeCodeConfirm(true, 2, 5)).toBe("\x1b[C\x1b[C\r");
+  });
+
+  it("wraps around with modulo (activeTab past confirmIndex)", () => {
+    // activeTab=0, totalTabs=5, confirmIndex=4 → 4 right arrows
+    expect(submitClaudeCodeConfirm(true, 0, 5)).toBe("\x1b[C\x1b[C\x1b[C\x1b[C\r");
   });
 });
 
@@ -703,5 +761,44 @@ describe("navigateNextQuestion - multi-question tab navigation", () => {
     expect(navigateNextQuestion("claude-code")).toBe("\x1b[C");
     expect(navigateNextQuestion("codex")).toBe("\x1b[C");
     expect(navigateNextQuestion("unknown")).toBe("\x1b[C");
+  });
+});
+
+// Regression tests for Devin prev/next question with otherEditing.
+// When cursor is on Other in text editing mode, Left/Right would move
+// the text cursor instead of switching tabs. The fix is:
+// 1. Up: exit editing (cursor → option above Other)
+// 2. Left/Right: switch tab (safe — no longer in editing mode)
+// 3. Down: on the new tab, move cursor back to Other
+describe("Devin prev/next question with otherEditing", () => {
+  const behavior = getBehavior("devin");
+  const ctx = {
+    options: ["1. Rust", "2. TS", "3. Python", "Other (type your own)"],
+    isMultiSelect: false,
+    isMultiQuestion: true,
+    activeTabIndex: 1,
+    totalTabs: 4,
+    cursorPos: 3,
+    otherEditing: true,
+  };
+
+  it("prevQuestion sends Up + Left + Down with delays", () => {
+    const result = behavior.prevQuestion(ctx);
+    const data = result.steps.map((s) => s.data).join("");
+    // Up (\x1b[A) + Left (\x1b[D) + Down (\x1b[B)
+    expect(data).toBe("\x1b[A\x1b[D\x1b[B");
+    expect(result.steps[0].delayAfter).toBe(300);
+    expect(result.steps[1].delayAfter).toBe(300);
+    expect(result.steps.length).toBe(3);
+  });
+
+  it("nextQuestion sends Up + Right + Down with delays", () => {
+    const result = behavior.nextQuestion(ctx);
+    const data = result.steps.map((s) => s.data).join("");
+    // Up (\x1b[A) + Right (\x1b[C) + Down (\x1b[B)
+    expect(data).toBe("\x1b[A\x1b[C\x1b[B");
+    expect(result.steps[0].delayAfter).toBe(300);
+    expect(result.steps[1].delayAfter).toBe(300);
+    expect(result.steps.length).toBe(3);
   });
 });

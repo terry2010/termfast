@@ -488,10 +488,11 @@ describe("useAgentStatus", () => {
 
     // Screen redraws — △ disappears but idle footer remains.
     // This is a redraw gap, not a real idle — blocked should persist.
+    // Note: no "esc interrupt" here — that would indicate working, not idle.
     term._setScreenLines([
       "  ┃  Some AI output text",
       "  ┃  More output",
-      "   ■⬝⬝⬝  esc interrupt  ctrl+p commands  • OpenCode 1.18.11",
+      "   /path  ctrl+p commands  • OpenCode 1.18.11",
     ]);
     // Tick 1: idle detected, missCount=1 < 3 → stay blocked
     act(() => { vi.advanceTimersByTime(600); });
@@ -531,10 +532,10 @@ describe("useAgentStatus", () => {
     act(() => { vi.advanceTimersByTime(600); });
     expect(result.current.status).toBe("blocked");
 
-    // Screen shows idle (no △, just footer) — dialog dismissed
+    // Screen shows idle (no △, no esc interrupt, just footer) — dialog dismissed
     term._setScreenLines([
       "  ┃  AI output text",
-      "   ■⬝⬝⬝  esc interrupt  ctrl+p commands  • OpenCode 1.18.11",
+      "   /path  ctrl+p commands  • OpenCode 1.18.11",
     ]);
 
     // 2 ticks: missCount=2 < 3 → still blocked
@@ -620,6 +621,43 @@ describe("useAgentStatus", () => {
       "  ·   Other (type your own)",
       "─────────────────────────────────────────────────────────────────",
       "↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel",
+    ]);
+    const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
+
+    act(() => {
+      term._fireOsc(0, "Devin - working");
+    });
+    act(() => {
+      term._fireOsc(777, "notify;Devin;Devin needs input");
+    });
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(result.current.isMultiQuestion).toBe(true);
+    expect(result.current.otherExpanded).toBe(false);
+  });
+
+  it("does not set otherExpanded when ❭ moved away from Other but └ text persists", () => {
+    // Regression: user typed text into Other, then moved cursor to another option.
+    // The "└ 1" line persists below Other showing previously typed text,
+    // but ❭ is NOT on Other — so otherExpanded must be false.
+    // If true, prev/next buttons would send Up arrow, moving the cursor
+    // instead of switching tabs.
+    const term = createMockTerminal([
+      "──────────────",
+      "  你希望使用哪种编程语言作为主要开发语言？",
+      "  · 1 Rust",
+      "      系统级语言，性能高",
+      "  · 2 TypeScript",
+      "      前端主流语言",
+      "  ❭ 3 Python",
+      "      脚本语言，开发快速",
+      "  · 4 Other (type your own)",
+      "      └ 1",
+      "─────────────────────────────────────────────────────────────────",
+      "↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel",
+      "? Not ready to answer, help me out!",
     ]);
     const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
 
@@ -756,10 +794,10 @@ describe("useAgentStatus — screen scraping for non-Devin CLIs", () => {
     expect(result.current.status).toBe("working");
   });
 
-  it("detects OpenCode idle from footer (no spinner) via tick", () => {
+  it("detects OpenCode idle from footer (no esc interrupt) via tick", () => {
     const screen = [
       "Some content",
-      "esc interrupt  tab agents  ctrl+p commands",
+      "/path  ctrl+p commands  • OpenCode 1.18.11",
     ];
     const term = createMockTerminal(screen);
     const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
@@ -771,6 +809,22 @@ describe("useAgentStatus — screen scraping for non-Devin CLIs", () => {
 
     expect(result.current.cli).toBe("opencode");
     expect(result.current.status).toBe("idle");
+  });
+
+  it("detects OpenCode working from 'esc interrupt' footer via tick", () => {
+    const screen = [
+      "Some content",
+      "esc interrupt  tab agents  ctrl+p commands",
+    ];
+    const term = createMockTerminal(screen);
+    const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(result.current.cli).toBe("opencode");
+    expect(result.current.status).toBe("working");
   });
 
   it("detects OpenCode blocked from Permission required via tick", () => {

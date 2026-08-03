@@ -18,6 +18,10 @@ import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/use
 import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { shouldResetOverlay } from "@/hooks/overlayReset";
 import { getBehavior, executeSteps, type BehaviorContext } from "@/hooks/cliBehavior";
+import { scrapeScreen, joinLines, getCursorLine, getCursorOptionIndex } from "@/hooks/screenScraper";
+import { prepareScreenText } from "@/hooks/cliDetector";
+import { extractQuestion, extractOptions, extractCursorIndex, detectMultiSelect } from "@/hooks/agentPatterns";
+import type { CliType } from "@/hooks/oscParser";
 import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
 import {
   initTerminalLog,
@@ -351,9 +355,20 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
 
   // AI CLI agent status — binds OSC handlers + output monitoring to the terminal
   const [agentTerm, setAgentTerm] = useState<Terminal | null>(null);
-  const { status: agentStatus, cli: agentCli, blockedMessage: agentBlockedMessage, question: agentQuestion, options: agentOptions, isMultiSelect: agentIsMultiSelect, isMultiQuestion: agentIsMultiQuestion, activeTabIndex: agentActiveTabIndex, totalTabs: agentTotalTabs, reviewAnswers: agentReviewAnswers, otherExpanded: agentOtherEditing } = useAgentStatus(agentTerm, sessionId);
+  const { status: agentStatus, cli: agentCli, blockedMessage: agentBlockedMessage, question: agentQuestion, options: agentOptions, isMultiSelect: agentIsMultiSelect, isMultiQuestion: agentIsMultiQuestion, activeTabIndex: agentActiveTabIndex, totalTabs: agentTotalTabs, reviewAnswers: agentReviewAnswers, otherExpanded: agentOtherEditing, cursorIndex: agentCursorIndex } = useAgentStatus(agentTerm, sessionId);
   const setTerminalTabAgentStatus = useServerStore((s) => s.setTerminalTabAgentStatus);
   const [agentOverlayDismissed, setAgentOverlayDismissed] = useState(false);
+  // Tracks whether a navigation (prev/next question) is in progress,
+  // to disable buttons while keystrokes are being sent.
+  const [agentNavigating, setAgentNavigating] = useState(false);
+  // Ref mirror of agentNavigating for use inside async closures without
+  // re-creating the callback on every state change.
+  const agentNavigatingRef = useRef(false);
+  useEffect(() => { agentNavigatingRef.current = agentNavigating; }, [agentNavigating]);
+  // Track which option the user selected per tab (tabIndex → optionIndex).
+  // Shared with AgentQuestionOverlay so TerminalView can verify cursor
+  // position after navigation and correct if needed.
+  const answeredTabsRef = useRef<Map<number, number>>(new Map());
 
   // Sync agent status to tab store (for tab label rendering)
   useEffect(() => {
@@ -446,13 +461,22 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // after Enter — if we send text immediately, it gets lost.
   const handleAgentTextAnswer = useCallback((option: string, text: string, index: number, hasExistingText?: boolean) => {
     if (!termRef.current || agentCli === "unknown") return;
+    // For multi-select mode, devinCursorPosRef is unreliable (no ❭ marker).
+    // Use getCursorOptionIndex to find the actual cursor position from the
+    // terminal buffer, so arrow navigation in submitDevinTextAnswer computes
+    // the correct distance.
+    let cursorPos = devinCursorPosRef.current;
+    if (agentIsMultiSelect && termRef.current) {
+      const actualPos = getCursorOptionIndex(termRef.current);
+      if (actualPos !== null) cursorPos = actualPos;
+    }
     const ctx: BehaviorContext = {
       options: agentOptions,
       isMultiSelect: agentIsMultiSelect,
       isMultiQuestion: agentIsMultiQuestion,
       activeTabIndex: agentActiveTabIndex,
       totalTabs: agentTotalTabs,
-      cursorPos: devinCursorPosRef.current,
+      cursorPos,
       otherEditing: agentOtherEditing,
       hasExistingText,
     };
@@ -487,51 +511,191 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     });
   }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
 
-  // Handle navigate to previous question tab (multi-question mode)
-  // Devin and OpenCode both bind ← to switch to previous tab.
-  // For Devin: Only when in "└ e" text editing mode (user pressed 'e' on Other),
-  // ←→ moves the text cursor instead of switching tabs. In that case, send Up
-  // first to exit editing mode, then Left/Right. Otherwise, send Left/Right
-  // directly — sending Up when not in editing mode would move the option cursor.
-  const handleAgentPrevQuestion = useCallback(() => {
-    if (!termRef.current || agentCli === "unknown") return;
-    const ctx: BehaviorContext = {
-      options: agentOptions,
-      isMultiSelect: agentIsMultiSelect,
-      isMultiQuestion: agentIsMultiQuestion,
-      activeTabIndex: agentActiveTabIndex,
-      totalTabs: agentTotalTabs,
-      cursorPos: devinCursorPosRef.current,
-      otherEditing: agentOtherEditing,
-    };
-    const result = getBehavior(agentCli).prevQuestion(ctx);
-    executeSteps(result.steps, (bytes) => {
+  // ── Closed-loop navigation for prev/next question ──────────────────────
+  // Instead of blindly sending keystrokes and hoping for the best, this
+  // function verifies each step's effect by scraping the screen, and
+  // corrects the cursor position if it doesn't match the user's previous
+  // selection.
+  //
+  // Steps:
+  // 1. If in Other editing mode: send Up, poll until cursor leaves Other
+  // 2. Send Left/Right, poll until question text changes (tab switched)
+  // 3. Check cursorIndex vs answeredTabsRef; if mismatch, send Up/Down to correct
+  // 4. Wait 0.5s, verify again (guard against server latency)
+  const navigateWithVerify = useCallback(async (
+    direction: "prev" | "next",
+  ) => {
+    const term = termRef.current;
+    if (!term || agentCli === "unknown") return;
+
+    const encoder = new TextEncoder();
+    const send = (data: string) => {
+      const bytes = encoder.encode(data);
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
+    };
+
+    // Helper: scrape screen and extract current state
+    const getScreenState = () => {
+      const lines = scrapeScreen(term);
+      const text = prepareScreenText(joinLines(lines));
+      const question = extractQuestion(agentCli as CliType, text);
+      const options = extractOptions(agentCli as CliType, text);
+      const isMultiSel = detectMultiSelect(agentCli as CliType, text);
+      const isMultiQ = agentIsMultiQuestion;
+      const behavior = getBehavior(agentCli as CliType);
+      // detectOtherExpanded checks for ❭ on Other line (single-select only).
+      // For multi-select, use cursor position: if the cursor is on a line
+      // starting with └ (the text input line under Other), we're in editing mode.
+      let otherEditing = behavior.detectOtherExpanded(text, isMultiSel, isMultiQ);
+      if (!otherEditing && isMultiSel) {
+        const cursorLine = getCursorLine(term);
+        if (cursorLine && /^\s*└/.test(cursorLine.text)) {
+          otherEditing = true;
+        }
+      }
+      const cursorIdx = !isMultiSel ? extractCursorIndex(agentCli as CliType, text) : null;
+      return { question, options, cursorIdx, otherEditing };
+    };
+
+    // Helper: poll until condition is met or timeout
+    const pollUntil = async <T,>(
+      fn: () => T | null,
+      isValid: (result: T) => boolean,
+      timeoutMs = 3000,
+      intervalMs = 100,
+    ): Promise<T | null> => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        await new Promise<void>((r) => setTimeout(r, intervalMs));
+        const result = fn();
+        if (result !== null && isValid(result)) return result;
+      }
+      return null;
+    };
+
+    // Step 1: If in Other editing mode, send Up and verify exit.
+    // detectOtherExpanded via getCursorLine checks if cursor is on └ line
+    // (multi-select) or ❭ on Other line (single-select).
+    if (getScreenState().otherEditing) {
+      send("\x1b[A");
+      // Wait for editing mode to exit (otherEditing becomes false)
+      await pollUntil(
+        () => getScreenState().otherEditing,
+        (otherEditing) => otherEditing === false,
+        3000, 100,
+      );
+    }
+
+    // Step 2: Send Left/Right and verify tab switch (question text changed).
+    // If tab didn't switch, we may still be in editing mode (detection missed).
+    // Send Up to exit editing, then retry Left/Right.
+    const beforeQuestion = getScreenState().question;
+    send(direction === "prev" ? "\x1b[D" : "\x1b[C");
+    let switchedState = await pollUntil(
+      () => getScreenState(),
+      (state) => state.question !== null && state.question !== beforeQuestion,
+      1000, 100,
+    );
+    if (!switchedState) {
+      // Tab didn't switch — likely still in text editing mode. Send Up to exit,
+      // then retry Left/Right.
+      send("\x1b[A");
+      await new Promise<void>((r) => setTimeout(r, 200));
+      send(direction === "prev" ? "\x1b[D" : "\x1b[C");
+      switchedState = await pollUntil(
+        () => getScreenState(),
+        (state) => state.question !== null && state.question !== beforeQuestion,
+      );
+    }
+    if (!switchedState) return; // timeout — give up
+
+    // Step 3: Check cursorIndex vs expected (user's previous selection)
+    const targetTab = direction === "prev" ? agentActiveTabIndex - 1 : agentActiveTabIndex + 1;
+    const expectedIdx = answeredTabsRef.current.get(targetTab);
+
+    const correctCursor = async (): Promise<boolean> => {
+      const state = getScreenState();
+      if (expectedIdx === undefined || state.cursorIdx === null) return true;
+      if (state.cursorIdx === expectedIdx) return true;
+
+      const optionsCount = state.options ? state.options.length : 0;
+      if (optionsCount === 0) return false;
+
+      const currentIdx = state.cursorIdx;
+      const diff = expectedIdx - currentIdx;
+      if (diff > 0) {
+        // Need to go Down
+        for (let i = 0; i < diff; i++) {
+          send("\x1b[B");
+          const expected = currentIdx + i + 1;
+          const result = await pollUntil(
+            () => getScreenState().cursorIdx,
+            (idx) => idx === expected,
+            1000, 50,
+          );
+          if (!result) break;
+        }
+      } else if (diff < 0) {
+        // Need to go Up
+        for (let i = 0; i < -diff; i++) {
+          send("\x1b[A");
+          const expected = currentIdx - i - 1;
+          const result = await pollUntil(
+            () => getScreenState().cursorIdx,
+            (idx) => idx === expected,
+            1000, 50,
+          );
+          if (!result) break;
+        }
+      }
+      // Verify final position
+      const finalState = getScreenState();
+      return finalState.cursorIdx === expectedIdx;
+    };
+
+    await correctCursor();
+
+    // Step 4: Enable buttons immediately after initial verification succeeds.
+    // Then wait 0.5s and verify again (guard against server latency).
+    // If the second check finds a mismatch, re-disable buttons, correct, then
+    // re-enable.
+    // Use a flag to detect if user started a new navigation during the 0.5s
+    // wait — if so, skip the recheck to avoid interfering with the new nav.
+    setAgentNavigating(false);
+    await new Promise<void>((r) => setTimeout(r, 500));
+    // If user started a new navigation during the wait, skip recheck
+    if (agentNavigatingRef.current) return;
+    const stateBeforeRecheck = getScreenState();
+    if (expectedIdx !== undefined && stateBeforeRecheck.cursorIdx !== null &&
+        stateBeforeRecheck.cursorIdx !== expectedIdx) {
+      // Mismatch detected — re-disable, correct, re-enable
+      setAgentNavigating(true);
+      await correctCursor();
+      setAgentNavigating(false);
+    }
+  }, [agentCli, agentOptions, agentActiveTabIndex, agentIsMultiQuestion, answeredTabsRef]);
+
+  // Handle navigate to previous question tab (multi-question mode)
+  // Uses closed-loop navigation: sends keystrokes one at a time, verifies
+  // each step's effect by scraping the screen, and corrects cursor position
+  // if it doesn't match the user's previous selection.
+  const handleAgentPrevQuestion = useCallback(() => {
+    if (!termRef.current || agentCli === "unknown" || agentNavigating) return;
+    setAgentNavigating(true);
+    navigateWithVerify("prev").finally(() => {
+      setAgentNavigating(false);
     });
-    if (result.newCursorPos !== undefined) devinCursorPosRef.current = result.newCursorPos;
-  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
+  }, [agentCli, agentNavigating, navigateWithVerify]);
 
   // Handle navigate to next question tab (multi-question mode)
-  // Devin and OpenCode both bind → to switch to next tab.
   const handleAgentNextQuestion = useCallback(() => {
-    if (!termRef.current || agentCli === "unknown") return;
-    const ctx: BehaviorContext = {
-      options: agentOptions,
-      isMultiSelect: agentIsMultiSelect,
-      isMultiQuestion: agentIsMultiQuestion,
-      activeTabIndex: agentActiveTabIndex,
-      totalTabs: agentTotalTabs,
-      cursorPos: devinCursorPosRef.current,
-      otherEditing: agentOtherEditing,
-    };
-    const result = getBehavior(agentCli).nextQuestion(ctx);
-    executeSteps(result.steps, (bytes) => {
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
+    if (!termRef.current || agentCli === "unknown" || agentNavigating) return;
+    setAgentNavigating(true);
+    navigateWithVerify("next").finally(() => {
+      setAgentNavigating(false);
     });
-    if (result.newCursorPos !== undefined) devinCursorPosRef.current = result.newCursorPos;
-  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
+  }, [agentCli, agentNavigating, navigateWithVerify]);
 
   // Handle confirm in multi-question mode.
   // Navigates to the last tab (submit/confirm), then Enter to submit.
@@ -1650,6 +1814,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         totalTabs={agentTotalTabs}
         reviewAnswers={agentReviewAnswers}
         blockedMessage={agentBlockedMessage}
+        cursorIndex={agentCursorIndex}
         onAnswer={handleAgentAnswer}
         onToggle={handleAgentToggle}
         onSubmitMultiSelect={handleAgentSubmitMultiSelect}
@@ -1659,6 +1824,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         onNextQuestion={handleAgentNextQuestion}
         onConfirm={handleAgentConfirm}
         onDismiss={() => setAgentOverlayDismissed(true)}
+        navigating={agentNavigating}
+        answeredTabsRef={answeredTabsRef}
       />
       {showSearch && (
         <div className="absolute top-2 right-2 z-50 bg-slate-800/95 border border-slate-600 rounded-lg shadow-lg flex items-center gap-1 px-2 py-1.5">

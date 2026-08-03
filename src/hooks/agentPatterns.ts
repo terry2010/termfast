@@ -49,6 +49,9 @@ export interface CliPatterns {
   multiQuestionDetector?: (screenText: string) => boolean;
   /** Extract review answers from the Confirm tab (null if not on Confirm tab). */
   reviewAnswersExtractor?: (screenText: string) => string[] | null;
+  /** Detect the cursor position (❭ marker) in single-select mode.
+   *  @returns 0-based index of the option the cursor is on, or null if not detectable. */
+  cursorIndexExtractor?: (screenText: string) => number | null;
 }
 
 // ── Devin patterns ────────────────────────────────────────────────────────────
@@ -85,16 +88,31 @@ const devinPatterns: CliPatterns = {
   questionExtractor: (text) => {
     const lines = text.split("\n");
     // Question/selector dialog (ask_user_question):
-    // The question text is on a line between the "──" separator and the
-    // first numbered option. Format: "  这是第 1 个测试问题（单选）：..."
+    // The question text is on a line between the tab row and the
+    // first option. Format: "  这是第 1 个测试问题（单选）：..."
     const selectorIdx = lines.findIndex((l) => /↑↓\s+navigate.*esc\s+cancel/.test(l));
     if (selectorIdx >= 0) {
-      // Find the first numbered option line above the footer.
-      // Format: "  ❭ 1 确认型弹窗" or "  □ 1 多选问题" or "  · 1 Rust"
+      // Find the bottom separator (full ── line above footer) — this is
+      // the lower bound of the dialog content, excluding user input above.
+      let bottomSepIdx = -1;
+      for (let i = selectorIdx - 1; i >= 0 && i >= selectorIdx - 5; i--) {
+        if (/^[─━]+$/.test(lines[i].trim())) { bottomSepIdx = i; break; }
+      }
+      // Find the tab row (first line with ── walking up from bottom separator)
+      let tabRowIdx = -1;
+      for (let i = bottomSepIdx - 1; i >= 0; i--) {
+        if (/──/.test(lines[i])) { tabRowIdx = i; break; }
+      }
+      const startIdx = tabRowIdx >= 0 ? tabRowIdx + 1 : 0;
+      const endIdx = bottomSepIdx >= 0 ? bottomSepIdx : selectorIdx;
+      // Find the first option line (numbered or unnumbered) in the dialog.
       const optionPattern = /^\s*[❭·□■]\s*(\d+)\s+(.+)/;
+      const unnumberedOptionPattern = /^\s*[❭·□■]\s+(.+)/;
+      const otherPattern = /^\s*[❭·□■]\s+(Other\s*\(type your own\))/i;
       let firstOptionIdx = -1;
-      for (let i = 0; i < selectorIdx; i++) {
-        if (optionPattern.test(lines[i])) {
+      for (let i = startIdx; i < endIdx; i++) {
+        if (optionPattern.test(lines[i]) || otherPattern.test(lines[i]) ||
+            unnumberedOptionPattern.test(lines[i])) {
           firstOptionIdx = i;
           break;
         }
@@ -104,7 +122,7 @@ const devinPatterns: CliPatterns = {
         // Skip empty lines, "──" separator lines, and description lines
         // (indented text under options). The question is the first
         // non-empty, non-separator line.
-        for (let i = firstOptionIdx - 1; i >= 0; i--) {
+        for (let i = firstOptionIdx - 1; i >= startIdx; i--) {
           const trimmed = lines[i].trim();
           if (!trimmed) continue;
           // Skip "──" separator lines (box-drawing)
@@ -155,26 +173,27 @@ const devinPatterns: CliPatterns = {
       const otherPattern = /^\s*[❭·□■]\s+(Other\s*\(type your own\))/i;
       const unnumberedPattern = /^\s*[❭·□■]\s+(.+)/;
 
-      // Find the question line — options only appear AFTER it.
-      // The dialog has a "──" separator line above the question (part of
-      // the tab row), and options appear below the question.
-      // We find the FIRST "──" line (from the top), which is the tab row
-      // separator. Options start after the question line that follows it.
-      // This prevents user message lines (with "❭" prefix) from being
-      // mistaken for options.
-      let separatorIdx = -1;
-      for (let i = 0; i < selectorIdx; i++) {
-        if (/──/.test(lines[i])) {
-          separatorIdx = i;
-          break;
-        }
+      // Find the dialog boundaries to exclude user input above the dialog.
+      // The dialog is bounded by:
+      //   - tab row (top): line with ── that's above the options
+      //   - bottom separator: full ── line immediately above the footer
+      // User input lines (with ❭ prefix) appear ABOVE the tab row and
+      // must not be mistaken for options.
+      let bottomSepIdx = -1;
+      for (let i = selectorIdx - 1; i >= 0 && i >= selectorIdx - 5; i--) {
+        if (/^[─━]+$/.test(lines[i].trim())) { bottomSepIdx = i; break; }
       }
-      const startIdx = separatorIdx >= 0 ? separatorIdx + 1 : 0;
+      let tabRowIdx = -1;
+      for (let i = bottomSepIdx - 1; i >= 0; i--) {
+        if (/──/.test(lines[i])) { tabRowIdx = i; break; }
+      }
+      const startIdx = tabRowIdx >= 0 ? tabRowIdx + 1 : 0;
+      const endIdx = bottomSepIdx >= 0 ? bottomSepIdx : selectorIdx;
 
       // First pass: try numbered extraction
       const numberedOptions: string[] = [];
       const numberedIndices: number[] = [];
-      for (let i = startIdx; i < selectorIdx; i++) {
+      for (let i = startIdx; i < endIdx; i++) {
         const m = lines[i].match(optionPattern);
         if (m) {
           numberedOptions.push(`${m[1]}. ${m[2].trim()}`);
@@ -203,7 +222,7 @@ const devinPatterns: CliPatterns = {
 
       // Second pass: unnumbered extraction
       const options: string[] = [];
-      for (let i = startIdx; i < selectorIdx; i++) {
+      for (let i = startIdx; i < endIdx; i++) {
         const om = lines[i].match(otherPattern);
         if (om) {
           options.push(om[1].trim());
@@ -240,6 +259,42 @@ const devinPatterns: CliPatterns = {
   multiSelectDetector: (text) => /↑↓\s+navigate.*␣\s+toggle.*esc\s+cancel/i.test(text),
   // Multi-question detection: "←→ switch question" in footer means multi-question.
   multiQuestionDetector: (text) => /↑↓\s+navigate.*←→\s+switch question.*esc\s+cancel/i.test(text),
+  // Cursor index detection: find the line with ❭ marker, match its option number.
+  // Returns the 0-based index into the extracted options array.
+  // Format: "  ❭ 1 Vite" → index 0, "  ❭ 3 esbuild" → index 2, "  ❭   Other" → last index
+  cursorIndexExtractor: (text) => {
+    const lines = text.split("\n");
+    const selectorIdx = lines.findIndex((l) => /↑↓\s+navigate.*esc\s+cancel/.test(l));
+    if (selectorIdx < 0) return null;
+    // Find dialog boundaries (same logic as optionsExtractor)
+    let bottomSepIdx = -1;
+    for (let i = selectorIdx - 1; i >= 0 && i >= selectorIdx - 5; i--) {
+      if (/^[─━]+$/.test(lines[i].trim())) { bottomSepIdx = i; break; }
+    }
+    let tabRowIdx = -1;
+    for (let i = bottomSepIdx - 1; i >= 0; i--) {
+      if (/──/.test(lines[i])) { tabRowIdx = i; break; }
+    }
+    const startIdx = tabRowIdx >= 0 ? tabRowIdx + 1 : 0;
+    const endIdx = bottomSepIdx >= 0 ? bottomSepIdx : selectorIdx;
+    // Scan options, track index, return when ❭ is found
+    const optionPattern = /^\s*[❭·□■]\s*(\d+)\s+(.+)/;
+    const otherPattern = /^\s*[❭·□■]\s+(Other\s*\(type your own\))/i;
+    const unnumberedPattern = /^\s*[❭·□■]\s+(.+)/;
+    let optionIndex = 0;
+    for (let i = startIdx; i < endIdx; i++) {
+      const line = lines[i];
+      const isCursor = /^\s*❭/.test(line);
+      if (optionPattern.test(line)) {
+        if (isCursor) return optionIndex;
+        optionIndex++;
+      } else if (otherPattern.test(line) || unnumberedPattern.test(line)) {
+        if (isCursor) return optionIndex;
+        optionIndex++;
+      }
+    }
+    return null;
+  },
 };
 
 // ── OpenCode patterns ──────────────────────────────────────────────────────────
@@ -262,8 +317,13 @@ const opencodePatterns: CliPatterns = {
     { status: "blocked", pattern: /⇆\s+tab.*enter\s+submit.*esc\s+dismiss/, priority: 9 },
     // Completion marker: "▣ Build · DeepSeek · 3.9s"
     { status: "done", pattern: /▣\s+\S+\s+·\s+.+?\s+·\s+(?:\d+m\s+)?\d+(?:\.\d+)?s/, priority: 8 },
-    // Tool-call spinner: "⠋ Read <path>" etc. — only reliable working indicator
+    // Tool-call spinner: "⠋ Read <path>" etc. — reliable working indicator
     { status: "working", pattern: /^\s+[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+\S+/m, priority: 7 },
+    // "esc interrupt" footer — shown when session status is not "idle" (working).
+    // This catches the gap between Thinking spinner frames and when streaming
+    // text content (no braille spinner on screen, but OpenCode is still working).
+    // Without this, the status flickers between working and idle during long tasks.
+    { status: "working", pattern: /esc\s+interrupt/, priority: 6 },
     // Idle footer (appears in both idle and working states, but when no spinner
     // is present, this indicates idle)
     { status: "idle", pattern: /ctrl\+p\s+commands/, priority: 5 },
@@ -477,8 +537,9 @@ const claudeCodePatterns: CliPatterns = {
       /Enter\s*to\s*select.*(?:Tab\/Arrow|Tab).*Esc\s*to\s*cancel/i.test(l));
     if (multiQFooterIdx >= 0) {
       // Find the first numbered option line above the footer.
-      // Format: "❯ 1. Rust" (selected) or "  2. Python" (unselected)
-      const optionPattern = /^\s*[❯>]\s*(\d+)\.\s+(.+)/;
+      // Format: "❯ 1. Rust" (focused) or "  2. Python" (unselected)
+      // [❯>]? is optional so we find the FIRST option, not just the focused one.
+      const optionPattern = /^\s*[❯>]?\s*(\d+)\.\s+(.+)/;
       let firstOptionIdx = -1;
       for (let i = 0; i < multiQFooterIdx; i++) {
         if (optionPattern.test(lines[i])) {
@@ -671,8 +732,10 @@ const claudeCodePatterns: CliPatterns = {
   // Format: "❯ 1. [ ] 选项一" (multi-select) vs "❯ 1. 选项一" (single-select)
   multiSelectDetector: (text) => {
     const lines = text.split("\n");
-    // Check numbered option lines for "[ ]" or "[✓]" checkbox markers
-    return lines.some((l) => /^\s*[❯>]?\s*\d+\.\s*\[[\s✓]\]/.test(l));
+    // Check numbered option lines for "[ ]" or "[✔]" checkbox markers.
+    // Note: Claude Code uses ✔ (U+2714 HEAVY CHECK MARK), not ✓ (U+2713).
+    // Must match both since screen may render either.
+    return lines.some((l) => /^\s*[❯>]?\s*\d+\.\s*\[[\s✓✔]\]/.test(l));
   },
   // Multi-question detection: tab row with "Submit" button.
   // Format: "←  ☐ 编程语言  ☐ 操作系统  ☐ 编辑器  ☐ 弹窗体验  ✔ Submit  →"
@@ -912,5 +975,15 @@ export function extractReviewAnswers(cli: CliType, screenText: string): string[]
   const patterns = PATTERNS[cli];
   if (!patterns?.reviewAnswersExtractor) return null;
   return patterns.reviewAnswersExtractor(screenText);
+}
+
+/**
+ * Detect the cursor position (❭ marker) in single-select mode.
+ * @returns 0-based index of the option the cursor is on, or null if not detectable.
+ */
+export function extractCursorIndex(cli: CliType, screenText: string): number | null {
+  const patterns = PATTERNS[cli];
+  if (!patterns?.cursorIndexExtractor) return null;
+  return patterns.cursorIndexExtractor(screenText);
 }
 // === SECTION 2 END ===

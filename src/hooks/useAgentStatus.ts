@@ -32,7 +32,7 @@ import {
 } from "./agentStateMachine";
 import { scrapeScreen, joinLines, extractTabInfo } from "./screenScraper";
 import { detectCli, detectStatus, prepareScreenText } from "./cliDetector";
-import { extractQuestion, extractOptions, detectMultiSelect, detectMultiQuestion, extractReviewAnswers } from "./agentPatterns";
+import { extractQuestion, extractOptions, detectMultiSelect, detectMultiQuestion, extractReviewAnswers, extractCursorIndex } from "./agentPatterns";
 import { getBehavior } from "./cliBehavior";
 import { logTerminalDebug } from "./terminalLogger";
 
@@ -80,6 +80,8 @@ export interface AgentStatusInfo {
   reviewAnswers: string[] | null;
   /** True if Devin's "Other" option is in "└ e" text editing mode (user pressed 'e' to type). */
   otherExpanded: boolean;
+  /** Cursor position (❭ marker) in single-select mode — 0-based index, or null if not detectable. */
+  cursorIndex: number | null;
 }
 
 /**
@@ -105,6 +107,7 @@ export function useAgentStatus(
     totalTabs: 0,
     reviewAnswers: null,
     otherExpanded: false,
+    cursorIndex: null,
   });
 
   // State machine lives in a ref — mutated in place, no re-allocation per tick.
@@ -135,6 +138,7 @@ export function useAgentStatus(
       let totalTabs = 0;
       let reviewAnswers: string[] | null = null;
       let otherExpanded = false;
+      let cursorIndex: number | null = null;
 
       // Only scrape screen for question/options when blocked
       if (state.status === "blocked" && state.cli !== "unknown") {
@@ -152,6 +156,10 @@ export function useAgentStatus(
           // In all these states, ←→ moves the text cursor, not switches tabs.
           const behavior = getBehavior(state.cli);
           otherExpanded = behavior.detectOtherExpanded(screenText, isMultiSelect, isMultiQuestion);
+          // Detect cursor position (❭ marker) for single-select mode
+          if (!isMultiSelect) {
+            cursorIndex = extractCursorIndex(state.cli, screenText);
+          }
           // Debug: log screenText when multiSelect/multiQuestion detected
           if (isMultiSelect || isMultiQuestion) {
             logTerminalDebug(sessionId, `screenText for multiSelect=${isMultiSelect} multiQuestion=${isMultiQuestion}: ${JSON.stringify(screenText.slice(-500))}`);
@@ -213,6 +221,7 @@ export function useAgentStatus(
         totalTabs,
         reviewAnswers,
         otherExpanded,
+        cursorIndex,
       });
     };
 

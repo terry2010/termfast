@@ -44,6 +44,8 @@ interface AgentQuestionOverlayProps {
   reviewAnswers: string[] | null;
   /** Blocked message (from OSC 777 for Devin, or screen scrape). */
   blockedMessage: string | null;
+  /** Cursor position (❭ marker) in single-select mode — 0-based index, or null. */
+  cursorIndex: number | null;
   /** Called when user clicks an answer option (single-select). */
   onAnswer: (option: string, index: number) => void;
   /** Called when user toggles an option in multi-select mode.
@@ -68,6 +70,13 @@ interface AgentQuestionOverlayProps {
   onConfirm: (hasAnswers: boolean) => void;
   /** Called when user dismisses the overlay without answering. */
   onDismiss: () => void;
+  /** Whether a navigation (prev/next question) is in progress.
+   *  Buttons are disabled while true to prevent overlapping keystroke sequences. */
+  navigating?: boolean;
+  /** External ref for tracking answered tabs (tabIndex → optionIndex).
+   *  If provided, the overlay uses this instead of an internal ref,
+   *  so TerminalView can read it for navigation verification. */
+  answeredTabsRef?: React.MutableRefObject<Map<number, number>>;
 }
 
 const CLI_NAMES: Record<CliType, string> = {
@@ -93,9 +102,10 @@ function isTypeYourOwnAnswer(option: string): boolean {
 
 /** Strip "[ ]" or "[✔]" checkbox prefix from a multi-select option label.
  *  "1. [✔] 选项A" → "1. 选项A"
- *  "5. [ ] Type something" → "5. Type something" */
+ *  "5. [ ] Type something" → "5. Type something"
+ *  Note: Claude Code uses ✔ (U+2714), not ✓ (U+2713) — match both. */
 function stripCheckbox(option: string): string {
-  return option.replace(/^(\d+\.\s*)\[[\s✓]\]\s*/, "$1");
+  return option.replace(/^(\d+\.\s*)\[[\s✓✔]\]\s*/, "$1");
 }
 
 /** Check if a multi-select option has a [✔] checkbox (is checked on screen). */
@@ -115,6 +125,7 @@ function AgentQuestionOverlayImpl({
   totalTabs,
   reviewAnswers,
   blockedMessage,
+  cursorIndex,
   onAnswer,
   onToggle,
   onSubmitMultiSelect,
@@ -124,6 +135,8 @@ function AgentQuestionOverlayImpl({
   onNextQuestion,
   onConfirm,
   onDismiss,
+  navigating,
+  answeredTabsRef: externalAnsweredTabsRef,
 }: AgentQuestionOverlayProps) {
   const { t } = useTranslation();
   const behavior = getBehavior(cli);
@@ -140,7 +153,10 @@ function AgentQuestionOverlayImpl({
   // Single-select answers submit immediately and advance tabs, so track them
   // separately from the per-tab multi-select state.
   // Map: tabIndex → optionIndex (which option was selected on that tab)
-  const answeredTabsRef = useRef<Map<number, number>>(new Map());
+  // Use external ref if provided (for TerminalView navigation verification),
+  // otherwise create an internal one.
+  const _internalAnsweredTabsRef = useRef<Map<number, number>>(new Map());
+  const answeredTabsRef = externalAnsweredTabsRef ?? _internalAnsweredTabsRef;
 
   // In multi-question mode, determine which tab is the "last question" tab.
   // Each CLI has different tab layout — delegated to behavior.
@@ -185,7 +201,7 @@ function AgentQuestionOverlayImpl({
     if (closed) {
       tabStateRef.current = new Map();
       prevTabRef.current = -1;
-      answeredTabsRef.current = new Map();
+      answeredTabsRef.current.clear();
       setChecked(new Set());
       setTextAnswers(new Map());
       setTextMode(false);
@@ -462,16 +478,18 @@ function AgentQuestionOverlayImpl({
               <div className="flex gap-2 mt-2">
                 {!hidePrev && (
                   <button
-                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     onClick={onPrevQuestion}
+                    disabled={navigating}
                   >
                     ← {t("server.agent_prev_question")}
                   </button>
                 )}
                 {!hideNext && (
                   <button
-                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     onClick={onNextQuestion}
+                    disabled={navigating}
                   >
                     {t("server.agent_next_question")} →
                   </button>
@@ -524,8 +542,13 @@ function AgentQuestionOverlayImpl({
         {!textMode && !isMultiSelect && options && options.length > 0 && (
           <div className="px-4 pb-3 flex flex-col gap-2">
             {options.map((option, index) => {
+              // Use cursorIndex (from screen ❭ marker) when available — it
+              // stays in sync with Devin's actual cursor position even when
+              // the user moves the cursor directly in the terminal.
+              // Fall back to answeredTabsRef for CLIs without cursorIndexExtractor.
               const selectedAnswer = isMultiQuestion ? answeredTabsRef.current.get(activeTabIndex) : undefined;
-              const isSelected = selectedAnswer === index;
+              const isSelected = cursorIndex !== null ? cursorIndex === index : selectedAnswer === index;
+              const textAns = textAnswers.get(index);
               return (
                 <button
                   key={index}
@@ -537,6 +560,9 @@ function AgentQuestionOverlayImpl({
                   onClick={() => handleSingleSelect(option, index)}
                 >
                   {isSelected && "✓ "}{option}
+                  {textAns && (
+                    <span className="text-blue-400 ml-2">: {textAns}</span>
+                  )}
                 </button>
               );
             })}
@@ -545,16 +571,18 @@ function AgentQuestionOverlayImpl({
               <div className="flex gap-2 mt-2">
                 {!hidePrev && (
                   <button
-                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     onClick={onPrevQuestion}
+                    disabled={navigating}
                   >
                     ← {t("server.agent_prev_question")}
                   </button>
                 )}
                 {!hideNext && (
                   <button
-                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     onClick={onNextQuestion}
+                    disabled={navigating}
                   >
                     {t("server.agent_next_question")} →
                   </button>
@@ -619,8 +647,9 @@ function AgentQuestionOverlayImpl({
             <div className="flex gap-2">
               {isMultiQuestion && !hidePrev && (
                 <button
-                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                  className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   onClick={onPrevQuestion}
+                  disabled={navigating}
                 >
                   ← {t("server.agent_prev_question")}
                 </button>

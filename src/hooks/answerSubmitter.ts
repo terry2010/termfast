@@ -25,7 +25,7 @@ export function submitAnswer(cli: CliType, option: string, index: number, option
     case "devin":
       return submitDevin(option, index, isMultiQuestion);
     case "opencode":
-      return submitOpenCode(option, index, optionCount);
+      return submitOpenCode(option, index, optionCount, isMultiQuestion);
     case "claude-code":
       return submitClaudeCode(option, index);
     case "codex":
@@ -295,8 +295,18 @@ export function submitOpenCodeConfirm(hasOptions: boolean, activeIndex: number, 
  *   Enter in editing mode adds text to answers but doesn't advance.
  *   Caller must then Tab to Confirm + Enter to submit.
  */
-export function submitOpenCodeTextAnswer(option: string, text: string, _isMultiSelect?: boolean, _optionCount?: number): { navigate: string; type: string } {
+export function submitOpenCodeTextAnswer(option: string, text: string, _isMultiSelect?: boolean, _optionCount?: number, hasExistingText?: boolean): { navigate: string; type: string; clear?: string } {
   const numMatch = option.match(/^(\d+)/);
+  // OpenCode's question editing mode binds Ctrl+C (prompt.clear) to clear
+  // the textarea, NOT Ctrl+U. Ctrl+U gets swallowed by the textarea and
+  // the text is lost. Use \x03 to clear existing text before typing.
+  // But \x03 on an empty textarea exits editing mode, so only send it when
+  // there is existing text to clear.
+  // \x03 is sent as a separate step (with a delay before typing) so that
+  // OpenCode's useBindings handler processes the clear command before the
+  // text input arrives — otherwise the text gets typed first and then
+  // cleared, losing everything.
+  const clear = hasExistingText ? "\x03" : undefined;
 
   // Single-select: number key to enter text mode, then type + Enter
   if (numMatch) {
@@ -304,9 +314,10 @@ export function submitOpenCodeTextAnswer(option: string, text: string, _isMultiS
     return {
       navigate: String(num),
       type: text + "\r",
+      clear,
     };
   }
-  return { navigate: "", type: text + "\r" };
+  return { navigate: "", type: text + "\r", clear };
 }
 
 /** Delay (ms) between sending navigate keystrokes and type keystrokes. */
@@ -370,18 +381,17 @@ export function sendTextAnswerWithDelay(
   return () => timers.forEach(clearTimeout);
 }
 
-function submitOpenCode(option: string, index: number, optionCount?: number): string {
+function submitOpenCode(option: string, index: number, optionCount?: number, isMultiQuestion?: boolean): string {
   const normalized = option.toLowerCase().trim();
 
-  // Permission dialog buttons
-  // The permission dialog uses mouse hover to change the focused button.
-  // When the user moves their mouse over the terminal (behind the overlay),
-  // the focus changes. To reliably activate the desired button, we cycle
-  // through all buttons (Tab optionCount times wraps back to button 0),
-  // then Tab (index) more times to reach the desired button, then Enter.
+  // Permission dialog buttons: "Allow once", "Allow always", "Reject"
+  // OpenCode's permission Prompt uses Left/Right (or h/l) for navigation,
+  // NOT Tab. Tab is bound globally to agent.cycle and does not change the
+  // selected button. The default selected option is always "Allow once"
+  // (keys[0]). Use "l" (next option, circular) to navigate to the desired
+  // button, then Enter to confirm.
   if (normalized === "allow once" || normalized === "allow always" || normalized === "reject") {
-    const cycleTabs = optionCount && optionCount > 1 ? "\t".repeat(optionCount) : "";
-    return cycleTabs + "\t".repeat(index) + "\r";
+    return "l".repeat(index) + "\r";
   }
 
   // Question/selector dialog (single-select): numbered options like "1. Rust"
@@ -389,11 +399,14 @@ function submitOpenCode(option: string, index: number, optionCount?: number): st
   // selectOption). This is simpler and more reliable than arrow navigation
   // (↑↓ are circular with modulo, making position-based navigation error-prone
   // in multi-question dialogs where the cursor carries over between tabs).
-  // Number key directly selects; pick() auto-advances to next tab.
+  // In multi-question mode, number key selects + pick() auto-advances to next
+  // tab — NO Enter needed.
+  // In single-question mode, number key only selects (highlights) the option;
+  // Enter is required to submit (footer says "enter submit").
   const numMatch = option.match(/^(\d+)/);
   if (numMatch) {
     const num = parseInt(numMatch[1], 10);
-    return String(num);
+    return isMultiQuestion ? String(num) : String(num) + "\r";
   }
 
   // Fallback: Tab index times + Enter

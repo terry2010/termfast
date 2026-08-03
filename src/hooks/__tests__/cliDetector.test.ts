@@ -105,8 +105,15 @@ describe("detectStatus", () => {
     expect(detectStatus("opencode", screen)).toBe("working");
   });
 
-  it("detects OpenCode idle from footer (no spinner)", () => {
+  it("detects OpenCode working from 'esc interrupt' footer (no spinner)", () => {
+    // "esc interrupt" only appears when session status is not "idle" (working).
+    // This catches the gap between Thinking spinner frames and text streaming.
     const screen = prepareScreenText("some content\nesc interrupt  tab agents  ctrl+p commands");
+    expect(detectStatus("opencode", screen)).toBe("working");
+  });
+
+  it("detects OpenCode idle from footer (no esc interrupt)", () => {
+    const screen = prepareScreenText("some content\n/path  ctrl+p commands  • OpenCode 1.18.11");
     expect(detectStatus("opencode", screen)).toBe("idle");
   });
 

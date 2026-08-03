@@ -63,8 +63,12 @@ export function detectCliFromScreen(screenText: string): CliType {
   }
 
   // OpenCode: "esc interrupt" + "ctrl+p commands" + "tab agents" footer
-  // Note: "esc interrupt" appears in both idle and working states (static footer)
+  // Note: "esc interrupt" only appears in working state (not idle).
   if (/esc\s+interrupt/.test(screenText) && /ctrl\+p\s+commands/.test(screenText)) {
+    return "opencode";
+  }
+  // OpenCode idle footer: "ctrl+p commands" + "• OpenCode <version>"
+  if (/ctrl\+p\s+commands/.test(screenText) && /•\s*OpenCode\s+\d/.test(screenText)) {
     return "opencode";
   }
   // OpenCode logo: █▀▀█ █▀▀█ pattern

@@ -130,22 +130,24 @@ export interface CliBehavior {
 export function executeSteps(
   steps: KeystrokeStep[],
   send: (bytes: Uint8Array) => void,
-): void {
-  if (steps.length === 0) return;
-  const encoder = new TextEncoder();
-  let i = 0;
-  const sendNext = () => {
-    while (i < steps.length) {
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (steps.length === 0) { resolve(); return; }
+    const encoder = new TextEncoder();
+    let i = 0;
+    const sendNext = () => {
+      if (i >= steps.length) { resolve(); return; }
       const step = steps[i];
       send(encoder.encode(step.data));
       i++;
       if (step.delayAfter && i < steps.length) {
         setTimeout(sendNext, step.delayAfter);
-        return;
+      } else {
+        sendNext();
       }
-    }
-  };
-  sendNext();
+    };
+    sendNext();
+  });
 }
 
 // === SECTION 1 END ===
@@ -221,8 +223,19 @@ const devinBehavior: CliBehavior = {
   },
   prevQuestion(ctx) {
     if (ctx.otherEditing) {
+      // Cursor is on Other in text editing mode. Left/Right would move
+      // the text cursor, not switch tabs. So:
+      // 1. Up: exit editing, cursor moves to option above Other
+      // 2. Left: switch to prev tab (now safe — not in editing mode)
+      // 3. Down: on the new tab, move cursor back down to Other
+      // Each step has delayAfter to ensure Devin processes each key
+      // before the next one is sent.
       return {
-        steps: [{ data: "\x1b[A" }, { data: "\x1b[D", delayAfter: 200 }],
+        steps: [
+          { data: "\x1b[A", delayAfter: 300 },
+          { data: "\x1b[D", delayAfter: 300 },
+          { data: "\x1b[B" },
+        ],
         dismiss: false,
         newCursorPos: 0,
       };
@@ -231,8 +244,13 @@ const devinBehavior: CliBehavior = {
   },
   nextQuestion(ctx) {
     if (ctx.otherEditing) {
+      // Same logic as prevQuestion — Up + Right + Down.
       return {
-        steps: [{ data: "\x1b[A" }, { data: "\x1b[C", delayAfter: 200 }],
+        steps: [
+          { data: "\x1b[A", delayAfter: 300 },
+          { data: "\x1b[C", delayAfter: 300 },
+          { data: "\x1b[B" },
+        ],
         dismiss: false,
         newCursorPos: 0,
       };
@@ -253,7 +271,11 @@ const devinBehavior: CliBehavior = {
   cacheOptionsOnOther: true,
   detectOtherExpanded(screenText, _isMultiSelect, isMultiQuestion) {
     if (!isMultiQuestion && !_isMultiSelect) return false;
-    return /^\s+└/m.test(screenText);
+    // "Other" is in editing mode ONLY when the cursor (❭) is on the Other line.
+    // The "└ text" line can persist below Other even when the cursor moved away
+    // (it shows previously typed text), so └ alone is not a reliable signal.
+    // Check that ❭ is on a line matching "Other (type your own)".
+    return /^\s*❭\s+Other\s*\(type your own\)/im.test(screenText);
   },
   handleOscTitle(_title) { return null; },
 };
@@ -264,6 +286,22 @@ const devinBehavior: CliBehavior = {
 
 const opencodeBehavior: CliBehavior = {
   answer(option, index, ctx) {
+    const normalized = option.toLowerCase().trim();
+    // OpenCode permission "Reject" may enter a RejectPrompt sub-dialog (when
+    // session has parentID) that requires a second Enter to confirm the reject.
+    // If we send "ll\r" as a single keystroke, the \r is consumed by the
+    // permission Prompt's "return" binding (entering RejectPrompt) instead of
+    // by RejectPrompt's "return" binding (confirming reject). Split into two
+    // steps with a delay so RejectPrompt is visible before the confirming Enter.
+    if (normalized === "reject") {
+      return {
+        steps: [
+          { data: "l".repeat(index), delayAfter: TEXT_ANSWER_DELAY_MS },
+          { data: "\r" },
+        ],
+        dismiss: false,
+      };
+    }
     const ks = submitAnswer("opencode", option, index, ctx.options?.length, ctx.isMultiQuestion);
     // OpenCode: don't dismiss after answer — status change from "blocked" to
     // "working" will naturally hide the overlay. This way, if the click didn't
@@ -278,9 +316,37 @@ const opencodeBehavior: CliBehavior = {
     return { steps: [{ data: submitOpenCodeMultiSelect() }], dismiss: true };
   },
   textAnswer(option, text, _index, ctx) {
-    const parts = submitOpenCodeTextAnswer(option, text, ctx.isMultiSelect, ctx.options?.length);
+    const parts = submitOpenCodeTextAnswer(option, text, ctx.isMultiSelect, ctx.options?.length, ctx.hasExistingText);
+    // Steps: navigate (number key) → [clear (Ctrl+C) if hasExistingText] → type (text + Enter)
+    // Each step has delayAfter so OpenCode processes the previous keystroke
+    // (enter editing mode / clear textarea) before the next one arrives.
+    const steps: KeystrokeStep[] = [{ data: parts.navigate, delayAfter: TEXT_ANSWER_DELAY_MS }];
+
+    // In multi-select mode, if the custom option already has text and is
+    // picked (customPicked()=true), the first number key calls toggle(value)
+    // which unselects the old answer but does NOT enter editing mode.
+    // A second number key is needed to actually enter editing mode.
+    // Without this, the subsequent \x03 (Ctrl+C) arrives while editing=false
+    // and triggers app.exit (reject), closing the question dialog.
+    if (ctx.isMultiSelect && ctx.hasExistingText) {
+      steps.push({ data: parts.navigate, delayAfter: TEXT_ANSWER_DELAY_MS });
+    }
+
+    if (parts.clear) {
+      steps.push({ data: parts.clear, delayAfter: TEXT_ANSWER_DELAY_MS });
+    }
+    steps.push({ data: parts.type, delayAfter: TEXT_ANSWER_DELAY_MS });
+    // In multi-select multi-question mode, Enter only stores the answer and
+    // exits editing mode — it does NOT advance to the next question tab
+    // (OpenCode's pick() is only called for single-select). Send Tab to
+    // switch to the next question tab after the answer is stored.
+    // Tab (\t) is used instead of Right arrow (\x1b[C) because \x1b can be
+    // interpreted as Esc by OpenCode's input parser, triggering reject().
+    if (ctx.isMultiSelect && ctx.isMultiQuestion) {
+      steps.push({ data: "\t", delayAfter: TEXT_ANSWER_DELAY_MS });
+    }
     return {
-      steps: [{ data: parts.navigate }, { data: parts.type, delayAfter: TEXT_ANSWER_DELAY_MS }],
+      steps,
       dismiss: !ctx.isMultiQuestion,
     };
   },
@@ -340,7 +406,7 @@ const claudeCodeBehavior: CliBehavior = {
   textAnswer(option, text, index, ctx) {
     const parts = submitClaudeCodeTextAnswer(option, text, index, ctx.isMultiSelect, ctx.hasExistingText);
     const steps: KeystrokeStep[] = [
-      { data: parts.navigate },
+      { data: parts.navigate, delayAfter: parts.navigate ? TEXT_ANSWER_DELAY_MS : 0 },
       { data: parts.type, delayAfter: TEXT_ANSWER_DELAY_MS },
     ];
     if (parts.submit) {
@@ -368,6 +434,24 @@ const claudeCodeBehavior: CliBehavior = {
     }
     const hasOptions = !!(ctx.options && ctx.options.length > 0);
     const ks = submitClaudeCodeConfirm(hasOptions, ctx.activeTabIndex, ctx.totalTabs);
+    // Split arrows and Enter into separate steps with delayAfter.
+    // Right arrow triggers tabs:next (currentQuestionIndex +1 via React state).
+    // If Enter arrives in the same PTY write, React hasn't re-rendered yet,
+    // so Enter hits the OLD tab's select:accept → setAnswer(shouldAdvance=true)
+    // → currentQuestionIndex +1 again, landing PAST the Submit tab and
+    // leaving Claude Code in a blank, unresponsive state.
+    const enterIdx = ks.lastIndexOf("\r");
+    if (enterIdx > 0) {
+      const arrows = ks.slice(0, enterIdx);
+      const enter = ks.slice(enterIdx);
+      return {
+        steps: [
+          { data: arrows, delayAfter: TEXT_ANSWER_DELAY_MS },
+          { data: enter, delayAfter: TEXT_ANSWER_SUBMIT_DELAY_MS },
+        ],
+        dismiss: true,
+      };
+    }
     return { steps: [{ data: ks }], dismiss: true };
   },
   // Claude Code has a Submit tab at the end, so last question is totalTabs - 2.

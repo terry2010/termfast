@@ -1,6 +1,6 @@
 // Unit tests for agentPatterns — question + option extraction
 import { describe, it, expect } from "vitest";
-import { extractQuestion, extractOptions, detectStatusFromScreen, detectMultiSelect, detectMultiQuestion, extractReviewAnswers, stripAnsi } from "../agentPatterns";
+import { extractQuestion, extractOptions, detectStatusFromScreen, detectMultiSelect, detectMultiQuestion, extractReviewAnswers, extractCursorIndex, stripAnsi } from "../agentPatterns";
 
 describe("stripAnsi", () => {
   it("removes SGR codes", () => {
@@ -163,6 +163,35 @@ describe("detectStatusFromScreen — OpenCode selector dialog", () => {
       "  ┃  测试反馈: 很好用",
       "  ┃  ⇆ tab  enter submit  esc dismiss",
     ].join("\n");
+    expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
+  });
+});
+
+describe("detectStatusFromScreen — OpenCode working vs idle", () => {
+  it("detects working from braille spinner + Thinking", () => {
+    const screen = "  ┃  Some output\n  ⠋ Thinking\n  esc interrupt  ctrl+p commands";
+    expect(detectStatusFromScreen("opencode", screen)).toBe("working");
+  });
+
+  it("detects working from 'esc interrupt' footer without spinner", () => {
+    // When OpenCode is streaming text content (between Thinking steps),
+    // there's no braille spinner on screen but "esc interrupt" is still shown.
+    const screen = "  ┃  Some AI output text here\n  ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt  ctrl+p commands";
+    expect(detectStatusFromScreen("opencode", screen)).toBe("working");
+  });
+
+  it("detects idle when only ctrl+p commands (no esc interrupt)", () => {
+    const screen = "  ┃  Done\n  /path  ctrl+p commands  • OpenCode 1.18.11";
+    expect(detectStatusFromScreen("opencode", screen)).toBe("idle");
+  });
+
+  it("done pattern (priority 8) overrides esc interrupt (priority 6)", () => {
+    const screen = "  ▣  Build · DeepSeek · 3.9s\n  esc interrupt  ctrl+p commands";
+    expect(detectStatusFromScreen("opencode", screen)).toBe("done");
+  });
+
+  it("blocked pattern (priority 9) overrides esc interrupt (priority 6)", () => {
+    const screen = "  △ Permission required\n  esc interrupt  ctrl+p commands";
     expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
   });
 });
@@ -462,6 +491,32 @@ describe("Claude Code v2.1 multi-question dialog", () => {
     expect(q).toBe("你最喜欢哪种编程语言？");
   });
 
+  it("extracts question text when focused option is NOT the first (regression)", () => {
+    // When user navigates to "Type something." (option 4), the ❯ marker
+    // is on option 4, not option 1. The question extractor should still
+    // find the FIRST option and walk up to the question text — not start
+    // from the focused option and pick up a description line by mistake.
+    const screen = [
+      "←  ☐ 问题一  ☐ 问题二  ✔ Submit  →",
+      "",
+      "问题 1：测试授权弹窗——你想对第一个工具做何选择？",
+      "",
+      "  1. 选项 1：允许执行命令",
+      "     模拟批准 Bash 工具调用",
+      "  2. 选项 2：允许读取文件",
+      "     模拟批准 Read 工具调用",
+      "  3. 选项 3：拒绝授权",
+      "     模拟用户拒绝本次授权",
+      "❯ 4. Type something.",
+      "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "  5. Chat about this",
+      "",
+      "Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim · Esc to cancel",
+    ].join("\n");
+    const q = extractQuestion("claude-code", screen);
+    expect(q).toBe("问题 1：测试授权弹窗——你想对第一个工具做何选择？");
+  });
+
   it("extracts all 6 options from multi-question dialog", () => {
     const opts = extractOptions("claude-code", multiQScreen);
     expect(opts).toEqual([
@@ -561,6 +616,34 @@ describe("Claude Code AskUserQuestion — multi-select with ↑/↓ footer", () 
 
   it("detects multi-select from [ ] checkboxes", () => {
     expect(detectMultiSelect("claude-code", multiSelectScreen)).toBe(true);
+  });
+
+  it("detects multi-select when ALL options are checked [✔] (regression)", () => {
+    // Claude Code uses ✔ (U+2714 HEAVY CHECK MARK), not ✓ (U+2713).
+    // When all options are checked, the screen only shows [✔] markers.
+    // The detector must still recognize this as multi-select — otherwise
+    // textAnswer would use the single-select submit path (just Enter,
+    // no Tab), causing Enter to UNCHECK the option instead of submitting.
+    const allCheckedScreen = [
+      "←  ☒ 测试题A  ☒ 测试题B  ✔ Submit  →",
+      "",
+      "题目 A：可多选（测试题）",
+      "",
+      "  1. [✔] 甲",
+      "  第 1 个可选",
+      "  2. [✔] 乙",
+      "  第 2 个可选",
+      "  3. [✔] 丙",
+      "  第 3 个可选",
+      "  4. [✔] 丁",
+      "  第 4 个可选",
+      "❯ 5. [✔] 1111222",
+      "     Next",
+      "  6. Chat about this",
+      "",
+      "Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim · Esc to cancel",
+    ].join("\n");
+    expect(detectMultiSelect("claude-code", allCheckedScreen)).toBe(true);
   });
 
   it("detects multi-question from tab row", () => {
@@ -1412,5 +1495,85 @@ describe("detectStatusFromScreen — Codex working (TUI spinner only)", () => {
   it("blocked has higher priority than working spinner", () => {
     const screen = "• Working (5s • esc to interrupt)\nApprove command? (y/n)";
     expect(detectStatusFromScreen("codex", screen)).toBe("blocked");
+  });
+});
+
+// Regression tests for user input being mistaken for options.
+// When Devin shows a multi-question dialog, the user's original input line
+// (starting with ❭) appears ABOVE the dialog tab row. The extractors must
+// bound their search to the dialog area only.
+describe("Devin dialog boundary — user input above dialog", () => {
+  // Screen with user input above the dialog (unnumbered options)
+  const screenWithUserInput = [
+    "❭ 我在测试devin 的交互， 你触发一个 单选多问题 弹窗",
+    "",
+    "  · IDE ✓ · Git 习惯 ✓ · 反馈方式 ────────────────────────────────",
+    "  你最高效的工作时段是？",
+    "  · 上午",
+    "    上午精力充沛，适合写代码",
+    "  · 下午",
+    "    下午状态稳定，适合调试和重构",
+    "  · 深夜",
+    "    夜深人静，灵感最旺",
+    "  ❭ Other (type your own)",
+    "─────────────────────────────────────────────────────────────────",
+    "↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel",
+    "? Not ready to answer, help me out!",
+  ].join("\n");
+
+  it("extractQuestion does not pick up user input as question", () => {
+    expect(extractQuestion("devin", screenWithUserInput)).toBe("你最高效的工作时段是？");
+  });
+
+  it("extractOptions does not include user input as first option", () => {
+    const options = extractOptions("devin", screenWithUserInput);
+    expect(options).not.toBeNull();
+    expect(options!.length).toBe(4);
+    expect(options![0]).toBe("上午");
+    expect(options![1]).toBe("下午");
+    expect(options![2]).toBe("深夜");
+    expect(options![3]).toBe("Other (type your own)");
+    // User input must NOT appear in options
+    expect(options!.some((o) => o.includes("我在测试"))).toBe(false);
+  });
+
+  it("extractCursorIndex returns correct index for ❭ on Other", () => {
+    expect(extractCursorIndex("devin", screenWithUserInput)).toBe(3);
+  });
+
+  // Screen with user input above the dialog (numbered options)
+  const screenNumberedWithUserInput = [
+    "❭ 我在测试devin 的交互",
+    "",
+    "─────────────────────────────────────────────────────────────────",
+    "  你希望项目采用哪种构建工具？",
+    "  · 1 Vite",
+    "      快速的前端构建工具",
+    "  · 2 Webpack",
+    "  ❭ 3 esbuild",
+    "      极速打包，配置简单",
+    "  ·   Other (type your own)",
+    "─────────────────────────────────────────────────────────────────",
+    "↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel",
+    "? Not ready to answer, help me out!",
+  ].join("\n");
+
+  it("extractOptions does not include user input (numbered options)", () => {
+    const options = extractOptions("devin", screenNumberedWithUserInput);
+    expect(options).not.toBeNull();
+    expect(options!.length).toBe(4);
+    expect(options![0]).toBe("1. Vite");
+    expect(options![1]).toBe("2. Webpack");
+    expect(options![2]).toBe("3. esbuild");
+    expect(options![3]).toBe("Other (type your own)");
+    expect(options!.some((o) => o.includes("我在测试"))).toBe(false);
+  });
+
+  it("extractCursorIndex returns correct index for numbered options", () => {
+    expect(extractCursorIndex("devin", screenNumberedWithUserInput)).toBe(2);
+  });
+
+  it("extractQuestion does not pick up user input (numbered options)", () => {
+    expect(extractQuestion("devin", screenNumberedWithUserInput)).toBe("你希望项目采用哪种构建工具？");
   });
 });

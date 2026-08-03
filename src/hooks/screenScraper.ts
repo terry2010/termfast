@@ -50,6 +50,76 @@ export function scrapeScreen(term: Terminal): string[] {
 }
 
 /**
+ * Get the text of the line where the cursor is currently positioned,
+ * plus the cursor's X position (column) within that line.
+ *
+ * Uses xterm.js buffer.active.cursorX / cursorY to find the cursor,
+ * then extracts the text of that line.
+ *
+ * @returns { text: string, cursorX: number } | null
+ *   - text: the line text where the cursor is
+ *   - cursorX: the column index of the cursor (0-based)
+ *   - null if the buffer or line is unavailable
+ */
+export function getCursorLine(term: Terminal): { text: string; cursorX: number } | null {
+  const buffer = term.buffer.active;
+  const y = buffer.cursorY;
+  const x = buffer.cursorX;
+  const line = buffer.getLine(y);
+  if (!line) return null;
+  return { text: extractLineText(line), cursorX: x };
+}
+
+/**
+ * Find which option the cursor is on by scanning the screen buffer.
+ *
+ * Scans from the cursor's Y position upward to find the nearest option line.
+ * Option lines are identified by leading markers: □, ■, ❭, or · (Devin).
+ * Description lines (indented under an option) and └ lines (text input) are
+ * skipped — the cursor is considered to be on the nearest option line above.
+ *
+ * Returns the 0-based index of the option (counting from the first option
+ * line found in the entire screen), or null if no option line is found.
+ *
+ * @param term  the xterm.js Terminal instance
+ * @returns 0-based option index, or null
+ */
+export function getCursorOptionIndex(term: Terminal): number | null {
+  const buffer = term.buffer.active;
+  const cursorY = buffer.cursorY;
+  const height = buffer.length;
+  const startLine = Math.max(0, height - MAX_LINES);
+
+  // Collect all option lines (line index → option index)
+  const optionLineMap: Map<number, number> = new Map();
+  let optionIdx = 0;
+  for (let i = startLine; i < height; i++) {
+    const line = buffer.getLine(i);
+    if (!line) continue;
+    const text = extractLineText(line);
+    // Option lines start with □, ■, ❭, or · (with optional leading spaces)
+    if (/^\s*[□■❭·]/.test(text)) {
+      optionLineMap.set(i, optionIdx);
+      optionIdx++;
+    }
+  }
+
+  // If cursor is exactly on an option line, return that index
+  if (optionLineMap.has(cursorY)) {
+    return optionLineMap.get(cursorY)!;
+  }
+
+  // Otherwise, scan upward from cursor to find the nearest option line
+  for (let y = cursorY; y >= startLine; y--) {
+    if (optionLineMap.has(y)) {
+      return optionLineMap.get(y)!;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extract text content from a single buffer line.
  * Handles wide characters (CJK, emoji) by skipping continuation cells.
  *

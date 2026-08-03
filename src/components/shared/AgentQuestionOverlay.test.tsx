@@ -21,6 +21,7 @@ const defaultProps = {
   totalTabs: 0,
   reviewAnswers: null as string[] | null,
   blockedMessage: null as string | null,
+  cursorIndex: null as number | null,
   onAnswer: vi.fn(),
   onToggle: vi.fn(),
   onSubmitMultiSelect: vi.fn(),
@@ -193,9 +194,7 @@ describe("AgentQuestionOverlay — multi-select", () => {
   it("Claude Code: syncs checked state from [✔] markers in options", () => {
     // Claude Code includes [✔] (U+2714) markers in option labels.
     // The sync effect should parse these and set the checked Set accordingly.
-    // Note: isCheckedOnScreen uses ✔ (U+2714), stripCheckbox uses ✓ (U+2713).
-    // stripCheckbox doesn't strip [✔], so displayed text includes the marker,
-    // but that's a pre-existing issue — here we only verify the sync logic.
+    // stripCheckbox now correctly strips [✔] (U+2714) as well as [✓] (U+2713).
     const { container } = render(
       <AgentQuestionOverlay
         {...defaultProps}
@@ -208,6 +207,26 @@ describe("AgentQuestionOverlay — multi-select", () => {
     // 2 options have [✔] → 2 SVG checkmark icons should be rendered
     const svgs = container.querySelectorAll("svg");
     expect(svgs.length).toBe(2);
+  });
+
+  it("Claude Code: stripCheckbox removes [✔] (U+2714) from option labels", () => {
+    // Regression: stripCheckbox used [✓] (U+2713) but Claude Code renders
+    // [✔] (U+2714 HEAVY CHECK MARK). The old regex didn't strip [✔],
+    // leaving the checkbox marker in the displayed option text.
+    const { getByText, queryByText } = render(
+      <AgentQuestionOverlay
+        {...defaultProps}
+        cli="claude-code"
+        question="Which features?"
+        options={["1. [✔] Feature A", "2. [ ] Feature B"]}
+        isMultiSelect={true}
+      />,
+    );
+    // The option text should NOT contain "[✔]" — it should show "1. Feature A"
+    expect(getByText("1. Feature A")).toBeTruthy();
+    expect(queryByText("1. [✔] Feature A")).toBeFalsy();
+    expect(getByText("2. Feature B")).toBeTruthy();
+    expect(queryByText("2. [ ] Feature B")).toBeFalsy();
   });
 });
 
