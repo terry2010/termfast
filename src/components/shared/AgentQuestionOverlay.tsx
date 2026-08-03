@@ -81,9 +81,12 @@ const CLI_NAMES: Record<CliType, string> = {
  *  Matches:
  *  - "Type your own answer" (OpenCode)
  *  - "Other (type your own)" (Devin)
- *  - "Type something." (Claude Code v2.1+) */
+ *  - "Type something." (Claude Code v2.1+ multi-question)
+ *  - "Tell Claude what to change" (Claude Code Plan Mode) */
 function isTypeYourOwnAnswer(option: string): boolean {
-  return /type\s+your\s+own/i.test(option) || /type\s+something/i.test(option);
+  return /type\s+your\s+own/i.test(option)
+    || /type\s+something/i.test(option)
+    || /tell\s+\S+\s+what\s+to\s+change/i.test(option);
 }
 
 function AgentQuestionOverlayImpl({
