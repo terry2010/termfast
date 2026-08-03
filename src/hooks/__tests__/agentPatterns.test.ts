@@ -482,25 +482,33 @@ describe("Claude Code v2.1 multi-question dialog", () => {
 describe("Claude Code multi-question — Submit tab", () => {
   // On the Submit tab, the footer may not include "Enter to select"
   // (there are no options to select). The tab row is still visible.
+  // All question tabs are ☒ (answered), not ☐ (unanswered).
   const submitTabScreen = [
     "❯ 我在测试claude 交互",
     "  Thought for 3s (ctrl+o to expand)",
     "───────────────────────────────────────────────────────────",
-    "←  ☐ 编程语言  ☐ 操作系统  ☐ 编辑器  ☐ 弹窗体验  ✔ Submit  →",
-    "Review your answers:",
-    "  编程语言: Rust",
-    "  操作系统: macOS",
-    "  编辑器: VS Code",
-    "  弹窗体验: 很好",
-    "Entertosubmit·Esctocancel",
+    "←  ☒ 交互风格  ☒ 开发阶段  ☒ 改动方式  ☒ 后续动作  ✔ Submit  →",
+    "Review your answers",
+    "● 你希望这个弹窗的交互风格是哪种？",
+    "  → 带预览对比",
+    "● 这个项目（ssh-proxy）目前的开发阶段是？",
+    "  → 打磨优化",
+    "● 你希望我接下来如何处理代码改动？",
+    "  → 严格评审",
+    "● 弹窗测试完成后，还需要我做什么？",
+    "  → 分析测试结果",
+    "Ready to submit your answers?",
+    "❯ 1. Submit answers",
+    "  2. Cancel",
+    "Enter to submit · Esc to cancel",
   ].join("\n");
 
-  it("detects blocked status from tab row on Submit tab", () => {
+  it("detects blocked status from tab row on Submit tab (all ☒)", () => {
     const status = detectStatusFromScreen("claude-code", submitTabScreen);
     expect(status).toBe("blocked");
   });
 
-  it("detects multi-question on Submit tab", () => {
+  it("detects multi-question on Submit tab (all ☒)", () => {
     expect(detectMultiQuestion("claude-code", submitTabScreen)).toBe(true);
   });
 

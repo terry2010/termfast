@@ -177,16 +177,17 @@ export function extractTabInfo(term: Terminal): { labels: string[]; activeIndex:
 
     // ── Claude Code format: "←  ☐ label  ☐ label  ...  ✔ Submit  →" ──
     // Tab row wrapped with ← and → arrows. Tabs separated by 2+ spaces.
-    // Each tab has a checkbox prefix: ☐ = unanswered, ✔ = answered.
+    // Each tab has a checkbox prefix: ☐ = unanswered, ☒ = answered.
     // Last entry is "Submit" button (always has ✔ prefix).
-    if (/^[←]\s+☐.*✔\s*Submit\s*→/.test(trimmed)) {
+    // Note: on the Submit tab, all question tabs are ☒ (answered).
+    if (/^[←]\s+[☐☒].*✔\s*Submit\s*→/.test(trimmed)) {
       // Strip the leading "←" and trailing "→"
       const content = trimmed.replace(/^[←]\s+/, "").replace(/\s*→$/, "").trim();
       // Split by 2+ spaces
       const parts = content.split(/\s{2,}/);
       if (parts.length < 2) continue;
-      // Extract labels by stripping ☐/✔ prefix
-      const labels = parts.map((p) => p.replace(/^[☐✔]\s*/, "").trim());
+      // Extract labels by stripping ☐/☒/✔ prefix
+      const labels = parts.map((p) => p.replace(/^[☐☒✔]\s*/, "").trim());
       // Detect active tab by checking cell bg colors (bright = active)
       let activeIndex = -1;
       let searchStart = 0;

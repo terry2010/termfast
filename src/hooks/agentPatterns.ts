@@ -413,7 +413,8 @@ const claudeCodePatterns: CliPatterns = {
     // On the Submit tab, the footer may not include "Enter to select"
     // (there are no options to select). Match the tab row itself as a
     // fallback blocked pattern so the overlay stays visible.
-    { status: "blocked", pattern: /←\s+☐.*✔\s*Submit\s*→/, priority: 9 },
+    // Note: answered tabs use ☒, unanswered use ☐ — match both.
+    { status: "blocked", pattern: /←\s+[☐☒].*✔\s*Submit\s*→/, priority: 9 },
     // Selection widget footer — blocked (user must choose)
     // Older Claude Code: "↑/↓ to navigate"
     { status: "blocked", pattern: /↑\/↓\s+to\s+navigate/, priority: 10 },
@@ -543,8 +544,9 @@ const claudeCodePatterns: CliPatterns = {
   },
   // Multi-question detection: tab row with "Submit" button.
   // Format: "←  ☐ 编程语言  ☐ 操作系统  ☐ 编辑器  ☐ 弹窗体验  ✔ Submit  →"
+  // Answered tabs use ☒ instead of ☐ — match both.
   multiQuestionDetector: (text) => {
-    return /☐.*✔\s*Submit/.test(text) || /←.*☐.*Submit.*→/.test(text);
+    return /[☐☒].*✔\s*Submit/.test(text) || /←.*[☐☒].*Submit.*→/.test(text);
   },
 };
 
