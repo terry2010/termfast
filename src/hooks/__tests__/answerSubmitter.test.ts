@@ -305,8 +305,15 @@ describe("submitAnswer — Claude Code", () => {
     expect(submitAnswer("claude-code", "No", 1)).toBe("\x1b[B\r");
   });
 
-  it("sends Down*index + Enter for selection widget", () => {
-    // Index 2 = press Down twice + Enter
+  it("sends number key for numbered option (multi-question dialog)", () => {
+    // "3. TypeScript" → send "3" (number key directly selects)
+    expect(submitAnswer("claude-code", "3. TypeScript", 2)).toBe("3");
+    expect(submitAnswer("claude-code", "1. Rust", 0)).toBe("1");
+    expect(submitAnswer("claude-code", "6. Chat about this", 5)).toBe("6");
+  });
+
+  it("sends Down*index + Enter for non-numbered selection widget", () => {
+    // No number prefix → fallback to arrow navigation
     expect(submitAnswer("claude-code", "Option C", 2)).toBe("\x1b[B\x1b[B\r");
   });
 });

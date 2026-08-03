@@ -371,10 +371,14 @@ function submitOpenCode(option: string, index: number, optionCount?: number): st
 }
 
 // ── Claude Code ────────────────────────────────────────────────────────────────
-// Claude Code selection widget uses ↑/↓ to navigate and Space/Enter to select.
-// For Yes/No prompts, "Yes" is typically first (index 0), "No" is second.
+// Claude Code selection widget: numbered options "1. Rust", "2. Python", etc.
 // Multi-question dialog (v2.1+): tab row "←  ☐ label  ...  ✔ Submit  →"
-// Right arrow switches to next question tab; on Submit tab, Enter submits.
+// Footer: "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
+//
+// Key insight: Claude Code's Ink TUI may use application cursor key mode,
+// making \x1b[B (CSI B) not recognized as Down arrow. Instead of relying
+// on arrow navigation, we use the NUMBER KEY from the option label to
+// directly select it. This is simpler and more reliable.
 function submitClaudeCode(option: string, index: number): string {
   const normalized = option.toLowerCase().trim();
 
@@ -383,12 +387,19 @@ function submitClaudeCode(option: string, index: number): string {
     return "\r"; // Yes is usually the default — just Enter
   }
   if (normalized.startsWith("no")) {
-    // Navigate down once to No, then Enter
     return "\x1b[B\r"; // Down arrow + Enter
   }
 
-  // Selection widget: navigate to the option by pressing Down index times
-  // Then press Space or Enter to select
+  // Multi-question selection widget: send the number key directly.
+  // Options are "1. Rust", "2. Python", "3. TypeScript", etc.
+  // Pressing the number key selects the option and auto-advances to
+  // the next question tab (same as OpenCode's number key behavior).
+  const numMatch = option.match(/^(\d+)/);
+  if (numMatch) {
+    return String(numMatch[1]);
+  }
+
+  // Fallback: navigate with Down arrow + Enter
   let keys = "";
   for (let i = 0; i < index; i++) {
     keys += "\x1b[B"; // Down arrow
@@ -414,6 +425,25 @@ export function submitClaudeCodeConfirm(hasOptions: boolean, activeIndex: number
   const currentTab = activeIndex >= 0 ? activeIndex : 0;
   const arrowsNeeded = (confirmIndex - currentTab + totalTabs) % totalTabs;
   return "\x1b[C".repeat(arrowsNeeded) + "\r";
+}
+
+/**
+ * Submit "Type your own answer" for Claude Code.
+ * Claude Code's "Type something." option (number 5) enters a text input
+ * mode when selected. We send the number key to select it, then after a
+ * delay, type the text + Enter to submit.
+ *
+ * @returns two-part keystroke sequence:
+ *   - navigate: number key to select "Type something"
+ *   - type: text + Enter to submit the custom answer
+ */
+export function submitClaudeCodeTextAnswer(option: string, text: string): { navigate: string; type: string } {
+  const numMatch = option.match(/^(\d+)/);
+  const numKey = numMatch ? numMatch[1] : "5";
+  return {
+    navigate: numKey,
+    type: text + "\r",
+  };
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────────

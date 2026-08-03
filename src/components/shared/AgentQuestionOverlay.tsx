@@ -78,9 +78,12 @@ const CLI_NAMES: Record<CliType, string> = {
 };
 
 /** Check if an option is the "Type your own answer" entry.
- *  Matches both "Type your own answer" (OpenCode) and "Other (type your own)" (Devin). */
+ *  Matches:
+ *  - "Type your own answer" (OpenCode)
+ *  - "Other (type your own)" (Devin)
+ *  - "Type something." (Claude Code v2.1+) */
 function isTypeYourOwnAnswer(option: string): boolean {
-  return /type\s+your\s+own/i.test(option);
+  return /type\s+your\s+own/i.test(option) || /type\s+something/i.test(option);
 }
 
 function AgentQuestionOverlayImpl({

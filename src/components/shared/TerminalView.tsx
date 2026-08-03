@@ -17,7 +17,7 @@ import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
 import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { shouldResetOverlay } from "@/hooks/overlayReset";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, navigatePrevQuestion, navigateNextQuestion } from "@/hooks/answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion } from "@/hooks/answerSubmitter";
 import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
 import {
   initTerminalLog,
@@ -459,6 +459,12 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       // option (index 0). Reset our tracking accordingly so subsequent toggles
       // compute relative movement from the correct position.
       devinCursorPosRef.current = 0;
+    } else if (agentCli === "claude-code") {
+      const parts = submitClaudeCodeTextAnswer(option, text);
+      sendTextAnswerWithDelay(parts, (bytes) => {
+        logTerminalInput(sessionIdRef.current, bytes);
+        sendToBackendRef.current(bytes);
+      });
     }
     if (!agentIsMultiQuestion) {
       setAgentOverlayDismissed(true);
