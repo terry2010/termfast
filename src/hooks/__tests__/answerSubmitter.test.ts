@@ -1,6 +1,6 @@
 // Unit tests for answerSubmitter — per-CLI answer submission strategies
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, navigatePrevQuestion, navigateNextQuestion } from "../answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion } from "../answerSubmitter";
 
 describe("submitAnswer — Devin", () => {
   it("sends number + Enter for numbered option (permission dialog)", () => {
@@ -315,6 +315,27 @@ describe("submitAnswer — Claude Code", () => {
   it("sends Down*index + Enter for non-numbered selection widget", () => {
     // No number prefix → fallback to arrow navigation
     expect(submitAnswer("claude-code", "Option C", 2)).toBe("\x1b[B\x1b[B\r");
+  });
+});
+
+describe("submitClaudeCodeTextAnswer", () => {
+  it("sends number key + text + single Enter for multi-question 'Type something.'", () => {
+    const result = submitClaudeCodeTextAnswer("5. Type something.", "my custom answer");
+    expect(result.navigate).toBe("5");
+    expect(result.type).toBe("my custom answer\r");
+  });
+
+  it("sends number key + text + double Enter for Plan Mode 'Tell Claude what to change'", () => {
+    const result = submitClaudeCodeTextAnswer("3. Tell Claude what to change", "please refine the plan");
+    expect(result.navigate).toBe("3");
+    // Two Enters: first submits text into field, second approves the feedback
+    expect(result.type).toBe("please refine the plan\r\r");
+  });
+
+  it("defaults to number 5 when no number prefix", () => {
+    const result = submitClaudeCodeTextAnswer("Type something.", "test");
+    expect(result.navigate).toBe("5");
+    expect(result.type).toBe("test\r");
   });
 });
 

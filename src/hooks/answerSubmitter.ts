@@ -433,16 +433,24 @@ export function submitClaudeCodeConfirm(hasOptions: boolean, activeIndex: number
  * mode when selected. We send the number key to select it, then after a
  * delay, type the text + Enter to submit.
  *
+ * Plan Mode's "Tell Claude what to change" option works differently:
+ * after typing the text + Enter, the text fills into the option label
+ * (e.g. "❯ 3. my feedback"), but the dialog stays open. The footer shows
+ * "shift+tab to approve with this feedback". The user must press Enter
+ * AGAIN to actually submit/approve. So we send text + "\r\r" (two Enters).
+ *
  * @returns two-part keystroke sequence:
- *   - navigate: number key to select "Type something"
- *   - type: text + Enter to submit the custom answer
+ *   - navigate: number key to select the text-input option
+ *   - type: text + Enter (one Enter for multi-question, two for Plan Mode)
  */
 export function submitClaudeCodeTextAnswer(option: string, text: string): { navigate: string; type: string } {
   const numMatch = option.match(/^(\d+)/);
   const numKey = numMatch ? numMatch[1] : "5";
+  // Plan Mode "Tell Claude what to change" needs an extra Enter to approve
+  const isPlanModeFeedback = /tell\s+\S+\s+what\s+to\s+change/i.test(option);
   return {
     navigate: numKey,
-    type: text + "\r",
+    type: text + (isPlanModeFeedback ? "\r\r" : "\r"),
   };
 }
 
