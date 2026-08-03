@@ -409,6 +409,11 @@ const claudeCodePatterns: CliPatterns = {
     // "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
     // The screen scraper may strip some spaces, so match flexibly.
     { status: "blocked", pattern: /Enter\s*to\s*select.*(?:Tab\/Arrow|Tab).*Esc\s*to\s*cancel/i, priority: 11 },
+    // Multi-question Submit tab: tab row "←  ☐ label  ...  ✔ Submit  →"
+    // On the Submit tab, the footer may not include "Enter to select"
+    // (there are no options to select). Match the tab row itself as a
+    // fallback blocked pattern so the overlay stays visible.
+    { status: "blocked", pattern: /←\s+☐.*✔\s*Submit\s*→/, priority: 9 },
     // Selection widget footer — blocked (user must choose)
     // Older Claude Code: "↑/↓ to navigate"
     { status: "blocked", pattern: /↑\/↓\s+to\s+navigate/, priority: 10 },

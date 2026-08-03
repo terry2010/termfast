@@ -479,6 +479,37 @@ describe("Claude Code v2.1 multi-question dialog", () => {
   });
 });
 
+describe("Claude Code multi-question — Submit tab", () => {
+  // On the Submit tab, the footer may not include "Enter to select"
+  // (there are no options to select). The tab row is still visible.
+  const submitTabScreen = [
+    "❯ 我在测试claude 交互",
+    "  Thought for 3s (ctrl+o to expand)",
+    "───────────────────────────────────────────────────────────",
+    "←  ☐ 编程语言  ☐ 操作系统  ☐ 编辑器  ☐ 弹窗体验  ✔ Submit  →",
+    "Review your answers:",
+    "  编程语言: Rust",
+    "  操作系统: macOS",
+    "  编辑器: VS Code",
+    "  弹窗体验: 很好",
+    "Entertosubmit·Esctocancel",
+  ].join("\n");
+
+  it("detects blocked status from tab row on Submit tab", () => {
+    const status = detectStatusFromScreen("claude-code", submitTabScreen);
+    expect(status).toBe("blocked");
+  });
+
+  it("detects multi-question on Submit tab", () => {
+    expect(detectMultiQuestion("claude-code", submitTabScreen)).toBe(true);
+  });
+
+  it("extracts no options on Submit tab", () => {
+    const opts = extractOptions("claude-code", submitTabScreen);
+    expect(opts).toBe(null);
+  });
+});
+
 describe("extractQuestion — Codex", () => {
   it("extracts Approve prompt", () => {
     const screen = "Approve command? (y/n)";
