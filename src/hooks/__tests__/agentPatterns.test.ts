@@ -987,6 +987,34 @@ describe("extractOptions — Codex request_user_input", () => {
     ].join("\n");
     expect(extractOptions("codex", screen)).toBeNull();
   });
+
+  it("ignores numbered lists in AI conversation history above Question header", () => {
+    // Real-world screen: AI response contains "1. 切换到 Plan mode..." etc.
+    const screen = [
+      "│ >_ OpenAI Codex (v0.146.0)                               │",
+      "› 我在测试 codex 的交互",
+      "• 当前会话处于 Default 模式，request_user_input 工具只在 Plan mode 下可用。",
+      "  你可以：",
+      "  1. 切换到 Plan mode（如果有切换入口），然后我再调用该工具；",
+      "  2. 或者直接在这里用文字告诉我你的选择，我也能正常处理。",
+      "  你更想用哪种方式继续？",
+      "• Model changed to opencode/deepseek-v4-flash-free medium for Plan mode.",
+      "› 我在测试 codex 的交互",
+      "  Question 1/2 (2 unanswered)",
+      "  这是第一个测试问题，请选择一个选项：",
+      "  › 1. 选项 A             这是选项 A 的描述文字。",
+      "    2. 选项 B             这是选项 B 的描述文字。",
+      "    3. 选项 C             这是选项 C 的描述文字。",
+      "    4. None of the above  Optionally, add details in notes (tab).",
+      "  tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt",
+    ].join("\n");
+    expect(extractOptions("codex", screen)).toEqual([
+      "1. 选项 A",
+      "2. 选项 B",
+      "3. 选项 C",
+      "4. None of the above",
+    ]);
+  });
 });
 
 describe("detectStatusFromScreen — Codex request_user_input", () => {

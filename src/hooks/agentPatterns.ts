@@ -777,11 +777,22 @@ const codexPatterns: CliPatterns = {
   },
   optionsExtractor: (text) => {
     const lines = text.split("\n");
+    // For request_user_input: only extract options after "Question N/M" header
+    // to avoid matching numbered lists in AI conversation history.
+    let questionStartIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*Question\s+\d+\/\d+/i.test(lines[i])) {
+        questionStartIdx = i;
+        break;
+      }
+    }
+    const startIdx = questionStartIdx >= 0 ? questionStartIdx : 0;
+
     // TUI selection list (both approval overlay and request_user_input):
     // "› 1. label (shortcut)" or "  2. label  description"
     const opts: string[] = [];
-    for (const line of lines) {
-      const m = line.match(/^\s*[› ]\s*(\d+\.\s+.+)$/);
+    for (let i = startIdx; i < lines.length; i++) {
+      const m = lines[i].match(/^\s*[› ]\s*(\d+\.\s+.+)$/);
       if (m) {
         const full = m[1].trim();
         // Strip description column (separated by 2+ spaces) for cleaner display.
