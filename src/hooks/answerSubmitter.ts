@@ -352,11 +352,20 @@ export function sendTextAnswerWithDelay(
   timers.push(setTimeout(() => {
     send(encoder.encode(parts.type));
   }, TEXT_ANSWER_DELAY_MS));
-  // Part 3: send submit after another delay (if provided)
+  // Part 3: send submit after another delay (if provided).
+  // Each character of submit is sent separately with a delay between them.
+  // This is critical for multi-select mode: submit is "\t\r" (Tab + Enter),
+  // and Tab and Enter must be sent separately because setIsSubmitFocused
+  // is async React state — if Enter arrives in the same tick as Tab,
+  // isSubmitFocused is still false and Enter toggles the option instead
+  // of submitting.
   if (parts.submit) {
-    timers.push(setTimeout(() => {
-      send(encoder.encode(parts.submit));
-    }, TEXT_ANSWER_DELAY_MS + TEXT_ANSWER_SUBMIT_DELAY_MS));
+    const submitChars = [...parts.submit];
+    submitChars.forEach((char, i) => {
+      timers.push(setTimeout(() => {
+        send(encoder.encode(char));
+      }, TEXT_ANSWER_DELAY_MS + TEXT_ANSWER_SUBMIT_DELAY_MS + i * TEXT_ANSWER_SUBMIT_DELAY_MS));
+    });
   }
   return () => timers.forEach(clearTimeout);
 }
@@ -539,13 +548,26 @@ export function submitClaudeCodeTextAnswer(option: string, text: string, index?:
   const numKey = numMatch ? numMatch[1] : "5";
   // Plan Mode "Tell Claude what to change" needs an extra Enter to approve
   const isPlanModeFeedback = /tell\s+\S+\s+what\s+to\s+change/i.test(option);
-  // Multi-select: number key only toggles checkbox, need Down arrows + Enter
-  // to enter text input mode
+  // Multi-select: number key only toggles checkbox, need Down arrows to
+  // navigate to the option. When focused, TextInput auto-renders and
+  // captures character input — no Enter needed to enter text mode.
+  // Submit: Tab to Submit button + Enter. Tab and Enter must be sent
+  // separately (with delay) because setIsSubmitFocused is async React
+  // state — if Enter arrives in the same tick, isSubmitFocused is still
+  // false and Enter toggles the option instead of submitting.
   if (isMultiSelect && index !== undefined && index > 0) {
     return {
-      navigate: "\x1b[B".repeat(index) + "\r",
+      navigate: "\x1b[B".repeat(index),
       type: text,
-      submit: isPlanModeFeedback ? "\r\r" : "\r",
+      submit: "\t\r",
+    };
+  }
+  // Multi-select with index 0: option is already focused, no navigation needed
+  if (isMultiSelect && index === 0) {
+    return {
+      navigate: "",
+      type: text,
+      submit: "\t\r",
     };
   }
   return {

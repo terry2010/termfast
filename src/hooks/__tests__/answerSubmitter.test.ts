@@ -351,20 +351,22 @@ describe("submitClaudeCodeTextAnswer", () => {
     expect(result.submit).toBe("\r");
   });
 
-  it("uses Down arrows + Enter for multi-select 'Type something' (index 4)", () => {
+  it("uses Down arrows (no Enter) for multi-select 'Type something' (index 4)", () => {
     const result = submitClaudeCodeTextAnswer("5. Type something", "my text", 4, true);
-    // In multi-select, number key only toggles checkbox — need Down*4 + Enter
-    expect(result.navigate).toBe("\x1b[B\x1b[B\x1b[B\x1b[B\r");
+    // In multi-select, number key only toggles checkbox — need Down arrows
+    // to navigate. When focused, TextInput auto-renders — no Enter needed.
+    // Submit: Tab + Enter (sent separately with delay by sendTextAnswerWithDelay)
+    expect(result.navigate).toBe("\x1b[B\x1b[B\x1b[B\x1b[B");
     expect(result.type).toBe("my text");
-    expect(result.submit).toBe("\r");
+    expect(result.submit).toBe("\t\r");
   });
 
-  it("uses number key for multi-select when index is 0", () => {
+  it("uses empty navigate for multi-select when index is 0 (already focused)", () => {
     const result = submitClaudeCodeTextAnswer("1. Type something", "my text", 0, true);
-    // Index 0 means option is already highlighted — number key works
-    expect(result.navigate).toBe("1");
+    // Index 0 means option is already focused — no navigation needed
+    expect(result.navigate).toBe("");
     expect(result.type).toBe("my text");
-    expect(result.submit).toBe("\r");
+    expect(result.submit).toBe("\t\r");
   });
 });
 
@@ -538,7 +540,7 @@ describe("sendTextAnswerWithDelay", () => {
     expect(new TextDecoder().decode(sends[2])).toBe("\r");
   });
 
-  it("sends double Enter for Plan Mode feedback (submit has \\r\\r)", () => {
+  it("sends double Enter for Plan Mode feedback (submit \\r\\r sent char-by-char)", () => {
     const sends: Uint8Array[] = [];
     const send = (bytes: Uint8Array) => sends.push(bytes);
     const parts = submitClaudeCodeTextAnswer("3. Tell Claude what to change", "feedback");
@@ -552,9 +554,42 @@ describe("sendTextAnswerWithDelay", () => {
     expect(sends).toHaveLength(2);
     expect(new TextDecoder().decode(sends[1])).toBe("feedback");
 
+    // First Enter after submit delay
     vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS);
     expect(sends).toHaveLength(3);
-    expect(new TextDecoder().decode(sends[2])).toBe("\r\r");
+    expect(new TextDecoder().decode(sends[2])).toBe("\r");
+
+    // Second Enter after another submit delay
+    vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS);
+    expect(sends).toHaveLength(4);
+    expect(new TextDecoder().decode(sends[3])).toBe("\r");
+  });
+
+  it("sends Tab and Enter separately for multi-select submit (\\t\\r)", () => {
+    const sends: Uint8Array[] = [];
+    const send = (bytes: Uint8Array) => sends.push(bytes);
+    const parts = submitClaudeCodeTextAnswer("5. Type something", "my text", 4, true);
+
+    sendTextAnswerWithDelay(parts, send);
+
+    // Immediately: Down arrows sent (no Enter)
+    expect(sends).toHaveLength(1);
+    expect(new TextDecoder().decode(sends[0])).toBe("\x1b[B\x1b[B\x1b[B\x1b[B");
+
+    // After delay: text sent
+    vi.advanceTimersByTime(TEXT_ANSWER_DELAY_MS);
+    expect(sends).toHaveLength(2);
+    expect(new TextDecoder().decode(sends[1])).toBe("my text");
+
+    // After submit delay: Tab sent (first char of submit)
+    vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS);
+    expect(sends).toHaveLength(3);
+    expect(new TextDecoder().decode(sends[2])).toBe("\t");
+
+    // After another submit delay: Enter sent (second char of submit)
+    vi.advanceTimersByTime(TEXT_ANSWER_SUBMIT_DELAY_MS);
+    expect(sends).toHaveLength(4);
+    expect(new TextDecoder().decode(sends[3])).toBe("\r");
   });
 
   it("cleanup function clears all timeouts (navigate + type + submit)", () => {
