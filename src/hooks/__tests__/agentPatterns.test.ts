@@ -565,6 +565,56 @@ describe("Claude Code — permission dialog (v2.1+)", () => {
   });
 });
 
+describe("Claude Code — Plan Mode (ExitPlanMode) dialog", () => {
+  // Plan Mode approval dialog when Claude Code finishes planning.
+  // Question: "Claude has written up a plan and is ready to execute. Would you like to proceed?"
+  // Options: "❯ 1. Yes, and use auto mode", "  2. Yes, manually approve edits",
+  //          "  3. Tell Claude what to change"
+  // Footer: "ctrl+g to edit in Vim · ~/.claude/plans/xxx.md"
+  const planScreen = [
+    " 为 TermFast 增加 Claude Code ExitPlanMode 弹窗检测",
+    " Context",
+    " TermFast 的 AI CLI 状态检测已覆盖 Claude Code 的权限弹窗和多问题向导。",
+    " 目标",
+    " 让 TermFast 在 Claude Code 处于 plan mode 审批状态时，检测到该弹窗并弹出 AnswerOverlay。",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    " Claude has written up a plan and is ready to execute. Would you like to proceed?",
+    " ❯ 1. Yes, and use auto mode",
+    "   2. Yes, manually approve edits",
+    "   3. Tell Claude what to change",
+    "      shift+tab to approve with this feedback",
+    " ctrl+g to edit in Vim · ~/.claude/plans/agile-waddling-cocoa.md",
+  ].join("\n");
+
+  it("detects blocked status from Would you like to proceed", () => {
+    const status = detectStatusFromScreen("claude-code", planScreen);
+    expect(status).toBe("blocked");
+  });
+
+  it("extracts full question text including prefix", () => {
+    const q = extractQuestion("claude-code", planScreen);
+    expect(q).toBe("Claude has written up a plan and is ready to execute. Would you like to proceed?");
+  });
+
+  it("extracts all 3 numbered options from Plan Mode dialog", () => {
+    const opts = extractOptions("claude-code", planScreen);
+    expect(opts).toEqual([
+      "1. Yes, and use auto mode",
+      "2. Yes, manually approve edits",
+      "3. Tell Claude what to change",
+    ]);
+  });
+
+  it("is not multi-select", () => {
+    expect(detectMultiSelect("claude-code", planScreen)).toBe(false);
+  });
+
+  it("is not multi-question", () => {
+    expect(detectMultiQuestion("claude-code", planScreen)).toBe(false);
+  });
+});
+
 describe("extractQuestion — Codex", () => {
   it("extracts Approve prompt", () => {
     const screen = "Approve command? (y/n)";

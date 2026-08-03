@@ -439,11 +439,21 @@ const claudeCodePatterns: CliPatterns = {
   ],
   questionExtractor: (text) => {
     const lines = text.split("\n");
-    // Plan approval
-    for (const line of lines) {
-      if (/Would you like to proceed\?/.test(line)) {
-        return "Would you like to proceed?";
+    // Plan Mode approval (ExitPlanMode):
+    // "Claude has written up a plan and is ready to execute. Would you like to proceed?"
+    // Options below: "❯ 1. Yes, and use auto mode", "  2. Yes, manually approve edits", etc.
+    // Footer: "ctrl+g to edit in Vim · ~/.claude/plans/xxx.md"
+    // Return the full question line (may include prefix text before "Would you like").
+    const planQIdx = lines.findIndex((l) => /Would you like to proceed\?/.test(l));
+    if (planQIdx >= 0) {
+      // Check if this is a Plan Mode dialog (has numbered options below)
+      const hasNumberedOptions = lines.slice(planQIdx + 1).some((l) =>
+        /^\s*[❯>]?\s*\d+\.\s+/.test(l));
+      if (hasNumberedOptions) {
+        return lines[planQIdx].trim();
       }
+      // Plain "Would you like to proceed?" without numbered options
+      return "Would you like to proceed?";
     }
     // Permission dialog (Claude Code v2.1+):
     // "Do you want to proceed?" (screen scrape may eat spaces: "Doyouwanttoproceed?")
@@ -507,11 +517,33 @@ const claudeCodePatterns: CliPatterns = {
   },
   optionsExtractor: (text) => {
     const lines = text.split("\n");
-    // Plan approval: "Yes" / "No"
-    for (const line of lines) {
-      if (/Would you like to proceed\?/.test(line)) {
-        return ["Yes", "No"];
+    // Plan Mode approval (ExitPlanMode):
+    // "Would you like to proceed?" with numbered options below.
+    // Options: "❯ 1. Yes, and use auto mode", "  2. Yes, manually approve edits",
+    //          "  3. Tell Claude what to change"
+    // Footer: "ctrl+g to edit in Vim · ~/.claude/plans/xxx.md"
+    // Extract numbered options between the question line and the footer.
+    const planQIdx = lines.findIndex((l) => /Would you like to proceed\?/.test(l));
+    if (planQIdx >= 0) {
+      // Find the footer (ctrl+g line) or end of screen
+      let footerIdx = lines.length;
+      for (let i = planQIdx + 1; i < lines.length; i++) {
+        if (/ctrl\+g\s+to\s+edit/i.test(lines[i])) {
+          footerIdx = i;
+          break;
+        }
       }
+      const options: string[] = [];
+      const optionPattern = /^\s*[❯>]?\s*(\d+)\.\s*(.+)/;
+      for (let i = planQIdx + 1; i < footerIdx; i++) {
+        const m = lines[i].match(optionPattern);
+        if (m) {
+          options.push(`${m[1]}. ${m[2].trim()}`);
+        }
+      }
+      if (options.length > 0) return options;
+      // Fallback for plain "Would you like to proceed?" without numbered options
+      return ["Yes", "No"];
     }
     // Permission dialog (Claude Code v2.1+):
     // Footer: "Esc to cancel · Tab to amend · ctrl+e to explain"
