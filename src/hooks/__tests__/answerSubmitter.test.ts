@@ -1,6 +1,6 @@
 // Unit tests for answerSubmitter — per-CLI answer submission strategies
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, TEXT_ANSWER_SUBMIT_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "../answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, TEXT_ANSWER_DELAY_MS, TEXT_ANSWER_SUBMIT_DELAY_MS, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, toggleClaudeCodeOption, submitClaudeCodeMultiSelect, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "../answerSubmitter";
 
 describe("submitAnswer — Devin", () => {
   it("sends number + Enter for numbered option (permission dialog)", () => {
@@ -349,6 +349,39 @@ describe("submitClaudeCodeTextAnswer", () => {
     expect(result.navigate).toBe("5");
     expect(result.type).toBe("test");
     expect(result.submit).toBe("\r");
+  });
+
+  it("uses Down arrows + Enter for multi-select 'Type something' (index 4)", () => {
+    const result = submitClaudeCodeTextAnswer("5. Type something", "my text", 4, true);
+    // In multi-select, number key only toggles checkbox — need Down*4 + Enter
+    expect(result.navigate).toBe("\x1b[B\x1b[B\x1b[B\x1b[B\r");
+    expect(result.type).toBe("my text");
+    expect(result.submit).toBe("\r");
+  });
+
+  it("uses number key for multi-select when index is 0", () => {
+    const result = submitClaudeCodeTextAnswer("1. Type something", "my text", 0, true);
+    // Index 0 means option is already highlighted — number key works
+    expect(result.navigate).toBe("1");
+    expect(result.type).toBe("my text");
+    expect(result.submit).toBe("\r");
+  });
+});
+
+describe("toggleClaudeCodeOption", () => {
+  it("sends number key for toggle", () => {
+    expect(toggleClaudeCodeOption("1. 选项一")).toBe("1");
+    expect(toggleClaudeCodeOption("3. 选项三")).toBe("3");
+  });
+
+  it("returns empty string when no number prefix", () => {
+    expect(toggleClaudeCodeOption("选项一")).toBe("");
+  });
+});
+
+describe("submitClaudeCodeMultiSelect", () => {
+  it("sends Tab + Enter to navigate to Submit tab and confirm", () => {
+    expect(submitClaudeCodeMultiSelect()).toBe("\t\r");
   });
 });
 

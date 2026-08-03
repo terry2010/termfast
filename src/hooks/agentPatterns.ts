@@ -626,7 +626,9 @@ const claudeCodePatterns: CliPatterns = {
           // Check if this is a numbered option (indent 0-3 spaces, optional ❯)
           const m = raw.match(/^\s{0,3}[❯>]?\s*(\d+)\.\s*(.+)/);
           if (m) {
-            options.unshift(`${m[1]}. ${m[2].trim()}`);
+            // Strip "[ ]" or "[✓]" checkbox prefix from multi-select options
+            const label = m[2].trim().replace(/^\[[\s✓]\]\s*/, "");
+            options.unshift(`${m[1]}. ${label}`);
             continue;
           }
           // Skip spinner/prompt lines

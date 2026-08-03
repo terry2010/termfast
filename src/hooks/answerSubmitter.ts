@@ -395,11 +395,29 @@ function submitOpenCode(option: string, index: number, optionCount?: number): st
 // Claude Code selection widget: numbered options "1. Rust", "2. Python", etc.
 // Multi-question dialog (v2.1+): tab row "←  ☐ label  ...  ✔ Submit  →"
 // Footer: "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
+// Multi-select: options have [ ]/[✓] checkboxes, same footer + tab row.
 //
 // Key insight: Claude Code's Ink TUI may use application cursor key mode,
 // making \x1b[B (CSI B) not recognized as Down arrow. Instead of relying
 // on arrow navigation, we use the NUMBER KEY from the option label to
 // directly select it. This is simpler and more reliable.
+
+/**
+ * Toggle a single option in Claude Code multi-select mode.
+ * Pressing the number key toggles the checkbox.
+ */
+export function toggleClaudeCodeOption(option: string): string {
+  const numMatch = option.match(/^(\d+)/);
+  return numMatch ? numMatch[1] : "";
+}
+
+/**
+ * Submit the multi-select answer for Claude Code.
+ * Tab to the "Submit" tab + Enter to confirm.
+ */
+export function submitClaudeCodeMultiSelect(): string {
+  return "\t\r";
+}
 
 /** Check if an option is a Claude Code Plan Mode (ExitPlanMode) option.
  *  These options need arrow navigation + delayed Enter (not number keys).
@@ -500,6 +518,11 @@ export function submitClaudeCodeConfirm(hasOptions: boolean, activeIndex: number
  * of the user's text. Sending Enter after a delay gives React time to
  * flush the state update.
  *
+ * In multi-select mode, pressing the number key only toggles the checkbox
+ * — it does NOT enter text input mode. To enter text mode, we must
+ * navigate to the option with Down arrows and press Enter. The `index`
+ * parameter tells us how many Down arrows to send (from the top).
+ *
  * Plan Mode's "Tell Claude what to change" option works differently:
  * after typing the text + Enter, the text fills into the option label
  * (e.g. "❯ 3. my feedback"), but the dialog stays open. The footer shows
@@ -507,15 +530,24 @@ export function submitClaudeCodeConfirm(hasOptions: boolean, activeIndex: number
  * AGAIN to actually submit/approve. So we send text + "\r\r" (two Enters).
  *
  * @returns three-part keystroke sequence:
- *   - navigate: number key to select the text-input option
+ *   - navigate: number key (single-select) or Down*index + Enter (multi-select)
  *   - type: the text to type (no Enter)
  *   - submit: Enter key(s) to submit ("\r" for single-question, "\r\r" for Plan Mode)
  */
-export function submitClaudeCodeTextAnswer(option: string, text: string): { navigate: string; type: string; submit: string } {
+export function submitClaudeCodeTextAnswer(option: string, text: string, index?: number, isMultiSelect?: boolean): { navigate: string; type: string; submit: string } {
   const numMatch = option.match(/^(\d+)/);
   const numKey = numMatch ? numMatch[1] : "5";
   // Plan Mode "Tell Claude what to change" needs an extra Enter to approve
   const isPlanModeFeedback = /tell\s+\S+\s+what\s+to\s+change/i.test(option);
+  // Multi-select: number key only toggles checkbox, need Down arrows + Enter
+  // to enter text input mode
+  if (isMultiSelect && index !== undefined && index > 0) {
+    return {
+      navigate: "\x1b[B".repeat(index) + "\r",
+      type: text,
+      submit: isPlanModeFeedback ? "\r\r" : "\r",
+    };
+  }
   return {
     navigate: numKey,
     type: text,

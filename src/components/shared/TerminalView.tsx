@@ -17,7 +17,7 @@ import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
 import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { shouldResetOverlay } from "@/hooks/overlayReset";
-import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "@/hooks/answerSubmitter";
+import { submitAnswer, toggleOpenCodeOption, submitOpenCodeMultiSelect, submitOpenCodeTextAnswer, submitOpenCodeConfirm, sendTextAnswerWithDelay, toggleDevinOption, submitDevinMultiSelect, submitDevinConfirm, submitDevinTextAnswer, submitClaudeCodeConfirm, submitClaudeCodeTextAnswer, toggleClaudeCodeOption, submitClaudeCodeMultiSelect, navigatePrevQuestion, navigateNextQuestion, isClaudeCodePlanModeOption, buildClaudeCodePlanModeNavigate } from "@/hooks/answerSubmitter";
 import { AgentQuestionOverlay } from "@/components/shared/AgentQuestionOverlay";
 import {
   initTerminalLog,
@@ -428,6 +428,12 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       sendToBackendRef.current(bytes);
       // Update cursor position after toggle
       devinCursorPosRef.current = index;
+    } else if (agentCli === "claude-code") {
+      // Multi-select: number key toggles the checkbox
+      const keystrokes = toggleClaudeCodeOption(option);
+      const bytes = new TextEncoder().encode(keystrokes);
+      logTerminalInput(sessionIdRef.current, bytes);
+      sendToBackendRef.current(bytes);
     }
     // Don't dismiss — user may want to toggle more options
   }, [agentCli, agentOptions]);
@@ -442,6 +448,12 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       sendToBackendRef.current(bytes);
     } else if (agentCli === "devin") {
       const keystrokes = submitDevinMultiSelect();
+      const bytes = new TextEncoder().encode(keystrokes);
+      logTerminalInput(sessionIdRef.current, bytes);
+      sendToBackendRef.current(bytes);
+    } else if (agentCli === "claude-code") {
+      // Tab to "Submit" tab + Enter to confirm
+      const keystrokes = submitClaudeCodeMultiSelect();
       const bytes = new TextEncoder().encode(keystrokes);
       logTerminalInput(sessionIdRef.current, bytes);
       sendToBackendRef.current(bytes);
@@ -475,7 +487,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       // compute relative movement from the correct position.
       devinCursorPosRef.current = 0;
     } else if (agentCli === "claude-code") {
-      const parts = submitClaudeCodeTextAnswer(option, text);
+      const parts = submitClaudeCodeTextAnswer(option, text, index, agentIsMultiSelect);
       sendTextAnswerWithDelay(parts, (bytes) => {
         logTerminalInput(sessionIdRef.current, bytes);
         sendToBackendRef.current(bytes);
