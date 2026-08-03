@@ -529,6 +529,62 @@ describe("Claude Code AskUserQuestion — ↑/↓ navigate footer", () => {
   });
 });
 
+describe("Claude Code AskUserQuestion — multi-select with ↑/↓ footer", () => {
+  // Multi-select dialog with [ ] checkboxes, tab row (single question + Submit),
+  // 2-space indent descriptions, separator, and "Chat about this" below.
+  const multiSelectScreen = [
+    "──────────────────────────────────────────────────────────────────────────────────────────",
+    "←  ☐ 多选测试  ✔ Submit  →",
+    "",
+    "请多选若干选项，测试完成后我会告诉你选了哪几个（第几个）？",
+    "",
+    "❯ 1. [ ] 选项一",
+    "  第一个选项（索引 1）",
+    "  2. [ ] 选项二",
+    "  第二个选项（索引 2）",
+    "  3. [ ] 选项三",
+    "  第三个选项（索引 3）",
+    "  4. [ ] 选项四",
+    "  第四个选项（索引 4）",
+    "  5. [ ] Type something",
+    "     Submit",
+    "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  6. Chat about this",
+    "",
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+  ].join("\n");
+
+  it("detects blocked status", () => {
+    const status = detectStatusFromScreen("claude-code", multiSelectScreen);
+    expect(status).toBe("blocked");
+  });
+
+  it("detects multi-select from [ ] checkboxes", () => {
+    expect(detectMultiSelect("claude-code", multiSelectScreen)).toBe(true);
+  });
+
+  it("detects multi-question from tab row", () => {
+    expect(detectMultiQuestion("claude-code", multiSelectScreen)).toBe(true);
+  });
+
+  it("extracts question text (not a description line)", () => {
+    const q = extractQuestion("claude-code", multiSelectScreen);
+    expect(q).toBe("请多选若干选项，测试完成后我会告诉你选了哪几个（第几个）？");
+  });
+
+  it("extracts all 6 options crossing separator and descriptions", () => {
+    const opts = extractOptions("claude-code", multiSelectScreen);
+    expect(opts).toEqual([
+      "1. [ ] 选项一",
+      "2. [ ] 选项二",
+      "3. [ ] 选项三",
+      "4. [ ] 选项四",
+      "5. [ ] Type something",
+      "6. Chat about this",
+    ]);
+  });
+});
+
 describe("Claude Code multi-question — Submit tab", () => {
   // On the Submit tab, the footer may not include "Enter to select"
   // (there are no options to select). The tab row is still visible.

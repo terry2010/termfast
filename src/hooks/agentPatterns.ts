@@ -503,24 +503,31 @@ const claudeCodePatterns: CliPatterns = {
     // Selection widget — find the question text above the "↑/↓ to navigate" footer
     for (let i = 0; i < lines.length; i++) {
       if (/↑\/↓\s+to\s+navigate/.test(lines[i])) {
-        // Look backwards for the question text, skipping:
-        // - numbered option lines ("1. label", "2. label", etc.)
-        // - description lines (indent 5+ spaces)
-        // - separator lines (─────)
-        // - spinner lines (✶, ✻, etc.)
-        // - prompt lines (❯)
+        // Find the first (topmost) numbered option line above the footer.
+        // Options may have description lines between them (indent 2-5 spaces).
+        // The question text is above the first option, usually separated by a blank line.
+        let firstOptionIdx = -1;
         for (let j = i - 1; j >= 0 && j >= i - 20; j--) {
           const raw = lines[j];
-          const trimmed = raw.trim();
-          if (!trimmed) continue;
-          if (/^[✶✢✽✻✳·*]/.test(trimmed)) continue;
-          if (/^[>❯]/.test(trimmed)) continue;
-          if (/^─+$/.test(trimmed)) continue;
-          if (/^\d+\.\s/.test(trimmed)) continue;
-          // Skip description lines (indent 5+ spaces)
-          if (/^\s{5,}\S/.test(raw)) continue;
-          // Found the question text
-          return trimmed;
+          if (/^\s{0,3}[❯>]?\s*\d+\.\s/.test(raw)) {
+            firstOptionIdx = j;
+          }
+        }
+        if (firstOptionIdx >= 0) {
+          // Walk upward from firstOptionIdx-1 to find the question text.
+          // Skip blank lines, tab row, separator lines, spinner/prompt lines.
+          for (let j = firstOptionIdx - 1; j >= 0; j--) {
+            const raw = lines[j];
+            const trimmed = raw.trim();
+            if (!trimmed) continue;
+            if (/^[✶✢✽✻✳·*]/.test(trimmed)) continue;
+            if (/^[>❯]/.test(trimmed)) continue;
+            if (/^─+$/.test(trimmed)) continue;
+            // Skip tab row ("←  ☐ label  ✔ Submit  →")
+            if (/^[←→]/.test(trimmed) || /✔\s*Submit/.test(trimmed)) continue;
+            // Found the question text
+            return trimmed;
+          }
         }
         return "Select an option";
       }
@@ -602,15 +609,15 @@ const claudeCodePatterns: CliPatterns = {
     // Selection widget — options are listed above the "↑/↓ to navigate" footer
     // AskUserQuestion format: "❯ 1. label" / "  2. label" with description lines,
     // optional separator, and "  5. Chat about this" below the separator.
+    // Multi-select format: "❯ 1. [ ] label" with 2-space indent descriptions.
     for (let i = 0; i < lines.length; i++) {
       if (/↑\/↓\s+to\s+navigate/.test(lines[i])) {
         const options: string[] = [];
-        // Look backwards for numbered option lines, crossing separators.
-        // Use original (untrimmed) line to check indentation:
-        // - Option lines: indent 0-3 spaces ("❯ 1. label" or "  2. label")
-        // - Description lines: indent 5+ spaces ("     description")
-        // - Question/tab row: indent 0 or "☐"
-        for (let j = i - 1; j >= 0 && j >= i - 20; j--) {
+        // Look backwards for numbered option lines, crossing separators and descriptions.
+        // Don't break on non-numbered lines — description lines have varying indent
+        // (2 spaces in multi-select, 5 spaces in single-select). Instead, continue
+        // past them and stop only at tab row or question text boundary.
+        for (let j = i - 1; j >= 0 && j >= i - 25; j--) {
           const raw = lines[j];
           const trimmed = raw.trim();
           if (!trimmed) continue;
@@ -622,18 +629,25 @@ const claudeCodePatterns: CliPatterns = {
             options.unshift(`${m[1]}. ${m[2].trim()}`);
             continue;
           }
-          // Skip description lines (indent 5+ spaces)
-          if (/^\s{5,}\S/.test(raw)) continue;
           // Skip spinner/prompt lines
           if (/^[✶✢✽✻✳·*]/.test(trimmed)) continue;
           if (/^[>❯]/.test(trimmed)) continue;
-          // Anything else (question text, tab row) — stop
-          if (options.length > 0) break;
+          // Skip tab row ("←  ☐ label  ✔ Submit  →") — stop here
+          if (/^[←→]/.test(trimmed) || /✔\s*Submit/.test(trimmed)) break;
+          // Otherwise it's a description line — skip it (don't break)
         }
         return options.length > 0 ? options : null;
       }
     }
     return null;
+  },
+  // Multi-select detection: options have "[ ]" or "[✓]" checkboxes.
+  // Single-select options don't have checkboxes.
+  // Format: "❯ 1. [ ] 选项一" (multi-select) vs "❯ 1. 选项一" (single-select)
+  multiSelectDetector: (text) => {
+    const lines = text.split("\n");
+    // Check numbered option lines for "[ ]" or "[✓]" checkbox markers
+    return lines.some((l) => /^\s*[❯>]?\s*\d+\.\s*\[[\s✓]\]/.test(l));
   },
   // Multi-question detection: tab row with "Submit" button.
   // Format: "←  ☐ 编程语言  ☐ 操作系统  ☐ 编辑器  ☐ 弹窗体验  ✔ Submit  →"
