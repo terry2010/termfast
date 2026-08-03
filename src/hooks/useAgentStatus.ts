@@ -144,14 +144,17 @@ export function useAgentStatus(
           options = extractOptions(state.cli, screenText);
           isMultiSelect = detectMultiSelect(state.cli, screenText);
           isMultiQuestion = detectMultiQuestion(state.cli, screenText);
-          // Detect "└" expanded state on Other option (Devin multi-select).
+          // Detect "└" expanded state on Other option (Devin).
           // When the cursor is on "Other (type your own)" and it's expanded,
           // Devin shows "└ e" (editing) or "└ text" (display) or "└" (empty).
           // In all these states, ←→ moves the text cursor, not switches tabs.
           // We need to send Up first to exit this state before switching tabs.
           // The "└" line is indented (starts with whitespace) and is the only
           // place "└" appears in the dialog.
-          if (state.cli === "devin" && isMultiSelect) {
+          // This applies to both multiSelect and multiQuestion (single-select
+          // multi-question) modes — both can have the "Other" option with
+          // text editing mode.
+          if (state.cli === "devin" && (isMultiSelect || isMultiQuestion)) {
             otherExpanded = /^\s+└/m.test(screenText);
           }
           // Debug: log screenText when multiSelect/multiQuestion detected

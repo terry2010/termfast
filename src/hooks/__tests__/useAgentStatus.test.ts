@@ -565,6 +565,77 @@ describe("useAgentStatus", () => {
     // Should clear blocked immediately (1 tick, not 3)
     expect(result.current.status).toBe("working");
   });
+
+  it("detects otherExpanded in multiQuestion (single-select) mode with └ editing", () => {
+    // Real-world screen: Devin multi-question dialog, user pressed 'e' on
+    // "Other (type your own)" and typed "333". The "└ 333" line indicates
+    // text editing mode. ←→ should move text cursor, not switch tabs.
+    // otherExpanded must be true so prev/next buttons send Up first.
+    const term = createMockTerminal([
+      "── 工作模式 ✓ · 代码风格 ✓ · 提交粒度 · 测试要求 ──",
+      "  代码风格上你更偏向哪种？",
+      "  · 紧凑简洁",
+      "      代码尽量紧凑，合并重复分支，减少嵌套",
+      "  · 清晰可读优先",
+      "      保留适度空行和注释，便于阅读",
+      "  ❭ Other (type your own)",
+      "    └ 333",
+      "─────────────────────────────────────────────────────────────────",
+      "↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel",
+      "? Not ready to answer, help me out!",
+    ]);
+    const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
+
+    // Detect Devin via OSC 0
+    act(() => {
+      term._fireOsc(0, "Devin - working");
+    });
+
+    // Get to blocked via OSC 777
+    act(() => {
+      term._fireOsc(777, "notify;Devin;Devin needs input");
+    });
+    expect(result.current.status).toBe("blocked");
+
+    // Advance tick to trigger screen scrape
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    // otherExpanded should be true because "└ 333" is present
+    // This is multiQuestion=true, multiSelect=false
+    expect(result.current.isMultiQuestion).toBe(true);
+    expect(result.current.isMultiSelect).toBe(false);
+    expect(result.current.otherExpanded).toBe(true);
+  });
+
+  it("does not set otherExpanded when └ is not present", () => {
+    const term = createMockTerminal([
+      "── 工作模式 ✓ · 代码风格 · 提交粒度 · 测试要求 ──",
+      "  代码风格上你更偏向哪种？",
+      "  ❭ 1 紧凑简洁",
+      "      代码尽量紧凑，合并重复分支，减少嵌套",
+      "  · 2 清晰可读优先",
+      "      保留适度空行和注释，便于阅读",
+      "  ·   Other (type your own)",
+      "─────────────────────────────────────────────────────────────────",
+      "↑↓ navigate · ↵ select · e select+type · ←→ switch question · ? help me out · esc cancel",
+    ]);
+    const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
+
+    act(() => {
+      term._fireOsc(0, "Devin - working");
+    });
+    act(() => {
+      term._fireOsc(777, "notify;Devin;Devin needs input");
+    });
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(result.current.isMultiQuestion).toBe(true);
+    expect(result.current.otherExpanded).toBe(false);
+  });
 });
 
 // ── OSC 0 title detection tests ──────────────────────────────────────────────
