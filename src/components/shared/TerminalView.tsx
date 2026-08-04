@@ -1,6 +1,7 @@
 // TerminalView — xterm.js wrapper for interactive SSH terminal
 // Connects to a backend PTY session via IPC
 // Supports ZMODEM (rz/sz) file transfers via zmodem.js-ex
+// Supports trzsz (trz/tsz) file transfers via trzsz.js (tmux-compatible)
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -11,8 +12,9 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { open, remove, copyFile, readFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
+import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open, remove, copyFile, readFile, writeFile, BaseDirectory, type FileHandle } from "@tauri-apps/plugin-fs";
+import { TrzszFilter } from "trzsz";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
 import type { AgentStatus } from "@/hooks/agentStateMachine";
@@ -264,6 +266,8 @@ interface TerminalViewProps {
   rzAvailable?: boolean;
   /** Terminal tab ID (for updating agentStatus in the store). */
   tabId?: string;
+  /** Tmux session name if this terminal is inside a tmux session. */
+  tmuxSessionName?: string;
 }
 
 // Module-level snapshot cache: key = serverId, value = serialized terminal
@@ -340,7 +344,7 @@ function stripLeadingZmodemHeaders(octets: number[]): number[] {
   return octets.slice(i);
 }
 
-export function TerminalView({ sessionId, serverId, active, initialOutput, rzAvailable, tabId }: TerminalViewProps) {
+export function TerminalView({ sessionId, serverId, active, initialOutput, rzAvailable, tabId, tmuxSessionName }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -737,8 +741,11 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [showTmuxZmodemTip, setShowTmuxZmodemTip] = useState<null | "sz" | "rz">(null);
   const rzAvailableRef = useRef(rzAvailable);
   rzAvailableRef.current = rzAvailable;
+  const tmuxSessionNameRef = useRef(tmuxSessionName);
+  tmuxSessionNameRef.current = tmuxSessionName;
   const activeRef = useRef(active);
   activeRef.current = active;
   const sendToBackendRef = useRef<(bytes: Uint8Array | number[], waitForSend?: boolean) => Promise<void>>(() => Promise.resolve());
@@ -880,6 +887,117 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       }).then(() => {}).catch(() => {});
     };
     sendToBackendRef.current = sendToBackend;
+
+    // --- trzsz File System Access API polyfill for Tauri WebView ---
+    // trzsz.js in browser mode uses window.showDirectoryPicker() and
+    // window.showOpenFilePicker() with FileSystemDirectoryHandle/FileHandle
+    // to read/write files. Tauri WebView doesn't support these, so we
+    // polyfill them using Tauri's file APIs.
+    if (typeof (window as any).showDirectoryPicker === "undefined") {
+      (window as any).showDirectoryPicker = async () => {
+        const selected = await openDialog({ directory: true });
+        if (!selected) throw { name: "AbortError" };
+        const dirPath = Array.isArray(selected) ? selected[0] : selected;
+        return makeDirHandle(dirPath);
+      };
+    }
+    if (typeof (window as any).showOpenFilePicker === "undefined") {
+      (window as any).showOpenFilePicker = async () => {
+        const selected = await openDialog({ multiple: true });
+        if (!selected) throw { name: "AbortError" };
+        const paths = Array.isArray(selected) ? selected : [selected];
+        return paths.map((p) => makeFileHandle(p));
+      };
+    }
+    function makeFileHandle(filePath: string) {
+      const name = filePath.split("/").pop() || filePath;
+      return {
+        kind: "file",
+        name,
+        _path: filePath,
+        async getFile() {
+          const data = await readFile(filePath);
+          return new File([data], name);
+        },
+        async createWritable() {
+          let written = false;
+          return {
+            async write(data: any) {
+              const bytes = data instanceof Uint8Array ? data
+                : data instanceof ArrayBuffer ? new Uint8Array(data)
+                : new TextEncoder().encode(String(data));
+              if (!written) { await writeFile(filePath, bytes, { create: true }); written = true; }
+              else { await writeFile(filePath, bytes, { append: true }); }
+            },
+            async close() {},
+            abort() {},
+          };
+        },
+      };
+    }
+    function makeDirHandle(dirPath: string): any {
+      return {
+        kind: "directory",
+        name: dirPath.split("/").pop() || dirPath,
+        _path: dirPath,
+        async getFileHandle(name: string) {
+          return makeFileHandle(dirPath + "/" + name);
+        },
+        async getDirectoryHandle(name: string) {
+          return makeDirHandle(dirPath + "/" + name);
+        },
+        async *values() { return; },
+        async *keys() { return; },
+      };
+    }
+
+    // --- trzsz filter (trz/tsz, tmux-compatible) ---
+    // Intercepts trz/tsz protocol frames in the terminal stream.
+    // Non-trzsz data is passed through to ZMODEM Sentry (which handles rz/sz).
+    // trzsz works inside tmux, unlike ZMODEM (rz/sz).
+    // Note: writeToTerminal is set after ZMODEM Sentry is created below,
+    // so it can feed into the Sentry's consume pipeline.
+    let trzszWriteToTerminal: (output: string | ArrayBuffer | Uint8Array | Blob) => void = (output) => {
+      // Before ZMODEM Sentry is set up, write directly to terminal
+      if (typeof output === "string") {
+        term.write(output);
+      } else if (output instanceof Uint8Array) {
+        term.write(output);
+      } else if (output instanceof ArrayBuffer) {
+        term.write(new Uint8Array(output));
+      }
+      // Blob — not expected in Tauri, skip
+    };
+    const trzszFilter = new TrzszFilter({
+      writeToTerminal: (output) => trzszWriteToTerminal(output),
+      sendToServer: (input) => {
+        if (typeof input === "string") {
+          sendToBackend(new TextEncoder().encode(input));
+        } else {
+          sendToBackend(input);
+        }
+      },
+      chooseSendFiles: async (directory) => {
+        // If files were drag-dropped, use those paths instead of file picker
+        if (pendingDropPaths && pendingDropPaths.length > 0) {
+          const paths = pendingDropPaths;
+          pendingDropPaths = null;
+          return paths;
+        }
+        const selected = await openDialog({
+          multiple: true,
+          directory: directory ?? false,
+        });
+        if (!selected) return undefined;
+        return Array.isArray(selected) ? selected : [selected];
+      },
+      chooseSaveDirectory: async () => {
+        const selected = await openDialog({ directory: true });
+        if (!selected) return undefined;
+        return selected;
+      },
+      terminalColumns: term.cols,
+    });
 
     // File paths from drag-drop (when rz is available, used instead of file picker)
     let pendingDropPaths: string[] | null = null;
@@ -1460,6 +1578,55 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       on_retract: () => {},
     });
 
+    // Connect trzszWriteToTerminal to the ZMODEM Sentry pipeline.
+    // trzsz's writeToTerminal output (non-trzsz data) feeds into the ZMODEM
+    // Sentry for rz/sz detection. This way both trzsz and ZMODEM work.
+    trzszWriteToTerminal = (output) => {
+      let rawBytes: Uint8Array;
+      if (typeof output === "string") {
+        rawBytes = new TextEncoder().encode(output);
+      } else if (output instanceof ArrayBuffer) {
+        rawBytes = new Uint8Array(output);
+      } else if (output instanceof Uint8Array) {
+        rawBytes = output;
+      } else {
+        // Blob — not expected in Tauri, skip
+        return;
+      }
+      if (rawBytes.length === 0) return;
+
+      const hadSession = !!zmodemSession;
+      const inCooldown = Date.now() < zmodemCooldownUntil;
+
+      if (inCooldown && !zmodemSession) {
+        const clean = stripLeadingZmodemHeaders(Array.from(rawBytes));
+        const cleanBytes = clean.length ? new Uint8Array(clean) : new Uint8Array(0);
+        pendingChunks.push(cleanBytes);
+        if (!flushScheduled) {
+          flushScheduled = true;
+          requestAnimationFrame(flushPending);
+        }
+        return;
+      }
+
+      try {
+        zsentry.consume(rawBytes);
+      } catch (e) {
+        console.error("[ZMODEM] sentry consume error:", e);
+      }
+      if (!hadSession && !zmodemSession) {
+        pendingChunks.push(rawBytes);
+        if (!flushScheduled) {
+          flushScheduled = true;
+          requestAnimationFrame(flushPending);
+        }
+      }
+      if (hadSession && !zmodemSession) {
+        zmodemCooldownUntil = Date.now() + 10000;
+        clearSentryState();
+      }
+    };
+
     // Ctrl+Shift+F → search in terminal (avoids Cmd+F intercepted by macOS WebKit)
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && e.ctrlKey && e.shiftKey && (e.key === "f" || e.key === "F" || e.code === "KeyF")) {
@@ -1472,10 +1639,43 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     // User input → backend (UTF-8 encoded for binary safety)
     // Use TextEncoder for correct multi-byte UTF-8 (Chinese, Japanese, Korean, emoji)
     const utf8Encoder = new TextEncoder();
+    // Track current input line for sz/rz detection in tmux
+    let inputLineBuffer = "";
     const inputDisposable = term.onData((data) => {
-      const bytes = utf8Encoder.encode(data);
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackend(bytes);
+      // Detect Enter key (\r) — check if current line is sz/rz in tmux
+      if (data === "\r" && tmuxSessionNameRef.current) {
+        const trimmed = inputLineBuffer.trim();
+        // Match "sz" or "rz" optionally followed by arguments
+        const cmdMatch = trimmed.match(/^(sz|rz)\b/);
+        if (cmdMatch) {
+          const cmd = cmdMatch[1] as "sz" | "rz";
+          setShowTmuxZmodemTip(cmd);
+          inputLineBuffer = "";
+          return; // Block the Enter key
+        }
+        inputLineBuffer = "";
+      } else if (data === "\r") {
+        inputLineBuffer = "";
+      } else if (data === "\x7f" || data === "\b") {
+        // Backspace
+        inputLineBuffer = inputLineBuffer.slice(0, -1);
+      } else if (data === "\x03") {
+        // Ctrl+C — clear line
+        inputLineBuffer = "";
+      } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
+        // Regular printable char
+        inputLineBuffer += data;
+      } else if (data.length > 1) {
+        // Paste or multi-char input — append (may contain command)
+        inputLineBuffer += data;
+      }
+      logTerminalInput(sessionIdRef.current, utf8Encoder.encode(data));
+      // Pass through trzsz filter (handles trz/tsz input interception)
+      trzszFilter.processTerminalInput(data);
+    });
+    // Binary input (e.g. paste of non-text data) — also through trzsz filter
+    const binaryInputDisposable = term.onBinary((data) => {
+      trzszFilter.processBinaryInput(data);
     });
 
     // Resize → backend
@@ -1485,6 +1685,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         cols,
         rows,
       }).catch(() => {});
+      // Update trzsz filter's terminal columns for progress bar rendering
+      trzszFilter.setTerminalColumns(cols);
     });
 
     // Listen for terminal output events from backend (base64-encoded)
@@ -1523,47 +1725,13 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     // Binary terminal output: register a callback for raw bytes from the Channel.
     // The Channel is created in ServerDetail.tsx and dispatches via dispatchTerminalOutput.
     const handleBinaryOutput = (rawBytes: Uint8Array, _isStderr: boolean) => {
-      const hadSession = !!zmodemSession;
-      const inCooldown = Date.now() < zmodemCooldownUntil;
-
       // Log raw PTY output to disk (for debugging AI CLI status detection)
       logTerminalOutput(sessionIdRef.current, rawBytes);
 
-      if (inCooldown && !zmodemSession) {
-        // Cooldown after session end: write raw data, skip Sentry
-        // to prevent spurious session creation from echoed ZMODEM bytes.
-        // Strip any leading ZMODEM headers (e.g. echoed ZFIN) so they
-        // don't appear as shell commands on the terminal.
-        const clean = stripLeadingZmodemHeaders(Array.from(rawBytes));
-        const cleanBytes = clean.length ? new Uint8Array(clean) : new Uint8Array(0);
-        pendingChunks.push(cleanBytes);
-        if (!flushScheduled) {
-          flushScheduled = true;
-          requestAnimationFrame(flushPending);
-        }
-        return;
-      }
-
-      try {
-        zsentry.consume(rawBytes);
-      } catch (e) {
-        console.error("[ZMODEM] sentry consume error:", e);
-      }
-      // No session before or after → normal shell output, batch via rAF
-      if (!hadSession && !zmodemSession) {
-        pendingChunks.push(rawBytes);
-        if (!flushScheduled) {
-          flushScheduled = true;
-          requestAnimationFrame(flushPending);
-        }
-      }
-      // Session ended during this chunk — clear Sentry, set cooldown, and
-      // let to_terminal handle the trailing bytes. Do NOT write rawBytes
-      // here because it may contain ZMODEM protocol frames (ZFIN, etc.).
-      if (hadSession && !zmodemSession) {
-        zmodemCooldownUntil = Date.now() + 10000;
-        clearSentryState();
-      }
+      // First pass through trzsz filter (handles trz/tsz, tmux-compatible).
+      // Non-trzsz data is forwarded to trzszWriteToTerminal, which feeds
+      // into the ZMODEM Sentry pipeline (handles rz/sz).
+      trzszFilter.processServerOutput(rawBytes);
     };
     registerTerminalOutput(sessionId, handleBinaryOutput);
 
@@ -1621,10 +1789,12 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         // handleRzUpload can use them instead of the file picker.
         pendingDropPaths = paths;
       } else {
-        // rz not available: insert file paths at cursor (no newline)
-        const quoted = paths.map(p => p.includes(" ") ? `"${p}"` : p).join(" ");
-        const bytes = encoder.encode(quoted);
+        // Try trzsz upload (works with tmux). Type "trz" command, then
+        // pass file paths to trzszFilter.uploadFiles when it prompts.
+        const bytes = encoder.encode("trz\n");
         sendToBackendRef.current(bytes);
+        // Store paths for trzsz chooseSendFiles callback
+        pendingDropPaths = paths;
       }
     }).then((fn) => {
       if (dragCancelled) { fn(); } else { unlistenFileDrop = fn; }
@@ -1665,6 +1835,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         activeWebglCount--;
       }
       inputDisposable.dispose();
+      binaryInputDisposable.dispose();
       resizeDisposable.dispose();
       // Dispose IME composition fix listeners
       for (const d of imeDisposers) { try { d(); } catch { /* ignore */ } }
@@ -1874,6 +2045,41 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
               className="ml-2 px-2 py-1 bg-red-600 hover:bg-red-500 text-white rounded text-xs"
             >
               取消
+            </button>
+          </div>
+        </div>
+      )}
+      {showTmuxZmodemTip && (
+        <div className="absolute top-4 left-4 right-4 z-50 bg-slate-800/95 border border-amber-500/50 text-white p-4 rounded-lg shadow-lg">
+          <div className="flex items-start gap-3">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-amber-400 mb-1">
+                {showTmuxZmodemTip === "sz" ? "sz" : "rz"} 在 tmux 中不可用
+              </p>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                ZModem 协议（rz/sz）与 tmux 不兼容，tmux 会拦截二进制控制序列导致传输失败。
+                推荐使用 <span className="text-blue-400 font-mono">trzsz</span>（trz/tsz）替代 — 它是 lrzsz 的现代替代品，完全兼容 tmux，还支持目录传输和断点续传。
+              </p>
+              <div className="mt-2 bg-slate-900/80 rounded px-3 py-2 font-mono text-xs text-slate-400">
+                <div className="text-slate-500"># 在服务器上安装 trzsz：</div>
+                <div className="text-green-400">pip3 install trzsz</div>
+                <div className="text-slate-500 mt-1"># 上传文件（替代 rz）：</div>
+                <div className="text-green-400">trz</div>
+                <div className="text-slate-500 mt-1"># 下载文件（替代 sz）：</div>
+                <div className="text-green-400">tsz &lt;文件名&gt;</div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowTmuxZmodemTip(null)}
+              className="shrink-0 text-slate-400 hover:text-white text-lg leading-none"
+            >
+              ✕
             </button>
           </div>
         </div>

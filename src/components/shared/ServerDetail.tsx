@@ -2021,6 +2021,7 @@ export function ServerDetail() {
               initialOutput={tt.initialOutput}
               rzAvailable={displayServer.rz_available}
               tabId={tt.id}
+              tmuxSessionName={tt.tmuxSessionName ?? undefined}
             />
             {tt.disconnected && (
               <div className="absolute top-0 left-0 right-0 flex items-center justify-between bg-black/70 px-4 py-2 z-10 pointer-events-auto">

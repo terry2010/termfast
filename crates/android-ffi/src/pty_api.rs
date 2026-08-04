@@ -204,14 +204,14 @@ pub fn resize_session(session_id: &str, cols: u32, rows: u32) -> Result<(), Stri
 
 /// Detect if tmux is installed on the remote server (3s timeout).
 pub async fn tmux_detect(server_id: &str) -> Result<bool, String> {
-    let handle = get_ssh_handle(server_id)?;
+    let handle = get_ssh_handle(server_id).await?;
     Ok(termfast_core::ssh::tmux::detect_tmux(&handle).await)
 }
 
 /// List TermFast-tagged tmux sessions on the server.
 /// Returns JSON string: {"sessions":[...],"tmux_installed":bool}
 pub async fn tmux_list_sessions(server_id: &str) -> Result<String, String> {
-    let handle = get_ssh_handle(server_id)?;
+    let handle = get_ssh_handle(server_id).await?;
     let installed = termfast_core::ssh::tmux::detect_tmux(&handle).await;
     if !installed {
         return Ok(serde_json::json!({
@@ -249,7 +249,7 @@ pub async fn tmux_new_session(
     cols: u32,
     rows: u32,
 ) -> Result<String, String> {
-    let handle = get_ssh_handle(server_id)?;
+    let handle = get_ssh_handle(server_id).await?;
 
     // Generate unique tmux session name — fallback to plain shell on collision
     let tmux_name = match termfast_core::ssh::tmux::generate_unique_session_name(&handle).await {
@@ -297,7 +297,7 @@ pub async fn tmux_attach_session(
     cols: u32,
     rows: u32,
 ) -> Result<String, String> {
-    let handle = get_ssh_handle(server_id)?;
+    let handle = get_ssh_handle(server_id).await?;
 
     // Verify session exists
     let exists = termfast_core::ssh::tmux::session_exists(&handle, tmux_session_name)
@@ -322,7 +322,7 @@ pub async fn tmux_attach_session(
 
 /// Kill a tmux session by name on the remote server.
 pub async fn tmux_kill_session(server_id: &str, tmux_session_name: &str) -> Result<bool, String> {
-    let handle = get_ssh_handle(server_id)?;
+    let handle = get_ssh_handle(server_id).await?;
     let cmd = format!(
         "tmux kill-session -t {} 2>/dev/null; echo \"EXIT:$?\"",
         termfast_core::ssh::tmux::shell_escape(tmux_session_name)
@@ -339,20 +339,19 @@ pub async fn tmux_kill_session(server_id: &str, tmux_session_name: &str) -> Resu
     Ok(killed)
 }
 
-/// Helper: get SSH handle for a server.
-fn get_ssh_handle(server_id: &str) -> Result<std::sync::Arc<russh::client::Handle<termfast_core::ssh::client::SshHandler>>, String> {
+/// Helper: get SSH handle for a server (async to avoid nested block_on).
+async fn get_ssh_handle(server_id: &str) -> Result<std::sync::Arc<russh::client::Handle<termfast_core::ssh::client::SshHandler>>, String> {
     use crate::jni::state;
     let instance = {
         let st = state().lock().unwrap();
         st.servers.get(server_id).cloned()
     };
     let instance = instance.ok_or_else(|| format!("server {} not found", server_id))?;
-    let rt = runtime();
-    let connected = rt.block_on(instance.ssh_client.is_connected());
+    let connected = instance.ssh_client.is_connected().await;
     if !connected {
         return Err("SSH not connected".to_string());
     }
-    let handle = rt.block_on(instance.ssh_client.get_handle())
+    let handle = instance.ssh_client.get_handle().await
         .ok_or_else(|| "SSH handle not available".to_string())?;
     Ok(handle)
 }

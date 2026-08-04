@@ -113,6 +113,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
 
     var connected by remember(sessionId) {
         val s = TerminalSessionManager.getSessions(serverId).firstOrNull { it.sessionId == sessionId }
+        android.util.Log.d("termfast", "TerminalScreen init: sessionId=$sessionId found=${s != null} connected=${s?.connected}")
         mutableStateOf(s?.connected ?: false)
     }
     var connecting by remember(sessionId) { mutableStateOf(!(connected)) }
@@ -129,6 +130,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         RustRepository.events.collect { event ->
             when (event) {
                 is RustEvent.TerminalClosed -> {
+                    android.util.Log.d("termfast", "TerminalClosed event: event.session_id=${event.session_id} this.sessionId=$sessionId")
                     if (event.session_id == sessionId) {
                         connected = false
                         connecting = false
@@ -136,6 +138,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                     }
                 }
                 is RustEvent.TerminalError -> {
+                    android.util.Log.d("termfast", "TerminalError event: event.session_id=${event.session_id} this.sessionId=$sessionId error=${event.error}")
                     if (event.session_id == sessionId) {
                         errorMsg = event.error
                         connecting = false
@@ -168,6 +171,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
 
     // Open terminal session on screen entry (only if not already connected)
     LaunchedEffect(serverId, sessionId) {
+        android.util.Log.d("termfast", "TerminalScreen LaunchedEffect: sessionId=$sessionId connected=$connected connecting=$connecting")
         if (connected) return@LaunchedEffect
         scope.launch {
             withContext(Dispatchers.IO) {
@@ -221,12 +225,14 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                     "auto" -> {
                         // Auto: if existing sessions, attach to most recent; else create new
                         val json = repo.tmuxListSessions(serverId)
+                        var attachedTmuxName: String? = null
                         try {
                             val resp = Json.decodeFromString<TmuxListResponse>(json)
                             if (resp.tmux_installed && resp.sessions.isNotEmpty()) {
                                 val mostRecent = resp.sessions.maxByOrNull { it.last_activity }
                                 if (mostRecent != null) {
                                     repo.tmuxAttachSession(serverId, sessionId, mostRecent.name, 80, 24)
+                                    attachedTmuxName = mostRecent.name
                                 } else {
                                     repo.tmuxNewSession(serverId, sessionId, "", 80, 24)
                                 }
@@ -243,6 +249,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                             connected = true
                             connecting = false
                             TerminalSessionManager.setConnectedBySession(sessionId, true)
+                            TerminalSessionManager.setTmuxSessionName(sessionId, attachedTmuxName)
                         }
                     }
                     else -> {
@@ -253,7 +260,9 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                             if (resp.tmux_installed && resp.sessions.isNotEmpty()) {
                                 withContext(Dispatchers.Main) {
                                     showTmuxPicker = true
-                                    connecting = false
+                                    // Keep connecting=true so the terminal shows
+                                    // a neutral "connecting" state instead of
+                                    // "disconnected" while the picker is open.
                                 }
                             } else if (resp.tmux_installed) {
                                 // tmux installed but no sessions — create new
@@ -262,6 +271,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                                     connected = true
                                     connecting = false
                                     TerminalSessionManager.setConnectedBySession(sessionId, true)
+                                    TerminalSessionManager.setTmuxSessionName(sessionId, null)
                                 }
                             } else {
                                 // tmux not installed, plain shell
@@ -848,18 +858,28 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     TmuxSessionPickerDialog(
         visible = showTmuxPicker,
         serverId = serverId,
-        onAttach = { newSessionId, tmuxName ->
+        sessionId = sessionId,
+        onAttach = { attachSessionId, tmuxName ->
             showTmuxPicker = false
-            // Navigate to the new terminal session
-            navController.navigate("terminal/$serverId/$newSessionId") {
-                popUpTo("terminal/$serverId")
+            if (attachSessionId != sessionId) {
+                // Reusing an existing terminal card that's already attached
+                // to this tmux session. Navigate to it.
+                navController.navigate("terminal/$serverId/$attachSessionId") {
+                    popUpTo("terminal/$serverId") { inclusive = true }
+                }
+            } else {
+                // Current session just attached to tmux.
+                connected = true
+                connecting = false
+                TerminalSessionManager.setConnectedBySession(sessionId, true)
+                TerminalSessionManager.setTmuxSessionName(sessionId, tmuxName)
             }
         },
-        onCreate = { newSessionId, desc ->
+        onCreate = { _sessionId, _desc ->
             showTmuxPicker = false
-            navController.navigate("terminal/$serverId/$newSessionId") {
-                popUpTo("terminal/$serverId")
-            }
+            connected = true
+            connecting = false
+            TerminalSessionManager.setConnectedBySession(sessionId, true)
         },
         onSkip = {
             showTmuxPicker = false
@@ -881,7 +901,11 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         },
         onDismiss = {
             showTmuxPicker = false
-            connecting = false
+            // Clean up the empty session and go back immediately.
+            // Don't set connecting=false — that would flash "disconnected"
+            // before popBackStack takes effect.
+            TerminalSessionManager.closeSessionBySessionId(sessionId)
+            navController.popBackStack()
         },
     )
 

@@ -61,6 +61,7 @@ data class TmuxNewSessionResponse(
 fun TmuxSessionPickerDialog(
     visible: Boolean,
     serverId: String,
+    sessionId: String,
     onAttach: (sessionId: String, tmuxSessionName: String) -> Unit,
     onCreate: (sessionId: String, description: String) -> Unit,
     onSkip: () -> Unit,
@@ -145,7 +146,8 @@ fun TmuxSessionPickerDialog(
                             onClick = {
                                 actionInProgress = true
                                 scope.launch(Dispatchers.IO) {
-                                    val sessionId = java.util.UUID.randomUUID().toString()
+                                    // Reuse the current sessionId instead of
+                                    // creating a new one — avoids orphan sessions
                                     val result = RustRepository.tmuxNewSession(
                                         serverId, sessionId, description, 80, 24,
                                     )
@@ -186,7 +188,22 @@ fun TmuxSessionPickerDialog(
                             if (!actionInProgress) {
                                 actionInProgress = true
                                 scope.launch(Dispatchers.IO) {
-                                    val sessionId = java.util.UUID.randomUUID().toString()
+                                    // Check if another terminal is already attached
+                                    // to this tmux session. If so, reuse it instead
+                                    // of creating a duplicate card.
+                                    val existing = com.termfast.app.ui.screen.TerminalSessionManager
+                                        .findSessionByTmuxName(serverId, s.name)
+                                    if (existing != null) {
+                                        // Clean up the empty session created by "+" button
+                                        com.termfast.app.ui.screen.TerminalSessionManager
+                                            .closeSessionBySessionId(sessionId)
+                                        withContext(Dispatchers.Main) {
+                                            actionInProgress = false
+                                            onAttach(existing.sessionId, s.name)
+                                        }
+                                        return@launch
+                                    }
+                                    // No existing terminal for this tmux session — attach
                                     val result = RustRepository.tmuxAttachSession(
                                         serverId, sessionId, s.name, 80, 24,
                                     )

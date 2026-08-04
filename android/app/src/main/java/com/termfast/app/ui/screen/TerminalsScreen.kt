@@ -77,10 +77,16 @@ fun TerminalsScreen(
     Scaffold(
         floatingActionButton = {
             if (sessions.isEmpty()) return@Scaffold
-            // New terminal — go to server list to pick a server
+            // New terminal — create a new session for the current server
             FloatingActionButton(onClick = {
-                navController.navigate("servers") {
-                    popUpTo("servers") { inclusive = false }
+                val serverId = focusServerId ?: sessions.firstOrNull()?.serverId
+                if (serverId != null) {
+                    val newSessionId = com.termfast.app.ui.screen.TerminalSessionManager.getOrCreateSession(serverId)
+                    navController.navigate("terminal/$serverId/$newSessionId")
+                } else {
+                    navController.navigate("servers") {
+                        popUpTo("servers") { inclusive = false }
+                    }
                 }
             }) {
                 Icon(Icons.Filled.Add, contentDescription = "新建终端")

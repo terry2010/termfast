@@ -199,6 +199,22 @@ impl ConfigManager {
             );
             return Ok(());
         }
+        // Extra safety: if servers is empty but the file on disk has servers,
+        // refuse to save. This catches cases where corrupt_load is false but
+        // the in-memory config lost servers due to a bug.
+        if config.servers.is_empty() && self.storage.exists() {
+            if let Ok(disk_config) = self.storage.load() {
+                if !disk_config.servers.is_empty() {
+                    tracing::error!(
+                        "save() refused: in-memory config has 0 servers but \
+                         disk has {} — preserving disk config. This is likely \
+                         a bug, not a user action.",
+                        disk_config.servers.len()
+                    );
+                    return Ok(());
+                }
+            }
+        }
         self.storage
             .save(&config)
             .map_err(|e| anyhow::anyhow!(e.to_string()))

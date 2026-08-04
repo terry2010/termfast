@@ -122,7 +122,15 @@ fun TermFastApp() {
             }
             composable("terminal/{serverId}") { backStack ->
                 val id = backStack.arguments?.getString("serverId") ?: ""
-                com.termfast.app.ui.screen.TerminalScreen(navController, id)
+                // Reuse existing connected session if available, instead of
+                // creating a new one each time the user taps the terminal button.
+                val existing = com.termfast.app.ui.screen.TerminalSessionManager.getSessions(id)
+                    .firstOrNull { it.connected }
+                if (existing != null) {
+                    com.termfast.app.ui.screen.TerminalScreen(navController, id, existing.sessionId)
+                } else {
+                    com.termfast.app.ui.screen.TerminalScreen(navController, id)
+                }
             }
             composable("terminal/{serverId}/{sessionId}") { backStack ->
                 val id = backStack.arguments?.getString("serverId") ?: ""

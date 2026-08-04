@@ -214,8 +214,16 @@ pub async fn generate_unique_session_name(
 }
 
 /// Build the `tmux attach -t <name>` command string (with newline for PTY injection).
+/// Uses window-size=manual so each client can resize to its own dimensions
+/// on attach (via resize-window). The last client to attach gets full view.
+/// Enables allow-passthrough for ZModem (rz/sz) support through tmux (3.3+).
 pub fn build_attach_command(session_name: &str) -> String {
-    format!("tmux attach -t {}\n", shell_escape(session_name))
+    let name = shell_escape(session_name);
+    format!(
+        "tmux set-option -t {name} window-size manual 2>/dev/null; \
+tmux set-option -t {name} allow-passthrough on 2>/dev/null; \
+tmux attach -t {name}\n"
+    )
 }
 
 /// Build a batched exec command to create + configure a new tmux session.
@@ -234,24 +242,30 @@ pub fn build_new_session_exec_command(
     let size = format!("{}x{}", cols, rows);
     // tmux new -d creates a detached session (no client attached)
     // set-option -t <name> sets user options on the session
+    // window-size=manual: each client resizes to its own dimensions on attach.
+    // The last client to attach/resize gets the full view.
+    // allow-passthrough: let ZModem (rz/sz) control sequences pass through tmux
+    // to the client (tmux 3.3+). Wrapped in 2>/dev/null for older tmux versions.
     format!(
         "tmux new -s {name} -d \
 && tmux set-option -t {name} @termfast true \
 && tmux set-option -t {name} @termfast_description {desc} \
 && tmux set-option -t {name} @termfast_created \"$(date +%s)\" \
 && tmux set-option -t {name} @termfast_server {srv} \
-&& tmux set-option -t {name} @termfast_size {size}"
+&& tmux set-option -t {name} @termfast_size {size} \
+&& tmux set-option -t {name} window-size manual \
+&& tmux set-option -t {name} allow-passthrough on 2>/dev/null"
     )
 }
 
-/// Build the `tmux set-option -t <name> @termfast_size "<cols>x<rows>"` command
-/// for updating the size on resize (exec channel, no newline).
+/// Build the command to resize a tmux window and update @termfast_size metadata.
+/// Uses resize-window to actually change the tmux rendering size (needed when
+/// window-size=manual). Called on PTY resize from any client.
 pub fn build_update_size_command(session_name: &str, cols: u16, rows: u16) -> String {
+    let name = shell_escape(session_name);
     format!(
-        "tmux set-option -t {} @termfast_size \"{}x{}\"",
-        shell_escape(session_name),
-        cols,
-        rows
+        "tmux resize-window -t {name} -x {cols} -y {rows} 2>/dev/null; \
+tmux set-option -t {name} @termfast_size \"{cols}x{rows}\""
     )
 }
 
@@ -350,13 +364,17 @@ mod tests {
     #[test]
     fn test_build_attach_command() {
         let cmd = build_attach_command("termfast_abc");
-        assert_eq!(cmd, "tmux attach -t 'termfast_abc'\n");
+        assert!(cmd.contains("tmux attach -t 'termfast_abc'"));
+        assert!(cmd.contains("window-size manual"));
+        assert!(cmd.contains("allow-passthrough on"));
     }
 
     #[test]
     fn test_build_attach_command_escaped() {
         let cmd = build_attach_command("name with space");
-        assert_eq!(cmd, "tmux attach -t 'name with space'\n");
+        assert!(cmd.contains("tmux attach -t 'name with space'"));
+        assert!(cmd.contains("window-size manual"));
+        assert!(cmd.contains("allow-passthrough on"));
     }
 
     #[test]
@@ -367,13 +385,16 @@ mod tests {
         assert!(cmd.contains("@termfast_description 'my desc'"));
         assert!(cmd.contains("@termfast_server 'srv1'"));
         assert!(cmd.contains("@termfast_size 120x40"));
+        assert!(cmd.contains("window-size manual"));
+        assert!(cmd.contains("allow-passthrough"));
         assert!(cmd.contains("&&"));
     }
 
     #[test]
     fn test_build_update_size_command() {
         let cmd = build_update_size_command("termfast_x", 100, 30);
-        assert_eq!(cmd, "tmux set-option -t 'termfast_x' @termfast_size \"100x30\"");
+        assert!(cmd.contains("tmux resize-window -t 'termfast_x' -x 100 -y 30"));
+        assert!(cmd.contains("@termfast_size \"100x30\""));
     }
 
     #[test]

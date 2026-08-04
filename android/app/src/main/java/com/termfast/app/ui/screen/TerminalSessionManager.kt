@@ -61,6 +61,8 @@ object TerminalSessionManager {
         // Preview cache for TerminalsScreen card — approximate plain-text
         // extracted from raw PTY data via stripAnsi(). Not used for rendering.
         val previewCache: String = "",
+        // tmux session name if this terminal is attached to a tmux session
+        val tmuxSessionName: String? = null,
     )
 
     @Synchronized
@@ -164,6 +166,22 @@ object TerminalSessionManager {
     fun setConnectedBySession(sessionId: String, connected: Boolean) {
         val existing = sessions[sessionId] ?: return
         sessions[sessionId] = existing.copy(connected = connected)
+    }
+
+    @Synchronized
+    fun setTmuxSessionName(sessionId: String, tmuxSessionName: String?) {
+        val existing = sessions[sessionId] ?: return
+        sessions[sessionId] = existing.copy(tmuxSessionName = tmuxSessionName)
+    }
+
+    /** Find an existing connected session attached to the given tmux session name. */
+    @Synchronized
+    fun findSessionByTmuxName(serverId: String, tmuxSessionName: String): SessionState? {
+        return sessions.values.firstOrNull {
+            it.serverId == serverId &&
+            it.tmuxSessionName == tmuxSessionName &&
+            it.connected
+        }
     }
 
     @Synchronized
