@@ -41,6 +41,12 @@ struct TerminalSession {
     /// On close, kill is called regardless of task state to ensure
     /// the child process is terminated.
     kill_child: Option<Box<dyn ChildKiller + Send + Sync>>,
+    /// tmux session name (Some if this terminal is attached to a tmux session)
+    /// Used by resize_and_notify to update @termfast_size via exec channel
+    tmux_session_name: Option<String>,
+    /// SSH handle (Some for SSH terminals, None for local)
+    /// Used by resize_and_notify to exec tmux set-option on resize
+    ssh_handle: Option<Arc<client::Handle<termfast_core::ssh::client::SshHandler>>>,
 }
 
 // === SECTION 1 END ===
@@ -98,7 +104,7 @@ impl TerminalManager {
     /// Returns the session ID.
     pub async fn open(
         &self,
-        ssh_handle: &client::Handle<termfast_core::ssh::client::SshHandler>,
+        ssh_handle: &Arc<client::Handle<termfast_core::ssh::client::SshHandler>>,
         server_id: &str,
         cols: u32,
         rows: u32,
@@ -110,7 +116,7 @@ impl TerminalManager {
 
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<TerminalCmd>();
 
-        let (mut channel, first_output) = try_open_pty_or_fallback(ssh_handle, cols, rows)
+        let (mut channel, first_output) = try_open_pty_or_fallback(ssh_handle.as_ref(), cols, rows)
             .await
             .map_err(|e| format!("failed to open terminal: {}", e))?;
 
@@ -438,6 +444,8 @@ impl TerminalManager {
             cmd_tx,
             tasks: vec![main_task],
             kill_child: None,
+            tmux_session_name: None,
+            ssh_handle: Some(Arc::clone(ssh_handle)),
         };
         self.sessions
             .lock()
@@ -592,6 +600,8 @@ impl TerminalManager {
             cmd_tx,
             tasks: vec![main_task, read_task, write_task],
             kill_child: Some(killer),
+            tmux_session_name: None,
+            ssh_handle: None,
         };
         self.sessions
             .lock()
@@ -621,6 +631,58 @@ impl TerminalManager {
         // initial_output is empty — local PTY output (prompt, MOTD) is streamed
         // asynchronously via the binary forwarder, unlike SSH's synchronous read.
         Ok((session_id, Vec::new()))
+    }
+
+    /// Set tmux session info on a terminal session (called after open, when tmux is used)
+    /// This stores the tmux session name and SSH handle for later resize_and_notify calls
+    pub async fn set_tmux_session_info(
+        &self,
+        session_id: &str,
+        tmux_session_name: Option<String>,
+        ssh_handle: Option<Arc<client::Handle<termfast_core::ssh::client::SshHandler>>>,
+    ) {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.tmux_session_name = tmux_session_name;
+            // Only update ssh_handle if provided (don't overwrite existing)
+            if ssh_handle.is_some() {
+                session.ssh_handle = ssh_handle;
+            }
+        }
+    }
+
+    /// Resize terminal + update tmux @termfast_size + broadcast RESIZE to remote subscribers
+    /// (Phase 4 remote subscribers not yet implemented — currently just resizes PTY + updates tmux)
+    pub async fn resize_and_notify(
+        &self,
+        session_id: &str,
+        cols: u32,
+        rows: u32,
+    ) -> Result<(), String> {
+        let (tmux_name, ssh_handle) = {
+            let sessions = self.sessions.lock().await;
+            let session = match sessions.get(session_id) {
+                Some(s) => s,
+                None => return Ok(()),
+            };
+            // Send resize command to PTY
+            let cmd = TerminalCmd::Resize(cols, rows);
+            let _ = session.cmd_tx.send(cmd);
+            // Get tmux info for exec channel update
+            (session.tmux_session_name.clone(), session.ssh_handle.clone())
+        };
+
+        // If SSH + tmux terminal, update @termfast_size via exec channel
+        if let (Some(name), Some(handle)) = (tmux_name, ssh_handle) {
+            let cmd = termfast_core::ssh::tmux::build_update_size_command(&name, cols as u16, rows as u16);
+            // Spawn async exec — don't block PTY resize on network round-trip
+            tokio::spawn(async move {
+                if let Err(e) = termfast_core::ssh::exec::exec(&handle, &cmd, 5).await {
+                    tracing::warn!("failed to update @termfast_size: {}", e);
+                }
+            });
+        }
+        Ok(())
     }
 
     /// Send user input to the terminal.
@@ -1080,5 +1142,55 @@ mod tests {
         assert!(!manager.has_sessions_for_server("__local__").await);
         assert!(manager.close(&sid1).await.is_err());
         assert!(manager.close(&sid2).await.is_err());
+    }
+
+    /// Test set_tmux_session_info + resize_and_notify on local terminal
+    /// (tmux_session_name=None → resize_and_notify should just resize PTY, no exec)
+    #[tokio::test]
+    async fn test_set_tmux_session_info_and_resize_local() {
+        let binary_forwarder: BinaryEventForwarder = Box::new(|_sid, _data, _stderr| {});
+        let event_forwarder: EventForwarder = Box::new(|_event, _data| {});
+
+        let manager = TerminalManager::new(
+            Arc::new(StdMutex::new(Some(event_forwarder))),
+            Arc::new(StdMutex::new(Some(binary_forwarder))),
+        );
+
+        let (sid, _) = manager.open_local(80, 24, None, None).await.unwrap();
+
+        // set_tmux_session_info with None should not panic
+        manager.set_tmux_session_info(&sid, None, None).await;
+
+        // resize_and_notify with no tmux session should just resize PTY (no exec)
+        manager
+            .resize_and_notify(&sid, 100, 30)
+            .await
+            .expect("resize_and_notify should succeed on local terminal");
+
+        // Verify resize took effect by checking session still works
+        manager.input(&sid, b"echo resize_ok\n").await.unwrap();
+
+        manager.close(&sid).await.unwrap();
+    }
+
+    /// Test set_tmux_session_info on non-existent session (should be no-op)
+    #[tokio::test]
+    async fn test_set_tmux_session_info_nonexistent() {
+        let binary_forwarder: BinaryEventForwarder = Box::new(|_sid, _data, _stderr| {});
+        let event_forwarder: EventForwarder = Box::new(|_event, _data| {});
+
+        let manager = TerminalManager::new(
+            Arc::new(StdMutex::new(Some(event_forwarder))),
+            Arc::new(StdMutex::new(Some(binary_forwarder))),
+        );
+
+        // Should not panic on non-existent session
+        manager
+            .set_tmux_session_info("nonexistent_sid", Some("test_tmux".to_string()), None)
+            .await;
+
+        // resize_and_notify on non-existent session should return Ok (no-op)
+        let result = manager.resize_and_notify("nonexistent_sid", 100, 30).await;
+        assert!(result.is_ok(), "resize_and_notify on non-existent session should return Ok");
     }
 }

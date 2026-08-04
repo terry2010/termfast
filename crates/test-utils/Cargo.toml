@@ -12,3 +12,5 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+rand = { workspace = true }
+ssh-key = { version = "0.7.0-rc.11", features = ["rand_core", "getrandom", "encryption"] }

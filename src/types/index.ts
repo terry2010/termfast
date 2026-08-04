@@ -93,6 +93,8 @@ export interface ServerConfig {
   last_known_ip: string | null;
   triggers: TriggerInstance[];
   suppress_firewall_badge: boolean;
+  /// tmux behavior: "auto" | "ask" | "always_new" | "disabled"
+  tmux_mode?: string;
 }
 
 // === SECTION 1 END ===

@@ -248,6 +248,7 @@ mod tests {
             suppress_firewall_badge: false,
             test_url: "https://google.com".into(),
             port_forwards: Vec::new(),
+            tmux_mode: "ask".to_string(),
         }
     }
 

@@ -31,6 +31,8 @@ export interface TerminalTab {
   disconnected: boolean;
   /** AI CLI agent status (null = no AI CLI detected / not yet monitored). */
   agentStatus: AgentStatus | null;
+  /** tmux session name if this tab is attached to a tmux session (null = plain shell). */
+  tmuxSessionName?: string | null;
 }
 
 interface ServerStore {

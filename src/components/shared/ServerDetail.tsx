@@ -19,6 +19,9 @@ import { TabTriggerManager } from "@/components/shared/TabTriggerManager";
 import { PortForwardPanel, PortForwardPanelHandle } from "@/components/shared/PortForwardPanel";
 import { TerminalView } from "@/components/shared/TerminalView";
 import { openTerminalWithChannel } from "@/lib/terminal";
+import { Channel } from "@tauri-apps/api/core";
+import { dispatchTerminalOutput } from "@/components/shared/TerminalView";
+import { TmuxSessionPicker } from "@/components/shared/TmuxSessionPicker";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
   showContextMenu,
@@ -87,6 +90,10 @@ export function ServerDetail() {
   // Disconnect confirmation: shown when user clicks disconnect with active terminals
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [pendingCloseTab, setPendingCloseTab] = useState<string | null>(null);
+  // Tmux session picker: shown when tmux_mode="ask" and sessions are available
+  const [showTmuxPicker, setShowTmuxPicker] = useState(false);
+  const [tmuxPickerCols, setTmuxPickerCols] = useState(80);
+  const [tmuxPickerRows, setTmuxPickerRows] = useState(24);
   // Timestamp of last contextmenu event — macOS fires click BEFORE contextmenu
   // on right-click, so we can't use a simple boolean flag. Instead we record
   // when contextmenu fires, and in onClick we check if a contextmenu happened
@@ -172,6 +179,106 @@ export function ServerDetail() {
   // and dispatch to the registered TerminalView callback.
   // (Uses the shared openTerminalWithChannel from @/lib/terminal)
 
+  // Helper: open a normal (non-tmux) terminal and add a tab
+  const openNormalTerminal = useCallback(
+    async (serverId: string, triggerOverrides?: Record<string, boolean>) => {
+      const result = await openTerminalWithChannel(serverId, 80, 24, {
+        triggerOverrides:
+          triggerOverrides && Object.keys(triggerOverrides).length > 0
+            ? triggerOverrides
+            : undefined,
+      });
+      const sessionId = result.session_id;
+      const initialOutput = result.initial_output || "";
+      const tabId: Tab = `term:${sessionId}`;
+      const currentTabs =
+        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
+      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      addTerminalTab(serverId, {
+        id: tabId,
+        sessionId,
+        label: defaultLabel,
+        defaultLabel,
+        initialOutput,
+        disconnected: false,
+        agentStatus: null,
+      });
+      setActiveTerminalTab(serverId, tabId);
+    },
+    [t],
+  );
+
+  // Helper: create a new tmux session and add a tab
+  const openTmuxNewSession = useCallback(
+    async (serverId: string, description: string, cols: number, rows: number) => {
+      let sessionId = "";
+      const onOutput = new Channel<ArrayBuffer>();
+      onOutput.onmessage = (data: ArrayBuffer) => {
+        if (sessionId) {
+          dispatchTerminalOutput(sessionId, new Uint8Array(data), false);
+        }
+      };
+      const result = await ipcInvoke<{ session_id: string; initial_output: string; tmux_session_name?: string }>(
+        "ipc_tmux_new_session",
+        { server_id: serverId, description, cols, rows, on_output: onOutput },
+      );
+      sessionId = result.session_id;
+      const initialOutput = result.initial_output || "";
+      const tmuxName = result.tmux_session_name || null;
+      const tabId: Tab = `term:${sessionId}`;
+      const currentTabs =
+        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
+      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      addTerminalTab(serverId, {
+        id: tabId,
+        sessionId,
+        label: defaultLabel,
+        defaultLabel,
+        initialOutput,
+        disconnected: false,
+        agentStatus: null,
+        tmuxSessionName: tmuxName,
+      });
+      setActiveTerminalTab(serverId, tabId);
+    },
+    [t],
+  );
+
+  // Helper: attach to an existing tmux session and add a tab
+  const openTmuxAttachSession = useCallback(
+    async (serverId: string, tmuxName: string, cols: number, rows: number) => {
+      let sessionId = "";
+      const onOutput = new Channel<ArrayBuffer>();
+      onOutput.onmessage = (data: ArrayBuffer) => {
+        if (sessionId) {
+          dispatchTerminalOutput(sessionId, new Uint8Array(data), false);
+        }
+      };
+      const result = await ipcInvoke<{ session_id: string; initial_output: string }>(
+        "ipc_tmux_attach_session",
+        { server_id: serverId, tmux_session_name: tmuxName, cols, rows, on_output: onOutput },
+      );
+      sessionId = result.session_id;
+      const initialOutput = result.initial_output || "";
+      const tabId: Tab = `term:${sessionId}`;
+      const currentTabs =
+        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
+      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      addTerminalTab(serverId, {
+        id: tabId,
+        sessionId,
+        label: defaultLabel,
+        defaultLabel,
+        initialOutput,
+        disconnected: false,
+        agentStatus: null,
+        tmuxSessionName: tmuxName,
+      });
+      setActiveTerminalTab(serverId, tabId);
+    },
+    [t],
+  );
+
   const handleOpenTerminal = useCallback(async () => {
     if (!server?.id) return;
     const serverId = server.id;
@@ -242,25 +349,46 @@ export function ServerDetail() {
         // Read trigger overrides before opening terminal (passed to daemon
         // in the same call to avoid race condition with terminal event consumer).
         const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
-        const result = await openTerminalWithChannel(serverId, 80, 24, {
-          triggerOverrides: triggerOverrides && Object.keys(triggerOverrides).length > 0 ? triggerOverrides : undefined,
-        });
-        const sessionId = result.session_id;
-        const initialOutput = result.initial_output || "";
-        const tabId: Tab = `term:${sessionId}`;
-        const currentTabs =
-          useServerStore.getState().terminal_tabs_by_server[serverId] || [];
-        const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
-        addTerminalTab(serverId, {
-          id: tabId,
-          sessionId,
-          label: defaultLabel,
-          defaultLabel,
-          initialOutput,
-          disconnected: false,
-          agentStatus: null,
-        });
-        setActiveTerminalTab(serverId, tabId);
+
+        // Check tmux_mode for this server
+        const liveServer2 = useServerStore.getState().servers.find(
+          (s) => s.id === serverId,
+        );
+        const tmuxMode = liveServer2?.tmux_mode || "ask";
+
+        if (tmuxMode === "disabled") {
+          // Normal terminal — no tmux
+          await openNormalTerminal(serverId, triggerOverrides);
+        } else if (tmuxMode === "always_new") {
+          // Create new tmux session directly
+          await openTmuxNewSession(serverId, "", 80, 24);
+        } else if (tmuxMode === "auto") {
+          // Auto-restore: list sessions, attach to most recent or create new
+          try {
+            const tmuxResult = await ipcInvoke<{
+              sessions: Array<{ name: string; last_activity: number }>;
+              tmux_installed: boolean;
+            }>("ipc_tmux_list_sessions", { server_id: serverId });
+            if (!tmuxResult.tmux_installed || tmuxResult.sessions.length === 0) {
+              // No tmux or no sessions — create new
+              await openTmuxNewSession(serverId, "", 80, 24);
+            } else {
+              // Sort by last_activity descending, attach to most recent
+              const sorted = [...tmuxResult.sessions].sort(
+                (a, b) => b.last_activity - a.last_activity,
+              );
+              await openTmuxAttachSession(serverId, sorted[0].name, 80, 24);
+            }
+          } catch {
+            // tmux check failed — fallback to normal terminal
+            await openNormalTerminal(serverId, triggerOverrides);
+          }
+        } else {
+          // "ask" mode — show picker
+          setTmuxPickerCols(80);
+          setTmuxPickerRows(24);
+          setShowTmuxPicker(true);
+        }
         requestAnimationFrame(() => {
           updateServerStatus(
             serverId,
@@ -1188,6 +1316,59 @@ export function ServerDetail() {
           />
         )}
 
+        {/* Tmux session picker — shown when tmux_mode="ask" */}
+        {server?.id && (
+          <TmuxSessionPicker
+            visible={showTmuxPicker}
+            serverId={server.id}
+            cols={tmuxPickerCols}
+            rows={tmuxPickerRows}
+            openTmuxTabs={(() => {
+              const map: Record<string, string> = {};
+              for (const tab of termTabs) {
+                if (tab.tmuxSessionName) {
+                  map[tab.tmuxSessionName] = tab.id;
+                }
+              }
+              return map;
+            })()}
+            onSessionCreated={(sessionId, initialOutput, tmuxSessionName) => {
+              setShowTmuxPicker(false);
+              const tabId: Tab = `term:${sessionId}`;
+              const currentTabs =
+                useServerStore.getState().terminal_tabs_by_server[server.id] || [];
+              const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+              addTerminalTab(server.id, {
+                id: tabId,
+                sessionId,
+                label: defaultLabel,
+                defaultLabel,
+                initialOutput,
+                disconnected: false,
+                agentStatus: null,
+                tmuxSessionName: tmuxSessionName || null,
+              });
+              setActiveTerminalTab(server.id, tabId);
+            }}
+            onSkipTmux={async () => {
+              setShowTmuxPicker(false);
+              // Open normal terminal without tmux
+              try {
+                const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[server.id];
+                await openNormalTerminal(server.id, triggerOverrides);
+              } catch (e: any) {
+                const msg = formatIpcError(e);
+                toast.error(t("server.terminal_open_failed"), { description: msg });
+              }
+            }}
+            onSwitchToTab={(tabId) => {
+              setShowTmuxPicker(false);
+              setActiveTerminalTab(server.id, tabId);
+            }}
+            onCancel={() => setShowTmuxPicker(false)}
+          />
+        )}
+
         {triggerMgrTabId && (() => {
           const tab = termTabs.find((tt) => tt.id === triggerMgrTabId);
           if (!tab) return null;
@@ -1441,6 +1622,39 @@ export function ServerDetail() {
                             <option value="3d">3d</option>
                           </select>
                         )}
+                      </div>
+                    </div>
+                    {/* tmux behavior — 3-option segmented control */}
+                    <div className="flex items-center justify-between px-4 py-3">
+                      <span className="text-sm text-gray-500">
+                        {t("server.tmux_mode_label")}
+                      </span>
+                      <div className="flex items-center gap-1 bg-[#F2F2F7]/80 dark:bg-[#2C2C2E]/80 rounded-lg p-0.5">
+                        {(["auto", "ask", "always_new"] as const).map((mode) => (
+                          <button
+                            key={mode}
+                            onClick={() => {
+                              ipcInvoke("ipc_update_config", {
+                                path: `servers[${displayServer.id}].tmux_mode`,
+                                value: mode,
+                              }).catch(() => {});
+                              useServerStore.setState((s) => ({
+                                servers: s.servers.map((srv) =>
+                                  srv.id === displayServer.id
+                                    ? { ...srv, tmux_mode: mode }
+                                    : srv,
+                                ),
+                              }));
+                            }}
+                            className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${
+                              (displayServer.tmux_mode || "ask") === mode
+                                ? "bg-white dark:bg-[#48484A] text-[#1D1D1F] dark:text-gray-100 shadow-sm"
+                                : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                            }`}
+                          >
+                            {t(`server.tmux_mode_${mode}`)}
+                          </button>
+                        ))}
                       </div>
                     </div>
                       </>
@@ -1740,6 +1954,7 @@ export function ServerDetail() {
                 </div>
               </div>
               )}
+
             </div>
           </div>
         )}

@@ -87,6 +87,9 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::TerminalInput => handle_terminal_input(state, &request.params).await,
         Action::TerminalClose => handle_terminal_close(state, &request.params).await,
         Action::TerminalResize => handle_terminal_resize(state, &request.params).await,
+        Action::TmuxListSessions => handle_tmux_list_sessions(state, &request.params).await,
+        Action::TmuxNewSession => handle_tmux_new_session(state, &request.params).await,
+        Action::TmuxAttachSession => handle_tmux_attach_session(state, &request.params).await,
         Action::SetTriggerOverrides => handle_set_trigger_overrides(state, &request.params).await,
         Action::GetTriggerOverrides => handle_get_trigger_overrides(state, &request.params).await,
 
@@ -3327,11 +3330,224 @@ async fn handle_terminal_resize(state: &DaemonState, params: &serde_json::Value)
 
     state
         .terminal_manager
-        .resize(session_id, cols, rows)
+        .resize_and_notify(session_id, cols, rows)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
 
     Ok(serde_json::json!({ "ok": true }))
+}
+
+/// List TermFast-tagged tmux sessions on a server (for restore popup)
+/// Params: { server_id }
+/// Returns: { sessions: [{ name, description, created, server, size: [cols, rows], windows, attached_count, last_activity }] }
+async fn handle_tmux_list_sessions(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params
+        .get("server_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+
+    // Check tmux_mode — if disabled, return empty without needing SSH connection
+    let config = state.config_manager.lock().await.get().await;
+    let mode_str = config
+        .find_server(server_id)
+        .map(|s| s.tmux_mode.as_str())
+        .unwrap_or("ask");
+    if mode_str == "disabled" {
+        return Ok(serde_json::json!({ "sessions": [], "tmux_installed": false }));
+    }
+    drop(config);
+
+    let server = state
+        .server_manager
+        .get_server(server_id)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::ServerNotFound, e.to_string()))?;
+
+    if !server.ssh_client.is_connected().await {
+        return Err(IpcError::new(ErrorCode::SshDisconnected, "server not connected"));
+    }
+
+    let ssh_handle = server
+        .ssh_client
+        .get_handle()
+        .await
+        .ok_or_else(|| IpcError::new(ErrorCode::SshDisconnected, "SSH handle not available"))?;
+
+    let tmux_installed = termfast_core::ssh::tmux::detect_tmux(&ssh_handle).await;
+    if !tmux_installed {
+        return Ok(serde_json::json!({ "sessions": [], "tmux_installed": false }));
+    }
+
+    let sessions = termfast_core::ssh::tmux::list_termfast_sessions(&ssh_handle)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+
+    let sessions_json: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "description": s.description,
+                "created": s.created,
+                "server": s.server,
+                "size": [s.size.0, s.size.1],
+                "windows": s.windows,
+                "attached_count": s.attached_count,
+                "last_activity": s.last_activity,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({ "sessions": sessions_json, "tmux_installed": true }))
+}
+
+/// Create a new tmux session and open terminal attached to it
+/// Params: { server_id, description, cols, rows }
+/// Returns: { session_id, initial_output (base64) }
+async fn handle_tmux_new_session(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params
+        .get("server_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let description = params
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let cols = params.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
+    let rows = params.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u32;
+
+    let server = state
+        .server_manager
+        .get_server(server_id)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::ServerNotFound, e.to_string()))?;
+
+    if !server.ssh_client.is_connected().await {
+        return Err(IpcError::new(ErrorCode::SshDisconnected, "server not connected"));
+    }
+
+    let ssh_handle = server
+        .ssh_client
+        .get_handle()
+        .await
+        .ok_or_else(|| IpcError::new(ErrorCode::SshDisconnected, "SSH handle not available"))?;
+
+    // Generate unique tmux session name
+    let tmux_name = termfast_core::ssh::tmux::generate_unique_session_name(&ssh_handle)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+
+    // Get server name for @termfast_server
+    let config = state.config_manager.lock().await.get().await;
+    let server_name = config
+        .find_server(server_id)
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| server_id.to_string());
+
+    // Create tmux session via exec (detached, with @termfast options)
+    let create_cmd = termfast_core::ssh::tmux::build_new_session_exec_command(
+        &tmux_name, description, &server_name, cols as u16, rows as u16,
+    );
+    let create_result = termfast_core::ssh::exec::exec(&ssh_handle, &create_cmd, 10)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    if !create_result.is_success() {
+        return Err(IpcError::new(
+            ErrorCode::Internal,
+            format!("failed to create tmux session: {}", create_result.stderr),
+        ));
+    }
+
+    // Open terminal and inject `tmux attach -t <name>`
+    let (session_id, initial_output) = state
+        .terminal_manager
+        .open(&ssh_handle, server_id, cols, rows)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
+
+    // Store tmux session info for resize_and_notify
+    state
+        .terminal_manager
+        .set_tmux_session_info(&session_id, Some(tmux_name.clone()), None)
+        .await;
+
+    // Inject `tmux attach -t <name>\n` into the PTY
+    let attach_cmd = termfast_core::ssh::tmux::build_attach_command(&tmux_name);
+    let _ = state
+        .terminal_manager
+        .input_with_ack(&session_id, attach_cmd.as_bytes(), true)
+        .await;
+
+    use base64::Engine;
+    let initial_b64 = base64::engine::general_purpose::STANDARD.encode(&initial_output);
+    Ok(serde_json::json!({ "session_id": session_id, "initial_output": initial_b64, "tmux_session_name": tmux_name }))
+}
+
+/// Attach to an existing tmux session and open terminal
+/// Params: { server_id, tmux_session_name, cols, rows }
+/// Returns: { session_id, initial_output (base64) }
+async fn handle_tmux_attach_session(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params
+        .get("server_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let tmux_session_name = params
+        .get("tmux_session_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing tmux_session_name"))?;
+    let cols = params.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
+    let rows = params.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u32;
+
+    let server = state
+        .server_manager
+        .get_server(server_id)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::ServerNotFound, e.to_string()))?;
+
+    if !server.ssh_client.is_connected().await {
+        return Err(IpcError::new(ErrorCode::SshDisconnected, "server not connected"));
+    }
+
+    let ssh_handle = server
+        .ssh_client
+        .get_handle()
+        .await
+        .ok_or_else(|| IpcError::new(ErrorCode::SshDisconnected, "SSH handle not available"))?;
+
+    // Verify the tmux session exists before opening terminal
+    let exists = termfast_core::ssh::tmux::session_exists(&ssh_handle, tmux_session_name)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    if !exists {
+        return Err(IpcError::new(
+            ErrorCode::Internal,
+            format!("tmux session '{}' does not exist", tmux_session_name),
+        ));
+    }
+
+    // Open terminal
+    let (session_id, initial_output) = state
+        .terminal_manager
+        .open(&ssh_handle, server_id, cols, rows)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
+
+    // Store tmux session info for resize_and_notify
+    state
+        .terminal_manager
+        .set_tmux_session_info(&session_id, Some(tmux_session_name.to_string()), None)
+        .await;
+
+    // Inject `tmux attach -t <name>\n` into the PTY
+    let attach_cmd = termfast_core::ssh::tmux::build_attach_command(tmux_session_name);
+    let _ = state
+        .terminal_manager
+        .input_with_ack(&session_id, attach_cmd.as_bytes(), true)
+        .await;
+
+    use base64::Engine;
+    let initial_b64 = base64::engine::general_purpose::STANDARD.encode(&initial_output);
+    Ok(serde_json::json!({ "session_id": session_id, "initial_output": initial_b64, "tmux_session_name": tmux_session_name }))
 }
 
 /// Set per-session exec_in_terminal overrides (runtime, not persisted)
@@ -3760,6 +3976,117 @@ mod tests {
         assert!(resp["message"].as_str().unwrap().contains("本地数据比云端新"));
         assert_eq!(resp["cloud_updated_at"], "2026-07-21T18:40:00Z");
         assert_eq!(resp["local_updated_at"], "2026-07-21T19:05:00Z");
+    }
+
+    // === tmux handler tests ===
+
+    #[tokio::test]
+    async fn test_tmux_list_sessions_missing_server_id() {
+        let state = test_state();
+        let params = serde_json::json!({});
+        let result = handle_tmux_list_sessions(&state, &params).await;
+        assert!(result.is_err(), "missing server_id should return error");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_list_sessions_server_not_found() {
+        let state = test_state();
+        let params = serde_json::json!({ "server_id": "nonexistent" });
+        let result = handle_tmux_list_sessions(&state, &params).await;
+        assert!(result.is_err(), "non-existent server should return error");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::ServerNotFound);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_new_session_missing_server_id() {
+        let state = test_state();
+        let params = serde_json::json!({});
+        let result = handle_tmux_new_session(&state, &params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_new_session_server_not_found() {
+        let state = test_state();
+        let params = serde_json::json!({ "server_id": "nonexistent", "description": "test" });
+        let result = handle_tmux_new_session(&state, &params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::ServerNotFound);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_attach_session_missing_server_id() {
+        let state = test_state();
+        let params = serde_json::json!({});
+        let result = handle_tmux_attach_session(&state, &params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_attach_session_missing_tmux_name() {
+        let state = test_state();
+        let params = serde_json::json!({ "server_id": "srv1" });
+        let result = handle_tmux_attach_session(&state, &params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_attach_session_server_not_found() {
+        let state = test_state();
+        let params = serde_json::json!({ "server_id": "nonexistent", "tmux_session_name": "test" });
+        let result = handle_tmux_attach_session(&state, &params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::ServerNotFound);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_list_sessions_disabled_mode_returns_empty() {
+        // Server with tmux_mode=disabled should return empty sessions without SSH
+        let mut config = Config::default();
+        use termfast_core::config::{ServerConfig, SshConfig, ProxyConfig, ReconnectConfig, IpCheckConfig};
+        let server = ServerConfig {
+            id: "srv_disabled".into(),
+            name: "Disabled".into(),
+            ssh: SshConfig {
+                host: "1.2.3.4".into(), port: 22, user: "root".into(),
+                auth_method: "key".into(), key_path: "".into(), key_auto_generated: false,
+                connection_mode: "single".into(), skip_hostkey_verify: false, host_key_fingerprint: None,
+            },
+            proxy: ProxyConfig {
+                enabled: false, socks5_port: 0, http_port: 0, mixed_port: 0,
+                max_channels: 64, channel_idle_timeout: 300,
+            },
+            reconnect: ReconnectConfig::default(),
+            ip_check: IpCheckConfig::default(),
+            last_known_ip: None, triggers: Vec::new(), suppress_firewall_badge: false,
+            test_url: "https://google.com".into(), port_forwards: Vec::new(),
+            tmux_mode: "disabled".to_string(),
+        };
+        config.servers.push(server);
+        let mgr = termfast_core::config::ConfigManager::new(config);
+        let state = DaemonState::new(mgr);
+
+        // Even though server is not connected, disabled mode should return empty
+        // before hitting the SSH connection check
+        let params = serde_json::json!({ "server_id": "srv_disabled" });
+        let result = handle_tmux_list_sessions(&state, &params).await;
+        // This will fail at SSH connection check because server isn't connected,
+        // but the tmux_mode=disabled check happens first and returns empty
+        assert!(result.is_ok(), "disabled mode should return Ok with empty sessions");
+        let data = result.unwrap();
+        assert_eq!(data["sessions"].as_array().unwrap().len(), 0);
+        assert_eq!(data["tmux_installed"], false);
     }
 }
 

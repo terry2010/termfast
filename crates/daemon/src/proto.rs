@@ -143,6 +143,12 @@ pub enum Action {
     TerminalInput,
     TerminalClose,
     TerminalResize,
+    /// List TermFast-tagged tmux sessions on a server (for restore popup)
+    TmuxListSessions,
+    /// Create a new tmux session and open terminal attached to it
+    TmuxNewSession,
+    /// Attach to an existing tmux session and open terminal
+    TmuxAttachSession,
 
     // Cloud sync — upload/download encrypted config to cloud providers
     CloudSyncGetAuthUrl,
@@ -381,6 +387,9 @@ mod tests {
             Action::TerminalInput,
             Action::TerminalClose,
             Action::TerminalResize,
+            Action::TmuxListSessions,
+            Action::TmuxNewSession,
+            Action::TmuxAttachSession,
         ];
         for action in actions {
             let json = serde_json::to_string(&action).unwrap();

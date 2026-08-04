@@ -596,10 +596,21 @@ pub struct ServerConfig {
     /// Port forwarding rules
     #[serde(default)]
     pub port_forwards: Vec<PortForwardRule>,
+    /// tmux behavior for this server: "auto" | "ask" | "always_new" | "disabled"
+    /// auto: auto-restore most recent @termfast session
+    /// ask: show popup with session list (default)
+    /// always_new: always create new session
+    /// disabled: never use tmux
+    #[serde(default = "default_tmux_mode")]
+    pub tmux_mode: String,
 }
 
 fn default_server_test_url() -> String {
     "https://google.com".to_string()
+}
+
+fn default_tmux_mode() -> String {
+    "ask".to_string()
 }
 
 // === SECTION 2 END ===
@@ -837,6 +848,7 @@ mod tests {
             suppress_firewall_badge: false,
             test_url: default_server_test_url(),
             port_forwards: Vec::new(),
+            tmux_mode: default_tmux_mode(),
         };
         config.servers.push(server);
 
@@ -844,6 +856,67 @@ mod tests {
         assert!(!config.is_socks5_port_in_use(1080, Some("srv_test")));
         assert!(!config.is_socks5_port_in_use(1081, None));
         assert!(config.is_http_port_in_use(8080, None));
+    }
+
+    #[test]
+    fn test_tmux_mode_default() {
+        let server = ServerConfig {
+            id: "srv_test".into(),
+            name: "Test".into(),
+            ssh: SshConfig {
+                host: "1.2.3.4".into(),
+                port: 22,
+                user: "root".into(),
+                auth_method: "key".into(),
+                key_path: "".into(),
+                key_auto_generated: false,
+                connection_mode: "single".into(),
+                skip_hostkey_verify: false,
+                host_key_fingerprint: None,
+            },
+            proxy: ProxyConfig {
+                enabled: true,
+                socks5_port: 1080,
+                http_port: 8080,
+                mixed_port: 0,
+                max_channels: 64,
+                channel_idle_timeout: 300,
+            },
+            reconnect: ReconnectConfig::default(),
+            ip_check: IpCheckConfig::default(),
+            last_known_ip: None,
+            triggers: Vec::new(),
+            suppress_firewall_badge: false,
+            test_url: default_server_test_url(),
+            port_forwards: Vec::new(),
+            tmux_mode: default_tmux_mode(),
+        };
+        assert_eq!(server.tmux_mode, "ask");
+    }
+
+    #[test]
+    fn test_tmux_mode_serde_round_trip() {
+        let json = r#"{
+            "id": "srv1",
+            "name": "Test",
+            "ssh": {"host": "1.2.3.4", "port": 22, "user": "root", "auth_method": "key", "key_path": "", "key_auto_generated": false, "connection_mode": "single", "skip_hostkey_verify": false, "host_key_fingerprint": null},
+            "proxy": {"enabled": false, "socks5_port": 0, "http_port": 0, "mixed_port": 0, "max_channels": 64, "channel_idle_timeout": 300},
+            "tmux_mode": "always_new"
+        }"#;
+        let config: Config = serde_json::from_str(&format!(r#"{{"version": 2, "servers": [{}]}}"#, json)).unwrap();
+        assert_eq!(config.servers[0].tmux_mode, "always_new");
+    }
+
+    #[test]
+    fn test_tmux_mode_missing_uses_default() {
+        let json = r#"{
+            "id": "srv1",
+            "name": "Test",
+            "ssh": {"host": "1.2.3.4", "port": 22, "user": "root", "auth_method": "key", "key_path": "", "key_auto_generated": false, "connection_mode": "single", "skip_hostkey_verify": false, "host_key_fingerprint": null},
+            "proxy": {"enabled": false, "socks5_port": 0, "http_port": 0, "mixed_port": 0, "max_channels": 64, "channel_idle_timeout": 300}
+        }"#;
+        let config: Config = serde_json::from_str(&format!(r#"{{"version": 2, "servers": [{}]}}"#, json)).unwrap();
+        assert_eq!(config.servers[0].tmux_mode, "ask", "missing tmux_mode should default to 'ask'");
     }
 
     #[test]
@@ -902,6 +975,7 @@ mod tests {
             suppress_firewall_badge: false,
             test_url: default_server_test_url(),
             port_forwards: Vec::new(),
+            tmux_mode: "ask".to_string(),
         };
         let json = serde_json::to_string(&server).unwrap();
         let de: ServerConfig = serde_json::from_str(&json).unwrap();
@@ -940,6 +1014,7 @@ mod tests {
             suppress_firewall_badge: false,
             test_url: default_server_test_url(),
             port_forwards: Vec::new(),
+            tmux_mode: "ask".to_string(),
         }
     }
 

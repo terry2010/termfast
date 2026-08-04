@@ -59,6 +59,7 @@ pub async fn exec(
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut exit_code = 0u32;
+        let mut got_exit_status = false;
 
         while let Some(msg) = channel.wait().await {
             match msg {
@@ -70,9 +71,12 @@ pub async fn exec(
                 }
                 russh::ChannelMsg::ExitStatus { exit_status } => {
                     exit_code = exit_status;
+                    got_exit_status = true;
                 }
                 russh::ChannelMsg::Eof => {
-                    break;
+                    // Don't break — keep reading until Close to ensure
+                    // we receive ExitStatus (it should come before Eof
+                    // per RFC 4254, but some implementations reorder).
                 }
                 russh::ChannelMsg::Close => {
                     break;
@@ -81,8 +85,13 @@ pub async fn exec(
             }
         }
 
+        // If we never got an explicit exit status, treat as failure (exit 1)
+        // rather than success (exit 0). This prevents false positives in
+        // session_exists checks.
+        let final_exit_code = if got_exit_status { exit_code } else { 1 };
+
         ExecResult {
-            exit_code,
+            exit_code: final_exit_code,
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
         }

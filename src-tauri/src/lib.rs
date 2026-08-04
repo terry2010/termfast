@@ -285,6 +285,9 @@ pub fn run() {
             ipc_terminal_input,
             ipc_terminal_close,
             ipc_terminal_resize,
+            ipc_tmux_list_sessions,
+            ipc_tmux_new_session,
+            ipc_tmux_attach_session,
             ipc_set_trigger_overrides,
             ipc_get_trigger_overrides,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
@@ -1375,6 +1378,82 @@ async fn ipc_terminal_resize(
         params,
     )
     .await
+}
+
+#[tauri::command]
+async fn ipc_tmux_list_sessions(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "server_id": server_id });
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::TmuxListSessions,
+        params,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn ipc_tmux_new_session(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    description: Option<String>,
+    cols: Option<u64>,
+    rows: Option<u64>,
+    on_output: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "server_id": server_id,
+        "description": description.as_deref().unwrap_or(""),
+        "cols": cols.unwrap_or(80),
+        "rows": rows.unwrap_or(24),
+    });
+    let result = forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::TmuxNewSession,
+        params,
+    )
+    .await?;
+    if let Some(session_id) = result.get("session_id").and_then(|v| v.as_str()) {
+        state
+            .terminal_channels
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), on_output);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn ipc_tmux_attach_session(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    tmux_session_name: String,
+    cols: Option<u64>,
+    rows: Option<u64>,
+    on_output: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "server_id": server_id,
+        "tmux_session_name": tmux_session_name,
+        "cols": cols.unwrap_or(80),
+        "rows": rows.unwrap_or(24),
+    });
+    let result = forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::TmuxAttachSession,
+        params,
+    )
+    .await?;
+    if let Some(session_id) = result.get("session_id").and_then(|v| v.as_str()) {
+        state
+            .terminal_channels
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), on_output);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
