@@ -162,4 +162,14 @@ object RustRepository {
         RustBridge.nativeCloseTerminal(sessionId)
     fun resizeTerminal(sessionId: String, cols: Int, rows: Int): Boolean =
         RustBridge.nativeResizeTerminal(sessionId, cols, rows)
+
+    // --- tmux Session Management ---
+    fun tmuxListSessions(serverId: String): String =
+        RustBridge.nativeTmuxListSessions(serverId)
+    fun tmuxNewSession(serverId: String, sessionId: String, description: String, cols: Int, rows: Int): String =
+        RustBridge.nativeTmuxNewSession(serverId, sessionId, description, cols, rows)
+    fun tmuxAttachSession(serverId: String, sessionId: String, tmuxSessionName: String, cols: Int, rows: Int): String =
+        RustBridge.nativeTmuxAttachSession(serverId, sessionId, tmuxSessionName, cols, rows)
+    fun tmuxKillSession(serverId: String, tmuxSessionName: String): Boolean =
+        RustBridge.nativeTmuxKillSession(serverId, tmuxSessionName)
 }

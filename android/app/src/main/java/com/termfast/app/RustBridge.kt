@@ -92,6 +92,12 @@ object RustBridge {
     external fun nativeCloseTerminal(sessionId: String): Boolean
     external fun nativeResizeTerminal(sessionId: String, cols: Int, rows: Int): Boolean
 
+    // --- tmux Session Management ---
+    external fun nativeTmuxListSessions(serverId: String): String
+    external fun nativeTmuxNewSession(serverId: String, sessionId: String, description: String, cols: Int, rows: Int): String
+    external fun nativeTmuxAttachSession(serverId: String, sessionId: String, tmuxSessionName: String, cols: Int, rows: Int): String
+    external fun nativeTmuxKillSession(serverId: String, tmuxSessionName: String): Boolean
+
     // --- Cloud Sync ---
     external fun nativeCloudSyncAuthUrl(provider: String): String
     external fun nativeCloudSyncExchangeCode(code: String): String

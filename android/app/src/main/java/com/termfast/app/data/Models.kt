@@ -55,6 +55,7 @@ data class ServerConfig(
     val port_forwards: List<PortForwardRule> = emptyList(),
     val suppress_firewall_badge: Boolean = false,
     val test_url: String = "https://google.com",
+    val tmux_mode: String = "ask",
 )
 
 @Serializable

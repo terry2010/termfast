@@ -47,6 +47,7 @@ fun ServerEditScreen(navController: NavController, serverId: String?) {
     var loading by remember { mutableStateOf(false) }
     var existingIpCheck by remember { mutableStateOf(IpCheckConfig()) }
     var existingTriggers by remember { mutableStateOf(emptyList<com.termfast.app.data.TriggerInstance>()) }
+    var tmuxMode by remember { mutableStateOf("ask") }
 
     LaunchedEffect(serverId) {
         if (serverId != null) {
@@ -73,6 +74,7 @@ fun ServerEditScreen(navController: NavController, serverId: String?) {
                 mixedPort = s.proxy.mixed_port.toString()
                 existingIpCheck = s.ip_check
                 existingTriggers = s.triggers
+                tmuxMode = s.tmux_mode
                 if (authMethod == "password") {
                     password = repo.loadCredential(s.id, "password") ?: ""
                 } else {
@@ -120,6 +122,7 @@ fun ServerEditScreen(navController: NavController, serverId: String?) {
                         ),
                         ip_check = existingIpCheck,
                         triggers = existingTriggers,
+                        tmux_mode = tmuxMode,
                     )
                     if (serverId != null) {
                         // Edit existing server: update config in-place without
@@ -302,6 +305,33 @@ fun ServerEditScreen(navController: NavController, serverId: String?) {
                         shape = RoundedCornerShape(12.dp),
                         singleLine = true,
                     )
+                }
+
+                EditSectionCard(title = "tmux 会话管理") {
+                    val modes = listOf("auto", "ask", "always_new", "disabled")
+                    val modeLabels = mapOf(
+                        "auto" to "自动",
+                        "ask" to "询问",
+                        "always_new" to "总是新建",
+                        "disabled" to "禁用",
+                    )
+                    Text(
+                        "连接时 tmux 行为：${modeLabels[tmuxMode] ?: tmuxMode}",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        modes.forEach { mode ->
+                            FilterChip(
+                                selected = tmuxMode == mode,
+                                onClick = { tmuxMode = mode },
+                                label = { Text(modeLabels[mode] ?: mode) },
+                            )
+                        }
+                    }
                 }
             }
         }

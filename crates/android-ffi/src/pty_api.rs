@@ -199,3 +199,160 @@ pub fn resize_session(session_id: &str, cols: u32, rows: u32) -> Result<(), Stri
         .send(PtyCommand::Resize(cols, rows))
         .map_err(|e| format!("failed to send resize: {}", e))
 }
+
+// === tmux session management ===
+
+/// Detect if tmux is installed on the remote server (3s timeout).
+pub async fn tmux_detect(server_id: &str) -> Result<bool, String> {
+    let handle = get_ssh_handle(server_id)?;
+    Ok(termfast_core::ssh::tmux::detect_tmux(&handle).await)
+}
+
+/// List TermFast-tagged tmux sessions on the server.
+/// Returns JSON string: {"sessions":[...],"tmux_installed":bool}
+pub async fn tmux_list_sessions(server_id: &str) -> Result<String, String> {
+    let handle = get_ssh_handle(server_id)?;
+    let installed = termfast_core::ssh::tmux::detect_tmux(&handle).await;
+    if !installed {
+        return Ok(serde_json::json!({
+            "sessions": [],
+            "tmux_installed": false
+        }).to_string());
+    }
+    let sessions = termfast_core::ssh::tmux::list_termfast_sessions(&handle)
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+    let sessions_json: Vec<serde_json::Value> = sessions.iter().map(|s| {
+        serde_json::json!({
+            "name": s.name,
+            "description": s.description,
+            "created": s.created,
+            "server": s.server,
+            "size": s.size,
+            "windows": s.windows,
+            "attached_count": s.attached_count,
+            "last_activity": s.last_activity,
+        })
+    }).collect();
+    Ok(serde_json::json!({
+        "sessions": sessions_json,
+        "tmux_installed": true
+    }).to_string())
+}
+
+/// Create a new tmux session and open a PTY attached to it.
+/// Returns JSON: {"session_id":"...","tmux_session_name":"..."}
+pub async fn tmux_new_session(
+    server_id: &str,
+    session_id: &str,
+    description: &str,
+    cols: u32,
+    rows: u32,
+) -> Result<String, String> {
+    let handle = get_ssh_handle(server_id)?;
+
+    // Generate unique tmux session name — fallback to plain shell on collision
+    let tmux_name = match termfast_core::ssh::tmux::generate_unique_session_name(&handle).await {
+        Ok(name) => name,
+        Err(_) => {
+            // Fallback: open plain shell
+            open_session(server_id, session_id, cols, rows).await?;
+            return Ok(serde_json::json!({
+                "session_id": session_id,
+                "tmux_session_name": null
+            }).to_string());
+        }
+    };
+
+    // Create tmux session via exec (detached)
+    let create_cmd = termfast_core::ssh::tmux::build_new_session_exec_command(
+        &tmux_name, description, "", cols as u16, rows as u16,
+    );
+    let create_result = termfast_core::ssh::exec::exec(&handle, &create_cmd, 10)
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+    if !create_result.is_success() {
+        return Err(format!("failed to create tmux session: {}", create_result.stderr));
+    }
+
+    // Open PTY and inject `tmux attach -t <name>`
+    open_session(server_id, session_id, cols, rows).await?;
+    let attach_cmd = termfast_core::ssh::tmux::build_attach_command(&tmux_name);
+    if let Err(e) = write_session(session_id, attach_cmd.as_bytes()) {
+        log_to_kotlin("warn", &format!("failed to inject attach command: {:?}", e));
+    }
+
+    Ok(serde_json::json!({
+        "session_id": session_id,
+        "tmux_session_name": tmux_name
+    }).to_string())
+}
+
+/// Attach to an existing tmux session and open a PTY.
+/// Returns JSON: {"session_id":"...","tmux_session_name":"..."}
+pub async fn tmux_attach_session(
+    server_id: &str,
+    session_id: &str,
+    tmux_session_name: &str,
+    cols: u32,
+    rows: u32,
+) -> Result<String, String> {
+    let handle = get_ssh_handle(server_id)?;
+
+    // Verify session exists
+    let exists = termfast_core::ssh::tmux::session_exists(&handle, tmux_session_name)
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+    if !exists {
+        return Err(format!("tmux session {} not found", tmux_session_name));
+    }
+
+    // Open PTY and inject `tmux attach -t <name>`
+    open_session(server_id, session_id, cols, rows).await?;
+    let attach_cmd = termfast_core::ssh::tmux::build_attach_command(tmux_session_name);
+    if let Err(e) = write_session(session_id, attach_cmd.as_bytes()) {
+        log_to_kotlin("warn", &format!("failed to inject attach command: {:?}", e));
+    }
+
+    Ok(serde_json::json!({
+        "session_id": session_id,
+        "tmux_session_name": tmux_session_name
+    }).to_string())
+}
+
+/// Kill a tmux session by name on the remote server.
+pub async fn tmux_kill_session(server_id: &str, tmux_session_name: &str) -> Result<bool, String> {
+    let handle = get_ssh_handle(server_id)?;
+    let cmd = format!(
+        "tmux kill-session -t {} 2>/dev/null; echo \"EXIT:$?\"",
+        termfast_core::ssh::tmux::shell_escape(tmux_session_name)
+    );
+    let result = termfast_core::ssh::exec::exec(&handle, &cmd, 5)
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+    let killed = if let Some(pos) = result.stdout.rfind("EXIT:") {
+        let code_str = &result.stdout[pos + 5..].trim();
+        code_str.parse::<u32>().map(|c| c == 0).unwrap_or(false)
+    } else {
+        result.exit_code == 0
+    };
+    Ok(killed)
+}
+
+/// Helper: get SSH handle for a server.
+fn get_ssh_handle(server_id: &str) -> Result<std::sync::Arc<russh::client::Handle<termfast_core::ssh::client::SshHandler>>, String> {
+    use crate::jni::state;
+    let instance = {
+        let st = state().lock().unwrap();
+        st.servers.get(server_id).cloned()
+    };
+    let instance = instance.ok_or_else(|| format!("server {} not found", server_id))?;
+    let rt = runtime();
+    let connected = rt.block_on(instance.ssh_client.is_connected());
+    if !connected {
+        return Err("SSH not connected".to_string());
+    }
+    let handle = rt.block_on(instance.ssh_client.get_handle())
+        .ok_or_else(|| "SSH handle not available".to_string())?;
+    Ok(handle)
+}

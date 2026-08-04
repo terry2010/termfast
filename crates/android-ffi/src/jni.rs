@@ -2075,3 +2075,98 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStopPortForward(
 }
 
 // === Port Forwarding END ===
+
+// === tmux Session Management ===
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeTmuxListSessions(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let rt = runtime();
+    let result = rt.block_on(crate::pty_api::tmux_list_sessions(&sid));
+    match result {
+        Ok(json) => string_to_jstring(&mut env, &json).into_raw(),
+        Err(e) => {
+            let json = serde_json::json!({ "sessions": [], "tmux_installed": false, "error": e });
+            string_to_jstring(&mut env, &json.to_string()).into_raw()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeTmuxNewSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+    session_id: JString,
+    description: JString,
+    cols: jint,
+    rows: jint,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let session = jstring_to_string(&mut env, &session_id);
+    let desc = jstring_to_string(&mut env, &description);
+    let cols = if cols > 0 { cols as u32 } else { 80 };
+    let rows = if rows > 0 { rows as u32 } else { 24 };
+    let rt = runtime();
+    let result = rt.block_on(crate::pty_api::tmux_new_session(&sid, &session, &desc, cols, rows));
+    match result {
+        Ok(json) => string_to_jstring(&mut env, &json).into_raw(),
+        Err(e) => {
+            let json = serde_json::json!({ "session_id": session, "tmux_session_name": null, "error": e });
+            string_to_jstring(&mut env, &json.to_string()).into_raw()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeTmuxAttachSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+    session_id: JString,
+    tmux_session_name: JString,
+    cols: jint,
+    rows: jint,
+) -> jstring {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let session = jstring_to_string(&mut env, &session_id);
+    let tmux_name = jstring_to_string(&mut env, &tmux_session_name);
+    let cols = if cols > 0 { cols as u32 } else { 80 };
+    let rows = if rows > 0 { rows as u32 } else { 24 };
+    let rt = runtime();
+    let result = rt.block_on(crate::pty_api::tmux_attach_session(&sid, &session, &tmux_name, cols, rows));
+    match result {
+        Ok(json) => string_to_jstring(&mut env, &json).into_raw(),
+        Err(e) => {
+            let json = serde_json::json!({ "session_id": session, "tmux_session_name": null, "error": e });
+            string_to_jstring(&mut env, &json.to_string()).into_raw()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeTmuxKillSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_id: JString,
+    tmux_session_name: JString,
+) -> jboolean {
+    let sid = jstring_to_string(&mut env, &server_id);
+    let tmux_name = jstring_to_string(&mut env, &tmux_session_name);
+    let rt = runtime();
+    let result = rt.block_on(crate::pty_api::tmux_kill_session(&sid, &tmux_name));
+    match result {
+        Ok(killed) => bool_to_jbool(killed),
+        Err(_) => bool_to_jbool(false),
+    }
+}
+
+// === tmux Session Management END ===

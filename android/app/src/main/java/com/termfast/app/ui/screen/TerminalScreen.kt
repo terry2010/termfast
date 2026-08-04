@@ -37,6 +37,7 @@ import com.termfast.app.ui.TerminalThemes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import org.connectbot.terminal.Terminal
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -115,6 +116,9 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         mutableStateOf(s?.connected ?: false)
     }
     var connecting by remember(sessionId) { mutableStateOf(!(connected)) }
+    // tmux picker state
+    var showTmuxPicker by remember(sessionId) { mutableStateOf(false) }
+    var tmuxMode by remember(sessionId) { mutableStateOf("ask") }
     // Was this terminal already connected when the screen was entered?
     // Used to suppress the "new terminal" hint when switching between sessions.
     val wasAlreadyConnected by remember(sessionId) { mutableStateOf(connected) }
@@ -185,16 +189,107 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                         return@withContext
                     }
                 }
-                // Open PTY terminal (80x24 default)
-                val ok = repo.openTerminal(serverId, sessionId, 80, 24)
-                withContext(Dispatchers.Main) {
-                    if (ok) {
-                        connected = true
-                        connecting = false
-                        TerminalSessionManager.setConnectedBySession(sessionId, true)
-                    } else {
-                        errorMsg = "无法打开终端会话"
-                        connecting = false
+                // Read tmux_mode from config
+                val config = repo.getConfig()
+                val mode = config?.servers?.find { it.id == serverId }?.tmux_mode ?: "ask"
+                withContext(Dispatchers.Main) { tmuxMode = mode }
+
+                when (mode) {
+                    "disabled" -> {
+                        // Plain shell, no tmux
+                        val ok = repo.openTerminal(serverId, sessionId, 80, 24)
+                        withContext(Dispatchers.Main) {
+                            if (ok) {
+                                connected = true
+                                connecting = false
+                                TerminalSessionManager.setConnectedBySession(sessionId, true)
+                            } else {
+                                errorMsg = "无法打开终端会话"
+                                connecting = false
+                            }
+                        }
+                    }
+                    "always_new" -> {
+                        // Always create new tmux session
+                        val result = repo.tmuxNewSession(serverId, sessionId, "", 80, 24)
+                        withContext(Dispatchers.Main) {
+                            connected = true
+                            connecting = false
+                            TerminalSessionManager.setConnectedBySession(sessionId, true)
+                        }
+                    }
+                    "auto" -> {
+                        // Auto: if existing sessions, attach to most recent; else create new
+                        val json = repo.tmuxListSessions(serverId)
+                        try {
+                            val resp = Json.decodeFromString<TmuxListResponse>(json)
+                            if (resp.tmux_installed && resp.sessions.isNotEmpty()) {
+                                val mostRecent = resp.sessions.maxByOrNull { it.last_activity }
+                                if (mostRecent != null) {
+                                    repo.tmuxAttachSession(serverId, sessionId, mostRecent.name, 80, 24)
+                                } else {
+                                    repo.tmuxNewSession(serverId, sessionId, "", 80, 24)
+                                }
+                            } else if (resp.tmux_installed) {
+                                repo.tmuxNewSession(serverId, sessionId, "", 80, 24)
+                            } else {
+                                // tmux not installed, plain shell
+                                repo.openTerminal(serverId, sessionId, 80, 24)
+                            }
+                        } catch (e: Exception) {
+                            repo.openTerminal(serverId, sessionId, 80, 24)
+                        }
+                        withContext(Dispatchers.Main) {
+                            connected = true
+                            connecting = false
+                            TerminalSessionManager.setConnectedBySession(sessionId, true)
+                        }
+                    }
+                    else -> {
+                        // "ask" mode — show picker dialog
+                        val json = repo.tmuxListSessions(serverId)
+                        try {
+                            val resp = Json.decodeFromString<TmuxListResponse>(json)
+                            if (resp.tmux_installed && resp.sessions.isNotEmpty()) {
+                                withContext(Dispatchers.Main) {
+                                    showTmuxPicker = true
+                                    connecting = false
+                                }
+                            } else if (resp.tmux_installed) {
+                                // tmux installed but no sessions — create new
+                                repo.tmuxNewSession(serverId, sessionId, "", 80, 24)
+                                withContext(Dispatchers.Main) {
+                                    connected = true
+                                    connecting = false
+                                    TerminalSessionManager.setConnectedBySession(sessionId, true)
+                                }
+                            } else {
+                                // tmux not installed, plain shell
+                                val ok = repo.openTerminal(serverId, sessionId, 80, 24)
+                                withContext(Dispatchers.Main) {
+                                    if (ok) {
+                                        connected = true
+                                        connecting = false
+                                        TerminalSessionManager.setConnectedBySession(sessionId, true)
+                                    } else {
+                                        errorMsg = "无法打开终端会话"
+                                        connecting = false
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            val ok = repo.openTerminal(serverId, sessionId, 80, 24)
+                            withContext(Dispatchers.Main) {
+                                if (ok) {
+                                    connected = true
+                                    connecting = false
+                                    TerminalSessionManager.setConnectedBySession(sessionId, true)
+                                } else {
+                                    errorMsg = "无法打开终端会话"
+                                    connecting = false
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -748,6 +843,47 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     // input directly. The old hidden BasicTextField is no longer needed.
     // When useSystemKeyboard is true, Terminal's keyboardEnabled is set to
     // true (see the Terminal() calls above), and termlib manages focus + IME.
+
+    // === tmux session picker dialog ===
+    TmuxSessionPickerDialog(
+        visible = showTmuxPicker,
+        serverId = serverId,
+        onAttach = { newSessionId, tmuxName ->
+            showTmuxPicker = false
+            // Navigate to the new terminal session
+            navController.navigate("terminal/$serverId/$newSessionId") {
+                popUpTo("terminal/$serverId")
+            }
+        },
+        onCreate = { newSessionId, desc ->
+            showTmuxPicker = false
+            navController.navigate("terminal/$serverId/$newSessionId") {
+                popUpTo("terminal/$serverId")
+            }
+        },
+        onSkip = {
+            showTmuxPicker = false
+            scope.launch {
+                withContext(Dispatchers.IO) {
+                    val ok = repo.openTerminal(serverId, sessionId, 80, 24)
+                    withContext(Dispatchers.Main) {
+                        if (ok) {
+                            connected = true
+                            connecting = false
+                            TerminalSessionManager.setConnectedBySession(sessionId, true)
+                        } else {
+                            errorMsg = "无法打开终端会话"
+                            connecting = false
+                        }
+                    }
+                }
+            }
+        },
+        onDismiss = {
+            showTmuxPicker = false
+            connecting = false
+        },
+    )
 
     // === Session action bottom sheet ===
     if (showSheet) {
