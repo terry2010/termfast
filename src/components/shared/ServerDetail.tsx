@@ -736,6 +736,33 @@ export function ServerDetail() {
     maybeDisconnectIfIdle(serverId, currentTabs.length - 1);
   };
 
+  // Kill the tmux session on the server, then close the tab
+  const killTmuxSession = (tabId: string) => {
+    const serverId = selectedId || "";
+    const currentTabs = terminalTabsByServer[serverId] || [];
+    const tab = currentTabs.find((tt) => tt.id === tabId);
+    if (!tab || !tab.tmuxSessionName) return;
+    const tmuxName = tab.tmuxSessionName;
+    ipcInvoke("ipc_tmux_kill_session", {
+      server_id: serverId,
+      tmux_session_name: tmuxName,
+    })
+      .then(() => {
+        // Close the tab after killing the session
+        if (tab.sessionId)
+          ipcInvoke("ipc_terminal_close", { session_id: tab.sessionId }).catch(
+            () => {},
+          );
+        removeTerminalTab(serverId, tabId);
+        maybeDisconnectIfIdle(serverId, currentTabs.length - 1);
+      })
+      .catch((e) => {
+        toast.error(t("server.tmux_kill_failed"), {
+          description: formatIpcError(e),
+        });
+      });
+  };
+
   // Close all disconnected tabs
   const closeDisconnectedTabs = () => {
     const serverId = selectedId || "";
@@ -912,6 +939,11 @@ export function ServerDetail() {
         danger: true,
       },
       { separator: true },
+      ...(tab.tmuxSessionName ? [{
+        label: t("tab.kill_tmux_session"),
+        onClick: () => killTmuxSession(tabId),
+        danger: true,
+      }] : []),
       { label: t("tab.close_session"), onClick: () => closeTab(tabId) },
       {
         label: t("tab.close_disconnected_sessions"),
@@ -1630,7 +1662,7 @@ export function ServerDetail() {
                         {t("server.tmux_mode_label")}
                       </span>
                       <div className="flex items-center gap-1 bg-[#F2F2F7]/80 dark:bg-[#2C2C2E]/80 rounded-lg p-0.5">
-                        {(["auto", "ask", "always_new"] as const).map((mode) => (
+                        {(["auto", "ask", "always_new", "disabled"] as const).map((mode) => (
                           <button
                             key={mode}
                             onClick={() => {

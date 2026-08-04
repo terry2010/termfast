@@ -262,7 +262,7 @@ pub fn build_kill_session_command(session_name: &str) -> String {
 
 /// Escape a string for safe use in a shell command argument.
 /// Wraps in single quotes and escapes any embedded single quotes.
-fn shell_escape(s: &str) -> String {
+pub fn shell_escape(s: &str) -> String {
     // Replace ' with '\'' (close quote, escaped quote, reopen quote)
     let escaped = s.replace('\'', "'\\''");
     format!("'{}'", escaped)

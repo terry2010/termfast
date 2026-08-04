@@ -280,8 +280,9 @@ fn extract_tmux_target(cmd: &str) -> Option<String> {
     let after_t = after_t.trim_start();
     if after_t.starts_with('\'') {
         // Quoted: 'name'
-        let end = after_t[1..].find('\'')?;
-        Some(after_t[1..1 + end].to_string())
+        let inner = after_t.strip_prefix('\'')?;
+        let end = inner.find('\'')?;
+        Some(inner[..end].to_string())
     } else {
         // Unquoted: take until whitespace
         let end = after_t.find(|c: char| c.is_whitespace()).unwrap_or(after_t.len());

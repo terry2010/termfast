@@ -288,6 +288,7 @@ pub fn run() {
             ipc_tmux_list_sessions,
             ipc_tmux_new_session,
             ipc_tmux_attach_session,
+            ipc_tmux_kill_session,
             ipc_set_trigger_overrides,
             ipc_get_trigger_overrides,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
@@ -1454,6 +1455,24 @@ async fn ipc_tmux_attach_session(
             .insert(session_id.to_string(), on_output);
     }
     Ok(result)
+}
+
+#[tauri::command]
+async fn ipc_tmux_kill_session(
+    state: tauri::State<'_, AppState>,
+    server_id: String,
+    tmux_session_name: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "server_id": server_id,
+        "tmux_session_name": tmux_session_name,
+    });
+    forward_to_daemon(
+        &state,
+        termfast_daemon::proto::Action::TmuxKillSession,
+        params,
+    )
+    .await
 }
 
 #[tauri::command]

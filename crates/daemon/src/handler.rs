@@ -90,6 +90,7 @@ pub async fn handle_request(request: &Request, state: &DaemonState) -> Response 
         Action::TmuxListSessions => handle_tmux_list_sessions(state, &request.params).await,
         Action::TmuxNewSession => handle_tmux_new_session(state, &request.params).await,
         Action::TmuxAttachSession => handle_tmux_attach_session(state, &request.params).await,
+        Action::TmuxKillSession => handle_tmux_kill_session(state, &request.params).await,
         Action::SetTriggerOverrides => handle_set_trigger_overrides(state, &request.params).await,
         Action::GetTriggerOverrides => handle_get_trigger_overrides(state, &request.params).await,
 
@@ -3432,10 +3433,21 @@ async fn handle_tmux_new_session(state: &DaemonState, params: &serde_json::Value
         .await
         .ok_or_else(|| IpcError::new(ErrorCode::SshDisconnected, "SSH handle not available"))?;
 
-    // Generate unique tmux session name
-    let tmux_name = termfast_core::ssh::tmux::generate_unique_session_name(&ssh_handle)
-        .await
-        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+    // Generate unique tmux session name — fallback to plain shell on collision
+    let tmux_name = match termfast_core::ssh::tmux::generate_unique_session_name(&ssh_handle).await {
+        Ok(name) => name,
+        Err(_) => {
+            // 3 collisions (extremely unlikely) — fallback to plain shell
+            let (session_id, initial_output) = state
+                .terminal_manager
+                .open(&ssh_handle, server_id, cols, rows)
+                .await
+                .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
+            use base64::Engine;
+            let initial_b64 = base64::engine::general_purpose::STANDARD.encode(&initial_output);
+            return Ok(serde_json::json!({ "session_id": session_id, "initial_output": initial_b64, "tmux_session_name": null }));
+        }
+    };
 
     // Get server name for @termfast_server
     let config = state.config_manager.lock().await.get().await;
@@ -3548,6 +3560,53 @@ async fn handle_tmux_attach_session(state: &DaemonState, params: &serde_json::Va
     use base64::Engine;
     let initial_b64 = base64::engine::general_purpose::STANDARD.encode(&initial_output);
     Ok(serde_json::json!({ "session_id": session_id, "initial_output": initial_b64, "tmux_session_name": tmux_session_name }))
+}
+
+/// Kill a tmux session by name via SSH exec.
+/// Params: { server_id, tmux_session_name }
+/// Returns: { success: bool }
+async fn handle_tmux_kill_session(state: &DaemonState, params: &serde_json::Value) -> HandlerResult {
+    let server_id = params
+        .get("server_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing server_id"))?;
+    let tmux_name = params
+        .get("tmux_session_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing tmux_session_name"))?;
+
+    let server = state
+        .server_manager
+        .get_server(server_id)
+        .await
+        .map_err(|e| IpcError::new(ErrorCode::ServerNotFound, e.to_string()))?;
+
+    if !server.ssh_client.is_connected().await {
+        return Err(IpcError::new(ErrorCode::SshDisconnected, "server not connected"));
+    }
+
+    let ssh_handle = server
+        .ssh_client
+        .get_handle()
+        .await
+        .ok_or_else(|| IpcError::new(ErrorCode::SshDisconnected, "SSH handle not available"))?;
+
+    let cmd = format!(
+        "tmux kill-session -t {} 2>/dev/null; echo \"EXIT:$?\"",
+        termfast_core::ssh::tmux::shell_escape(tmux_name)
+    );
+    let result = termfast_core::ssh::exec::exec(&ssh_handle, &cmd, 5).await
+        .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
+
+    // Parse EXIT:N marker
+    let killed = if let Some(pos) = result.stdout.rfind("EXIT:") {
+        let code_str = &result.stdout[pos + 5..].trim();
+        code_str.parse::<u32>().map(|c| c == 0).unwrap_or(false)
+    } else {
+        result.exit_code == 0
+    };
+
+    Ok(serde_json::json!({ "success": killed }))
 }
 
 /// Set per-session exec_in_terminal overrides (runtime, not persisted)
@@ -4045,6 +4104,36 @@ mod tests {
         let state = test_state();
         let params = serde_json::json!({ "server_id": "nonexistent", "tmux_session_name": "test" });
         let result = handle_tmux_attach_session(&state, &params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::ServerNotFound);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_kill_session_missing_server_id() {
+        let state = test_state();
+        let params = serde_json::json!({ "tmux_session_name": "test" });
+        let result = handle_tmux_kill_session(&state, &params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_kill_session_missing_tmux_name() {
+        let state = test_state();
+        let params = serde_json::json!({ "server_id": "srv1" });
+        let result = handle_tmux_kill_session(&state, &params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn test_tmux_kill_session_server_not_found() {
+        let state = test_state();
+        let params = serde_json::json!({ "server_id": "nonexistent", "tmux_session_name": "test" });
+        let result = handle_tmux_kill_session(&state, &params).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, ErrorCode::ServerNotFound);

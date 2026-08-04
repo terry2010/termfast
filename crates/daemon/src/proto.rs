@@ -149,6 +149,8 @@ pub enum Action {
     TmuxNewSession,
     /// Attach to an existing tmux session and open terminal
     TmuxAttachSession,
+    /// Kill a tmux session by name (via SSH exec)
+    TmuxKillSession,
 
     // Cloud sync — upload/download encrypted config to cloud providers
     CloudSyncGetAuthUrl,
@@ -390,6 +392,7 @@ mod tests {
             Action::TmuxListSessions,
             Action::TmuxNewSession,
             Action::TmuxAttachSession,
+            Action::TmuxKillSession,
         ];
         for action in actions {
             let json = serde_json::to_string(&action).unwrap();

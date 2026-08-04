@@ -100,7 +100,7 @@ describe("TmuxSessionPicker", () => {
       <TmuxSessionPicker {...defaultProps} />,
     );
     await waitFor(() => {
-      expect(getByText("my dev session")).toBeTruthy();
+      expect(getByText("termfast_abc")).toBeTruthy();
     });
     // Verify all 5 fields are rendered (验收 #3)
     // Fields are rendered as "label: value" so use partial match
@@ -148,7 +148,7 @@ describe("TmuxSessionPicker", () => {
       <TmuxSessionPicker {...defaultProps} />,
     );
     await waitFor(() => {
-      expect(getByText("test session")).toBeTruthy();
+      expect(getByText("termfast_abc")).toBeTruthy();
     });
     fireEvent.click(getByText("server.tmux_attach"));
     await waitFor(() => {
@@ -158,7 +158,7 @@ describe("TmuxSessionPicker", () => {
 
   it("hides create form when cancel button is clicked", async () => {
     mockIpcInvoke.mockResolvedValue({ sessions: [], tmux_installed: true });
-    const { getByText } = render(
+    const { getByText, queryByText } = render(
       <TmuxSessionPicker {...defaultProps} />,
     );
     await waitFor(() => {
@@ -246,7 +246,7 @@ describe("TmuxSessionPicker", () => {
       <TmuxSessionPicker {...defaultProps} />,
     );
     await waitFor(() => {
-      expect(getByText("test")).toBeTruthy();
+      expect(getByText("termfast_abc")).toBeTruthy();
     });
     fireEvent.click(getByText("server.tmux_skip"));
     expect(defaultProps.onSkipTmux).toHaveBeenCalledTimes(1);
@@ -273,7 +273,7 @@ describe("TmuxSessionPicker", () => {
       />,
     );
     await waitFor(() => {
-      expect(getByText("already open session")).toBeTruthy();
+      expect(getByText("termfast_abc")).toBeTruthy();
     });
     // Should show "goto tab" button, not "restore"
     expect(getByText("server.tmux_goto_tab")).toBeTruthy();
