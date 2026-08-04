@@ -137,6 +137,9 @@ dependencies {
     // Terminal emulator (ConnectBot termlib — libvterm via JNI + Compose Canvas)
     implementation("org.connectbot:termlib:0.1.0")
 
+    // WebSocket client (tunnel to relay server for remote terminal sharing)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 

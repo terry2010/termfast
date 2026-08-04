@@ -3,9 +3,11 @@
 //! Can be embedded in Tauri (GUI mode) or run standalone (--daemon mode).
 
 pub mod frame;
+pub mod frame_crypto;
 pub mod handler;
 pub mod lock;
 pub mod proto;
+pub mod remote_frame;
 pub mod server;
 pub mod terminal;
 

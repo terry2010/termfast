@@ -104,6 +104,12 @@ object RustBridge {
     external fun nativePairingComplete(pairingId: String, phonePubkey: String, deviceId: String): String
     external fun nativePairingDownloadConfig(pairingJwt: String): String
 
+    // --- Remote Terminal (WebSocket tunnel) ---
+    external fun nativeRequestRemoteTerminalList(pairingJwt: String): String
+    external fun nativeSubscribeRemoteTerminal(pairingJwt: String, sessionId: String): Boolean
+    external fun nativeUnsubscribeRemoteTerminal(sessionId: String): Boolean
+    external fun nativeSendRemoteInput(sessionId: String, data: ByteArray): Boolean
+
     // --- Cloud Sync ---
     external fun nativeCloudSyncAuthUrl(provider: String): String
     external fun nativeCloudSyncExchangeCode(code: String): String

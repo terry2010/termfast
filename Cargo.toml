@@ -75,7 +75,6 @@ termfast-credential = { path = "crates/credential" }
 termfast-daemon = { path = "crates/daemon" }
 termfast-desktop = { path = "crates/desktop" }
 termfast-cloud-sync = { path = "crates/cloud-sync" }
-termfast-android-ffi = { path = "crates/android-ffi" }
 termfast-test-utils = { path = "crates/test-utils" }
 
 # Test dependencies

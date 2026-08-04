@@ -7159,8 +7159,10 @@ dependencies = [
 name = "termfast-daemon"
 version = "0.4.7"
 dependencies = [
+ "aes-gcm 0.10.3",
  "anyhow",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "cron",
  "directories",

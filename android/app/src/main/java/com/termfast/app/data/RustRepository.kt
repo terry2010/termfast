@@ -182,4 +182,14 @@ object RustRepository {
         RustBridge.nativePairingComplete(pairingId, phonePubkey, deviceId)
     fun pairingDownloadConfig(pairingJwt: String): String =
         RustBridge.nativePairingDownloadConfig(pairingJwt)
+
+    // --- Remote Terminal ---
+    fun requestRemoteTerminalList(pairingJwt: String): String =
+        RustBridge.nativeRequestRemoteTerminalList(pairingJwt)
+    fun subscribeRemoteTerminal(pairingJwt: String, sessionId: String): Boolean =
+        RustBridge.nativeSubscribeRemoteTerminal(pairingJwt, sessionId)
+    fun unsubscribeRemoteTerminal(sessionId: String): Boolean =
+        RustBridge.nativeUnsubscribeRemoteTerminal(sessionId)
+    fun sendRemoteInput(sessionId: String, data: ByteArray): Boolean =
+        RustBridge.nativeSendRemoteInput(sessionId, data)
 }

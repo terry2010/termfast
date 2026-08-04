@@ -47,6 +47,22 @@ struct TerminalSession {
     /// SSH handle (Some for SSH terminals, None for local)
     /// Used by resize_and_notify to exec tmux set-option on resize
     ssh_handle: Option<Arc<client::Handle<termfast_core::ssh::client::SshHandler>>>,
+    /// Display name for LIST_REQUEST (local label or server name + index)
+    name: String,
+    /// Ring buffer of recent output (256KB) for remote subscriber history recovery
+    history: Arc<std::sync::RwLock<crate::remote_frame::RingBuffer>>,
+    /// Remote subscribers (mobile clients via relay tunnel)
+    remote_subscribers: Arc<std::sync::Mutex<Vec<RemoteSubscriber>>>,
+    /// Current PTY size (cols, rows) — read by SUBSCRIBE, updated by resize
+    pty_size: Arc<std::sync::Mutex<(u16, u16)>>,
+}
+
+/// A remote subscriber = one mobile client's output channel
+pub struct RemoteSubscriber {
+    pub pairing_id: String,
+    pub terminal_id: u32,
+    pub sender: tokio::sync::mpsc::Sender<crate::remote_frame::Frame>,
+    pub lagging: bool,
 }
 
 // === SECTION 1 END ===
@@ -446,6 +462,10 @@ impl TerminalManager {
             kill_child: None,
             tmux_session_name: None,
             ssh_handle: Some(Arc::clone(ssh_handle)),
+            name: format!("{} #?", server_id),
+            history: Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024))),
+            remote_subscribers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pty_size: Arc::new(std::sync::Mutex::new((cols as u16, rows as u16))),
         };
         self.sessions
             .lock()
@@ -602,6 +622,10 @@ impl TerminalManager {
             kill_child: Some(killer),
             tmux_session_name: None,
             ssh_handle: None,
+            name: "Local".to_string(),
+            history: Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024))),
+            remote_subscribers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pty_size: Arc::new(std::sync::Mutex::new((cols as u16, rows as u16))),
         };
         self.sessions
             .lock()
@@ -926,9 +950,148 @@ impl TerminalManager {
         let sessions = self.sessions.lock().await;
         sessions.values().any(|s| s.server_id == server_id)
     }
+
+    /// List all session infos for remote LIST_REQUEST.
+    pub async fn list_session_infos(&self) -> Vec<SessionInfo> {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .iter()
+            .map(|(sid, s)| SessionInfo {
+                session_id: sid.clone(),
+                name: s.name.clone(),
+                server_id: s.server_id.clone(),
+                is_local: s.server_id == "__local__",
+                tmux_session_name: s.tmux_session_name.clone(),
+            })
+            .collect()
+    }
+
+    /// Subscribe a remote client to a terminal session.
+    /// Returns Ok(()) with the initial PTY size and history snapshot.
+    pub async fn subscribe_remote(
+        &self,
+        session_id: &str,
+        subscriber: RemoteSubscriber,
+    ) -> Result<((u16, u16), Vec<bytes::Bytes>), String> {
+        let sessions = self.sessions.lock().await;
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("session {} not found", session_id))?;
+        let pty_size = *session.pty_size.lock().unwrap();
+        let history: Vec<bytes::Bytes> = {
+            let hb = session.history.read().unwrap();
+            hb.iter().cloned().collect()
+        };
+        session
+            .remote_subscribers
+            .lock()
+            .unwrap()
+            .push(subscriber);
+        Ok((pty_size, history))
+    }
+
+    /// Unsubscribe a remote client from a terminal session.
+    pub async fn unsubscribe_remote(&self, session_id: &str, pairing_id: &str) {
+        let sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get(session_id) {
+            let mut subs = session.remote_subscribers.lock().unwrap();
+            subs.retain(|s| s.pairing_id != pairing_id);
+        }
+    }
+
+    /// Broadcast output to all remote subscribers of a session.
+    /// Called by forward_and_broadcast after writing to ring buffer.
+    pub async fn broadcast_to_subscribers(&self, session_id: &str, data: &[u8]) {
+        let sessions = self.sessions.lock().await;
+        let session = match sessions.get(session_id) {
+            Some(s) => s,
+            None => return,
+        };
+        // Write to ring buffer
+        session
+            .history
+            .write()
+            .unwrap()
+            .push(bytes::Bytes::from(data.to_vec()));
+        // Broadcast to subscribers
+        let mut subs = session.remote_subscribers.lock().unwrap();
+        let chunks: Vec<&[u8]> = data.chunks(crate::remote_frame::MAX_OUTPUT_DATA).collect();
+        for sub in subs.iter_mut() {
+            if sub.lagging {
+                if sub.sender.capacity() > 0 {
+                    let history = session.history.read().unwrap();
+                    let all_bytes: Vec<u8> = history.iter().flatten().cloned().collect();
+                    let hist_chunks: Vec<&[u8]> =
+                        all_bytes.chunks(crate::remote_frame::MAX_HISTORY_DATA).collect();
+                    let total = hist_chunks.len();
+                    for (seq, chunk) in hist_chunks.iter().enumerate() {
+                        let is_last = seq == total - 1;
+                        let frame = crate::remote_frame::Frame::history(
+                            sub.terminal_id,
+                            seq as u32,
+                            is_last,
+                            chunk,
+                        );
+                        let _ = sub.sender.try_send(frame);
+                    }
+                    sub.lagging = false;
+                }
+                continue;
+            }
+            for chunk in &chunks {
+                let frame = crate::remote_frame::Frame::output(sub.terminal_id, chunk);
+                match sub.sender.try_send(frame) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        sub.lagging = true;
+                        break;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
+        }
+    }
+
+    /// Forward remote input to a terminal session.
+    pub async fn remote_input(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
+        self.input(session_id, data).await
+    }
+
+    /// Get current PTY size for a session.
+    pub async fn get_pty_size(&self, session_id: &str) -> Option<(u16, u16)> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(session_id).map(|s| *s.pty_size.lock().unwrap())
+    }
+
+    /// Update PTY size (called on resize).
+    pub async fn update_pty_size(&self, session_id: &str, cols: u16, rows: u16) {
+        let sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get(session_id) {
+            *session.pty_size.lock().unwrap() = (cols, rows);
+        }
+    }
+
+    /// Get history snapshot for REDRAW_REQUEST.
+    pub async fn get_history(&self, session_id: &str) -> Option<Vec<bytes::Bytes>> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(session_id).map(|s| {
+            let hb = s.history.read().unwrap();
+            hb.iter().cloned().collect()
+        })
+    }
 }
 
 // === SECTION 2 END ===
+
+/// Session info for remote LIST_RESPONSE.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub name: String,
+    pub server_id: String,
+    pub is_local: bool,
+    pub tmux_session_name: Option<String>,
+}
 
 async fn try_open_pty_or_fallback(
     ssh_handle: &client::Handle<termfast_core::ssh::client::SshHandler>,
