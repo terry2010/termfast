@@ -111,6 +111,12 @@ impl Frame {
         Self::new(OK, terminal_id, Vec::new())
     }
 
+    /// Construct a NOTIFY frame with JSON payload.
+    /// payload = JSON {event_type, title, body, terminal_id, timestamp, ...}
+    pub fn notify(terminal_id: u32, json: &str) -> Self {
+        Self::new(NOTIFY, terminal_id, json.as_bytes().to_vec())
+    }
+
     /// Serialize frame to bytes (for encryption + transmission).
     pub fn serialize(&self) -> Vec<u8> {
         let payload_len = (self.payload.len() as u32) | (if self.compressed_flag { 0x80000000 } else { 0 });

@@ -139,12 +139,13 @@ private fun parseTerminalList(json: String): List<TerminalEntry> {
         val array = org.json.JSONArray(json)
         for (i in 0 until array.length()) {
             val obj = array.getJSONObject(i)
+            val tmuxSession = obj.optString("tmux_session_name", "")
             entries.add(TerminalEntry(
                 id = obj.optString("session_id"),
                 name = obj.optString("name", "Terminal"),
                 serverId = obj.optString("server_id", ""),
                 isLocal = obj.optBoolean("is_local", false),
-                tmuxSessionName = obj.optString("tmux_session_name", null as String?),
+                tmuxSessionName = tmuxSession.ifEmpty { null },
             ))
         }
     } catch (e: Exception) {

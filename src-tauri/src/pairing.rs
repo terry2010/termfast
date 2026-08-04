@@ -114,3 +114,35 @@ pub async fn list_devices(token: &str) -> Result<Value, String> {
     }
     Ok(body)
 }
+
+pub async fn send_push(
+    token: &str,
+    pairing_id: &str,
+    event_type: &str,
+    title: &str,
+    body: &str,
+    terminal_id: Option<&str>,
+) -> Result<Value, String> {
+    let mut payload = serde_json::json!({
+        "pairing_id": pairing_id,
+        "event_type": event_type,
+        "title": title,
+        "body": body,
+    });
+    if let Some(tid) = terminal_id {
+        payload["terminal_id"] = serde_json::Value::String(tid.to_string());
+    }
+    let resp = client()
+        .post(format!("{}/push", BACKEND_URL))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(body.get("error").and_then(|v| v.as_str()).unwrap_or("error").to_string());
+    }
+    Ok(body)
+}

@@ -298,6 +298,7 @@ pub fn run() {
             ipc_pairing_revoke,
             ipc_pairing_upload_config,
             ipc_pairing_list_devices,
+            ipc_push_send,
             ipc_set_trigger_overrides,
             ipc_get_trigger_overrides,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
@@ -2015,6 +2016,26 @@ async fn ipc_pairing_upload_config(pairing_jwt: String, ciphertext: String, nonc
 #[tauri::command]
 async fn ipc_pairing_list_devices(token: String) -> Result<serde_json::Value, String> {
     pairing::list_devices(&token).await
+}
+
+#[tauri::command]
+async fn ipc_push_send(
+    token: String,
+    pairing_id: String,
+    event_type: String,
+    title: String,
+    body: String,
+    terminal_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    pairing::send_push(
+        &token,
+        &pairing_id,
+        &event_type,
+        &title,
+        &body,
+        terminal_id.as_deref(),
+    )
+    .await
 }
 
 // === SECTION: Pairing IPC commands END ===
