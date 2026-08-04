@@ -2170,3 +2170,91 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeTmuxKillSession(
 }
 
 // === tmux Session Management END ===
+
+// === Pairing (HTTP client to Go backend) ===
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativePairingRegister(
+    mut env: JNIEnv,
+    _class: JClass,
+    email: JString,
+    password: JString,
+) -> jstring {
+    let email = jstring_to_string(&mut env, &email);
+    let password = jstring_to_string(&mut env, &password);
+    let rt = runtime();
+    let result = rt.block_on(crate::pairing_api::register(&email, &password));
+    match result {
+        Ok(json) => string_to_jstring(&mut env, &json).into_raw(),
+        Err(e) => {
+            let json = serde_json::json!({ "error": e }).to_string();
+            string_to_jstring(&mut env, &json).into_raw()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativePairingLogin(
+    mut env: JNIEnv,
+    _class: JClass,
+    email: JString,
+    password: JString,
+) -> jstring {
+    let email = jstring_to_string(&mut env, &email);
+    let password = jstring_to_string(&mut env, &password);
+    let rt = runtime();
+    let result = rt.block_on(crate::pairing_api::login(&email, &password));
+    match result {
+        Ok(json) => string_to_jstring(&mut env, &json).into_raw(),
+        Err(e) => {
+            let json = serde_json::json!({ "error": e }).to_string();
+            string_to_jstring(&mut env, &json).into_raw()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativePairingComplete(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    phone_pubkey: JString,
+    device_id: JString,
+) -> jstring {
+    let pairing_id = jstring_to_string(&mut env, &pairing_id);
+    let phone_pubkey = jstring_to_string(&mut env, &phone_pubkey);
+    let device_id = jstring_to_string(&mut env, &device_id);
+    let rt = runtime();
+    let result = rt.block_on(crate::pairing_api::pair_complete(&pairing_id, &phone_pubkey, &device_id));
+    match result {
+        Ok(json) => string_to_jstring(&mut env, &json).into_raw(),
+        Err(e) => {
+            let json = serde_json::json!({ "error": e }).to_string();
+            string_to_jstring(&mut env, &json).into_raw()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativePairingDownloadConfig(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_jwt: JString,
+) -> jstring {
+    let jwt = jstring_to_string(&mut env, &pairing_jwt);
+    let rt = runtime();
+    let result = rt.block_on(crate::pairing_api::download_config(&jwt));
+    match result {
+        Ok(json) => string_to_jstring(&mut env, &json).into_raw(),
+        Err(e) => {
+            let json = serde_json::json!({ "error": e }).to_string();
+            string_to_jstring(&mut env, &json).into_raw()
+        }
+    }
+}
+
+// === Pairing END ===

@@ -43,6 +43,7 @@ chrono = { workspace = true }
 sys-locale = "0.3.2"
 os_info = "3"
 whoami = "2"
+reqwest = { workspace = true, features = ["json"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "4", features = ["apple-native-keyring-store"] }

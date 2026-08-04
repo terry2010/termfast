@@ -98,6 +98,12 @@ object RustBridge {
     external fun nativeTmuxAttachSession(serverId: String, sessionId: String, tmuxSessionName: String, cols: Int, rows: Int): String
     external fun nativeTmuxKillSession(serverId: String, tmuxSessionName: String): Boolean
 
+    // --- Pairing (HTTP client to Go backend) ---
+    external fun nativePairingRegister(email: String, password: String): String
+    external fun nativePairingLogin(email: String, password: String): String
+    external fun nativePairingComplete(pairingId: String, phonePubkey: String, deviceId: String): String
+    external fun nativePairingDownloadConfig(pairingJwt: String): String
+
     // --- Cloud Sync ---
     external fun nativeCloudSyncAuthUrl(provider: String): String
     external fun nativeCloudSyncExchangeCode(code: String): String

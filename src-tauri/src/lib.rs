@@ -6,6 +6,7 @@
 
 mod daemon_embed;
 mod credential_manager;
+mod pairing;
 
 use credential_manager::{credential_file_path, CredentialState};
 use daemon_embed::EmbeddedDaemon;
@@ -289,6 +290,14 @@ pub fn run() {
             ipc_tmux_new_session,
             ipc_tmux_attach_session,
             ipc_tmux_kill_session,
+            // Pairing
+            ipc_pairing_register,
+            ipc_pairing_login,
+            ipc_pairing_initiate,
+            ipc_pairing_status,
+            ipc_pairing_revoke,
+            ipc_pairing_upload_config,
+            ipc_pairing_list_devices,
             ipc_set_trigger_overrides,
             ipc_get_trigger_overrides,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
@@ -1970,3 +1979,42 @@ async fn ipc_get_port_forward_status(
 }
 
 // === SECTION: Port forwarding IPC commands END ===
+
+// === SECTION: Pairing IPC commands ===
+
+#[tauri::command]
+async fn ipc_pairing_register(email: String, password: String) -> Result<serde_json::Value, String> {
+    pairing::auth_register(&email, &password).await
+}
+
+#[tauri::command]
+async fn ipc_pairing_login(email: String, password: String) -> Result<serde_json::Value, String> {
+    pairing::auth_login(&email, &password).await
+}
+
+#[tauri::command]
+async fn ipc_pairing_initiate(token: String, desktop_device_id: String) -> Result<serde_json::Value, String> {
+    pairing::pair_initiate(&token, &desktop_device_id).await
+}
+
+#[tauri::command]
+async fn ipc_pairing_status(token: String, pairing_id: String) -> Result<serde_json::Value, String> {
+    pairing::pair_status(&token, &pairing_id).await
+}
+
+#[tauri::command]
+async fn ipc_pairing_revoke(token: String, pairing_id: String) -> Result<serde_json::Value, String> {
+    pairing::pair_revoke(&token, &pairing_id).await
+}
+
+#[tauri::command]
+async fn ipc_pairing_upload_config(pairing_jwt: String, ciphertext: String, nonce: String) -> Result<serde_json::Value, String> {
+    pairing::sync_upload_config(&pairing_jwt, &ciphertext, &nonce).await
+}
+
+#[tauri::command]
+async fn ipc_pairing_list_devices(token: String) -> Result<serde_json::Value, String> {
+    pairing::list_devices(&token).await
+}
+
+// === SECTION: Pairing IPC commands END ===

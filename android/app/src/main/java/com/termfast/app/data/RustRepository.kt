@@ -172,4 +172,14 @@ object RustRepository {
         RustBridge.nativeTmuxAttachSession(serverId, sessionId, tmuxSessionName, cols, rows)
     fun tmuxKillSession(serverId: String, tmuxSessionName: String): Boolean =
         RustBridge.nativeTmuxKillSession(serverId, tmuxSessionName)
+
+    // --- Pairing ---
+    fun pairingRegister(email: String, password: String): String =
+        RustBridge.nativePairingRegister(email, password)
+    fun pairingLogin(email: String, password: String): String =
+        RustBridge.nativePairingLogin(email, password)
+    fun pairingComplete(pairingId: String, phonePubkey: String, deviceId: String): String =
+        RustBridge.nativePairingComplete(pairingId, phonePubkey, deviceId)
+    fun pairingDownloadConfig(pairingJwt: String): String =
+        RustBridge.nativePairingDownloadConfig(pairingJwt)
 }
