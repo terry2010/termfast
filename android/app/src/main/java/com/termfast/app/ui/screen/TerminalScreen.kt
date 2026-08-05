@@ -42,7 +42,16 @@ import org.connectbot.terminal.Terminal
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun TerminalScreen(navController: NavController, serverId: String, existingSessionId: String? = null) {
+fun TerminalScreen(
+    navController: NavController,
+    serverId: String,
+    existingSessionId: String? = null,
+    // Remote terminal mode: when isRemote=true, skip SSH connection logic and
+    // use the pre-created remote session (emulator wired to RemoteTunnelManager).
+    isRemote: Boolean = false,
+    remoteSessionId: String? = null,
+    remoteTerminalName: String = "Remote",
+) {
     val repo = remember { RustRepository }
     val scope = rememberCoroutineScope()
 
@@ -66,18 +75,26 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         }
     }
     val context = LocalContext.current
-    // Use existing session if provided, otherwise get or create
-    val sessionId = remember(existingSessionId) {
-        if (existingSessionId != null) {
+    // Use existing session if provided, otherwise get or create.
+    // In remote mode, the session was already created by RemoteTerminalScreen
+    // and passed in via remoteSessionId.
+    val sessionId = remember(existingSessionId, remoteSessionId) {
+        if (isRemote && remoteSessionId != null) {
+            remoteSessionId
+        } else if (existingSessionId != null) {
             TerminalSessionManager.getOrCreateSessionById(serverId, existingSessionId)
         } else {
             TerminalSessionManager.getOrCreateSession(serverId)
         }
     }
     val listState = null  // unused — termlib handles scrolling internally
-    // Resolve title: server name + session name
+    // Resolve title: session name or remote terminal name
     var sessionState by remember { mutableStateOf(TerminalSessionManager.getSessions(serverId).firstOrNull { it.sessionId == sessionId }) }
-    val title = sessionState?.name?.ifBlank { null } ?: "SSH 终端"
+    val title = if (isRemote) {
+        sessionState?.name?.ifBlank { null } ?: remoteTerminalName
+    } else {
+        sessionState?.name?.ifBlank { null } ?: "SSH 终端"
+    }
 
     // Session action sheet
     var showSheet by remember { mutableStateOf(false) }
@@ -112,11 +129,16 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     val emulator = remember(sessionId) { TerminalSessionManager.getEmulatorBySession(sessionId) }
 
     var connected by remember(sessionId) {
-        val s = TerminalSessionManager.getSessions(serverId).firstOrNull { it.sessionId == sessionId }
-        android.util.Log.d("termfast", "TerminalScreen init: sessionId=$sessionId found=${s != null} connected=${s?.connected}")
-        mutableStateOf(s?.connected ?: false)
+        if (isRemote) {
+            // Remote sessions are created already connected
+            mutableStateOf(true)
+        } else {
+            val s = TerminalSessionManager.getSessions(serverId).firstOrNull { it.sessionId == sessionId }
+            android.util.Log.d("termfast", "TerminalScreen init: sessionId=$sessionId found=${s != null} connected=${s?.connected}")
+            mutableStateOf(s?.connected ?: false)
+        }
     }
-    var connecting by remember(sessionId) { mutableStateOf(!(connected)) }
+    var connecting by remember(sessionId) { mutableStateOf(if (isRemote) false else !(connected)) }
     // tmux picker state
     var showTmuxPicker by remember(sessionId) { mutableStateOf(false) }
     var tmuxMode by remember(sessionId) { mutableStateOf("ask") }
@@ -126,7 +148,9 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
     // Collect terminal events — only for connection state, not rendering.
+    // In remote mode, connection state is managed by RemoteTunnelManager.
     LaunchedEffect(sessionId) {
+        if (isRemote) return@LaunchedEffect
         RustRepository.events.collect { event ->
             when (event) {
                 is RustEvent.TerminalClosed -> {
@@ -160,17 +184,27 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     // emulator's actual dimensions to the remote shell so TUI apps
     // (top, htop, vim) render correctly. Debounce 500ms to avoid
     // flooding resize commands during continuous pinch-zoom.
+    // In remote mode, the Terminal composable's onSizeChanged automatically
+    // calls emulator.resize() which triggers the onResize callback →
+    // RemoteTunnelManager.sendResize. So we do NOT manually resize here
+    // (doing so would overwrite the Terminal composable's calculated dimensions
+    // with the old 24x80 default, causing the half-screen issue).
     LaunchedEffect(connected, baseFontSize) {
         if (connected && emulator != null) {
             kotlinx.coroutines.delay(500)
             val dims = emulator.dimensions
-            repo.resizeTerminal(sessionId, dims.columns, dims.rows)
-            android.util.Log.d("termfast", "resize sent: ${dims.columns}x${dims.rows} fontSize=$baseFontSize")
+            if (!isRemote) {
+                repo.resizeTerminal(sessionId, dims.columns, dims.rows)
+            }
+            android.util.Log.d("termfast", "resize sent: ${dims.columns}x${dims.rows} fontSize=$baseFontSize remote=$isRemote")
         }
     }
 
     // Open terminal session on screen entry (only if not already connected)
+    // In remote mode, the tunnel + session are already established by
+    // RemoteTerminalScreen — skip SSH connection entirely.
     LaunchedEffect(serverId, sessionId) {
+        if (isRemote) return@LaunchedEffect
         android.util.Log.d("termfast", "TerminalScreen LaunchedEffect: sessionId=$sessionId connected=$connected connecting=$connecting")
         if (connected) return@LaunchedEffect
         scope.launch {
@@ -312,6 +346,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     //   transition) and there are >1 terminals. Only show the hint on the
     //   initial connection, not when switching to an already-connected session.
     LaunchedEffect(connected) {
+        if (isRemote) return@LaunchedEffect
         if (connected && !wasAlreadyConnected && !hintShown) {
             val count = TerminalSessionManager.getSessions(serverId).size
             if (count > 1) {
@@ -356,7 +391,14 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         //   to the short edge so keys keep portrait size. Side is toggleable.
         val keyboardWidth = configuration.screenHeightDp.dp
         val keyboardModifier = Modifier.width(keyboardWidth)
-        val onKeyLambda = { key: String -> if (connected) repo.writeTerminal(sessionId, key) }
+        // In remote mode, keyboard input goes through TerminalSessionManager
+        // which routes to RemoteTunnelManager. In SSH mode, it goes through
+        // repo.writeTerminal (SSH PTY).
+        val onKeyLambda = { key: String ->
+            if (connected) {
+                TerminalSessionManager.writeToSession(sessionId, key)
+            }
+        }
         val togglePosition = { keyboardOnLeft = !keyboardOnLeft }
 
         Row(
@@ -505,7 +547,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                         as android.content.ClipboardManager
                     val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
                     if (text.isNotEmpty() && connected) {
-                        repo.writeTerminal(sessionId, text)
+                        TerminalSessionManager.writeToSession(sessionId, text)
                     }
                 },
                 textColor = terminalFg,
@@ -559,23 +601,28 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                     )
                     TextButton(
                         onClick = {
-                            connecting = true
-                            errorMsg = null
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    val status = repo.getServerStatus(serverId)
-                                    if (status.status != "connected") {
-                                        repo.connectServer(serverId)
-                                    }
-                                    val ok = repo.openTerminal(serverId, sessionId, 80, 24)
-                                    withContext(Dispatchers.Main) {
-                                        if (ok) {
-                                            connected = true
-                                            connecting = false
-                                            TerminalSessionManager.setConnectedBySession(sessionId, true)
-                                        } else {
-                                            errorMsg = "重连失败"
-                                            connecting = false
+                            if (isRemote) {
+                                // Remote: pop back to terminal list to reconnect
+                                navController.popBackStack()
+                            } else {
+                                connecting = true
+                                errorMsg = null
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        val status = repo.getServerStatus(serverId)
+                                        if (status.status != "connected") {
+                                            repo.connectServer(serverId)
+                                        }
+                                        val ok = repo.openTerminal(serverId, sessionId, 80, 24)
+                                        withContext(Dispatchers.Main) {
+                                            if (ok) {
+                                                connected = true
+                                                connecting = false
+                                                TerminalSessionManager.setConnectedBySession(sessionId, true)
+                                            } else {
+                                                errorMsg = "重连失败"
+                                                connecting = false
+                                            }
                                         }
                                     }
                                 }
@@ -739,7 +786,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                         as android.content.ClipboardManager
                     val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
                     if (text.isNotEmpty() && connected) {
-                        repo.writeTerminal(sessionId, text)
+                        TerminalSessionManager.writeToSession(sessionId, text)
                     }
                 },
                 textColor = terminalFg,
@@ -793,23 +840,28 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                     )
                     TextButton(
                         onClick = {
-                            connecting = true
-                            errorMsg = null
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    val status = repo.getServerStatus(serverId)
-                                    if (status.status != "connected") {
-                                        repo.connectServer(serverId)
-                                    }
-                                    val ok = repo.openTerminal(serverId, sessionId, 80, 24)
-                                    withContext(Dispatchers.Main) {
-                                        if (ok) {
-                                            connected = true
-                                            connecting = false
-                                            TerminalSessionManager.setConnectedBySession(sessionId, true)
-                                        } else {
-                                            errorMsg = "重连失败"
-                                            connecting = false
+                            if (isRemote) {
+                                // Remote: pop back to terminal list to reconnect
+                                navController.popBackStack()
+                            } else {
+                                connecting = true
+                                errorMsg = null
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        val status = repo.getServerStatus(serverId)
+                                        if (status.status != "connected") {
+                                            repo.connectServer(serverId)
+                                        }
+                                        val ok = repo.openTerminal(serverId, sessionId, 80, 24)
+                                        withContext(Dispatchers.Main) {
+                                            if (ok) {
+                                                connected = true
+                                                connecting = false
+                                                TerminalSessionManager.setConnectedBySession(sessionId, true)
+                                            } else {
+                                                errorMsg = "重连失败"
+                                                connecting = false
+                                            }
                                         }
                                     }
                                 }
@@ -828,7 +880,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
         if (!useSystemKeyboard) {
             TerminalKeyboard(
                 onKey = { key ->
-                    if (connected) repo.writeTerminal(sessionId, key)
+                    if (connected) TerminalSessionManager.writeToSession(sessionId, key)
                 },
                 enabled = connected,
                 onToggleSystemKeyboard = toggleSystemKeyboard,
@@ -854,11 +906,12 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
     // When useSystemKeyboard is true, Terminal's keyboardEnabled is set to
     // true (see the Terminal() calls above), and termlib manages focus + IME.
 
-    // === tmux session picker dialog ===
-    TmuxSessionPickerDialog(
-        visible = showTmuxPicker,
-        serverId = serverId,
-        sessionId = sessionId,
+    // === tmux session picker dialog === (SSH only, not for remote terminals)
+    if (!isRemote) {
+        TmuxSessionPickerDialog(
+            visible = showTmuxPicker,
+            serverId = serverId,
+            sessionId = sessionId,
         onAttach = { attachSessionId, tmuxName ->
             showTmuxPicker = false
             if (attachSessionId != sessionId) {
@@ -908,6 +961,7 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
             navController.popBackStack()
         },
     )
+    } // end if (!isRemote) — tmux picker
 
     // === Session action bottom sheet ===
     if (showSheet) {
@@ -938,7 +992,11 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                 leadingContent = { Icon(Icons.Filled.Tab, contentDescription = null, modifier = Modifier.size(24.dp)) },
                 modifier = Modifier.clickable {
                     showSheet = false
-                    navController.navigate("terminals/$sessionId")
+                    if (isRemote) {
+                        navController.navigate("remote_terminals")
+                    } else {
+                        navController.navigate("terminals/$sessionId")
+                    }
                 },
             )
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -951,25 +1009,28 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                     showRenameDialog = true
                 },
             )
-            ListItem(
-                headlineContent = { Text("重连") },
-                leadingContent = { Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(24.dp)) },
-                modifier = Modifier.clickable {
-                    showSheet = false
-                    TerminalSessionManager.reconnectSession(serverId, sessionId) { }
-                    connecting = true
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            kotlinx.coroutines.delay(500)
-                            val s = TerminalSessionManager.getSessions(serverId).firstOrNull { it.sessionId == sessionId }
-                            withContext(Dispatchers.Main) {
-                                connected = s?.connected ?: false
-                                connecting = false
+            // Reconnect — SSH only (remote reconnect is handled differently)
+            if (!isRemote) {
+                ListItem(
+                    headlineContent = { Text("重连") },
+                    leadingContent = { Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(24.dp)) },
+                    modifier = Modifier.clickable {
+                        showSheet = false
+                        TerminalSessionManager.reconnectSession(serverId, sessionId) { }
+                        connecting = true
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                kotlinx.coroutines.delay(500)
+                                val s = TerminalSessionManager.getSessions(serverId).firstOrNull { it.sessionId == sessionId }
+                                withContext(Dispatchers.Main) {
+                                    connected = s?.connected ?: false
+                                    connecting = false
+                                }
                             }
                         }
-                    }
-                },
-            )
+                    },
+                )
+            }
             ListItem(
                 headlineContent = { Text(if (connected) "断开" else "已断开") },
                 leadingContent = { Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(24.dp)) },
@@ -1044,7 +1105,11 @@ fun TerminalScreen(navController: NavController, serverId: String, existingSessi
                 TextButton(
                     onClick = {
                         showDeleteDialog = false
-                        RustRepository.closeTerminal(sessionId)
+                        if (!isRemote) {
+                            RustRepository.closeTerminal(sessionId)
+                        } else {
+                            TerminalSessionManager.disconnectSession(sessionId)
+                        }
                         TerminalSessionManager.closeSessionBySessionId(sessionId)
                         navController.popBackStack()
                     },

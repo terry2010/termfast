@@ -105,6 +105,8 @@ pub struct TerminalManager {
     /// Callback invoked when a terminal closes (for RemoteServer to clean up IdMap).
     /// Set by RemoteServer via set_on_closed_callback.
     on_closed_callback: Arc<std::sync::Mutex<Option<OnClosedCallback>>>,
+    /// Callback invoked when a terminal is opened (for RemoteServer to broadcast LIST_CHANGED).
+    on_opened_callback: Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
 }
 
 impl TerminalManager {
@@ -120,12 +122,28 @@ impl TerminalManager {
             closed_sessions: Arc::new(Mutex::new(HashSet::new())),
             trigger_overrides: Arc::new(Mutex::new(HashMap::new())),
             on_closed_callback: Arc::new(std::sync::Mutex::new(None)),
+            on_opened_callback: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
     /// Set a callback invoked when a terminal closes (for RemoteServer IdMap cleanup).
     pub fn set_on_closed_callback(&self, callback: OnClosedCallback) {
         *self.on_closed_callback.lock().unwrap() = Some(callback);
+    }
+
+    /// Set a callback invoked when a terminal is opened (for broadcasting LIST_CHANGED).
+    pub fn set_on_opened_callback(&self, callback: Box<dyn Fn() + Send + Sync>) {
+        *self.on_opened_callback.lock().unwrap() = Some(callback);
+    }
+
+    /// Invoke the on_opened callback (if set).
+    pub fn notify_opened(&self) {
+        if let Ok(cb) = self.on_opened_callback.lock() {
+            if let Some(ref f) = *cb {
+                tracing::info!("[TerminalManager] notify_opened: broadcasting LIST_CHANGED");
+                f();
+            }
+        }
     }
 
     /// Invoke the on_closed callback (if set) for a session_id.
@@ -520,6 +538,9 @@ impl TerminalManager {
             .lock()
             .await
             .insert(session_id.clone(), session);
+
+        // Note: notify_opened() is called by the handler after set_session_name.
+
         Ok((session_id, initial_output))
     }
 
@@ -692,6 +713,10 @@ impl TerminalManager {
             .await
             .insert(session_id.clone(), session);
 
+        // Note: notify_opened() is NOT called here — the caller (handler) must
+        // set the session name first, then call notify_opened() to broadcast
+        // LIST_CHANGED. This ensures mobile sees the correct name in the list.
+
         // Set trigger overrides BEFORE sending the Opened event, so the
         // terminal event consumer sees them when it processes the event.
         if let Some(overrides) = trigger_overrides {
@@ -831,6 +856,14 @@ impl TerminalManager {
             .cmd_tx
             .send(TerminalCmd::Resize(cols, rows))
             .map_err(|e| format!("failed to resize terminal: {}", e))
+    }
+
+    /// Update a session's display name (used by remote terminal list).
+    pub async fn set_session_name(&self, session_id: &str, name: &str) {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.name = name.to_string();
+        }
     }
 
     /// Check if a session is a local terminal
@@ -1100,7 +1133,6 @@ impl TerminalManager {
             .get(session_id)
             .ok_or_else(|| format!("session {} not found", session_id))?;
 
-        let pty_size = *session.pty_size.lock().unwrap();
         let terminal_id = subscriber.terminal_id;
         let pairing_id = subscriber.pairing_id.clone();
 
@@ -1116,9 +1148,10 @@ impl TerminalManager {
             hb.iter().flatten().cloned().collect()
         };
 
-        // 3. Push RESIZE frame into subscriber channel
-        let resize_frame = crate::remote_frame::Frame::resize(terminal_id, pty_size.0, pty_size.1);
-        let _ = subscriber.sender.try_send(resize_frame);
+        // 3. RESIZE frame is NOT pushed here — the mobile client determines
+        // its own dimensions based on screen size and sends RESIZE to us.
+        // Pushing our PTY size would overwrite the mobile's chosen dimensions
+        // and cause a resize loop.
 
         // 4. Push HISTORY frames (chunked by MAX_HISTORY_DATA) into subscriber channel
         if !history_bytes.is_empty() {

@@ -130,7 +130,6 @@ class RemoteTunnelManager(
         }
 
         override fun onBinaryFrame(data: ByteArray) {
-            android.util.Log.i("RemoteTunnel", "onBinaryFrame: ${data.size} bytes")
             // Binary frame from relay → Rust FFI decrypts + dispatches events
             try {
                 ffi.onBinary(pairingId, data)

@@ -181,7 +181,7 @@ fn dispatch_frame_event(pairing_id: &str, frame_type: u8, terminal_id: u32, payl
     #[cfg(target_os = "android")]
     {
         use termfast_daemon::remote_frame::{
-            ERROR, HISTORY, LIST_RESPONSE, OK, OUTPUT, RESIZE,
+            ERROR, HISTORY, LIST_RESPONSE, NOTIFY, OK, OUTPUT, RESIZE,
         };
         match frame_type {
             LIST_RESPONSE => {
@@ -189,6 +189,16 @@ fn dispatch_frame_event(pairing_id: &str, frame_type: u8, terminal_id: u32, payl
                 let event = crate::event::RustEvent::RemoteTerminalList {
                     pairing_id: pairing_id.to_string(),
                     terminals: json,
+                };
+                crate::jni::dispatch_event_to_kotlin(&event.to_json());
+            }
+            NOTIFY => {
+                // Desktop broadcasts NOTIFY(list_changed) when terminals open/close.
+                // Mobile should re-send LIST_REQUEST to refresh the terminal list.
+                let json = String::from_utf8_lossy(payload).to_string();
+                let event = crate::event::RustEvent::RemoteTerminalNotify {
+                    pairing_id: pairing_id.to_string(),
+                    message: json,
                 };
                 crate::jni::dispatch_event_to_kotlin(&event.to_json());
             }

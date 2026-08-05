@@ -158,6 +158,13 @@ fun RemoteTerminalListContent(
                         error = null
                     }
                 }
+                is RustEvent.RemoteTerminalNotify -> {
+                    // Desktop broadcasts list_changed when terminals open/close.
+                    // Re-send LIST_REQUEST to refresh the terminal list.
+                    if (event.pairing_id == pairingId && tunnelManager.protocolReady.value) {
+                        tunnelManager.sendListRequest()
+                    }
+                }
                 is RustEvent.RemoteTerminalError -> {
                     if (event.pairing_id == pairingId) {
                         error = event.error

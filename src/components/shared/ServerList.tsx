@@ -50,14 +50,15 @@ async function openLocalTerminalFromList() {
   // in the same call to avoid race condition with terminal event consumer).
   const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
   try {
+    const currentTabs = store.terminal_tabs_by_server[serverId] || [];
+    const defaultLabel = `Terminal ${currentTabs.length + 1}`;
     const result = await openTerminalWithChannel(serverId, 80, 24, {
       backend: "local",
+      name: defaultLabel,
       triggerOverrides: triggerOverrides && Object.keys(triggerOverrides).length > 0 ? triggerOverrides : undefined,
     });
     const sessionId = result.session_id;
     const tabId = `term:${sessionId}`;
-    const currentTabs = store.terminal_tabs_by_server[serverId] || [];
-    const defaultLabel = `Terminal ${currentTabs.length + 1}`;
     store.addTerminalTab(serverId, {
       id: tabId,
       sessionId,
@@ -252,14 +253,15 @@ export function ServerList({
         // SSH connected — now open terminal session
         try {
           const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
+          const currentTabs = store.terminal_tabs_by_server[serverId] || [];
+          const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
           const result = await openTerminalWithChannel(serverId, 80, 24, {
+            name: defaultLabel,
             triggerOverrides: triggerOverrides && Object.keys(triggerOverrides).length > 0 ? triggerOverrides : undefined,
           });
           const sessionId = result.session_id;
           const initialOutput = result.initial_output || "";
           const tabId = `term:${sessionId}`;
-          const currentTabs = store.terminal_tabs_by_server[serverId] || [];
-          const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
           // Terminal ready — create tab and switch to it first
           store.addTerminalTab(serverId, {
             id: tabId,

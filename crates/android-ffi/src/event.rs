@@ -96,6 +96,12 @@ pub enum RustEvent {
         pairing_id: String,
         error: String,
     },
+    /// NOTIFY frame from desktop (e.g. list_changed — mobile should re-request list).
+    #[serde(rename = "RemoteTerminalNotify")]
+    RemoteTerminalNotify {
+        pairing_id: String,
+        message: String,
+    },
 }
 
 impl RustEvent {

@@ -182,7 +182,11 @@ export function ServerDetail() {
   // Helper: open a normal (non-tmux) terminal and add a tab
   const openNormalTerminal = useCallback(
     async (serverId: string, triggerOverrides?: Record<string, boolean>) => {
+      const currentTabs =
+        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
+      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
       const result = await openTerminalWithChannel(serverId, 80, 24, {
+        name: defaultLabel,
         triggerOverrides:
           triggerOverrides && Object.keys(triggerOverrides).length > 0
             ? triggerOverrides
@@ -191,9 +195,6 @@ export function ServerDetail() {
       const sessionId = result.session_id;
       const initialOutput = result.initial_output || "";
       const tabId: Tab = `term:${sessionId}`;
-      const currentTabs =
-        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
-      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
       addTerminalTab(serverId, {
         id: tabId,
         sessionId,
@@ -462,16 +463,17 @@ export function ServerDetail() {
     // in the same call to avoid race condition with terminal event consumer).
     const triggerOverrides = useTriggerStore.getState().serverExecInTerminalOverrides[serverId];
     try {
+      const currentTabs =
+        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
+      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
       const result = await openTerminalWithChannel(serverId, 80, 24, {
         backend: "local",
         shell: effectiveShell,
+        name: defaultLabel,
         triggerOverrides: triggerOverrides && Object.keys(triggerOverrides).length > 0 ? triggerOverrides : undefined,
       });
       const sessionId = result.session_id;
       const tabId: Tab = `term:${sessionId}`;
-      const currentTabs =
-        useServerStore.getState().terminal_tabs_by_server[serverId] || [];
-      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
       addTerminalTab(serverId, {
         id: tabId,
         sessionId,

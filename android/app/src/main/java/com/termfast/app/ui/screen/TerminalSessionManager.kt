@@ -225,6 +225,7 @@ object TerminalSessionManager {
                 tunnelManager.sendInput(terminalId, bytes)
             },
             onResize = { dims ->
+                android.util.Log.d("termfast", "REMOTE onResize callback: ${dims.columns}x${dims.rows} for session=$sessionId")
                 tunnelManager.sendResize(terminalId, dims.columns, dims.rows)
             },
         )
@@ -366,6 +367,23 @@ object TerminalSessionManager {
         }
     }
 
+    /**
+     * Write keyboard input to a session (SSH or remote).
+     * For SSH: writes to the PTY via RustRepository.
+     * For remote: sends INPUT frame via RemoteTunnelManager.
+     */
+    fun writeToSession(sessionId: String, data: String) {
+        val session = sessions[sessionId] ?: return
+        if (session.remotePairingId != null) {
+            // Remote: send via tunnel manager
+            val tunnelManager = tunnelManagers[session.remotePairingId]
+            tunnelManager?.sendInput(session.remoteTerminalId, data.toByteArray())
+        } else {
+            // SSH: write to PTY
+            RustRepository.writeTerminal(sessionId, data)
+        }
+    }
+
     fun reconnectSession(serverId: String, sessionId: String, onResult: (Boolean) -> Unit) {
         RustRepository.closeTerminal(sessionId)
         setConnectedBySession(sessionId, false)
@@ -503,6 +521,7 @@ object TerminalSessionManager {
      * Handle RemoteTerminalResize: resize emulator to desktop PTY dimensions.
      */
     private fun handleRemoteResize(event: RustEvent.RemoteTerminalResize) {
+        android.util.Log.d("termfast", "handleRemoteResize: ${event.cols}x${event.rows} pairing=${event.pairing_id}")
         val session = sessions.values.firstOrNull {
             it.remotePairingId == event.pairing_id &&
             it.remoteTerminalId == event.terminal_id.toInt()

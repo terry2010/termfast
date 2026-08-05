@@ -96,6 +96,32 @@ pub type FileUploadCallback = Box<
         + Sync,
 >;
 
+/// Broadcast a LIST_CHANGED NOTIFY frame to all active tunnels.
+/// Uses try_send (non-blocking) since this is called from sync callbacks.
+/// Mobile clients receiving this frame should re-send LIST_REQUEST.
+fn broadcast_list_changed(active_tunnels: &Arc<StdMutex<HashMap<String, mpsc::Sender<Frame>>>>) {
+    let tunnels = active_tunnels.lock().unwrap();
+    tracing::info!("[RemoteServer] broadcast_list_changed: {} active tunnel(s)", tunnels.len());
+    let notify_frame = Frame::notify(0, r#"{"type":"list_changed"}"#);
+    let mut dead = Vec::new();
+    for (pairing_id, tx) in tunnels.iter() {
+        match tx.try_send(notify_frame.clone()) {
+            Ok(()) => tracing::info!("[RemoteServer] sent LIST_CHANGED to pairing {}", pairing_id),
+            Err(_) => {
+                tracing::debug!("[RemoteServer] tunnel {} appears disconnected (try_send failed), will remove", pairing_id);
+                dead.push(pairing_id.clone());
+            }
+        }
+    }
+    drop(tunnels);
+    if !dead.is_empty() {
+        let mut tunnels = active_tunnels.lock().unwrap();
+        for id in dead {
+            tunnels.remove(&id);
+        }
+    }
+}
+
 /// IdMap (u32↔session_id), auth_keys (pairing_id→key), answered_questions (mutex).
 pub struct RemoteServer {
     pub terminal_manager: Arc<TerminalManager>,
@@ -112,6 +138,9 @@ pub struct RemoteServer {
     /// Callback for uploading local files to cloud (set by desktop app).
     /// Receives (file_path, terminal_id) → FileUploadResult or error message.
     file_upload_callback: Arc<std::sync::Mutex<Option<FileUploadCallback>>>,
+    /// Active tunnel connections: pairing_id → async_tx (for pushing frames to mobile).
+    /// Used to broadcast LIST_CHANGED notifications when terminals are created/closed.
+    active_tunnels: Arc<StdMutex<HashMap<String, mpsc::Sender<Frame>>>>,
 }
 
 impl RemoteServer {
@@ -120,14 +149,28 @@ impl RemoteServer {
         config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
     ) -> Self {
         let id_map = Arc::new(StdMutex::new(IdMap::new()));
-        // Register on_closed callback so TerminalManager notifies us when a terminal closes
+
+        // active_tunnels registry — used to broadcast LIST_CHANGED to all connected mobiles
+        let active_tunnels: Arc<StdMutex<HashMap<String, mpsc::Sender<Frame>>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
+
+        // Register on_closed callback: clean up IdMap + broadcast LIST_CHANGED
         let id_map_cb = id_map.clone();
+        let tunnels_closed = active_tunnels.clone();
         terminal_manager.set_on_closed_callback(Box::new(move |session_id: &str| {
             if let Ok(mut map) = id_map_cb.lock() {
                 map.remove(session_id);
                 tracing::debug!("[RemoteServer] on_terminal_closed: removed session {} from IdMap", session_id);
             }
+            broadcast_list_changed(&tunnels_closed);
         }));
+
+        // Register on_opened callback: broadcast LIST_CHANGED to all connected mobiles
+        let tunnels_opened = active_tunnels.clone();
+        terminal_manager.set_on_opened_callback(Box::new(move || {
+            broadcast_list_changed(&tunnels_opened);
+        }));
+
         Self {
             terminal_manager,
             config_manager,
@@ -135,6 +178,7 @@ impl RemoteServer {
             auth_keys: Arc::new(RwLock::new(HashMap::new())),
             answered_questions: Arc::new(StdMutex::new(HashMap::new())),
             file_upload_callback: Arc::new(std::sync::Mutex::new(None)),
+            active_tunnels,
         }
     }
 
@@ -217,11 +261,18 @@ impl RemoteServer {
             }
         };
 
+        // Register this tunnel's async_tx in active_tunnels so we can push
+        // LIST_CHANGED notifications to mobile when terminals open/close.
+        {
+            let mut tunnels = self.active_tunnels.lock().unwrap();
+            tunnels.insert(pairing_id.clone(), async_tx.clone());
+        }
+
         // Phase 2: Main loop — process frames
         // terminal_id → session_id resolution uses the persistent IdMap (self.id_map),
         // not a per-tunnel HashMap. This ensures terminal_id is stable across
         // LIST_REQUEST calls and across reconnects.
-        loop {
+        'tunnel: loop {
             tokio::select! {
                 // Encrypted bytes from mobile (via relay)
                 data = inbound_rx.recv() => {
@@ -233,7 +284,7 @@ impl RemoteServer {
                                 Err(e) => {
                                     tracing::warn!("decrypt error from pairing {}: {}", pairing_id, e);
                                     // Per design: decrypt failure → disconnect, no reply
-                                    return;
+                                    break 'tunnel;
                                 }
                             };
                             // Deserialize frame
@@ -241,7 +292,7 @@ impl RemoteServer {
                                 Ok(f) => f,
                                 Err(e) => {
                                     tracing::warn!("frame deserialize error from pairing {}: {}", pairing_id, e);
-                                    return;
+                                    break 'tunnel;
                                 }
                             };
                             // Process frame
@@ -255,18 +306,18 @@ impl RemoteServer {
                             if let Some(resp_frame) = response {
                                 if let Err(e) = self.send_frame(&mut send_cipher, &outbound_tx, &resp_frame).await {
                                     tracing::warn!("send error for pairing {}: {}", pairing_id, e);
-                                    return;
+                                    break 'tunnel;
                                 }
                             }
 
                             if should_close {
                                 tracing::info!("closing tunnel for pairing {} (GOODBYE)", pairing_id);
-                                return;
+                                break 'tunnel;
                             }
                         }
                         None => {
                             tracing::info!("inbound channel closed for pairing {}", pairing_id);
-                            return;
+                            break 'tunnel;
                         }
                     }
                 }
@@ -276,18 +327,24 @@ impl RemoteServer {
                         Some(f) => {
                             if let Err(e) = self.send_frame(&mut send_cipher, &outbound_tx, &f).await {
                                 tracing::warn!("async send error for pairing {}: {}", pairing_id, e);
-                                return;
+                                break 'tunnel;
                             }
                         }
                         None => {
                             // async_tx still held by us (in async_tx var), so None shouldn't happen
                             // unless all clones are dropped. Treat as tunnel close.
                             tracing::info!("async channel closed for pairing {}", pairing_id);
-                            return;
+                            break 'tunnel;
                         }
                     }
                 }
             }
+        }
+
+        // Unregister this tunnel from active_tunnels (cleanup on any exit path)
+        {
+            let mut tunnels = self.active_tunnels.lock().unwrap();
+            tunnels.remove(&pairing_id);
         }
     }
 
@@ -637,11 +694,18 @@ impl RemoteServer {
         &self,
         frame: Frame,
     ) -> Option<Frame> {
-        // Mobile sends RESIZE as a query — desktop replies with current PTY size
-        // (per design: mobile adapts to desktop size, doesn't change PTY)
+        // Mobile sends RESIZE with its desired cols/rows.
+        // Desktop resizes its PTY to match. No reply needed — the mobile
+        // already knows its own dimensions. Replying would cause a resize
+        // loop (mobile resize → desktop reply → mobile resize → ...).
         if let Some(session_id) = self.resolve_sid(frame.terminal_id) {
-            if let Some((cols, rows)) = self.terminal_manager.get_pty_size(&session_id).await {
-                return Some(Frame::resize(frame.terminal_id, cols, rows));
+            if let Some((cols, rows)) = frame.parse_resize() {
+                let _ = self.terminal_manager
+                    .resize_and_notify(&session_id, cols as u32, rows as u32)
+                    .await;
+                // Return None — no reply frame. The OK was already sent
+                // by the frame handler for query-type frames.
+                return None;
             }
         }
         Some(Frame::error("invalid_terminal_id"))
@@ -916,7 +980,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// Test SUBSCRIBE → OK + RESIZE + HISTORY frames
+    /// Test SUBSCRIBE → OK + HISTORY frames (no RESIZE — mobile determines size)
     #[tokio::test]
     async fn test_subscribe() {
         let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
@@ -938,12 +1002,8 @@ mod tests {
         assert_eq!(ok_frame.frame_type, remote_frame::OK);
         assert_eq!(ok_frame.terminal_id, term_id);
 
-        // Should receive RESIZE frame (80x24)
-        let resize_frame = recv_decrypted_frame(&desktop_recv, &mut outbound_rx).await;
-        assert_eq!(resize_frame.frame_type, remote_frame::RESIZE);
-        let (cols, rows) = resize_frame.parse_resize().unwrap();
-        assert_eq!(cols, 80);
-        assert_eq!(rows, 24);
+        // No RESIZE frame is sent on SUBSCRIBE — mobile determines its own
+        // dimensions and sends RESIZE to desktop. History may follow if non-empty.
 
         drop(inbound_tx);
         let _ = handle.await;
@@ -1039,7 +1099,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// Test RESIZE query → desktop replies with current PTY size
+    /// Test RESIZE → desktop resizes PTY, no reply (prevents resize loop)
     #[tokio::test]
     async fn test_resize_query() {
         let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
@@ -1053,15 +1113,17 @@ mod tests {
         let (mut mobile_send, desktop_recv) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
         let term_id = do_list_and_get_first_id(&mut mobile_send, &desktop_recv, &inbound_tx, &mut outbound_rx).await;
 
-        // Send RESIZE query (mobile's requested size doesn't matter — desktop replies with its own)
+        // Send RESIZE — desktop should resize its PTY but NOT reply (prevents loop)
         send_encrypted_frame(&mut mobile_send, &inbound_tx, &Frame::resize(term_id, 100, 30)).await;
 
-        // Should receive RESIZE with desktop's actual PTY size (80x24)
-        let resize_reply = recv_decrypted_frame(&desktop_recv, &mut outbound_rx).await;
-        assert_eq!(resize_reply.frame_type, remote_frame::RESIZE);
-        let (cols, rows) = resize_reply.parse_resize().unwrap();
-        assert_eq!(cols, 80);
-        assert_eq!(rows, 24);
+        // Should NOT receive any reply frame (timeout means success — no loop)
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            outbound_rx.recv(),
+        ).await {
+            Ok(Some(_)) => panic!("expected no reply to RESIZE, but got a frame"),
+            _ => {} // timeout or channel closed — correct
+        }
 
         drop(inbound_tx);
         let _ = handle.await;
@@ -1166,12 +1228,7 @@ mod tests {
             let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
             if f.frame_type == remote_frame::OK { break; }
         }
-        // Drain until RESIZE
-        loop {
-            if tokio::time::Instant::now() >= deadline { panic!("timeout waiting for RESIZE after first SUBSCRIBE"); }
-            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
-            if f.frame_type == remote_frame::RESIZE { break; }
-        }
+        // No RESIZE frame on SUBSCRIBE (mobile determines size)
 
         // Second SUBSCRIBE (same terminal_id, same pairing_id) — should be idempotent
         send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::subscribe(term_id)).await;
@@ -1184,14 +1241,7 @@ mod tests {
             if f.frame_type == remote_frame::OK { got_ok = true; break; }
         }
         assert!(got_ok, "should receive OK for second SUBSCRIBE");
-        // Drain until RESIZE
-        let mut got_resize = false;
-        loop {
-            if tokio::time::Instant::now() >= deadline2 { break; }
-            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
-            if f.frame_type == remote_frame::RESIZE { got_resize = true; break; }
-        }
-        assert!(got_resize, "should receive RESIZE for second SUBSCRIBE");
+        // No RESIZE frame on SUBSCRIBE (mobile determines size)
 
         drop(inbound_tx);
         let _ = handle.await;
@@ -1322,7 +1372,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// Test SUBSCRIBE with non-empty history → RESIZE + HISTORY frames
+    /// Test SUBSCRIBE with non-empty history → OK + HISTORY frames (no RESIZE)
     #[tokio::test]
     async fn test_subscribe_with_history() {
         let (remote_server, sid) = setup_remote_server_with_local_terminal().await;
@@ -1340,13 +1390,10 @@ mod tests {
         let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
         let term_id = do_list_and_get_first_id(&mut mobile_ss, &desktop_sc, &inbound_tx, &mut outbound_rx).await;
 
-        // SUBSCRIBE — should get OK + RESIZE + HISTORY
+        // SUBSCRIBE — should get OK + HISTORY (no RESIZE — mobile determines size)
         send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::subscribe(term_id)).await;
         let ok = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
         assert_eq!(ok.frame_type, remote_frame::OK);
-
-        let resize = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
-        assert_eq!(resize.frame_type, remote_frame::RESIZE);
 
         // Should receive at least one HISTORY frame
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1469,12 +1516,7 @@ mod tests {
             let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
             if f.frame_type == remote_frame::OK { break; }
         }
-        // Drain until RESIZE
-        loop {
-            if tokio::time::Instant::now() >= deadline { panic!("timeout waiting for RESIZE after SUBSCRIBE"); }
-            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
-            if f.frame_type == remote_frame::RESIZE { break; }
-        }
+        // No RESIZE frame on SUBSCRIBE (mobile determines size)
 
         // INPUT_ANSWER — should get OK + broadcast QUESTION_RESOLVED to subscribers
         send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::input_answer(term_id, "q-broadcast", "1")).await;

@@ -2979,6 +2979,10 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         .get("shell")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // Parse trigger overrides from the request (set before Opened event
     // to avoid race condition with terminal event consumer).
@@ -2992,11 +2996,12 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         });
 
     tracing::info!(
-        "handle_terminal_open: server_id={}, backend={}, cols={}, rows={}",
+        "handle_terminal_open: server_id={}, backend={}, cols={}, rows={}, name={:?}",
         server_id,
         backend,
         cols,
-        rows
+        rows,
+        name,
     );
 
     // Local terminal branch — no SSH connection needed
@@ -3007,6 +3012,12 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
             .open_local(cols, rows, shell, trigger_overrides)
             .await
             .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
+        // Set display name if provided (used by remote terminal list)
+        if let Some(ref n) = name {
+            state.terminal_manager.set_session_name(&session_id, n).await;
+        }
+        // Broadcast LIST_CHANGED AFTER name is set, so mobile sees the correct name
+        state.terminal_manager.notify_opened();
         use base64::Engine;
         let initial_b64 =
             base64::engine::general_purpose::STANDARD.encode(&initial_output);
@@ -3048,6 +3059,13 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         .open(&ssh_handle, server_id, cols, rows)
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, e))?;
+
+    // Set display name if provided (used by remote terminal list)
+    if let Some(ref n) = name {
+        state.terminal_manager.set_session_name(&session_id, n).await;
+    }
+    // Broadcast LIST_CHANGED AFTER name is set, so mobile sees the correct name
+    state.terminal_manager.notify_opened();
 
     // Set trigger overrides for this session (passed from frontend to avoid
     // race condition — overrides are available before any trigger fires).

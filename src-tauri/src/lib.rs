@@ -1349,6 +1349,7 @@ async fn ipc_terminal_open(
     on_output: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
     backend: Option<String>,
     shell: Option<String>,
+    name: Option<String>,
     trigger_overrides: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
@@ -1357,6 +1358,7 @@ async fn ipc_terminal_open(
         "rows": rows.unwrap_or(24),
         "backend": backend.as_deref().unwrap_or("ssh"),
         "shell": shell,
+        "name": name,
         "trigger_overrides": trigger_overrides,
     });
     let result = forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalOpen, params).await?;

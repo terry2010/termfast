@@ -111,6 +111,16 @@ export default function App() {
       })
       .catch((e) => console.error("load servers failed:", e));
 
+    // Restore remote tunnels on startup (survives app restart)
+    const savedToken = localStorage.getItem("pairing_token");
+    if (savedToken) {
+      ipcInvoke<any>("ipc_restore_tunnels", { jwt: savedToken })
+        .then((r) => {
+          if (r > 0) console.log(`[App] restored ${r} remote tunnel(s)`);
+        })
+        .catch((e) => console.warn("[App] restore tunnels failed:", e));
+    }
+
     // Pre-load trigger templates so the selector in TriggerEditor has data
     // before the TemplateLibrary modal is ever opened.
     loadTemplates().catch((e) => console.error("load templates failed:", e));

@@ -16,6 +16,7 @@ export interface TerminalOpenResult {
 export interface TerminalOpenOptions {
   backend?: "ssh" | "local";
   shell?: string;
+  name?: string;
   triggerOverrides?: Record<string, boolean>;
 }
 
@@ -50,6 +51,7 @@ export async function openTerminalWithChannel(
     on_output: onOutput,
     backend: options?.backend ?? "ssh",
     shell: options?.shell,
+    name: options?.name,
     trigger_overrides: options?.triggerOverrides,
   });
   sessionId = result.session_id;
