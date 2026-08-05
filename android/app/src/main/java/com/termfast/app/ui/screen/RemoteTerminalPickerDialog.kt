@@ -146,9 +146,12 @@ fun RemoteTerminalPickerDialog(
         }
     }
 
-    // Start tunnel when dialog opens, stop when dialog closes (dismiss only).
-    // When a terminal is selected, the tunnel is handed off to
-    // RemoteTerminalScreen — stopping here would sever the connection.
+    // Start tunnel when dialog opens. When dialog closes, do NOT stop the
+    // tunnel — stopping closes the WebSocket which kicks the desktop's peer,
+    // and if the user reopens the dialog quickly the new connection gets
+    // "desktop_offline" while the desktop is re-registering. Instead, keep
+    // the tunnel alive and reuse it on reopen. The tunnel is only stopped
+    // when RemoteTerminalScreen is exited (its DisposableEffect calls stop()).
     LaunchedEffect(tunnelManager, visible) {
         if (visible) {
             loading = true
@@ -156,14 +159,10 @@ fun RemoteTerminalPickerDialog(
             terminals = emptyList()
             terminalSelected = false
             tunnelManager.start()
-        } else {
-            if (!terminalSelected) {
-                // Dismissed without selecting — stop tunnel to avoid background
-                // reconnection loops that kick the desktop's peer.
-                tunnelManager.stop()
-            }
-            // If terminalSelected, RemoteTerminalScreen owns the tunnel now.
         }
+        // On dismiss: don't stop — tunnel stays connected for reuse.
+        // RemoteTerminalScreen.onDispose handles full stop when leaving the
+        // terminal flow entirely.
     }
 
     // Auto-retry when desktop is offline — check every 5 seconds

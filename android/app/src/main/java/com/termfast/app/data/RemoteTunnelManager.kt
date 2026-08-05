@@ -164,8 +164,14 @@ class RemoteTunnelManager(
 
     /**
      * Start the tunnel: connect WebSocket and wait for peer_connected.
-     * Uses forceConnect to ensure a fresh connection even if a previous
-     * attempt left the client in an error/stuck state.
+     *
+     * If the tunnel is already connected (Connected/WaitingForPeer/Connecting),
+     * the existing connection is reused — forceConnect() is NOT called to
+     * avoid creating a new WebSocket that kicks the desktop's peer.
+     * If the protocol is already ready (HELLO exchange done), a fresh
+     * LIST_REQUEST is sent so the caller gets the terminal list.
+     * If the protocol is not ready but the transport is connected, a fresh
+     * HELLO is sent to re-establish the encrypted session.
      */
     fun start() {
         val config = TunnelConfig(
@@ -173,9 +179,30 @@ class RemoteTunnelManager(
             pairingJwt = pairingJwt,
             pairingId = pairingId,
         )
-        // Reset transport state so UI shows "loading" instead of stale error
+        val conn = tunnelManager.getOrCreate(config, callbacks)
+        val currentState = conn.state
+        if (currentState is TunnelState.Connected) {
+            // Transport connected — reuse it.
+            if (_protocolReady.value) {
+                // Protocol already ready — just request a fresh list.
+                sendListRequest()
+            } else {
+                // Protocol not ready (e.g. HELLO was lost) — re-send HELLO
+                // to re-establish the encrypted session.
+                sendHello()
+            }
+            return
+        }
+        if (currentState is TunnelState.WaitingForPeer ||
+            currentState is TunnelState.Connecting
+        ) {
+            // Connection in progress — wait for it.
+            return
+        }
+        // Disconnected or Error — need a fresh connection
         _transportState.value = TunnelState.Connecting
-        tunnelManager.getOrCreate(config, callbacks).forceConnect()
+        _protocolReady.value = false
+        conn.forceConnect()
     }
 
     /**
