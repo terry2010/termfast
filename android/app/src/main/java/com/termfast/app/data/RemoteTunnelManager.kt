@@ -113,6 +113,7 @@ class RemoteTunnelManager(
 
     private val callbacks = object : TunnelCallbacks {
         override fun onPeerConnected() {
+            android.util.Log.i("RemoteTunnel", "onPeerConnected, sending HELLO")
             _transportState.value = TunnelState.Connected
             // Peer connected → init tunnel (generate + send encrypted HELLO)
             sendHello()
@@ -129,15 +130,17 @@ class RemoteTunnelManager(
         }
 
         override fun onBinaryFrame(data: ByteArray) {
+            android.util.Log.i("RemoteTunnel", "onBinaryFrame: ${data.size} bytes")
             // Binary frame from relay → Rust FFI decrypts + dispatches events
             try {
                 ffi.onBinary(pairingId, data)
-            } catch (_: Exception) {
-                // FFI errors are logged on Rust side; swallow here to avoid crash
+            } catch (e: Exception) {
+                android.util.Log.e("RemoteTunnel", "onBinaryFrame: FFI error", e)
             }
         }
 
         override fun onError(message: String) {
+            android.util.Log.e("RemoteTunnel", "onError: $message")
             _transportState.value = TunnelState.Error(message)
             _protocolReady.value = false
         }
@@ -165,7 +168,10 @@ class RemoteTunnelManager(
             goodbyeCt?.let { sendRaw(it) }
         } catch (_: Exception) {
         }
-        tunnelManager.close(pairingId)
+        try {
+            tunnelManager.close(pairingId)
+        } catch (_: Exception) {
+        }
         _protocolReady.value = false
         _transportState.value = TunnelState.Disconnected
     }
@@ -237,9 +243,13 @@ class RemoteTunnelManager(
 
     private fun sendHello() {
         try {
+            android.util.Log.i("RemoteTunnel", "sendHello: init FFI, pairingId=$pairingId, keyLen=${pairingKey.size}")
             val helloCt = ffi.init(pairingId, pairingKey)
-            sendRaw(helloCt)
+            android.util.Log.i("RemoteTunnel", "sendHello: got ciphertext ${helloCt.size} bytes, sending")
+            val sent = sendRaw(helloCt)
+            android.util.Log.i("RemoteTunnel", "sendHello: sendRaw result=$sent")
         } catch (e: Exception) {
+            android.util.Log.e("RemoteTunnel", "sendHello: failed", e)
             _transportState.value = TunnelState.Error("HELLO init failed: ${e.message}")
         }
     }

@@ -135,16 +135,6 @@ fun SettingsScreen(navController: NavController) {
                 onClick = { navController.navigate("pairing") },
             )
 
-            // Remote terminals section — only show if pairing config exists
-            if (com.termfast.app.data.PairingStore.hasRemoteTunnelConfig()) {
-                SettingsNavCard(
-                    icon = Icons.Filled.Devices,
-                    title = "远程终端",
-                    subtitle = "查看桌面端共享的终端",
-                    onClick = { navController.navigate("remote_terminals") },
-                )
-            }
-
             // Terminal section
             TerminalSettingsSection()
 

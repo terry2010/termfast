@@ -148,6 +148,23 @@ object TerminalSessionManager {
         tunnelManagers[pairingId] = manager
     }
 
+    /** Get or create a shared RemoteTunnelManager for a pairing_id. */
+    @Synchronized
+    fun getOrCreateTunnelManager(
+        pairingId: String,
+        pairingKey: ByteArray,
+        relayUrl: String,
+        pairingJwt: String,
+    ): com.termfast.app.data.RemoteTunnelManager {
+        val existing = tunnelManagers[pairingId]
+        if (existing != null) return existing
+        val manager = com.termfast.app.data.RemoteTunnelManager(
+            pairingId, pairingKey, relayUrl, pairingJwt
+        )
+        tunnelManagers[pairingId] = manager
+        return manager
+    }
+
     /** Unregister a tunnel manager for a pairing. */
     @Synchronized
     fun unregisterTunnelManager(pairingId: String) {

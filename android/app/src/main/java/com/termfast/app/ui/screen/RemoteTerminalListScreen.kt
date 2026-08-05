@@ -118,9 +118,9 @@ fun RemoteTerminalListContent(
     var transportState by remember { mutableStateOf<TunnelState>(TunnelState.Disconnected) }
     var protocolReady by remember { mutableStateOf(false) }
 
-    // Create tunnel manager (remembered per pairingId)
+    // Create tunnel manager (shared via TerminalSessionManager)
     val tunnelManager = remember(pairingId) {
-        RemoteTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt)
+        TerminalSessionManager.getOrCreateTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt)
     }
     val scope = rememberCoroutineScope()
 
@@ -174,12 +174,8 @@ fun RemoteTerminalListContent(
         tunnelManager.start()
     }
 
-    // Stop tunnel on screen exit
-    DisposableEffect(tunnelManager) {
-        onDispose {
-            tunnelManager.stop()
-        }
-    }
+    // Note: tunnel is shared via TerminalSessionManager — do NOT stop on exit,
+    // RemoteTerminalScreen manages its own lifecycle.
 
     Scaffold(
         topBar = {

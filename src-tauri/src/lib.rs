@@ -7,6 +7,7 @@
 mod daemon_embed;
 mod credential_manager;
 mod pairing;
+mod pairing_store;
 mod tunnel_manager;
 
 use credential_manager::{credential_file_path, CredentialState};
@@ -30,16 +31,43 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing to stderr (visible in `npm start` terminal)
+    // Initialize tracing to log file (persisted for debugging, cross-platform)
+    // Use platform-appropriate log directory:
+    //   macOS: ~/Library/Logs/com.termfast.app/
+    //   Windows: %APPDATA%\com.termfast.app\logs\
+    //   Linux: ~/.local/share/com.termfast.app/logs/
+    #[cfg(target_os = "macos")]
+    let log_dir = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        std::path::PathBuf::from(home).join("Library/Logs/com.termfast.app")
+    };
+    #[cfg(target_os = "windows")]
+    let log_dir = {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+        std::path::PathBuf::from(appdata).join("com.termfast.app").join("logs")
+    };
+    #[cfg(target_os = "linux")]
+    let log_dir = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        std::path::PathBuf::from(home).join(".local/share/com.termfast.app/logs")
+    };
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("termfast-app.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("cannot open log file");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("termfast_app=info".parse().unwrap())
-                .add_directive("termfast_daemon=info".parse().unwrap())
-                .add_directive("termfast_core=info".parse().unwrap())
+                .add_directive("termfast_app=debug".parse().unwrap())
+                .add_directive("termfast_daemon=debug".parse().unwrap())
+                .add_directive("termfast_core=debug".parse().unwrap())
                 .add_directive("keychain=debug".parse().unwrap()),
         )
-        .with_writer(std::io::stderr)
+        .with_writer(file)
+        .with_ansi(false)
         .init();
 
     tauri::Builder::default()
@@ -299,6 +327,7 @@ pub fn run() {
             ipc_pairing_register,
             ipc_pairing_login,
             ipc_pairing_initiate,
+            ipc_generate_pairing_key,
             ipc_pairing_status,
             ipc_pairing_revoke,
             ipc_pairing_upload_config,
@@ -309,6 +338,7 @@ pub fn run() {
             // Remote terminal tunnels (FP-4a-3/4)
             ipc_tunnel_start,
             ipc_tunnel_stop,
+            ipc_restore_tunnels,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
             ipc_quit_app,
             // Developer options
@@ -2006,6 +2036,15 @@ async fn ipc_pairing_initiate(token: String, desktop_device_id: String) -> Resul
     pairing::pair_initiate(&token, &desktop_device_id).await
 }
 
+/// Generate a random 32-byte pairing key (hex-encoded) for tunnel crypto.
+/// Called by frontend after pair_initiate, to embed in QR code.
+#[tauri::command]
+async fn ipc_generate_pairing_key() -> Result<String, String> {
+    let mut key = [0u8; 32];
+    getrandom::fill(&mut key).map_err(|e| e.to_string())?;
+    Ok(hex::encode(key))
+}
+
 #[tauri::command]
 async fn ipc_pairing_status(token: String, pairing_id: String) -> Result<serde_json::Value, String> {
     pairing::pair_status(&token, &pairing_id).await
@@ -2029,6 +2068,9 @@ async fn ipc_pairing_revoke(
         tm.remote_server().revoke_pairing(&pairing_id).await;
     }
     drop(tm_guard);
+
+    // 4. Remove persisted pairing so it won't be restored on next startup
+    pairing_store::remove(&pairing_id);
 
     result
 }
@@ -2243,7 +2285,15 @@ async fn ipc_tunnel_start(
     let tm = tm_guard.as_ref().unwrap().clone();
     drop(tm_guard);
 
-    tm.start_tunnel(pairing_id, pairing_key, relay_url, jwt).await
+    tm.start_tunnel(pairing_id.clone(), pairing_key, relay_url.clone(), jwt).await?;
+
+    // Persist pairing so tunnel can be restored after restart
+    pairing_store::save(pairing_store::StoredPairing {
+        pairing_id,
+        pairing_key_hex,
+        relay_url,
+    });
+    Ok(())
 }
 
 /// Stop the WebSocket tunnel for a specific pairing_id.
@@ -2257,7 +2307,50 @@ async fn ipc_tunnel_stop(
     if let Some(tm) = tm_guard.as_ref() {
         tm.stop_tunnel(&pairing_id).await;
     }
+    drop(tm_guard);
+    // Remove persisted pairing so it won't be restored on next startup
+    pairing_store::remove(&pairing_id);
     Ok(())
+}
+
+/// Restore all persisted tunnels on app startup.
+///
+/// Called by the frontend after loading the saved JWT. Loads all pairings
+/// from pairings.json and starts a tunnel for each. Pairings whose backend
+/// record has been revoked will fail at relay register time and be cleaned
+/// up by the tunnel client's reconnect logic.
+///
+/// Returns the number of tunnels attempted.
+#[tauri::command]
+async fn ipc_restore_tunnels(
+    app: tauri::AppHandle,
+    jwt: String,
+) -> Result<usize, String> {
+    let stored = pairing_store::load();
+    let count = stored.len();
+    tracing::info!("ipc_restore_tunnels: {} persisted pairing(s)", count);
+    for p in stored {
+        // Reuse ipc_tunnel_start logic by calling start_tunnel directly.
+        // We must initialize the tunnel manager the same way ipc_tunnel_start does.
+        let pairing_id = p.pairing_id.clone();
+        let pairing_key_hex = p.pairing_key_hex.clone();
+        let relay_url = p.relay_url.clone();
+        let jwt_clone = jwt.clone();
+        let app_clone = app.clone();
+        // Delegate to ipc_tunnel_start to keep init logic in one place.
+        if let Err(e) = ipc_tunnel_start(
+            app_clone,
+            pairing_id.clone(),
+            pairing_key_hex.clone(),
+            relay_url.clone(),
+            jwt_clone,
+        ).await {
+            tracing::warn!("ipc_restore_tunnels: failed to restore pairing {}: {}", pairing_id, e);
+            // Remove invalid pairing from store so we don't keep retrying
+            pairing_store::remove(&pairing_id);
+        }
+    }
+    Ok(count)
 }
 
 /// Decode a 64-char hex string into a 32-byte array.

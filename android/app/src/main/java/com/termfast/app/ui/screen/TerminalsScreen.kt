@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -132,6 +133,15 @@ fun TerminalsScreen(
                     Spacer(Modifier.width(8.dp))
                     Text("去服务器列表")
                 }
+                // Remote terminals entry (only if paired)
+                if (com.termfast.app.data.PairingStore.hasRemoteTunnelConfig()) {
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedButton(onClick = { navController.navigate("remote_terminals") }) {
+                        Icon(Icons.Filled.Devices, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("远程终端")
+                    }
+                }
             }
             return@Scaffold
         }
@@ -145,6 +155,37 @@ fun TerminalsScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 16.dp),
         ) {
+            // Remote terminals entry at top (only if paired)
+            if (com.termfast.app.data.PairingStore.hasRemoteTunnelConfig()) {
+                item(key = "remote_terminals") {
+                    Card(
+                        onClick = { navController.navigate("remote_terminals") },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Devices,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                            Column {
+                                Text("远程终端", style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    "查看桌面端共享的终端",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             grouped.forEach { (serverId, serverSessions) ->
                 // Server group header
                 item(key = "header_$serverId") {

@@ -103,6 +103,7 @@ class TunnelConnection(
     private val client: OkHttpClient,
     private val scope: CoroutineScope,
 ) {
+    @Volatile
     private var webSocket: WebSocket? = null
     @Volatile
     private var _state: TunnelState = TunnelState.Disconnected
@@ -113,12 +114,18 @@ class TunnelConnection(
     private var backoffMs: Long = 1000
     @Volatile
     private var manuallyClosed = false
+    @Volatile
+    private var connecting = false
 
     /**
      * Start connecting. Auto-reconnects on disconnect with exponential backoff.
+     * Safe to call multiple times — duplicate calls are ignored.
      */
     fun connect() {
+        if (connecting) return
         scope.launch {
+            if (connecting) return@launch
+            connecting = true
             manuallyClosed = false
             backoffMs = 1000
             connectOnce()
@@ -144,6 +151,7 @@ class TunnelConnection(
     fun close() {
         scope.launch {
             manuallyClosed = true
+            connecting = false
             reconnectJob?.cancel()
             webSocket?.close(1000, "client closing")
             webSocket = null
@@ -154,7 +162,11 @@ class TunnelConnection(
     private suspend fun connectOnce() {
         updateState(TunnelState.Connecting)
 
-        val wsUrl = config.relayUrl.replace("http", "ws") + "/tunnel"
+        val wsUrl = if (config.relayUrl.startsWith("ws://") || config.relayUrl.startsWith("wss://")) {
+            config.relayUrl
+        } else {
+            config.relayUrl.replace("http", "ws") + "/tunnel"
+        }
         val request = Request.Builder()
             .url(wsUrl)
             .header("Authorization", "Bearer ${config.pairingJwt}")
@@ -184,16 +196,25 @@ class TunnelConnection(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                // HTTP 401 during WebSocket upgrade = JWT invalid/expired
-                // Stop reconnecting and notify app layer
                 val code = response?.code
+                android.util.Log.e("TunnelClient", "onFailure: code=$code, throwable=${t.javaClass.name}: ${t.message}, response=${response?.message}")
                 if (code == 401) {
+                    // JWT invalid/expired — stop reconnecting
                     manuallyClosed = true
                     updateState(TunnelState.Error("authentication failed (401)"))
                     callbacks.onError("authentication failed (401)")
                     return
                 }
-                handleDisconnect("failure: ${t.message}")
+                if (code == 429) {
+                    // Rate limited — use longer backoff before retrying
+                    callbacks.onError("too many connections (429), retrying in 60s")
+                    updateState(TunnelState.Error("too many connections (429)"))
+                    backoffMs = 60_000
+                    scheduleReconnect()
+                    return
+                }
+                val errMsg = "${t.javaClass.simpleName}: ${t.message ?: "unknown"} (code=$code)"
+                handleDisconnect("failure: $errMsg")
             }
         })
 

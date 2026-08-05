@@ -7033,6 +7033,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "getrandom 0.4.3",
  "hex",
  "keyring",
  "os_info",

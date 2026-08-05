@@ -96,9 +96,9 @@ fun RemoteTerminalScreen(
         pairingKeyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     }
 
-    // Create tunnel manager
+    // Create tunnel manager (shared via TerminalSessionManager)
     val tunnelManager = remember(pairingId) {
-        RemoteTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt)
+        TerminalSessionManager.getOrCreateTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt)
     }
 
     var connected by remember { mutableStateOf(false) }
@@ -176,11 +176,10 @@ fun RemoteTerminalScreen(
         tunnelManager.start()
     }
 
-    // Stop tunnel + send UNSUBSCRIBE on screen exit
+    // Send UNSUBSCRIBE on screen exit (but don't stop shared tunnel)
     DisposableEffect(tunnelManager) {
         onDispose {
             tunnelManager.sendUnsubscribe(terminalId)
-            tunnelManager.stop()
         }
     }
 

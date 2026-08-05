@@ -1844,6 +1844,7 @@ function PairingSection() {
   const [password, setPassword] = useState("");
   const [token, setToken] = useState<string | null>(null);
   const [pairingId, setPairingId] = useState<string | null>(null);
+  const [pairingKey, setPairingKey] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
   const [devices, setDevices] = useState<any[]>([]);
 
@@ -1854,6 +1855,16 @@ function PairingSection() {
       ipcInvoke<any>("ipc_pairing_list_devices", { token: saved })
         .then((r) => setDevices(r.devices || []))
         .catch(() => {});
+      // Restore tunnels for previously-persisted pairings (survives restart)
+      ipcInvoke<any>("ipc_restore_tunnels", { jwt: saved })
+        .then((r) => {
+          if (r > 0) {
+            toast.success(`已恢复 ${r} 个远程隧道`);
+          }
+        })
+        .catch((e) => {
+          console.warn("restore tunnels failed", e);
+        });
     }
   }, []);
 
@@ -1887,7 +1898,9 @@ function PairingSection() {
         token,
         desktop_device_id: "desktop-" + Date.now(),
       });
+      const pairingKey = await ipcInvoke<string>("ipc_generate_pairing_key");
       setPairingId(result.pairing_id);
+      setPairingKey(pairingKey);
       setPolling(true);
     } catch (e: any) {
       toast.error(t("pairing.initiate_failed"), { description: String(e) });
@@ -1895,7 +1908,7 @@ function PairingSection() {
   };
 
   useEffect(() => {
-    if (!polling || !pairingId || !token) return;
+    if (!polling || !pairingId || !token || !pairingKey) return;
     let stopped = false;
     let attempts = 0;
     const maxAttempts = 150;
@@ -1911,6 +1924,19 @@ function PairingSection() {
         if (result.status === "completed") {
           setPolling(false);
           toast.success(t("pairing.completed"));
+          // Start tunnel for this pairing
+          if (pairingKey) {
+            try {
+              await ipcInvoke("ipc_tunnel_start", {
+                pairing_id: pairingId,
+                pairing_key_hex: pairingKey,
+                relay_url: "ws://sh.zimufan.com:39527/tunnel",
+                jwt: token,
+              });
+            } catch (e: any) {
+              toast.error("隧道启动失败", { description: String(e) });
+            }
+          }
           const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token });
           setDevices(devResult.devices || []);
           return;
@@ -1920,7 +1946,7 @@ function PairingSection() {
     };
     poll();
     return () => { stopped = true; };
-  }, [polling, pairingId, token, t]);
+  }, [polling, pairingId, pairingKey, token, t]);
 
   const handleRevoke = async (pid: string) => {
     if (!token) return;
@@ -1940,8 +1966,13 @@ function PairingSection() {
     localStorage.removeItem("pairing_token");
   };
 
-  const qrContent = pairingId
-    ? JSON.stringify({ pairing_id: pairingId, backend_url: "http://sh.zimufan.com:39527" })
+  const qrContent = pairingId && pairingKey
+    ? JSON.stringify({
+        pairing_id: pairingId,
+        backend_url: "http://sh.zimufan.com:39527",
+        pairing_key: pairingKey,
+        relay_url: "ws://sh.zimufan.com:39527/tunnel",
+      })
     : "";
 
   return (

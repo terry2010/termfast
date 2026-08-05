@@ -63,37 +63,37 @@ fun PairingScreen(navController: NavController) {
                 try {
                     val json = JSONObject(content)
                     val pairingId = json.getString("pairing_id")
+                    val pairingKey = json.optString("pairing_key", "")
+                    val relayUrl = json.optString("relay_url", "")
                     // Auto-complete pairing
                     scope.launch {
                         loading = true
                         try {
                             val result = withContext(Dispatchers.IO) {
-                                val deviceName = "${Build.MANUFACTURER}-${Build.MODEL}".replace(" ", "-")
+                                val marketName = try {
+                                    val process = ProcessBuilder("getprop", "ro.product.vendor.marketname").start()
+                                    val out = process.inputStream.bufferedReader().readText().trim()
+                                    if (out.isNotEmpty()) out else {
+                                        val p2 = ProcessBuilder("getprop", "ro.product.marketname").start()
+                                        p2.inputStream.bufferedReader().readText().trim()
+                                    }
+                                } catch (_: Exception) { "" }
+                                val deviceName = if (marketName.isNotEmpty()) {
+                                    "${Build.MANUFACTURER} $marketName".trim()
+                                } else {
+                                    "${Build.MANUFACTURER}-${Build.MODEL}".replace(" ", "-")
+                                }
                                 PairingApi.completePairing(pairingId, "phone-pubkey", deviceName)
                             }
                             val status = result.optString("status")
                             if (status == "completed") {
                                 val jwt = result.optString("pairing_jwt")
-                                if (jwt.isNotEmpty()) {
+                                if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
+                                    PairingStore.saveRemoteTunnelConfig(
+                                        pairingId, pairingKey, relayUrl, jwt
+                                    )
+                                } else if (jwt.isNotEmpty()) {
                                     PairingStore.savePairingJwt(jwt)
-                                    // Download config to get pairing_key + relay_url
-                                    // for remote terminal tunnel
-                                    try {
-                                        val configJson = withContext(Dispatchers.IO) {
-                                            com.termfast.app.data.RustRepository.pairingDownloadConfig(jwt)
-                                        }
-                                        val config = org.json.JSONObject(configJson)
-                                        val pairingKey = config.optString("pairing_key", "")
-                                        val relayUrl = config.optString("relay_url", "")
-                                        if (pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
-                                            PairingStore.saveRemoteTunnelConfig(
-                                                pairingId, pairingKey, relayUrl, jwt
-                                            )
-                                        }
-                                    } catch (_: Exception) {
-                                        // Config download failed — remote terminals won't work
-                                        // but pairing itself succeeded
-                                    }
                                 }
                                 Toast.makeText(context, "配对成功", Toast.LENGTH_SHORT).show()
                                 devices = withContext(Dispatchers.IO) { PairingApi.listDevices(token!!) }
