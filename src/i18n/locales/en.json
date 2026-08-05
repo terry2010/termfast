@@ -706,5 +706,27 @@
     "delete_confirm": "Are you sure you want to delete \"{{name}}\"?",
     "delete_confirm_running": "\"{{name}}\" is currently running. Stop and delete it?",
     "error": "Error"
+  },
+  "pairing": {
+    "title": "Device Pairing",
+    "description": "Pair your phone for remote terminal access",
+    "email": "Email",
+    "password": "Password",
+    "register": "Register",
+    "login": "Login",
+    "logout": "Logout",
+    "register_success": "Registration successful",
+    "register_failed": "Registration failed",
+    "login_success": "Login successful",
+    "login_failed": "Login failed",
+    "pair_new_device": "Pair New Device",
+    "waiting_scan": "Waiting for phone to confirm...",
+    "paired_devices": "Paired Devices",
+    "revoke": "Revoke",
+    "revoked": "Pairing revoked",
+    "revoke_failed": "Revoke failed",
+    "initiate_failed": "Failed to initiate pairing",
+    "completed": "Pairing completed",
+    "timeout": "Pairing timed out, please retry"
   }
 }

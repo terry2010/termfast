@@ -1,0 +1,256 @@
+package com.termfast.app.data
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+/**
+ * FFI backend interface for remote tunnel frame operations.
+ * Default implementation delegates to RustRepository (JNI → Rust).
+ * Tests can provide a mock implementation to verify state transitions
+ * without loading the native library.
+ */
+interface RemoteTunnelFfi {
+    /** Initialize tunnel: generate + encrypt HELLO. Returns ciphertext bytes. */
+    fun init(pairingId: String, pairingKey: ByteArray): ByteArray
+
+    /** Process inbound binary frame (decrypt + dispatch events). */
+    fun onBinary(pairingId: String, data: ByteArray)
+
+    /** Create + encrypt LIST_REQUEST. Returns ciphertext or null on error. */
+    fun sendListRequest(pairingId: String): ByteArray?
+
+    /** Create + encrypt SUBSCRIBE. Returns ciphertext or null on error. */
+    fun subscribe(pairingId: String, terminalId: Int): ByteArray?
+
+    /** Create + encrypt UNSUBSCRIBE. Returns ciphertext or null on error. */
+    fun unsubscribe(pairingId: String, terminalId: Int): ByteArray?
+
+    /** Create + encrypt INPUT. Returns ciphertext or null on error. */
+    fun sendInput(pairingId: String, terminalId: Int, data: ByteArray): ByteArray?
+
+    /** Create + encrypt RESIZE. Returns ciphertext or null on error. */
+    fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray?
+
+    /** Close tunnel: send GOODBYE + remove session. Returns GOODBYE ciphertext or null. */
+    fun close(pairingId: String): ByteArray?
+}
+
+/**
+ * Default FFI backend: delegates to RustRepository (JNI → Rust).
+ */
+object DefaultRemoteTunnelFfi : RemoteTunnelFfi {
+    override fun init(pairingId: String, pairingKey: ByteArray): ByteArray =
+        RustRepository.remoteTunnelInit(pairingId, pairingKey)
+
+    override fun onBinary(pairingId: String, data: ByteArray) {
+        RustRepository.remoteTunnelOnBinary(pairingId, data)
+    }
+
+    override fun sendListRequest(pairingId: String): ByteArray? =
+        RustRepository.remoteTunnelSendListRequest(pairingId)
+
+    override fun subscribe(pairingId: String, terminalId: Int): ByteArray? =
+        RustRepository.remoteTunnelSubscribe(pairingId, terminalId)
+
+    override fun unsubscribe(pairingId: String, terminalId: Int): ByteArray? =
+        RustRepository.remoteTunnelUnsubscribe(pairingId, terminalId)
+
+    override fun sendInput(pairingId: String, terminalId: Int, data: ByteArray): ByteArray? =
+        RustRepository.remoteTunnelSendInput(pairingId, terminalId, data)
+
+    override fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray? =
+        RustRepository.remoteTunnelSendResize(pairingId, terminalId, cols, rows)
+
+    override fun close(pairingId: String): ByteArray? =
+        RustRepository.remoteTunnelClose(pairingId)
+}
+
+// === SECTION 1 END ===
+
+/**
+ * Manages a remote terminal tunnel: WebSocket transport (TunnelClient) +
+ * frame crypto/protocol (Rust FFI remote_terminal module).
+ *
+ * Lifecycle:
+ * 1. start() → TunnelClient connects WebSocket, waits for peer_connected
+ * 2. onPeerConnected → Rust FFI init_tunnel → send encrypted HELLO via WebSocket
+ * 3. onBinaryFrame → Rust FFI process_binary → events dispatched via RustRepository.events
+ * 4. RemoteTunnelReady event → session key established, can send LIST/SUBSCRIBE/INPUT
+ * 5. stop() → send GOODBYE via Rust FFI → close WebSocket
+ *
+ * Reconnection: TunnelClient auto-reconnects on disconnect. After peer_connected,
+ * init_tunnel is called again to generate a new HELLO with fresh client_random.
+ *
+ * @param ffi FFI backend (default: DefaultRemoteTunnelFfi → RustRepository).
+ *   Tests inject a mock to verify state transitions without JNI.
+ */
+class RemoteTunnelManager(
+    private val pairingId: String,
+    private val pairingKey: ByteArray,
+    private val relayUrl: String,
+    private val pairingJwt: String,
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+    private val ffi: RemoteTunnelFfi = DefaultRemoteTunnelFfi,
+) {
+    private val tunnelManager = TunnelManager(scope)
+
+    /** Tunnel transport state (WebSocket + peer connection). */
+    private val _transportState = MutableStateFlow<TunnelState>(TunnelState.Disconnected)
+    val transportState: StateFlow<TunnelState> = _transportState.asStateFlow()
+
+    /** Protocol state (HELLO exchange complete, session key established). */
+    private val _protocolReady = MutableStateFlow(false)
+    val protocolReady: StateFlow<Boolean> = _protocolReady.asStateFlow()
+
+    /** Exposed for tests: callbacks object to simulate tunnel events. */
+    internal val testCallbacks: TunnelCallbacks
+        get() = callbacks
+
+    private val callbacks = object : TunnelCallbacks {
+        override fun onPeerConnected() {
+            _transportState.value = TunnelState.Connected
+            // Peer connected → init tunnel (generate + send encrypted HELLO)
+            sendHello()
+        }
+
+        override fun onPeerDisconnected() {
+            _transportState.value = TunnelState.Disconnected
+            _protocolReady.value = false
+        }
+
+        override fun onPeerTimeout() {
+            _transportState.value = TunnelState.PeerTimeout
+            _protocolReady.value = false
+        }
+
+        override fun onBinaryFrame(data: ByteArray) {
+            // Binary frame from relay → Rust FFI decrypts + dispatches events
+            try {
+                ffi.onBinary(pairingId, data)
+            } catch (_: Exception) {
+                // FFI errors are logged on Rust side; swallow here to avoid crash
+            }
+        }
+
+        override fun onError(message: String) {
+            _transportState.value = TunnelState.Error(message)
+            _protocolReady.value = false
+        }
+    }
+
+    /**
+     * Start the tunnel: connect WebSocket and wait for peer_connected.
+     */
+    fun start() {
+        val config = TunnelConfig(
+            relayUrl = relayUrl,
+            pairingJwt = pairingJwt,
+            pairingId = pairingId,
+        )
+        tunnelManager.getOrCreate(config, callbacks).connect()
+    }
+
+    /**
+     * Stop the tunnel: send GOODBYE and close WebSocket.
+     */
+    fun stop() {
+        // Send GOODBYE via FFI (best-effort, ignore errors)
+        try {
+            val goodbyeCt = ffi.close(pairingId)
+            goodbyeCt?.let { sendRaw(it) }
+        } catch (_: Exception) {
+        }
+        tunnelManager.close(pairingId)
+        _protocolReady.value = false
+        _transportState.value = TunnelState.Disconnected
+    }
+
+    /**
+     * Send a LIST_REQUEST frame. Only valid after protocolReady == true.
+     * Returns true if the frame was sent successfully.
+     */
+    fun sendListRequest(): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendListRequest(pairingId) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
+     * Send a SUBSCRIBE frame for a terminal. Only valid after protocolReady.
+     */
+    fun sendSubscribe(terminalId: Int): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.subscribe(pairingId, terminalId) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
+     * Send an UNSUBSCRIBE frame for a terminal.
+     */
+    fun sendUnsubscribe(terminalId: Int): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.unsubscribe(pairingId, terminalId) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
+     * Send user input (keystrokes) to a terminal.
+     */
+    fun sendInput(terminalId: Int, data: ByteArray): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendInput(pairingId, terminalId, data) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
+     * Send a RESIZE frame (notify desktop of mobile terminal size).
+     */
+    fun sendResize(terminalId: Int, cols: Int, rows: Int): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendResize(pairingId, terminalId, cols, rows) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
+     * Called when RemoteTunnelReady event is received from Rust FFI.
+     * Marks protocol as ready and triggers LIST_REQUEST.
+     */
+    fun onProtocolReady() {
+        _protocolReady.value = true
+    }
+
+    /**
+     * Called when RemoteTerminalError event is received.
+     * Resets protocol state (e.g. invalid_terminal_id error).
+     */
+    fun onProtocolError() {
+        // Keep protocol ready for error frames that don't invalidate the session
+        // (e.g. "invalid_terminal_id" means the SUBSCRIBE failed, not the tunnel)
+    }
+
+    // === Internal helpers ===
+
+    private fun sendHello() {
+        try {
+            val helloCt = ffi.init(pairingId, pairingKey)
+            sendRaw(helloCt)
+        } catch (e: Exception) {
+            _transportState.value = TunnelState.Error("HELLO init failed: ${e.message}")
+        }
+    }
+
+    /** Exposed for tests: send raw bytes via tunnel (returns false if no connection). */
+    internal fun sendRawInternal(data: ByteArray): Boolean = sendRaw(data)
+
+    private fun sendRaw(data: ByteArray): Boolean {
+        val conn = tunnelManager.getConnection(pairingId) ?: return false
+        return conn.sendBinary(data)
+    }
+}
+
+// === SECTION 2 END ===

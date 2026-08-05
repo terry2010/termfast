@@ -10,7 +10,8 @@ use std::io;
 
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_OUTPUT_DATA: usize = 65536;
-pub const MAX_HISTORY_DATA: usize = 65536;
+/// HISTORY payload = [seq:4][is_last:1][data], so max data = 65536 - 5 = 65531
+pub const MAX_HISTORY_DATA: usize = 65531;
 
 // Frame types
 pub const HELLO: u8 = 0x00;
@@ -27,6 +28,9 @@ pub const HISTORY: u8 = 0x0A;
 pub const REDRAW_REQUEST: u8 = 0x0B;
 pub const NOTIFY: u8 = 0x0C;
 pub const OK: u8 = 0x0D;
+pub const INPUT_ANSWER: u8 = 0x0E;
+pub const QUESTION_RESOLVED: u8 = 0x0F;
+pub const FILE_REQUEST: u8 = 0x10;
 
 /// In-memory frame representation.
 #[derive(Debug, Clone)]
@@ -95,6 +99,11 @@ impl Frame {
         Self::new(ERROR, 0, msg.as_bytes().to_vec())
     }
 
+    /// Construct an ERROR frame with a specific terminal_id.
+    pub fn error_with_terminal(terminal_id: u32, msg: &str) -> Self {
+        Self::new(ERROR, terminal_id, msg.as_bytes().to_vec())
+    }
+
     pub fn history(terminal_id: u32, seq: u32, is_last: bool, data: &[u8]) -> Self {
         let mut payload = Vec::with_capacity(5 + data.len());
         payload.extend_from_slice(&seq.to_be_bytes());
@@ -115,6 +124,32 @@ impl Frame {
     /// payload = JSON {event_type, title, body, terminal_id, timestamp, ...}
     pub fn notify(terminal_id: u32, json: &str) -> Self {
         Self::new(NOTIFY, terminal_id, json.as_bytes().to_vec())
+    }
+
+    /// Construct an INPUT_ANSWER frame.
+    /// payload = JSON {question_id, answer}
+    pub fn input_answer(terminal_id: u32, question_id: &str, answer: &str) -> Self {
+        let json = serde_json::json!({
+            "question_id": question_id,
+            "answer": answer,
+        });
+        Self::new(INPUT_ANSWER, terminal_id, json.to_string().into_bytes())
+    }
+
+    /// Construct a QUESTION_RESOLVED frame.
+    /// payload = JSON {question_id, answer}
+    pub fn question_resolved(terminal_id: u32, question_id: &str, answer: &str) -> Self {
+        let json = serde_json::json!({
+            "question_id": question_id,
+            "answer": answer,
+        });
+        Self::new(QUESTION_RESOLVED, terminal_id, json.to_string().into_bytes())
+    }
+
+    /// Construct a FILE_REQUEST frame.
+    /// payload = file_path (UTF-8 string)
+    pub fn file_request(terminal_id: u32, file_path: &str) -> Self {
+        Self::new(FILE_REQUEST, terminal_id, file_path.as_bytes().to_vec())
     }
 
     /// Serialize frame to bytes (for encryption + transmission).

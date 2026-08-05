@@ -52,7 +52,8 @@ fun TermFastApp() {
     //   bottom bar, so we match "terminal/" specifically (the actual terminal
     //   screen routes are "terminal/{serverId}" and "terminal/{serverId}/{sessionId}").
     val currentRoute = current?.route
-    val showBottomBar = currentRoute?.startsWith("terminal/") != true
+    val showBottomBar = currentRoute?.startsWith("terminal/") != true &&
+        currentRoute?.startsWith("remote_terminal") != true
 
     Scaffold(
         bottomBar = {
@@ -120,6 +121,18 @@ fun TermFastApp() {
             composable("per_app_proxy") {
                 com.termfast.app.ui.screen.PerAppProxyScreen(navController)
             }
+            composable("pairing") {
+                com.termfast.app.ui.screen.PairingScreen(navController)
+            }
+            composable("qr_scanner") {
+                com.termfast.app.ui.screen.QrScannerScreen(
+                    onScanned = { content ->
+                        navController.previousBackStackEntry?.savedStateHandle?.set("qr_result", content)
+                        navController.popBackStack()
+                    },
+                    onBack = { navController.popBackStack() },
+                )
+            }
             composable("terminal/{serverId}") { backStack ->
                 val id = backStack.arguments?.getString("serverId") ?: ""
                 // Reuse existing connected session if available, instead of
@@ -144,6 +157,25 @@ fun TermFastApp() {
             composable("terminals_by_server/{serverId}") { backStack ->
                 val serverId = backStack.arguments?.getString("serverId") ?: ""
                 com.termfast.app.ui.screen.TerminalsScreen(navController, focusServerId = serverId)
+            }
+            // Remote terminal list — shows terminals shared from desktop via relay tunnel
+            composable("remote_terminals") {
+                com.termfast.app.ui.screen.RemoteTerminalListScreen(
+                    navController = navController,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            // Remote terminal rendering — opens a specific remote terminal session
+            composable("remote_terminal/{pairingId}/{terminalId}/{terminalName}") { backStack ->
+                val pairingId = backStack.arguments?.getString("pairingId") ?: ""
+                val terminalId = backStack.arguments?.getString("terminalId")?.toIntOrNull() ?: 0
+                val terminalName = backStack.arguments?.getString("terminalName") ?: "Remote"
+                com.termfast.app.ui.screen.RemoteTerminalScreen(
+                    navController = navController,
+                    pairingId = pairingId,
+                    terminalId = terminalId,
+                    terminalName = terminalName,
+                )
             }
         }
     }

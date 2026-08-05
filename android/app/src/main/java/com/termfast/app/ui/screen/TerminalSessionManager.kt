@@ -23,6 +23,8 @@ import java.util.UUID
 object TerminalSessionManager {
     private val sessions = mutableMapOf<String, SessionState>()
     private var collectorStarted = false
+    // Tunnel managers registered by pairingId — used for UNSUBSCRIBE on disconnect
+    private val tunnelManagers = mutableMapOf<String, com.termfast.app.data.RemoteTunnelManager>()
 
     // Regex to strip ANSI escape codes:
     // - CSI: \x1b[?...letter (colors, cursor movement, private modes like ?2004h)
@@ -63,7 +65,17 @@ object TerminalSessionManager {
         val previewCache: String = "",
         // tmux session name if this terminal is attached to a tmux session
         val tmuxSessionName: String? = null,
+        // --- Remote terminal fields ---
+        // Non-null when this is a remote terminal session (data from relay tunnel).
+        val remotePairingId: String? = null,
+        // u32 terminal_id from desktop protocol server (valid when remotePairingId != null)
+        val remoteTerminalId: Int = 0,
     )
+
+    /** Whether this session is a remote terminal (vs. local SSH). */
+    fun isRemoteSession(sessionId: String): Boolean {
+        return sessions[sessionId]?.remotePairingId != null
+    }
 
     @Synchronized
     fun getOrCreateSession(serverId: String): String {
@@ -86,6 +98,119 @@ object TerminalSessionManager {
             emulator = createEmulator(sessionId),
         )
         return sessionId
+    }
+
+    /**
+     * Create or get a remote terminal session.
+     *
+     * Remote sessions are identified by pairingId + terminalId (u32 from desktop
+     * protocol server). The sessionId is a synthetic UUID used as a key in the
+     * sessions map. Input from the emulator is sent via RemoteTunnelManager
+     * (WebSocket + Rust FFI) instead of the local SSH PTY path.
+     *
+     * @param pairingId Pairing ID for the tunnel
+     * @param terminalId u32 terminal_id from LIST_RESPONSE
+     * @param tunnelManager Tunnel manager for sending input/resize frames
+     * @param name Display name (from LIST_RESPONSE)
+     * @return sessionId (synthetic UUID)
+     */
+    @Synchronized
+    fun getOrCreateRemoteSession(
+        pairingId: String,
+        terminalId: Int,
+        tunnelManager: com.termfast.app.data.RemoteTunnelManager,
+        name: String,
+    ): String {
+        // Register tunnel manager for this pairing (used by disconnectSession)
+        tunnelManagers[pairingId] = tunnelManager
+        // Reuse existing session if same pairingId + terminalId
+        val existing = sessions.values.firstOrNull {
+            it.remotePairingId == pairingId && it.remoteTerminalId == terminalId
+        }
+        if (existing != null) return existing.sessionId
+
+        val sessionId = UUID.randomUUID().toString()
+        sessions[sessionId] = SessionState(
+            sessionId = sessionId,
+            serverId = "remote:$pairingId",  // synthetic serverId for remote
+            emulator = createRemoteEmulator(sessionId, terminalId, tunnelManager),
+            connected = true,
+            name = name,
+            remotePairingId = pairingId,
+            remoteTerminalId = terminalId,
+        )
+        return sessionId
+    }
+
+    /** Register a tunnel manager for a pairing (for UNSUBSCRIBE on disconnect). */
+    @Synchronized
+    fun registerTunnelManager(pairingId: String, manager: com.termfast.app.data.RemoteTunnelManager) {
+        tunnelManagers[pairingId] = manager
+    }
+
+    /** Unregister a tunnel manager for a pairing. */
+    @Synchronized
+    fun unregisterTunnelManager(pairingId: String) {
+        tunnelManagers.remove(pairingId)
+    }
+
+    /**
+     * Test-only: create a remote session with a pre-built emulator (for testing
+     * event routing without a real RemoteTunnelManager).
+     */
+    @Synchronized
+    internal fun createRemoteSessionForTest(
+        pairingId: String,
+        terminalId: Int,
+        emulator: TerminalEmulator?,
+        sessionId: String = UUID.randomUUID().toString(),
+        name: String = "test-remote",
+    ): String {
+        sessions[sessionId] = SessionState(
+            sessionId = sessionId,
+            serverId = "remote:$pairingId",
+            emulator = emulator,
+            connected = true,
+            name = name,
+            remotePairingId = pairingId,
+            remoteTerminalId = terminalId,
+        )
+        return sessionId
+    }
+
+    /**
+     * Find an existing remote session by pairingId + terminalId.
+     * Used by getOrCreateRemoteSession for reuse logic; exposed for testing.
+     */
+    @Synchronized
+    internal fun findRemoteSession(pairingId: String, terminalId: Int): String? {
+        return sessions.values.firstOrNull {
+            it.remotePairingId == pairingId && it.remoteTerminalId == terminalId
+        }?.sessionId
+    }
+
+    /**
+     * Create a termlib emulator for a remote terminal session.
+     * Keyboard input and resize events are sent via RemoteTunnelManager
+     * (encrypted INPUT/RESIZE frames through the WebSocket tunnel).
+     */
+    private fun createRemoteEmulator(
+        sessionId: String,
+        terminalId: Int,
+        tunnelManager: com.termfast.app.data.RemoteTunnelManager,
+    ): TerminalEmulator {
+        return TerminalEmulatorFactory.create(
+            initialRows = 24,
+            initialCols = 80,
+            defaultForeground = Color(0xFFCDD6F4),
+            defaultBackground = Color(0xFF1E1E2E),
+            onKeyboardInput = { bytes ->
+                tunnelManager.sendInput(terminalId, bytes)
+            },
+            onResize = { dims ->
+                tunnelManager.sendResize(terminalId, dims.columns, dims.rows)
+            },
+        )
     }
 
     /**
@@ -211,8 +336,17 @@ object TerminalSessionManager {
     }
 
     fun disconnectSession(sessionId: String) {
-        RustRepository.closeTerminal(sessionId)
-        setConnectedBySession(sessionId, false)
+        val session = sessions[sessionId]
+        if (session != null && session.remotePairingId != null) {
+            // Remote session: send UNSUBSCRIBE via registered tunnel manager
+            val tunnelManager = tunnelManagers[session.remotePairingId]
+            tunnelManager?.sendUnsubscribe(session.remoteTerminalId)
+            setConnectedBySession(sessionId, false)
+        } else {
+            // Local SSH session
+            RustRepository.closeTerminal(sessionId)
+            setConnectedBySession(sessionId, false)
+        }
     }
 
     fun reconnectSession(serverId: String, sessionId: String, onResult: (Boolean) -> Unit) {
@@ -242,41 +376,134 @@ object TerminalSessionManager {
         collectorStarted = true
         GlobalScope.launch {
             RustRepository.events.collect { event ->
-                when (event) {
-                    is RustEvent.TerminalData -> {
-                        val bytes = if (event.encoding == "base64") {
-                            Base64.decode(event.data, Base64.DEFAULT)
-                        } else {
-                            event.data.toByteArray()
-                        }
-                        val session = sessions[event.session_id]
-                        if (session != null) {
-                            // Feed raw bytes to termlib — libvterm handles
-                            // UTF-8 + ANSI parsing internally.
-                            session.emulator?.writeInput(bytes)
-                            // Update preview cache for TerminalsScreen card
-                            val rawText = String(bytes, Charsets.UTF_8)
-                            val previewText = stripAnsi(rawText).replace("\r", "").trim()
-                            if (previewText.isNotBlank()) {
-                                sessions[event.session_id] = session.copy(
-                                    previewCache = (session.previewCache + "\n" + previewText)
-                                        .lines()
-                                        .filter { it.isNotBlank() }
-                                        .takeLast(5)
-                                        .joinToString("\n")
-                                )
-                            }
-                        }
+                handleEvent(event)
+            }
+        }
+    }
+
+    /**
+     * Process a single RustEvent — handles both local and remote terminal events.
+     * Extracted from startGlobalCollector for testability.
+     */
+    @Synchronized
+    internal fun handleEvent(event: RustEvent) {
+        when (event) {
+            is RustEvent.TerminalData -> {
+                val bytes = if (event.encoding == "base64") {
+                    Base64.decode(event.data, Base64.DEFAULT)
+                } else {
+                    event.data.toByteArray()
+                }
+                val session = sessions[event.session_id]
+                if (session != null) {
+                    // Feed raw bytes to termlib — libvterm handles
+                    // UTF-8 + ANSI parsing internally.
+                    session.emulator?.writeInput(bytes)
+                    // Update preview cache for TerminalsScreen card
+                    val rawText = String(bytes, Charsets.UTF_8)
+                    val previewText = stripAnsi(rawText).replace("\r", "").trim()
+                    if (previewText.isNotBlank()) {
+                        sessions[event.session_id] = session.copy(
+                            previewCache = (session.previewCache + "\n" + previewText)
+                                .lines()
+                                .filter { it.isNotBlank() }
+                                .takeLast(5)
+                                .joinToString("\n")
+                        )
                     }
-                    is RustEvent.TerminalClosed -> {
-                        setConnectedBySession(event.session_id, false)
-                    }
-                    is RustEvent.TerminalError -> {
-                        setConnectedBySession(event.session_id, false)
-                    }
-                    else -> {}
                 }
             }
+            is RustEvent.TerminalClosed -> {
+                setConnectedBySession(event.session_id, false)
+            }
+            is RustEvent.TerminalError -> {
+                setConnectedBySession(event.session_id, false)
+            }
+            // --- Remote terminal events ---
+            is RustEvent.RemoteTerminalOutput -> {
+                handleRemoteOutput(event)
+            }
+            is RustEvent.RemoteTerminalHistory -> {
+                handleRemoteHistory(event)
+            }
+            is RustEvent.RemoteTerminalResize -> {
+                handleRemoteResize(event)
+            }
+            is RustEvent.RemoteTerminalError -> {
+                handleRemoteError(event)
+            }
+            is RustEvent.RemoteTunnelReady -> {
+                // Tunnel ready — handled by RemoteTunnelManager, nothing to do here
+            }
+            is RustEvent.RemoteTerminalList -> {
+                // LIST_RESPONSE — handled by RemoteTerminalListScreen
+            }
+            else -> {}
+        }
+    }
+
+    /**
+     * Decode base64 string to bytes. Uses java.util.Base64 (works in both
+     * Android runtime and unit tests; android.util.Base64 is stubbed in tests).
+     */
+    private fun decodeBase64(data: String): ByteArray =
+        java.util.Base64.getMimeDecoder().decode(data)
+
+    /**
+     * Handle RemoteTerminalOutput: decode base64 data and write to emulator.
+     */
+    private fun handleRemoteOutput(event: RustEvent.RemoteTerminalOutput) {
+        val session = sessions.values.firstOrNull {
+            it.remotePairingId == event.pairing_id &&
+            it.remoteTerminalId == event.terminal_id.toInt()
+        }
+        if (session != null && event.encoding == "base64") {
+            val bytes = decodeBase64(event.data)
+            session.emulator?.writeInput(bytes)
+        }
+    }
+
+    /**
+     * Handle RemoteTerminalHistory: on seq=0, clear screen; write data to emulator.
+     */
+    private fun handleRemoteHistory(event: RustEvent.RemoteTerminalHistory) {
+        val session = sessions.values.firstOrNull {
+            it.remotePairingId == event.pairing_id &&
+            it.remoteTerminalId == event.terminal_id.toInt()
+        }
+        if (session != null && event.encoding == "base64") {
+            val bytes = decodeBase64(event.data)
+            // On first HISTORY chunk (seq=0), clear the emulator
+            // to prepare for a fresh snapshot (e.g. after reconnect)
+            if (event.seq == 0L) {
+                session.emulator?.clearScreen()
+            }
+            session.emulator?.writeInput(bytes, 0, bytes.size)
+        }
+    }
+
+    /**
+     * Handle RemoteTerminalResize: resize emulator to desktop PTY dimensions.
+     */
+    private fun handleRemoteResize(event: RustEvent.RemoteTerminalResize) {
+        val session = sessions.values.firstOrNull {
+            it.remotePairingId == event.pairing_id &&
+            it.remoteTerminalId == event.terminal_id.toInt()
+        }
+        if (session != null) {
+            session.emulator?.resize(event.cols, event.rows)
+        }
+    }
+
+    /**
+     * Handle RemoteTerminalError: mark all remote sessions for this pairing
+     * as disconnected.
+     */
+    private fun handleRemoteError(event: RustEvent.RemoteTerminalError) {
+        sessions.values.filter {
+            it.remotePairingId == event.pairing_id
+        }.forEach {
+            sessions[it.sessionId] = it.copy(connected = false)
         }
     }
 }

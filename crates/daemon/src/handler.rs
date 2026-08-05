@@ -3000,6 +3000,7 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
     );
 
     // Local terminal branch — no SSH connection needed
+    #[cfg(not(target_os = "android"))]
     if backend == "local" {
         let (session_id, initial_output) = state
             .terminal_manager
@@ -3012,6 +3013,12 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
         return Ok(
             serde_json::json!({ "session_id": session_id, "initial_output": initial_b64 }),
         );
+    }
+
+    // Android: local terminal not supported — return error if backend == "local"
+    #[cfg(target_os = "android")]
+    if backend == "local" {
+        return Err(IpcError::new(ErrorCode::Internal, "local terminals not supported on Android"));
     }
 
     // SSH terminal (backend == "ssh" or unspecified)
@@ -4653,6 +4660,13 @@ async fn handle_cloud_sync_upload(
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("upload: {}", e)))?;
 
+    // Save file_upload_config for FILE_REQUEST (local terminal file transfer)
+    *state.file_upload_config.lock().await = Some(crate::server::FileUploadConfig {
+        provider: provider.clone(),
+        token: stored.token.clone(),
+        master_password: master_password.clone(),
+    });
+
     // Get the new remote hash (re-fetch file_info)
     let new_info = p
         .file_info(&stored.token, &sync_path)
@@ -4814,6 +4828,13 @@ async fn handle_cloud_sync_download(
         serde_json::from_value(payload.config.clone())
             .map_err(|e| IpcError::new(ErrorCode::Internal, format!("parse config: {}", e)))?;
     apply_full_export(state, &export_data).await?;
+
+    // Save file_upload_config for FILE_REQUEST (local terminal file transfer)
+    *state.file_upload_config.lock().await = Some(crate::server::FileUploadConfig {
+        provider: provider.clone(),
+        token: stored.token.clone(),
+        master_password: master_password.clone(),
+    });
 
     // Update sync state — record the config.json mtime AFTER apply, so that
     // on next download we can detect if the local config has been modified since.

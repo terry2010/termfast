@@ -27,6 +27,9 @@ rand = { workspace = true }
 cron = "0.17.0"
 aes-gcm.workspace = true
 bytes = "1.12.1"
+ring = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 termfast-test-utils = { workspace = true }

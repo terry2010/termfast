@@ -22,7 +22,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 type TabId =
-  "general" | "logs" | "terminal" | "proxy" | "trigger" | "notification" | "credentials" | "cloud_sync" | "data" | "developer" | "about";
+  "general" | "logs" | "terminal" | "proxy" | "trigger" | "notification" | "credentials" | "cloud_sync" | "pairing" | "data" | "developer" | "about";
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -45,6 +45,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     { id: "notification", label: t("settings.notification.title") },
     { id: "credentials", label: t("credentials.settings_section") },
     { id: "cloud_sync", label: t("settings.cloud_sync.title") },
+    { id: "pairing", label: t("pairing.title") },
     ...(devModeActive ? [{ id: "developer" as TabId, label: t("settings.developer.title") }] : []),
     { id: "about", label: t("settings.about.title") },
   ];
@@ -179,6 +180,13 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               }}
             >
               <CloudSyncSection />
+            </div>
+            <div
+              ref={(el) => {
+                sectionRefs.current.pairing = el;
+              }}
+            >
+              <PairingSection />
             </div>
             {devModeActive && (
               <div
@@ -1827,4 +1835,215 @@ function CloudSyncSection() {
 
     </section>
   );
+}
+
+// === Pairing section ===
+function PairingSection() {
+  const { t } = useTranslation();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [token, setToken] = useState<string | null>(null);
+  const [pairingId, setPairingId] = useState<string | null>(null);
+  const [polling, setPolling] = useState(false);
+  const [devices, setDevices] = useState<any[]>([]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("pairing_token");
+    if (saved) {
+      setToken(saved);
+      ipcInvoke<any>("ipc_pairing_list_devices", { token: saved })
+        .then((r) => setDevices(r.devices || []))
+        .catch(() => {});
+    }
+  }, []);
+
+  const handleRegister = async () => {
+    try {
+      await ipcInvoke("ipc_pairing_register", { email, password });
+      toast.success(t("pairing.register_success"));
+    } catch (e: any) {
+      toast.error(t("pairing.register_failed"), { description: String(e) });
+    }
+  };
+
+  const handleLogin = async () => {
+    try {
+      const result = await ipcInvoke<any>("ipc_pairing_login", { email, password });
+      const tok = result.access_token;
+      setToken(tok);
+      localStorage.setItem("pairing_token", tok);
+      toast.success(t("pairing.login_success"));
+      const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token: tok });
+      setDevices(devResult.devices || []);
+    } catch (e: any) {
+      toast.error(t("pairing.login_failed"), { description: String(e) });
+    }
+  };
+
+  const handleInitiatePairing = async () => {
+    if (!token) return;
+    try {
+      const result = await ipcInvoke<any>("ipc_pairing_initiate", {
+        token,
+        desktop_device_id: "desktop-" + Date.now(),
+      });
+      setPairingId(result.pairing_id);
+      setPolling(true);
+    } catch (e: any) {
+      toast.error(t("pairing.initiate_failed"), { description: String(e) });
+    }
+  };
+
+  useEffect(() => {
+    if (!polling || !pairingId || !token) return;
+    let stopped = false;
+    let attempts = 0;
+    const maxAttempts = 150;
+    const poll = async () => {
+      if (stopped || attempts >= maxAttempts) {
+        setPolling(false);
+        if (attempts >= maxAttempts) toast.error(t("pairing.timeout"));
+        return;
+      }
+      attempts++;
+      try {
+        const result = await ipcInvoke<any>("ipc_pairing_status", { token, pairing_id: pairingId });
+        if (result.status === "completed") {
+          setPolling(false);
+          toast.success(t("pairing.completed"));
+          const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token });
+          setDevices(devResult.devices || []);
+          return;
+        }
+      } catch { /* ignore */ }
+      setTimeout(poll, 2000);
+    };
+    poll();
+    return () => { stopped = true; };
+  }, [polling, pairingId, token, t]);
+
+  const handleRevoke = async (pid: string) => {
+    if (!token) return;
+    try {
+      await ipcInvoke("ipc_pairing_revoke", { token, pairing_id: pid });
+      setDevices(devices.filter((d) => d.pairing_id !== pid));
+      toast.success(t("pairing.revoked"));
+    } catch (e: any) {
+      toast.error(t("pairing.revoke_failed"), { description: String(e) });
+    }
+  };
+
+  const handleLogout = () => {
+    setToken(null);
+    setDevices([]);
+    setPairingId(null);
+    localStorage.removeItem("pairing_token");
+  };
+
+  const qrContent = pairingId
+    ? JSON.stringify({ pairing_id: pairingId, backend_url: "http://sh.zimufan.com" })
+    : "";
+
+  return (
+    <section className="mb-12">
+      <h2 className="text-xl font-semibold mb-1">{t("pairing.title")}</h2>
+      <p className="text-sm text-gray-500 mb-4">{t("pairing.description", "配对手机端，实现远程终端访问")}</p>
+
+      {!token ? (
+        <div className="space-y-3 max-w-sm">
+          <input
+            type="email"
+            placeholder={t("pairing.email")}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+          />
+          <input
+            type="password"
+            placeholder={t("pairing.password")}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-transparent text-sm"
+          />
+          <p className="text-xs text-gray-400 -mt-1">{t("pairing.password_hint", "密码至少8位")}</p>
+          <div className="flex gap-2">
+            <button
+              onClick={handleRegister}
+              disabled={email.length < 3 || password.length < 8}
+              className="flex-1 px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-sm disabled:opacity-50"
+            >
+              {t("pairing.register")}
+            </button>
+            <button
+              onClick={handleLogin}
+              disabled={email.length < 3 || password.length < 8}
+              className="flex-1 px-4 py-2 rounded-lg bg-blue-500 text-white text-sm disabled:opacity-50"
+            >
+              {t("pairing.login")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {!pairingId && !polling && (
+            <button
+              onClick={handleInitiatePairing}
+              className="px-4 py-2 rounded-lg bg-blue-500 text-white text-sm font-medium"
+            >
+              {t("pairing.pair_new_device")}
+            </button>
+          )}
+
+          {polling && pairingId && (
+            <div className="p-4 rounded-lg border border-gray-200 dark:border-gray-700 max-w-sm">
+              <div className="bg-white p-4 rounded-lg mb-3 flex items-center justify-center">
+                <QRCodeDisplay content={qrContent} />
+              </div>
+              <p className="text-sm text-gray-500 text-center">{t("pairing.waiting_scan")}</p>
+              <div className="mt-2 text-xs text-gray-400 text-center font-mono break-all">{pairingId}</div>
+            </div>
+          )}
+
+          {devices.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium mb-2">{t("pairing.paired_devices")}</h3>
+              <div className="space-y-2">
+                {devices.map((d) => (
+                  <div key={d.pairing_id} className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50 dark:bg-gray-800">
+                    <div>
+                      <div className="text-sm">{d.mobile_device_id || d.pairing_id}</div>
+                      <div className="text-xs text-gray-500">{d.status}</div>
+                    </div>
+                    <button onClick={() => handleRevoke(d.pairing_id)} className="text-xs text-red-500">
+                      {t("pairing.revoke")}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <button onClick={handleLogout} className="text-xs text-gray-500">
+            {t("pairing.logout", "退出登录")}
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function QRCodeDisplay({ content }: { content: string }) {
+  const [svg, setSvg] = useState<string>("");
+  useEffect(() => {
+    import("qrcode")
+      .then((QRCode) => {
+        QRCode.toString(content, { type: "svg", margin: 1, width: 200 }, (err: any, s: string) => {
+          if (!err) setSvg(s);
+        });
+      })
+      .catch(() => {
+        setSvg(`<text x="10" y="100" font-size="10">${content}</text>`);
+      });
+  }, [content]);
+  return <div dangerouslySetInnerHTML={{ __html: svg || "<div>Generating...</div>" }} />;
 }

@@ -45,6 +45,9 @@ pub struct DaemonState {
     pub cloud_sync_callback: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<termfast_cloud_sync::callback::CallbackResult>>>>,
     /// Cloud sync pending auth info (provider + code_verifier for the in-flight callback)
     pub cloud_sync_pending: Arc<Mutex<Option<CloudSyncPendingAuth>>>,
+    /// Cloud file upload config (provider + token + master_password) for FILE_REQUEST.
+    /// Set when user performs cloud sync; used by RemoteServer file_upload_callback.
+    pub file_upload_config: Arc<Mutex<Option<FileUploadConfig>>>,
     /// 本地触发器引擎（独立于 SSH 服务器的 TriggerEngine）
     pub local_trigger_engine: Arc<termfast_core::trigger::TriggerEngine>,
     /// 本地网络监听 task handle（用于 shutdown 时 abort）
@@ -60,6 +63,15 @@ pub struct CloudSyncPendingAuth {
     pub code_verifier: String,
     pub redirect_uri: String,
     pub state: String,
+}
+
+/// Cloud file upload config (for FILE_REQUEST on local terminals).
+/// Set when user performs cloud sync; used by RemoteServer file_upload_callback.
+#[derive(Clone)]
+pub struct FileUploadConfig {
+    pub provider: String,
+    pub token: termfast_cloud_sync::OAuthToken,
+    pub master_password: String,
 }
 
 /// A connected client
@@ -117,6 +129,7 @@ impl DaemonState {
             ),
             cloud_sync_callback: Arc::new(Mutex::new(None)),
             cloud_sync_pending: Arc::new(Mutex::new(None)),
+            file_upload_config: Arc::new(Mutex::new(None)),
             local_trigger_engine: Arc::new(termfast_core::trigger::TriggerEngine::new()),
             local_monitor_handle: Arc::new(Mutex::new(None)),
             local_interval_handles: Arc::new(Mutex::new(Vec::new())),

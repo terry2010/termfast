@@ -183,13 +183,42 @@ object RustRepository {
     fun pairingDownloadConfig(pairingJwt: String): String =
         RustBridge.nativePairingDownloadConfig(pairingJwt)
 
-    // --- Remote Terminal ---
-    fun requestRemoteTerminalList(pairingJwt: String): String =
-        RustBridge.nativeRequestRemoteTerminalList(pairingJwt)
-    fun subscribeRemoteTerminal(pairingJwt: String, sessionId: String): Boolean =
-        RustBridge.nativeSubscribeRemoteTerminal(pairingJwt, sessionId)
-    fun unsubscribeRemoteTerminal(sessionId: String): Boolean =
-        RustBridge.nativeUnsubscribeRemoteTerminal(sessionId)
-    fun sendRemoteInput(sessionId: String, data: ByteArray): Boolean =
-        RustBridge.nativeSendRemoteInput(sessionId, data)
+    // --- Remote Terminal (WebSocket tunnel frame-level API) ---
+    // Kotlin TunnelClient manages WebSocket transport; Rust FFI handles
+    // frame encryption/decryption and protocol logic (HELLO, LIST, SUBSCRIBE, etc.)
+
+    /** Initialize a tunnel session: generate HELLO, encrypt with pairing key.
+     *  Returns encrypted HELLO bytes to send via TunnelClient.sendBinary(). */
+    fun remoteTunnelInit(pairingId: String, pairingKey: ByteArray): ByteArray =
+        RustBridge.nativeRemoteTunnelInit(pairingId, pairingKey)
+
+    /** Process a binary frame received from the relay.
+     *  Rust decrypts and dispatches events (RemoteTerminalOutput, etc.). */
+    fun remoteTunnelOnBinary(pairingId: String, data: ByteArray) {
+        RustBridge.nativeRemoteTunnelOnBinary(pairingId, data)
+    }
+
+    /** Create + encrypt a LIST_REQUEST frame. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendListRequest(pairingId: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendListRequest(pairingId)
+
+    /** Create + encrypt a SUBSCRIBE frame. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSubscribe(pairingId: String, terminalId: Int): ByteArray? =
+        RustBridge.nativeRemoteTunnelSubscribe(pairingId, terminalId)
+
+    /** Create + encrypt an UNSUBSCRIBE frame. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelUnsubscribe(pairingId: String, terminalId: Int): ByteArray? =
+        RustBridge.nativeRemoteTunnelUnsubscribe(pairingId, terminalId)
+
+    /** Create + encrypt an INPUT frame with user keystrokes. Returns ciphertext to send. */
+    fun remoteTunnelSendInput(pairingId: String, terminalId: Int, data: ByteArray): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendInput(pairingId, terminalId, data)
+
+    /** Create + encrypt a RESIZE frame. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendResize(pairingId, terminalId, cols, rows)
+
+    /** Close tunnel session: send GOODBYE + remove session state. Returns GOODBYE ciphertext. */
+    fun remoteTunnelClose(pairingId: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelClose(pairingId)
 }

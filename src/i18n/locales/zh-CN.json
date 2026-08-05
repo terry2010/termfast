@@ -709,5 +709,27 @@
     "delete_confirm": "确定要删除「{{name}}」吗？",
     "delete_confirm_running": "「{{name}}」正在运行中，确定要停止并删除吗？",
     "error": "错误"
+  },
+  "pairing": {
+    "title": "设备配对",
+    "description": "配对手机端，实现远程终端访问",
+    "email": "邮箱",
+    "password": "密码",
+    "register": "注册",
+    "login": "登录",
+    "logout": "退出登录",
+    "register_success": "注册成功",
+    "register_failed": "注册失败",
+    "login_success": "登录成功",
+    "login_failed": "登录失败",
+    "pair_new_device": "配对新设备",
+    "waiting_scan": "等待手机端确认配对...",
+    "paired_devices": "已配对设备",
+    "revoke": "撤销",
+    "revoked": "已撤销配对",
+    "revoke_failed": "撤销失败",
+    "initiate_failed": "发起配对失败",
+    "completed": "配对成功",
+    "timeout": "配对超时，请重试"
   }
 }

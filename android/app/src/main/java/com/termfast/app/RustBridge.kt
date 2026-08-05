@@ -104,11 +104,16 @@ object RustBridge {
     external fun nativePairingComplete(pairingId: String, phonePubkey: String, deviceId: String): String
     external fun nativePairingDownloadConfig(pairingJwt: String): String
 
-    // --- Remote Terminal (WebSocket tunnel) ---
-    external fun nativeRequestRemoteTerminalList(pairingJwt: String): String
-    external fun nativeSubscribeRemoteTerminal(pairingJwt: String, sessionId: String): Boolean
-    external fun nativeUnsubscribeRemoteTerminal(sessionId: String): Boolean
-    external fun nativeSendRemoteInput(sessionId: String, data: ByteArray): Boolean
+    // --- Remote Terminal (WebSocket tunnel frame-level API) ---
+    // Kotlin TunnelClient manages WebSocket; Rust FFI handles frame crypto + protocol.
+    external fun nativeRemoteTunnelInit(pairingId: String, pairingKey: ByteArray): ByteArray
+    external fun nativeRemoteTunnelOnBinary(pairingId: String, data: ByteArray)
+    external fun nativeRemoteTunnelSendListRequest(pairingId: String): ByteArray?
+    external fun nativeRemoteTunnelSubscribe(pairingId: String, terminalId: Int): ByteArray?
+    external fun nativeRemoteTunnelUnsubscribe(pairingId: String, terminalId: Int): ByteArray?
+    external fun nativeRemoteTunnelSendInput(pairingId: String, terminalId: Int, data: ByteArray): ByteArray?
+    external fun nativeRemoteTunnelSendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray?
+    external fun nativeRemoteTunnelClose(pairingId: String): ByteArray?
 
     // --- Cloud Sync ---
     external fun nativeCloudSyncAuthUrl(provider: String): String

@@ -2257,4 +2257,191 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativePairingDownloadC
     }
 }
 
+// === Remote Terminal (WebSocket tunnel frame-level API) ===
+
+/// Helper: convert a jbyteArray to a fixed 32-byte array.
+fn jbyte_array_to_32(env: &mut JNIEnv, arr: &::jni::objects::JByteArray) -> Result<[u8; 32], String> {
+    let bytes = env.convert_byte_array(arr).map_err(|e| e.to_string())?;
+    if bytes.len() != 32 {
+        return Err(format!("expected 32-byte key, got {} bytes", bytes.len()));
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Ok(key)
+}
+
+/// Helper: convert a Rust byte vec to a jbyteArray (returns null ptr on error).
+fn vec_to_jbytearray(env: &mut JNIEnv, data: &[u8]) -> ::jni::sys::jbyteArray {
+    match env.byte_array_from_slice(data) {
+        Ok(arr) => arr.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelInit(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    pairing_key: ::jni::objects::JByteArray,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let key = match jbyte_array_to_32(&mut env, &pairing_key) {
+        Ok(k) => k,
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelInit: {}", e));
+            return std::ptr::null_mut();
+        }
+    };
+    match crate::remote_terminal::init_tunnel(&pid, &key) {
+        Ok(ciphertext) => vec_to_jbytearray(&mut env, &ciphertext),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelInit: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelOnBinary(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    data: ::jni::objects::JByteArray,
+) {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let bytes = match env.convert_byte_array(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelOnBinary: convert error: {}", e));
+            return;
+        }
+    };
+    if let Err(e) = crate::remote_terminal::process_binary(&pid, &bytes) {
+        log_to_kotlin("warn", &format!("nativeRemoteTunnelOnBinary: {}", e));
+    }
+}
+
+// === SECTION: Remote tunnel JNI part 1 END ===
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendListRequest(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    match crate::remote_terminal::send_list_request(&pid) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendListRequest: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSubscribe(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    terminal_id: jint,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    match crate::remote_terminal::send_subscribe(&pid, terminal_id as u32) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSubscribe: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelUnsubscribe(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    terminal_id: jint,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    match crate::remote_terminal::send_unsubscribe(&pid, terminal_id as u32) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelUnsubscribe: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendInput(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    terminal_id: jint,
+    data: ::jni::objects::JByteArray,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let bytes = match env.convert_byte_array(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendInput: convert: {}", e));
+            return std::ptr::null_mut();
+        }
+    };
+    match crate::remote_terminal::send_input(&pid, terminal_id as u32, &bytes) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendInput: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendResize(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    terminal_id: jint,
+    cols: jint,
+    rows: jint,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    match crate::remote_terminal::send_resize(&pid, terminal_id as u32, cols as u16, rows as u16) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendResize: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelClose(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    match crate::remote_terminal::close_tunnel(&pid) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelClose: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+// === SECTION: Remote tunnel JNI part 2 END ===
+
 // === Pairing END ===

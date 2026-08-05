@@ -195,6 +195,14 @@ class MainActivity : ComponentActivity() {
             is RustEvent.TerminalError -> {
                 // Terminal error is handled by TerminalScreen
             }
+            // Remote terminal events are handled by RemoteTerminalListScreen
+            // and TerminalSessionManager's global collector.
+            is RustEvent.RemoteTunnelReady,
+            is RustEvent.RemoteTerminalList,
+            is RustEvent.RemoteTerminalOutput,
+            is RustEvent.RemoteTerminalHistory,
+            is RustEvent.RemoteTerminalResize,
+            is RustEvent.RemoteTerminalError -> { }
         }
     }
 

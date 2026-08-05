@@ -7,6 +7,7 @@
 mod daemon_embed;
 mod credential_manager;
 mod pairing;
+mod tunnel_manager;
 
 use credential_manager::{credential_file_path, CredentialState};
 use daemon_embed::EmbeddedDaemon;
@@ -22,6 +23,9 @@ pub struct AppState {
     /// Terminal output channels — key = session_id, value = Channel for raw bytes.
     /// Set by ipc_terminal_open, consumed by the binary event forwarder.
     pub terminal_channels: std::sync::Mutex<std::collections::HashMap<String, tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>>>,
+    /// Desktop tunnel manager — manages WebSocket tunnels to relay for paired phones.
+    /// Initialized after daemon starts (needs TerminalManager from DaemonState).
+    pub tunnel_manager: tokio::sync::Mutex<Option<Arc<tunnel_manager::DesktopTunnelManager>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -213,6 +217,7 @@ pub fn run() {
                             daemon: tokio::sync::Mutex::new(Some(Arc::new(daemon))),
                             is_quitting: std::sync::atomic::AtomicBool::new(false),
                             terminal_channels: std::sync::Mutex::new(std::collections::HashMap::new()),
+                            tunnel_manager: tokio::sync::Mutex::new(None),
                         };
                         handle.manage(state);
                         tracing::info!("Tauri app state initialized with event forwarding");
@@ -301,6 +306,9 @@ pub fn run() {
             ipc_push_send,
             ipc_set_trigger_overrides,
             ipc_get_trigger_overrides,
+            // Remote terminal tunnels (FP-4a-3/4)
+            ipc_tunnel_start,
+            ipc_tunnel_stop,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
             ipc_quit_app,
             // Developer options
@@ -2004,8 +2012,25 @@ async fn ipc_pairing_status(token: String, pairing_id: String) -> Result<serde_j
 }
 
 #[tauri::command]
-async fn ipc_pairing_revoke(token: String, pairing_id: String) -> Result<serde_json::Value, String> {
-    pairing::pair_revoke(&token, &pairing_id).await
+async fn ipc_pairing_revoke(
+    app: tauri::AppHandle,
+    token: String,
+    pairing_id: String,
+) -> Result<serde_json::Value, String> {
+    // 1. Revoke on backend (removes pairing from DB)
+    let result = pairing::pair_revoke(&token, &pairing_id).await;
+
+    // 2. Stop the tunnel for this pairing_id (if active)
+    let state = app.state::<AppState>();
+    let tm_guard = state.tunnel_manager.lock().await;
+    if let Some(tm) = tm_guard.as_ref() {
+        tm.stop_tunnel(&pairing_id).await;
+        // 3. Revoke pairing in RemoteServer (removes auth_key + remote_subscribers)
+        tm.remote_server().revoke_pairing(&pairing_id).await;
+    }
+    drop(tm_guard);
+
+    result
 }
 
 #[tauri::command]
@@ -2039,3 +2064,213 @@ async fn ipc_push_send(
 }
 
 // === SECTION: Pairing IPC commands END ===
+
+// === SECTION: Remote terminal tunnel IPC commands (FP-4a-3/4) ===
+
+/// Upload a local file to cloud storage for FILE_REQUEST (local terminal file transfer).
+/// Reads the file, encrypts with master password, uploads to cloud, returns FileUploadResult.
+async fn upload_file_to_cloud(
+    file_path: String,
+    file_upload_config: Arc<tokio::sync::Mutex<Option<termfast_daemon::server::FileUploadConfig>>>,
+    config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
+) -> Result<termfast_daemon::remote_server::FileUploadResult, String> {
+    // Get upload config
+    let upload_cfg = {
+        let guard = file_upload_config.lock().await;
+        guard.as_ref().ok_or_else(|| "cloud sync not configured — please sync config first".to_string())?.clone()
+    };
+
+    // Read file
+    let file_data = tokio::fs::read(&file_path).await
+        .map_err(|e| format!("read file failed: {}", e))?;
+    let file_size = file_data.len() as u64;
+
+    // Get file name from path
+    let file_name = std::path::Path::new(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+
+    // Compute SHA-256
+    let sha256 = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&file_data);
+        let hash = hasher.finalize();
+        hex::encode(hash)
+    };
+
+    // Detect MIME type (simple extension-based)
+    let mime_type = detect_mime_type(&file_name);
+
+    // Encrypt with master password (on blocking thread — Argon2id)
+    let mp = upload_cfg.master_password.clone();
+    let encrypted = tokio::task::spawn_blocking(move || {
+        // Use a dedicated magic for file uploads: "TFFI" (TermFast File)
+        let magic = *b"TFFI";
+        termfast_cloud_sync::sync_crypto::encrypt_with_magic(&magic, &mp, &file_data)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {}", e))?
+    .map_err(|e| format!("encrypt: {}", e))?;
+
+    // Build provider (need proxy settings from config)
+    let (proxy_mode_str, proxy_url) = {
+        let mgr = config_manager.lock().await;
+        let config = mgr.get().await;
+        (
+            config.general.http_proxy_mode.clone(),
+            config.general.http_proxy_url.clone(),
+        )
+    };
+    let proxy_mode = termfast_cloud_sync::proxy::ProxyMode::from_config(&proxy_mode_str, &proxy_url);
+
+    let provider: Box<dyn termfast_cloud_sync::CloudProviderTrait> = match upload_cfg.provider.as_str() {
+        "dropbox" => Box::new(
+            termfast_cloud_sync::dropbox::DropboxProvider::with_proxy_mode(proxy_mode),
+        ),
+        "baidu" => Box::new(
+            termfast_cloud_sync::baidu::BaiduProvider::with_proxy_mode(proxy_mode),
+        ),
+        _ => return Err(format!("unknown provider: {}", upload_cfg.provider)),
+    };
+
+    // Generate cloud path: /TermFast/files/{uuid}.enc
+    let cloud_path = format!("/TermFast/files/{}.enc", uuid::Uuid::new_v4());
+
+    // Upload
+    provider
+        .upload(&upload_cfg.token, &cloud_path, &encrypted)
+        .await
+        .map_err(|e| format!("upload: {}", e))?;
+
+    tracing::info!(
+        "FILE_REQUEST: uploaded {} ({} bytes) to {}",
+        file_name, file_size, cloud_path
+    );
+
+    Ok(termfast_daemon::remote_server::FileUploadResult {
+        cloud_path,
+        file_name,
+        size: file_size,
+        sha256,
+        mime_type,
+    })
+}
+
+/// Simple MIME type detection based on file extension.
+fn detect_mime_type(file_name: &str) -> String {
+    let ext = std::path::Path::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "txt" | "log" => "text/plain",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "xml" => "application/xml",
+        "zip" => "application/zip",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        "mp4" => "video/mp4",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+/// Start a WebSocket tunnel to the relay for a paired phone.
+///
+/// Called by the frontend after pairing completes (or on app startup for
+/// existing pairings). The tunnel connects to the relay, registers as
+/// desktop, and bridges encrypted frame I/O between the phone (via relay)
+/// and the desktop's RemoteServer (which shares local terminals).
+///
+/// # Arguments
+///
+/// * `pairing_id` - Pairing ID for this phone
+/// * `pairing_key_hex` - 32-byte pairing key K as hex string (64 chars)
+/// * `relay_url` - Relay WebSocket URL (e.g. "wss://termfast.xisj.com/tunnel")
+/// * `jwt` - Desktop user JWT (for relay authentication)
+#[tauri::command]
+async fn ipc_tunnel_start(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    pairing_key_hex: String,
+    relay_url: String,
+    jwt: String,
+) -> Result<(), String> {
+    // Decode pairing key from hex
+    let pairing_key = decode_hex_32(&pairing_key_hex)?;
+
+    // Get or create the DesktopTunnelManager
+    let state = app.state::<AppState>();
+    let mut tm_guard = state.tunnel_manager.lock().await;
+    if tm_guard.is_none() {
+        // Initialize: get TerminalManager + ConfigManager from daemon
+        let daemon_guard = state.daemon.lock().await;
+        if let Some(daemon) = daemon_guard.as_ref() {
+            let terminal_manager = daemon.server.state().terminal_manager.clone();
+            let config_manager = daemon.server.state().config_manager.clone();
+            let file_upload_config = daemon.server.state().file_upload_config.clone();
+            let tm = Arc::new(tunnel_manager::DesktopTunnelManager::new(
+                terminal_manager,
+                config_manager.clone(),
+            ));
+            // Register file upload callback for FILE_REQUEST (local terminal file transfer)
+            let config_mgr_cb = config_manager.clone();
+            tm.remote_server().set_file_upload_callback(Box::new(move |file_path: String| {
+                let file_upload_config = file_upload_config.clone();
+                let config_mgr = config_mgr_cb.clone();
+                Box::pin(async move {
+                    upload_file_to_cloud(file_path, file_upload_config, config_mgr).await
+                })
+            }));
+            *tm_guard = Some(tm);
+            tracing::info!("DesktopTunnelManager initialized");
+        } else {
+            return Err("daemon not started".to_string());
+        }
+    }
+    let tm = tm_guard.as_ref().unwrap().clone();
+    drop(tm_guard);
+
+    tm.start_tunnel(pairing_id, pairing_key, relay_url, jwt).await
+}
+
+/// Stop the WebSocket tunnel for a specific pairing_id.
+#[tauri::command]
+async fn ipc_tunnel_stop(
+    app: tauri::AppHandle,
+    pairing_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let tm_guard = state.tunnel_manager.lock().await;
+    if let Some(tm) = tm_guard.as_ref() {
+        tm.stop_tunnel(&pairing_id).await;
+    }
+    Ok(())
+}
+
+/// Decode a 64-char hex string into a 32-byte array.
+fn decode_hex_32(hex: &str) -> Result<[u8; 32], String> {
+    if hex.len() != 64 {
+        return Err(format!("pairing key hex must be 64 chars, got {}", hex.len()));
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| format!("invalid hex at byte {}: {}", i, e))?;
+    }
+    Ok(out)
+}
+
+// === SECTION: Remote terminal tunnel IPC commands END ===

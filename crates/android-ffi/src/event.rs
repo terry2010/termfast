@@ -53,6 +53,49 @@ pub enum RustEvent {
         session_id: String,
         error: String,
     },
+    /// Remote tunnel HELLO exchange complete, session key established.
+    #[serde(rename = "RemoteTunnelReady")]
+    RemoteTunnelReady {
+        pairing_id: String,
+    },
+    /// LIST_RESPONSE received — terminal list JSON payload.
+    #[serde(rename = "RemoteTerminalList")]
+    RemoteTerminalList {
+        pairing_id: String,
+        terminals: String,
+    },
+    /// OUTPUT frame — terminal output data (base64 encoded).
+    #[serde(rename = "RemoteTerminalOutput")]
+    RemoteTerminalOutput {
+        pairing_id: String,
+        terminal_id: u32,
+        data: String,
+        encoding: String,
+    },
+    /// HISTORY frame — terminal history snapshot (base64 encoded).
+    #[serde(rename = "RemoteTerminalHistory")]
+    RemoteTerminalHistory {
+        pairing_id: String,
+        terminal_id: u32,
+        seq: u32,
+        is_last: bool,
+        data: String,
+        encoding: String,
+    },
+    /// RESIZE frame — desktop PTY size change notification.
+    #[serde(rename = "RemoteTerminalResize")]
+    RemoteTerminalResize {
+        pairing_id: String,
+        terminal_id: u32,
+        cols: u16,
+        rows: u16,
+    },
+    /// ERROR frame from desktop protocol server.
+    #[serde(rename = "RemoteTerminalError")]
+    RemoteTerminalError {
+        pairing_id: String,
+        error: String,
+    },
 }
 
 impl RustEvent {

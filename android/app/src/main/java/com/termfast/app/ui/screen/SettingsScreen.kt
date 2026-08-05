@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.VpnKey
@@ -125,6 +126,24 @@ fun SettingsScreen(navController: NavController) {
 
             // Cloud sync section
             CloudSyncSection()
+
+            // Pairing section
+            SettingsNavCard(
+                icon = Icons.Filled.Devices,
+                title = "设备配对",
+                subtitle = "配对手机端，实现远程终端访问",
+                onClick = { navController.navigate("pairing") },
+            )
+
+            // Remote terminals section — only show if pairing config exists
+            if (com.termfast.app.data.PairingStore.hasRemoteTunnelConfig()) {
+                SettingsNavCard(
+                    icon = Icons.Filled.Devices,
+                    title = "远程终端",
+                    subtitle = "查看桌面端共享的终端",
+                    onClick = { navController.navigate("remote_terminals") },
+                )
+            }
 
             // Terminal section
             TerminalSettingsSection()

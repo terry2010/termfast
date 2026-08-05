@@ -9,12 +9,30 @@ use russh::client;
 use russh::ChannelMsg;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+#[cfg(not(target_os = "android"))]
 use termfast_core::local::{ChildKiller, PtySize};
+#[cfg(not(target_os = "android"))]
 use termfast_core::local::pty::open_local_pty;
 use termfast_core::ssh::pty;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+
+/// Android stub for ChildKiller trait (local terminals not supported on Android).
+#[cfg(target_os = "android")]
+pub trait ChildKiller: Send {
+    fn kill(&mut self) -> Result<(), std::io::Error>;
+}
+
+/// Android stub for PtySize (local terminals not supported on Android).
+#[cfg(target_os = "android")]
+#[derive(Clone, Copy, Debug)]
+pub struct PtySize {
+    pub rows: u16,
+    pub cols: u16,
+    pub pixel_width: u16,
+    pub pixel_height: u16,
+}
 
 /// 本地终端生命周期事件（打开/关闭）
 #[derive(Debug, Clone)]
@@ -67,6 +85,9 @@ pub struct RemoteSubscriber {
 
 // === SECTION 1 END ===
 
+/// Type alias for the on_closed callback function.
+pub type OnClosedCallback = Box<dyn Fn(&str) + Send + Sync>;
+
 /// Manages all active terminal sessions
 pub struct TerminalManager {
     sessions: Mutex<HashMap<String, TerminalSession>>,
@@ -81,6 +102,9 @@ pub struct TerminalManager {
     /// These are NOT persisted — cleared on restart. Used by the frontend
     /// to toggle exec_in_terminal per-terminal without modifying trigger config.
     trigger_overrides: Arc<Mutex<HashMap<String, HashMap<String, bool>>>>,
+    /// Callback invoked when a terminal closes (for RemoteServer to clean up IdMap).
+    /// Set by RemoteServer via set_on_closed_callback.
+    on_closed_callback: Arc<std::sync::Mutex<Option<OnClosedCallback>>>,
 }
 
 impl TerminalManager {
@@ -95,6 +119,21 @@ impl TerminalManager {
             local_event_tx: Arc::new(Mutex::new(None)),
             closed_sessions: Arc::new(Mutex::new(HashSet::new())),
             trigger_overrides: Arc::new(Mutex::new(HashMap::new())),
+            on_closed_callback: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Set a callback invoked when a terminal closes (for RemoteServer IdMap cleanup).
+    pub fn set_on_closed_callback(&self, callback: OnClosedCallback) {
+        *self.on_closed_callback.lock().unwrap() = Some(callback);
+    }
+
+    /// Invoke the on_closed callback (if set) for a session_id.
+    fn notify_closed(&self, session_id: &str) {
+        if let Ok(cb) = self.on_closed_callback.lock() {
+            if let Some(ref f) = *cb {
+                f(session_id);
+            }
         }
     }
 
@@ -129,6 +168,14 @@ impl TerminalManager {
         let sid = session_id.clone();
         let fwd = self.forwarder.clone();
         let bin_fwd = self.binary_forwarder.clone();
+
+        // Create shared state Arcs early so reader task and TerminalSession share them
+        let history: Arc<std::sync::RwLock<crate::remote_frame::RingBuffer>> =
+            Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subscribers: Arc<std::sync::Mutex<Vec<RemoteSubscriber>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pty_size: Arc<std::sync::Mutex<(u16, u16)>> =
+            Arc::new(std::sync::Mutex::new((cols as u16, rows as u16)));
 
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<TerminalCmd>();
 
@@ -191,6 +238,8 @@ impl TerminalManager {
         let task_sid = sid.clone();
         let task_fwd = fwd.clone();
         let task_bin_fwd = bin_fwd.clone();
+        let task_history = history.clone();
+        let task_remote_subs = remote_subscribers.clone();
         let main_task = tokio::spawn(async move {
             tracing::info!("terminal main task started for {}", task_sid);
             // Buffer for merging small Data packets within a short time window.
@@ -206,7 +255,7 @@ impl TerminalManager {
                             data_buf.len(),
                             task_sid
                         );
-                        forward_terminal_output(&task_bin_fwd, &task_sid, &data_buf, false);
+                        forward_and_broadcast(&task_bin_fwd, &task_history, &task_remote_subs, &task_sid, &data_buf, false);
                         data_buf.clear();
                     }
                     if !stderr_buf.is_empty() {
@@ -463,9 +512,9 @@ impl TerminalManager {
             tmux_session_name: None,
             ssh_handle: Some(Arc::clone(ssh_handle)),
             name: format!("{} #?", server_id),
-            history: Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024))),
-            remote_subscribers: Arc::new(std::sync::Mutex::new(Vec::new())),
-            pty_size: Arc::new(std::sync::Mutex::new((cols as u16, rows as u16))),
+            history,
+            remote_subscribers,
+            pty_size,
         };
         self.sessions
             .lock()
@@ -479,6 +528,7 @@ impl TerminalManager {
     /// Spawns a local shell in a PTY using `portable-pty`. The reader/writer
     /// are synchronous, so they're moved into `spawn_blocking` tasks with
     /// mpsc channels bridging to the async main task.
+    #[cfg(not(target_os = "android"))]
     pub async fn open_local(
         &self,
         cols: u32,
@@ -490,6 +540,14 @@ impl TerminalManager {
         let sid = session_id.clone();
         let bin_fwd = self.binary_forwarder.clone();
         let fwd = self.forwarder.clone();
+
+        // Create shared state Arcs early so reader task and TerminalSession share them
+        let history: Arc<std::sync::RwLock<crate::remote_frame::RingBuffer>> =
+            Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subscribers: Arc<std::sync::Mutex<Vec<RemoteSubscriber>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pty_size: Arc<std::sync::Mutex<(u16, u16)>> =
+            Arc::new(std::sync::Mutex::new((cols as u16, rows as u16)));
 
         let local_pty = open_local_pty(cols as u16, rows as u16, shell.as_deref())
             .map_err(|e| format!("failed to open local PTY: {}", e))?;
@@ -541,6 +599,8 @@ impl TerminalManager {
         let task_sid = sid.clone();
         let task_bin_fwd = bin_fwd.clone();
         let task_fwd = fwd.clone();
+        let task_history = history.clone();
+        let task_remote_subs = remote_subscribers.clone();
         let master = local_pty.master;
         let mut child = local_pty.child;
         // Clone Arc handles for local terminal events (move into main task)
@@ -554,7 +614,7 @@ impl TerminalManager {
                     data = read_rx.recv() => {
                         match data {
                             Some(data) => {
-                                forward_terminal_output(&task_bin_fwd, &task_sid, &data, false);
+                                forward_and_broadcast(&task_bin_fwd, &task_history, &task_remote_subs, &task_sid, &data, false);
                             }
                             None => {
                                 // Shell exited naturally (exit / Ctrl+D)
@@ -623,9 +683,9 @@ impl TerminalManager {
             tmux_session_name: None,
             ssh_handle: None,
             name: "Local".to_string(),
-            history: Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024))),
-            remote_subscribers: Arc::new(std::sync::Mutex::new(Vec::new())),
-            pty_size: Arc::new(std::sync::Mutex::new((cols as u16, rows as u16))),
+            history,
+            remote_subscribers,
+            pty_size,
         };
         self.sessions
             .lock()
@@ -873,6 +933,8 @@ impl TerminalManager {
             }
             // Clear per-session trigger overrides
             self.clear_trigger_overrides(session_id).await;
+            // Notify RemoteServer to clean up IdMap (if callback set)
+            self.notify_closed(session_id);
             Ok(())
         } else {
             Err(format!("terminal session not found: {}", session_id))
@@ -910,6 +972,8 @@ impl TerminalManager {
                         }
                     }
                 }
+                // Notify RemoteServer to clean up IdMap
+                self.notify_closed(&id);
             }
         }
     }
@@ -941,6 +1005,8 @@ impl TerminalManager {
                         });
                     }
                 }
+                // Notify RemoteServer to clean up IdMap
+                self.notify_closed(&id);
             }
         }
     }
@@ -952,42 +1018,129 @@ impl TerminalManager {
     }
 
     /// List all session infos for remote LIST_REQUEST.
+    /// Per design doc: server_name is left empty (filled by RemoteServer.handle_list
+    /// via ConfigManager). preview is computed from ring buffer tail (ANSI stripped).
     pub async fn list_session_infos(&self) -> Vec<SessionInfo> {
-        let sessions = self.sessions.lock().await;
-        sessions
-            .iter()
-            .map(|(sid, s)| SessionInfo {
-                session_id: sid.clone(),
-                name: s.name.clone(),
-                server_id: s.server_id.clone(),
-                is_local: s.server_id == "__local__",
-                tmux_session_name: s.tmux_session_name.clone(),
-            })
-            .collect()
+        // Phase 1: hold sessions lock, only do lightweight clone
+        #[derive(Clone)]
+        struct SessionSnapshot {
+            sid: String,
+            name: String,
+            server_id: String,
+            is_local: bool,
+            tmux_session_name: Option<String>,
+            tail_bytes: Vec<u8>,
+        }
+        let snapshots: Vec<SessionSnapshot> = {
+            let sessions = self.sessions.lock().await;
+            sessions.iter().map(|(sid, s)| {
+                let tail_bytes = {
+                    let history = s.history.read().unwrap();
+                    let all_bytes: Vec<u8> = history.iter().flatten().cloned().collect();
+                    if all_bytes.len() > 2048 {
+                        all_bytes[all_bytes.len()-2048..].to_vec()
+                    } else {
+                        all_bytes
+                    }
+                };
+                let is_local = s.server_id == "__local__";
+                SessionSnapshot {
+                    sid: sid.clone(),
+                    name: s.name.clone(),
+                    server_id: s.server_id.clone(),
+                    is_local,
+                    tmux_session_name: s.tmux_session_name.clone(),
+                    tail_bytes,
+                }
+            }).collect()
+        }; // sessions lock released
+
+        // Phase 2: outside lock, do CPU-intensive ANSI stripping
+        snapshots.into_iter().map(|snap| {
+            let preview = strip_ansi(&String::from_utf8_lossy(&snap.tail_bytes))
+                .lines().rev().take(5)
+                .collect::<Vec<_>>().iter().rev()
+                .copied().collect::<Vec<_>>().join("\n");
+            let terminal_type = if snap.is_local { "local" } else { "ssh" };
+            SessionInfo {
+                session_id: snap.sid,
+                name: snap.name,
+                server_id: snap.server_id,
+                is_local: snap.is_local,
+                tmux_session_name: snap.tmux_session_name,
+                server_name: String::new(), // filled by RemoteServer.handle_list
+                terminal_type: terminal_type.to_string(),
+                status: "active".to_string(),
+                preview,
+            }
+        }).collect()
     }
 
     /// Subscribe a remote client to a terminal session.
-    /// Returns Ok(()) with the initial PTY size and history snapshot.
+    ///
+    /// Atomic operation (per design doc): within remote_subscribers lock,
+    /// 1. Remove old subscriber with same pairing_id (idempotent SUBSCRIBE)
+    /// 2. Read ring buffer snapshot
+    /// 3. Push RESIZE + HISTORY frames into subscriber channel (try_send)
+    /// 4. Add subscriber to remote_subscribers
+    ///
+    /// This ensures no OUTPUT is lost between snapshot and subscription —
+    /// reader task's broadcast is blocked by the lock, and OUTPUT frames
+    /// queued after unlock will follow HISTORY in the mpsc channel (FIFO).
+    ///
+    /// Returns Ok(()) on success. The subscriber's channel receives
+    /// RESIZE + HISTORY frames immediately (within the lock).
     pub async fn subscribe_remote(
         &self,
         session_id: &str,
         subscriber: RemoteSubscriber,
-    ) -> Result<((u16, u16), Vec<bytes::Bytes>), String> {
+    ) -> Result<(), String> {
         let sessions = self.sessions.lock().await;
         let session = sessions
             .get(session_id)
             .ok_or_else(|| format!("session {} not found", session_id))?;
+
         let pty_size = *session.pty_size.lock().unwrap();
-        let history: Vec<bytes::Bytes> = {
+        let terminal_id = subscriber.terminal_id;
+        let pairing_id = subscriber.pairing_id.clone();
+
+        // Lock remote_subscribers for atomic operation
+        let mut subs = session.remote_subscribers.lock().unwrap();
+
+        // 1. Idempotent: remove old subscriber with same pairing_id
+        subs.retain(|s| s.pairing_id != pairing_id);
+
+        // 2. Read ring buffer snapshot (under subs lock, nested history read lock)
+        let history_bytes: Vec<u8> = {
             let hb = session.history.read().unwrap();
-            hb.iter().cloned().collect()
+            hb.iter().flatten().cloned().collect()
         };
-        session
-            .remote_subscribers
-            .lock()
-            .unwrap()
-            .push(subscriber);
-        Ok((pty_size, history))
+
+        // 3. Push RESIZE frame into subscriber channel
+        let resize_frame = crate::remote_frame::Frame::resize(terminal_id, pty_size.0, pty_size.1);
+        let _ = subscriber.sender.try_send(resize_frame);
+
+        // 4. Push HISTORY frames (chunked by MAX_HISTORY_DATA) into subscriber channel
+        if !history_bytes.is_empty() {
+            let hist_chunks: Vec<&[u8]> =
+                history_bytes.chunks(crate::remote_frame::MAX_HISTORY_DATA).collect();
+            let total = hist_chunks.len();
+            for (seq, chunk) in hist_chunks.iter().enumerate() {
+                let is_last = seq == total - 1;
+                let hist_frame = crate::remote_frame::Frame::history(
+                    terminal_id,
+                    seq as u32,
+                    is_last,
+                    chunk,
+                );
+                let _ = subscriber.sender.try_send(hist_frame);
+            }
+        }
+
+        // 5. Add subscriber to remote_subscribers
+        subs.push(subscriber);
+
+        Ok(())
     }
 
     /// Unsubscribe a remote client from a terminal session.
@@ -999,62 +1152,31 @@ impl TerminalManager {
         }
     }
 
-    /// Broadcast output to all remote subscribers of a session.
-    /// Called by forward_and_broadcast after writing to ring buffer.
-    pub async fn broadcast_to_subscribers(&self, session_id: &str, data: &[u8]) {
+    /// Forward remote input to a terminal session.
+    pub async fn remote_input(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
+        self.input(session_id, data).await
+    }
+
+    /// Broadcast a frame to all remote subscribers of a terminal session.
+    /// Used by RemoteServer.handle_answer to broadcast QUESTION_RESOLVED.
+    pub async fn broadcast_to_subscribers(&self, session_id: &str, frame: crate::remote_frame::Frame) {
         let sessions = self.sessions.lock().await;
-        let session = match sessions.get(session_id) {
-            Some(s) => s,
-            None => return,
-        };
-        // Write to ring buffer
-        session
-            .history
-            .write()
-            .unwrap()
-            .push(bytes::Bytes::from(data.to_vec()));
-        // Broadcast to subscribers
-        let mut subs = session.remote_subscribers.lock().unwrap();
-        let chunks: Vec<&[u8]> = data.chunks(crate::remote_frame::MAX_OUTPUT_DATA).collect();
-        for sub in subs.iter_mut() {
-            if sub.lagging {
-                if sub.sender.capacity() > 0 {
-                    let history = session.history.read().unwrap();
-                    let all_bytes: Vec<u8> = history.iter().flatten().cloned().collect();
-                    let hist_chunks: Vec<&[u8]> =
-                        all_bytes.chunks(crate::remote_frame::MAX_HISTORY_DATA).collect();
-                    let total = hist_chunks.len();
-                    for (seq, chunk) in hist_chunks.iter().enumerate() {
-                        let is_last = seq == total - 1;
-                        let frame = crate::remote_frame::Frame::history(
-                            sub.terminal_id,
-                            seq as u32,
-                            is_last,
-                            chunk,
-                        );
-                        let _ = sub.sender.try_send(frame);
-                    }
-                    sub.lagging = false;
-                }
-                continue;
-            }
-            for chunk in &chunks {
-                let frame = crate::remote_frame::Frame::output(sub.terminal_id, chunk);
-                match sub.sender.try_send(frame) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        sub.lagging = true;
-                        break;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
+        if let Some(session) = sessions.get(session_id) {
+            let subs = session.remote_subscribers.lock().unwrap();
+            for sub in subs.iter() {
+                let _ = sub.sender.try_send(frame.clone());
             }
         }
     }
 
-    /// Forward remote input to a terminal session.
-    pub async fn remote_input(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
-        self.input(session_id, data).await
+    /// Remove all remote subscribers with the given pairing_id across all sessions.
+    /// Used by RemoteServer.revoke_pairing to disconnect a revoked phone.
+    pub async fn remove_remote_subscribers(&self, pairing_id: &str) {
+        let sessions = self.sessions.lock().await;
+        for session in sessions.values() {
+            let mut subs = session.remote_subscribers.lock().unwrap();
+            subs.retain(|s| s.pairing_id != pairing_id);
+        }
     }
 
     /// Get current PTY size for a session.
@@ -1084,6 +1206,7 @@ impl TerminalManager {
 // === SECTION 2 END ===
 
 /// Session info for remote LIST_RESPONSE.
+/// Per design doc: server_name filled by RemoteServer.handle_list via ConfigManager.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionInfo {
     pub session_id: String,
@@ -1091,6 +1214,15 @@ pub struct SessionInfo {
     pub server_id: String,
     pub is_local: bool,
     pub tmux_session_name: Option<String>,
+    /// Server display name — filled by RemoteServer.handle_list via ConfigManager.
+    /// "__local__" → "桌面端", else → config server name.
+    pub server_name: String,
+    /// "local" or "ssh" — determines mobile connection mode (relay vs SSH direct).
+    pub terminal_type: String,
+    /// "active" (PTY running) or "closed" (closing). Sessions in map are always active.
+    pub status: String,
+    /// Last 5 lines of output (ANSI stripped) for preview in terminal list.
+    pub preview: String,
 }
 
 async fn try_open_pty_or_fallback(
@@ -1187,6 +1319,95 @@ fn forward_terminal_output(
     }
 }
 
+/// Forward terminal output to the GUI + write to ring buffer + broadcast to remote subscribers.
+///
+/// This is the unified output path for both SSH (`open()`) and local (`open_local()`) terminals.
+/// It replaces `forward_terminal_output` in reader tasks so that remote subscribers (mobile clients)
+/// receive output in addition to the desktop GUI.
+///
+/// Lock order: remote_subscribers → history (nested write/read within subs lock).
+/// stderr is forwarded to GUI but NOT written to ring buffer or broadcast (per design).
+fn forward_and_broadcast(
+    forwarder: &Arc<std::sync::Mutex<Option<BinaryEventForwarder>>>,
+    history: &Arc<std::sync::RwLock<crate::remote_frame::RingBuffer>>,
+    remote_subscribers: &Arc<std::sync::Mutex<Vec<RemoteSubscriber>>>,
+    session_id: &str,
+    data: &[u8],
+    is_stderr: bool,
+) {
+    // 1. Forward to desktop GUI (same as forward_terminal_output)
+    forward_terminal_output(forwarder, session_id, data, is_stderr);
+
+    if is_stderr {
+        return;
+    }
+
+    // 2. Write to ring buffer + broadcast to remote subscribers
+    let mut subs = match remote_subscribers.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            tracing::warn!("forward_and_broadcast: remote_subscribers lock poisoned for session {}", session_id);
+            return;
+        }
+    };
+
+    // Write to ring buffer (under remote_subscribers lock, nested history write lock)
+    if let Ok(mut hb) = history.write() {
+        hb.push(bytes::Bytes::from(data.to_vec()));
+    }
+
+    // Broadcast to subscribers with backpressure handling
+    let chunks: Vec<&[u8]> = data.chunks(crate::remote_frame::MAX_OUTPUT_DATA).collect();
+    for sub in subs.iter_mut() {
+        if sub.lagging {
+            // Backpressure recovery: if channel has capacity, send HISTORY snapshot
+            if sub.sender.capacity() > 0 {
+                let hist_data: Vec<u8> = {
+                    if let Ok(hb) = history.read() {
+                        hb.iter().flatten().cloned().collect()
+                    } else {
+                        continue;
+                    }
+                };
+                let hist_chunks: Vec<&[u8]> =
+                    hist_data.chunks(crate::remote_frame::MAX_HISTORY_DATA).collect();
+                let total = hist_chunks.len();
+                for (seq, chunk) in hist_chunks.iter().enumerate() {
+                    let is_last = seq == total - 1;
+                    let frame = crate::remote_frame::Frame::history(
+                        sub.terminal_id,
+                        seq as u32,
+                        is_last,
+                        chunk,
+                    );
+                    let _ = sub.sender.try_send(frame);
+                }
+                sub.lagging = false;
+            }
+            continue;
+        }
+
+        // Normal broadcast: send OUTPUT frames (chunked if data > MAX_OUTPUT_DATA)
+        let mut failed = false;
+        for chunk in &chunks {
+            if failed {
+                break;
+            }
+            let frame = crate::remote_frame::Frame::output(sub.terminal_id, chunk);
+            match sub.sender.try_send(frame) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    sub.lagging = true;
+                    failed = true;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    failed = true;
+                }
+            }
+        }
+    }
+}
+
 /// Forward terminal closed event to the GUI
 fn forward_terminal_closed(
     forwarder: &Arc<std::sync::Mutex<Option<EventForwarder>>>,
@@ -1199,6 +1420,79 @@ fn forward_terminal_closed(
                 serde_json::json!({ "sessionId": session_id }),
             );
         }
+    }
+}
+
+/// Strip ANSI escape sequences from a string (for preview in terminal list).
+/// Removes CSI sequences (ESC [ ... letter), OSC sequences (ESC ] ... BEL/ST),
+/// and simple ESC sequences (ESC + single char).
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            // ESC sequence
+            i += 1;
+            if i >= bytes.len() { break; }
+            if bytes[i] == b'[' {
+                // CSI: ESC [ ... 0x40-0x7E
+                i += 1;
+                while i < bytes.len() && !(bytes[i] >= 0x40 && bytes[i] <= 0x7e) {
+                    i += 1;
+                }
+                if i < bytes.len() { i += 1; } // skip final byte
+            } else if bytes[i] == b']' {
+                // OSC: ESC ] ... BEL (0x07) or ST (ESC \)
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == 0x07 { i += 1; break; }
+                    if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i+1] == b'\\' { i += 2; break; }
+                    i += 1;
+                }
+            } else {
+                // Simple: ESC + single char
+                i += 1;
+            }
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+impl TerminalManager {
+    /// Test helper: register a mock SSH session (non-local server_id) without
+    /// actually opening an SSH connection. Used for FILE_REQUEST SSH tests.
+    pub async fn register_mock_ssh_session(
+        &self,
+        session_id: &str,
+        server_id: &str,
+        cols: u32,
+        rows: u32,
+    ) {
+        let history: Arc<std::sync::RwLock<crate::remote_frame::RingBuffer>> =
+            Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subscribers: Arc<std::sync::Mutex<Vec<RemoteSubscriber>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pty_size: Arc<std::sync::Mutex<(u16, u16)>> =
+            Arc::new(std::sync::Mutex::new((cols as u16, rows as u16)));
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<TerminalCmd>();
+        let session = TerminalSession {
+            name: format!("ssh-{}", server_id),
+            server_id: server_id.to_string(),
+            cmd_tx,
+            tasks: Vec::new(),
+            history,
+            remote_subscribers,
+            pty_size,
+            kill_child: None,
+            tmux_session_name: None,
+            ssh_handle: None,
+        };
+        self.sessions.lock().await.insert(session_id.to_string(), session);
     }
 }
 
@@ -1355,5 +1649,316 @@ mod tests {
         // resize_and_notify on non-existent session should return Ok (no-op)
         let result = manager.resize_and_notify("nonexistent_sid", 100, 30).await;
         assert!(result.is_ok(), "resize_and_notify on non-existent session should return Ok");
+    }
+
+    // === forward_and_broadcast tests ===
+
+    /// Helper: create a RemoteSubscriber with a bounded channel
+    fn make_subscriber(pairing_id: &str, terminal_id: u32, capacity: usize) -> (RemoteSubscriber, mpsc::Receiver<crate::remote_frame::Frame>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        (RemoteSubscriber {
+            pairing_id: pairing_id.to_string(),
+            terminal_id,
+            sender: tx,
+            lagging: false,
+        }, rx)
+    }
+
+    /// Test forward_and_broadcast: normal path — stdout writes to ring buffer + broadcasts to subscriber
+    #[tokio::test]
+    async fn test_forward_and_broadcast_normal() {
+        let gui_output: Arc<StdMutex<Vec<u8>>> = Arc::new(StdMutex::new(Vec::new()));
+        let gui_clone = gui_output.clone();
+        let bin_fwd: BinaryEventForwarder = Box::new(move |_sid, data, _stderr| {
+            if let Ok(mut buf) = gui_clone.lock() {
+                buf.extend_from_slice(data);
+            }
+        });
+        let forwarder: Arc<StdMutex<Option<BinaryEventForwarder>>> =
+            Arc::new(StdMutex::new(Some(bin_fwd)));
+        let history = Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subs = Arc::new(StdMutex::new(Vec::new()));
+
+        let (sub, mut rx) = make_subscriber("pair1", 42, 256);
+        remote_subs.lock().unwrap().push(sub);
+
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"hello world", false);
+
+        // GUI should receive the data
+        assert_eq!(&*gui_output.lock().unwrap(), b"hello world");
+
+        // Ring buffer should have the data
+        assert_eq!(history.read().unwrap().total_bytes(), 11);
+
+        // Subscriber should receive an OUTPUT frame
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(frame.frame_type, crate::remote_frame::OUTPUT);
+        assert_eq!(frame.terminal_id, 42);
+        assert_eq!(&frame.payload, b"hello world");
+    }
+
+    /// Test forward_and_broadcast: stderr forwarded to GUI but NOT to ring buffer or subscribers
+    #[tokio::test]
+    async fn test_forward_and_broadcast_stderr() {
+        let gui_output: Arc<StdMutex<Vec<u8>>> = Arc::new(StdMutex::new(Vec::new()));
+        let gui_clone = gui_output.clone();
+        let bin_fwd: BinaryEventForwarder = Box::new(move |_sid, data, stderr| {
+            if let Ok(mut buf) = gui_clone.lock() {
+                if stderr {
+                    buf.extend_from_slice(b"[ERR]");
+                }
+                buf.extend_from_slice(data);
+            }
+        });
+        let forwarder = Arc::new(StdMutex::new(Some(bin_fwd)));
+        let history = Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subs = Arc::new(StdMutex::new(Vec::new()));
+
+        let (sub, mut rx) = make_subscriber("pair1", 1, 256);
+        remote_subs.lock().unwrap().push(sub);
+
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"error msg", true);
+
+        // GUI should receive stderr data
+        assert_eq!(&*gui_output.lock().unwrap(), b"[ERR]error msg");
+
+        // Ring buffer should be empty (stderr not stored)
+        assert_eq!(history.read().unwrap().total_bytes(), 0);
+
+        // Subscriber should NOT receive any frame
+        let frame = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
+        assert!(frame.is_err() || frame.unwrap().is_none(), "stderr should not be broadcast to subscribers");
+    }
+
+    /// Test forward_and_broadcast: backpressure — channel full marks lagging, recovery sends HISTORY
+    #[tokio::test]
+    async fn test_forward_and_broadcast_backpressure_recovery() {
+        let bin_fwd: BinaryEventForwarder = Box::new(|_sid, _data, _stderr| {});
+        let forwarder = Arc::new(StdMutex::new(Some(bin_fwd)));
+        let history = Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subs = Arc::new(StdMutex::new(Vec::new()));
+
+        // Channel capacity = 1, so second send will fail → mark lagging
+        let (sub, mut rx) = make_subscriber("pair1", 5, 1);
+        remote_subs.lock().unwrap().push(sub);
+
+        // First call: sends one OUTPUT frame (fills channel, capacity now 0)
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"first", false);
+        // Do NOT drain — channel is full
+
+        // Second call: channel is full → try_send fails → lagging = true, no OUTPUT sent
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"second", false);
+        // Ring buffer should have both "first" and "second"
+        assert_eq!(history.read().unwrap().total_bytes(), 11);
+        // Subscriber should be marked lagging
+        assert!(remote_subs.lock().unwrap()[0].lagging, "subscriber should be marked lagging");
+
+        // Now drain the channel so capacity > 0 (simulates subscriber consuming)
+        let frame1 = rx.recv().await.unwrap();
+        assert_eq!(frame1.frame_type, crate::remote_frame::OUTPUT);
+        assert_eq!(&frame1.payload, b"first");
+
+        // Third call: lagging recovery — channel has capacity → sends HISTORY snapshot
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"third", false);
+
+        // Should receive HISTORY frames (snapshot of ring buffer: "first" + "second" + "third")
+        let mut got_history = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
+                Ok(Some(frame)) => {
+                    if frame.frame_type == crate::remote_frame::HISTORY {
+                        got_history = true;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(got_history, "should receive HISTORY frame during lagging recovery");
+        // After recovery, lagging should be false
+        assert!(!remote_subs.lock().unwrap()[0].lagging, "subscriber should not be lagging after recovery");
+    }
+
+    /// Test forward_and_broadcast: large data (> MAX_OUTPUT_DATA) is chunked into multiple OUTPUT frames
+    #[tokio::test]
+    async fn test_forward_and_broadcast_large_data_chunking() {
+        let bin_fwd: BinaryEventForwarder = Box::new(|_sid, _data, _stderr| {});
+        let forwarder = Arc::new(StdMutex::new(Some(bin_fwd)));
+        let history = Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subs = Arc::new(StdMutex::new(Vec::new()));
+
+        let (sub, mut rx) = make_subscriber("pair1", 7, 256);
+        remote_subs.lock().unwrap().push(sub);
+
+        // Create data larger than MAX_OUTPUT_DATA (65536)
+        let large_data = vec![0xABu8; crate::remote_frame::MAX_OUTPUT_DATA + 1000];
+
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", &large_data, false);
+
+        // Should receive 2 OUTPUT frames (65536 + 1000)
+        let mut total_received = 0usize;
+        let mut frame_count = 0u32;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if tokio::time::Instant::now() >= deadline || frame_count >= 2 {
+                break;
+            }
+            match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
+                Ok(Some(frame)) => {
+                    assert_eq!(frame.frame_type, crate::remote_frame::OUTPUT);
+                    assert_eq!(frame.terminal_id, 7);
+                    total_received += frame.payload.len();
+                    frame_count += 1;
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(frame_count, 2, "should receive exactly 2 chunked OUTPUT frames");
+        assert_eq!(total_received, large_data.len());
+
+        // Ring buffer should have the full data
+        assert_eq!(history.read().unwrap().total_bytes(), large_data.len());
+    }
+
+    /// Test forward_and_broadcast: no subscribers — data still goes to GUI and ring buffer
+    #[tokio::test]
+    async fn test_forward_and_broadcast_no_subscribers() {
+        let gui_output: Arc<StdMutex<Vec<u8>>> = Arc::new(StdMutex::new(Vec::new()));
+        let gui_clone = gui_output.clone();
+        let bin_fwd: BinaryEventForwarder = Box::new(move |_sid, data, _stderr| {
+            if let Ok(mut buf) = gui_clone.lock() {
+                buf.extend_from_slice(data);
+            }
+        });
+        let forwarder = Arc::new(StdMutex::new(Some(bin_fwd)));
+        let history = Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subs = Arc::new(StdMutex::new(Vec::new()));
+
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"no subs", false);
+
+        // GUI should receive data
+        assert_eq!(&*gui_output.lock().unwrap(), b"no subs");
+        // Ring buffer should have data
+        assert_eq!(history.read().unwrap().total_bytes(), 7);
+    }
+
+    /// Test forward_and_broadcast: multiple subscribers all receive OUTPUT
+    #[tokio::test]
+    async fn test_forward_and_broadcast_multiple_subscribers() {
+        let bin_fwd: BinaryEventForwarder = Box::new(|_sid, _data, _stderr| {});
+        let forwarder = Arc::new(StdMutex::new(Some(bin_fwd)));
+        let history = Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subs = Arc::new(StdMutex::new(Vec::new()));
+
+        let (sub1, mut rx1) = make_subscriber("pair1", 1, 256);
+        let (sub2, mut rx2) = make_subscriber("pair2", 2, 256);
+        remote_subs.lock().unwrap().push(sub1);
+        remote_subs.lock().unwrap().push(sub2);
+
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"broadcast", false);
+
+        let f1 = rx1.recv().await.unwrap();
+        assert_eq!(f1.frame_type, crate::remote_frame::OUTPUT);
+        assert_eq!(f1.terminal_id, 1);
+        assert_eq!(&f1.payload, b"broadcast");
+
+        let f2 = rx2.recv().await.unwrap();
+        assert_eq!(f2.frame_type, crate::remote_frame::OUTPUT);
+        assert_eq!(f2.terminal_id, 2);
+        assert_eq!(&f2.payload, b"broadcast");
+    }
+
+    /// Test forward_and_broadcast: channel closed (subscriber disconnected) — no panic, data still to GUI/ring buffer
+    #[tokio::test]
+    async fn test_forward_and_broadcast_channel_closed() {
+        let gui_output: Arc<StdMutex<Vec<u8>>> = Arc::new(StdMutex::new(Vec::new()));
+        let gui_clone = gui_output.clone();
+        let bin_fwd: BinaryEventForwarder = Box::new(move |_sid, data, _stderr| {
+            if let Ok(mut buf) = gui_clone.lock() {
+                buf.extend_from_slice(data);
+            }
+        });
+        let forwarder = Arc::new(StdMutex::new(Some(bin_fwd)));
+        let history = Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subs = Arc::new(StdMutex::new(Vec::new()));
+
+        let (sub, rx) = make_subscriber("pair1", 9, 256);
+        remote_subs.lock().unwrap().push(sub);
+        // Drop receiver → sender will get Closed error on try_send
+        drop(rx);
+
+        // Should not panic
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"closed chan", false);
+
+        // GUI and ring buffer should still have data
+        assert_eq!(&*gui_output.lock().unwrap(), b"closed chan");
+        assert_eq!(history.read().unwrap().total_bytes(), 11); // "closed chan" = 11 bytes
+    }
+
+    /// Test forward_and_broadcast: HISTORY snapshot content during lagging recovery
+    #[tokio::test]
+    async fn test_forward_and_broadcast_history_snapshot_content() {
+        let bin_fwd: BinaryEventForwarder = Box::new(|_sid, _data, _stderr| {});
+        let forwarder = Arc::new(StdMutex::new(Some(bin_fwd)));
+        let history = Arc::new(std::sync::RwLock::new(crate::remote_frame::RingBuffer::new(256 * 1024)));
+        let remote_subs = Arc::new(StdMutex::new(Vec::new()));
+
+        let (sub, mut rx) = make_subscriber("pair1", 3, 1);
+        remote_subs.lock().unwrap().push(sub);
+
+        // Fill ring buffer with known data, force lagging, then recover
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"AAA", false);
+        // Don't drain — channel full
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"BBB", false);
+        // Now lagging, ring buffer has "AAA"+"BBB" = 6 bytes
+        assert!(remote_subs.lock().unwrap()[0].lagging);
+
+        // Drain channel
+        let _ = rx.recv().await.unwrap();
+
+        // Recover — should send HISTORY with content "AAABBB"
+        forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"CCC", false);
+
+        // Collect all HISTORY frames and verify content
+        let mut history_data = Vec::new();
+        let mut last_seq = None;
+        let mut got_is_last = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
+                Ok(Some(frame)) => {
+                    if frame.frame_type == crate::remote_frame::HISTORY {
+                        // payload = [seq:4][is_last:1][data]
+                        assert!(frame.payload.len() >= 5, "HISTORY payload too short");
+                        let seq = u32::from_be_bytes([
+                            frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3],
+                        ]);
+                        let is_last = frame.payload[4];
+                        // Verify seq increments
+                        if let Some(prev) = last_seq {
+                            assert_eq!(seq, prev + 1, "HISTORY seq should increment");
+                        } else {
+                            assert_eq!(seq, 0, "first HISTORY seq should be 0");
+                        }
+                        last_seq = Some(seq);
+                        if is_last == 1 {
+                            got_is_last = true;
+                        }
+                        history_data.extend_from_slice(&frame.payload[5..]);
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(got_is_last, "should receive HISTORY with is_last=1");
+        // Ring buffer had "AAA"+"BBB"+"CCC" = 9 bytes
+        assert_eq!(history_data, b"AAABBBCCC", "HISTORY snapshot should contain all ring buffer data");
+        assert!(!remote_subs.lock().unwrap()[0].lagging, "should not be lagging after recovery");
     }
 }

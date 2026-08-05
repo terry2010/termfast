@@ -8,8 +8,10 @@ pub mod handler;
 pub mod lock;
 pub mod proto;
 pub mod remote_frame;
+pub mod remote_server;
 pub mod server;
 pub mod terminal;
+pub mod tunnel_client;
 
 pub use handler::handle_request;
 pub use lock::{find_daemon_socket, DaemonLock};

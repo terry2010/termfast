@@ -20,6 +20,7 @@ pub mod network;
 pub mod proxy_api;
 pub mod pty_api;
 pub mod pairing_api;
+pub mod remote_terminal;
 pub mod runtime;
 pub mod server_api;
 pub mod vpn;

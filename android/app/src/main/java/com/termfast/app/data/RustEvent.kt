@@ -66,4 +66,55 @@ sealed class RustEvent {
         val session_id: String,
         val error: String,
     ) : RustEvent()
+
+    // --- Remote Terminal events (from Rust FFI frame processing) ---
+
+    @Serializable
+    @SerialName("RemoteTunnelReady")
+    data class RemoteTunnelReady(
+        val pairing_id: String,
+    ) : RustEvent()
+
+    @Serializable
+    @SerialName("RemoteTerminalList")
+    data class RemoteTerminalList(
+        val pairing_id: String,
+        val terminals: String,
+    ) : RustEvent()
+
+    @Serializable
+    @SerialName("RemoteTerminalOutput")
+    data class RemoteTerminalOutput(
+        val pairing_id: String,
+        val terminal_id: Long,
+        val data: String,
+        val encoding: String,
+    ) : RustEvent()
+
+    @Serializable
+    @SerialName("RemoteTerminalHistory")
+    data class RemoteTerminalHistory(
+        val pairing_id: String,
+        val terminal_id: Long,
+        val seq: Long,
+        val is_last: Boolean,
+        val data: String,
+        val encoding: String,
+    ) : RustEvent()
+
+    @Serializable
+    @SerialName("RemoteTerminalResize")
+    data class RemoteTerminalResize(
+        val pairing_id: String,
+        val terminal_id: Long,
+        val cols: Int,
+        val rows: Int,
+    ) : RustEvent()
+
+    @Serializable
+    @SerialName("RemoteTerminalError")
+    data class RemoteTerminalError(
+        val pairing_id: String,
+        val error: String,
+    ) : RustEvent()
 }
