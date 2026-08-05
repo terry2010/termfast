@@ -3,6 +3,7 @@ package com.termfast.app.data
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.*
 import okio.ByteString
@@ -28,7 +29,7 @@ sealed class ControlMessage {
     data class PeerConnected(val raw: String) : ControlMessage()
     data class PeerDisconnected(val raw: String) : ControlMessage()
     data class PeerTimeout(val raw: String) : ControlMessage()
-    data class Error(val message: String) : ControlMessage()
+    data class Error(val message: String, val code: Int = 0) : ControlMessage()
     data class Unknown(val raw: String) : ControlMessage()
 }
 
@@ -44,7 +45,8 @@ fun parseControlMessage(text: String): ControlMessage {
             "peer_disconnected" -> ControlMessage.PeerDisconnected(text)
             "peer_timeout" -> ControlMessage.PeerTimeout(text)
             "error" -> ControlMessage.Error(
-                json["message"]?.jsonPrimitive?.content ?: "unknown error"
+                message = json["message"]?.jsonPrimitive?.content ?: "unknown error",
+                code = json["code"]?.jsonPrimitive?.intOrNull ?: 0,
             )
             else -> ControlMessage.Unknown(text)
         }
@@ -133,6 +135,24 @@ class TunnelConnection(
     }
 
     /**
+     * Force reconnect: close any existing connection and start fresh.
+     * Used when the tunnel manager needs to retry after an error state.
+     */
+    fun forceConnect() {
+        scope.launch {
+            connecting = false
+            manuallyClosed = false
+            backoffMs = 1000
+            reconnectJob?.cancel()
+            webSocket?.close(1000, "force reconnect")
+            webSocket = null
+            connecting = true
+            updateState(TunnelState.Connecting)
+            connectOnce()
+        }
+    }
+
+    /**
      * Send a binary frame (encrypted protocol frame from Rust FFI).
      *
      * Only allowed when state is Connected (peer_connected received, relay pipe
@@ -201,6 +221,7 @@ class TunnelConnection(
                 if (code == 401) {
                     // JWT invalid/expired — stop reconnecting
                     manuallyClosed = true
+                    connecting = false
                     updateState(TunnelState.Error("authentication failed (401)"))
                     callbacks.onError("authentication failed (401)")
                     return
@@ -210,6 +231,7 @@ class TunnelConnection(
                     callbacks.onError("too many connections (429), retrying in 60s")
                     updateState(TunnelState.Error("too many connections (429)"))
                     backoffMs = 60_000
+                    connecting = false
                     scheduleReconnect()
                     return
                 }
@@ -239,6 +261,7 @@ class TunnelConnection(
             is ControlMessage.PeerDisconnected -> {
                 callbacks.onPeerDisconnected()
                 updateState(TunnelState.Disconnected)
+                connecting = false
                 // Desktop went offline — proactively close WS and reconnect
                 webSocket?.close(1000, "peer_disconnected")
                 webSocket = null
@@ -247,12 +270,19 @@ class TunnelConnection(
             is ControlMessage.PeerTimeout -> {
                 updateState(TunnelState.PeerTimeout)
                 callbacks.onPeerTimeout()
+                connecting = false
                 // peer_timeout means desktop offline > 5 min, don't auto-reconnect
                 manuallyClosed = true
             }
             is ControlMessage.Error -> {
                 callbacks.onError(msg.message)
                 updateState(TunnelState.Error(msg.message))
+                connecting = false
+                // desktop_offline (code 4030): desktop is not connected to relay,
+                // no point retrying immediately — stop auto-reconnect.
+                if (msg.code == 4030 || msg.message.contains("desktop_offline")) {
+                    manuallyClosed = true
+                }
             }
             is ControlMessage.Unknown -> {
                 // Ignore unknown control messages
@@ -262,6 +292,7 @@ class TunnelConnection(
 
     private fun handleDisconnect(reason: String) {
         webSocket = null
+        connecting = false
         if (manuallyClosed) {
             updateState(TunnelState.Disconnected)
             return
@@ -281,6 +312,7 @@ class TunnelConnection(
             delay(backoffMs)
             backoffMs = (backoffMs * 2).coerceAtMost(30_000)
             if (!manuallyClosed) {
+                connecting = true
                 connectOnce()
             }
         }

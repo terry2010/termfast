@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Shield
@@ -43,6 +44,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
+import com.termfast.app.data.PairingStore
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.ServerConfig
 import com.termfast.app.data.ServerStatus
@@ -52,6 +54,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
+import java.net.URLEncoder
 import java.net.URL
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,6 +76,8 @@ fun ServerListScreen(navController: NavController) {
     // Per-server proxy running state
     var proxyRunningIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var proxyStartingIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showRemotePicker by remember { mutableStateOf(false) }
+    val hasRemoteConfig = remember { PairingStore.hasRemoteTunnelConfig() }
 
     val vpnLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -198,6 +203,14 @@ fun ServerListScreen(navController: NavController) {
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Remote terminal card — shown when paired with desktop
+                if (hasRemoteConfig) {
+                    item(key = "remote_terminal_card") {
+                        RemoteTerminalCard(
+                            onClick = { showRemotePicker = true },
+                        )
+                    }
+                }
                 items(servers, key = { it.id }) { server ->
                     var testResult by remember { mutableStateOf<String?>(null) }
                     var testing by remember { mutableStateOf(false) }
@@ -318,10 +331,92 @@ fun ServerListScreen(navController: NavController) {
             }
             }
         }
+
+        // Remote terminal picker dialog
+        RemoteTerminalPickerDialog(
+            visible = showRemotePicker,
+            onTerminalClick = { terminalId, name ->
+                showRemotePicker = false
+                val pid = PairingStore.getPairingId() ?: return@RemoteTerminalPickerDialog
+                val encodedName = URLEncoder.encode(name, "UTF-8")
+                navController.navigate("remote_terminal/$pid/$terminalId/$encodedName")
+            },
+            onDismiss = { showRemotePicker = false },
+        )
     }
 }
 
 // === SECTION 1 END ===
+
+@Composable
+private fun RemoteTerminalCard(onClick: () -> Unit) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        ),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+        onClick = onClick,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Devices,
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp),
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "远程终端",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "连接桌面端共享的终端",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.primary)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Terminal,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                )
+                Text(
+                    "选择终端",
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun EmptyServerState(modifier: Modifier = Modifier) {

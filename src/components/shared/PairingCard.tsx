@@ -58,6 +58,10 @@ export function PairingCard() {
       toast.success(t("pairing.login_success"));
       const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token: tok });
       setDevices(devResult.devices || []);
+      // Restore tunnels for previously-persisted pairings (survives logout/login)
+      ipcInvoke<any>("ipc_restore_tunnels", { jwt: tok }).catch((e) =>
+        console.warn("[PairingCard] restore tunnels failed:", e),
+      );
     } catch (e: any) {
       toast.error(t("pairing.login_failed"), { description: String(e) });
     }
@@ -136,6 +140,9 @@ export function PairingCard() {
   };
 
   const handleLogout = () => {
+    // Stop all tunnels without removing persisted pairing records,
+    // so they can be restored when user logs back in.
+    ipcInvoke("ipc_tunnel_stop_all", {}).catch(() => {});
     setToken(null);
     setDevices([]);
     setPairingId(null);

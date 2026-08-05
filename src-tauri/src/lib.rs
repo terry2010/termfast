@@ -338,6 +338,7 @@ pub fn run() {
             // Remote terminal tunnels (FP-4a-3/4)
             ipc_tunnel_start,
             ipc_tunnel_stop,
+            ipc_tunnel_stop_all,
             ipc_restore_tunnels,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
             ipc_quit_app,
@@ -2312,6 +2313,18 @@ async fn ipc_tunnel_stop(
     drop(tm_guard);
     // Remove persisted pairing so it won't be restored on next startup
     pairing_store::remove(&pairing_id);
+    Ok(())
+}
+
+/// Stop all tunnels WITHOUT removing persisted pairing records.
+/// Used on logout — tunnels are restored when user logs back in.
+#[tauri::command]
+async fn ipc_tunnel_stop_all(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let tm_guard = state.tunnel_manager.lock().await;
+    if let Some(tm) = tm_guard.as_ref() {
+        tm.stop_all().await;
+    }
     Ok(())
 }
 

@@ -136,11 +136,22 @@ fun TerminalsScreen(
                 // Remote terminals entry (only if paired)
                 if (com.termfast.app.data.PairingStore.hasRemoteTunnelConfig()) {
                     Spacer(Modifier.height(16.dp))
-                    OutlinedButton(onClick = { navController.navigate("remote_terminals") }) {
+                    var showRemotePicker by remember { mutableStateOf(false) }
+                    OutlinedButton(onClick = { showRemotePicker = true }) {
                         Icon(Icons.Filled.Devices, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("远程终端")
                     }
+                    RemoteTerminalPickerDialog(
+                        visible = showRemotePicker,
+                        onTerminalClick = { terminalId, name ->
+                            showRemotePicker = false
+                            val pid = com.termfast.app.data.PairingStore.getPairingId() ?: return@RemoteTerminalPickerDialog
+                            val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
+                            navController.navigate("remote_terminal/$pid/$terminalId/$encodedName")
+                        },
+                        onDismiss = { showRemotePicker = false },
+                    )
                 }
             }
             return@Scaffold
@@ -155,37 +166,6 @@ fun TerminalsScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 16.dp),
         ) {
-            // Remote terminals entry at top (only if paired)
-            if (com.termfast.app.data.PairingStore.hasRemoteTunnelConfig()) {
-                item(key = "remote_terminals") {
-                    Card(
-                        onClick = { navController.navigate("remote_terminals") },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.Devices,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Column {
-                                Text("远程终端", style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    "查看桌面端共享的终端",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
             grouped.forEach { (serverId, serverSessions) ->
                 // Server group header
                 item(key = "header_$serverId") {

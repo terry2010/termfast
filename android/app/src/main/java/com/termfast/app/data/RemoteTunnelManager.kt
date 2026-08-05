@@ -140,13 +140,32 @@ class RemoteTunnelManager(
 
         override fun onError(message: String) {
             android.util.Log.e("RemoteTunnel", "onError: $message")
-            _transportState.value = TunnelState.Error(message)
+            // "closed: 1000" is a normal disconnect (e.g. desktop went offline,
+            // relay closed the pipe). Don't show as error — auto-reconnect
+            // will retry silently. Only set Error state for real failures.
+            if (message.startsWith("closed: 1000")) {
+                _transportState.value = TunnelState.Disconnected
+            } else if (message.contains("desktop_offline")) {
+                _transportState.value = TunnelState.Error(message)
+            } else {
+                // Don't let follow-up socket errors (EOFException, etc.) overwrite
+                // a desktop_offline error — they're a side effect of the relay
+                // closing the connection after sending desktop_offline.
+                val current = _transportState.value
+                if (current is TunnelState.Error && current.message.contains("desktop_offline")) {
+                    android.util.Log.i("RemoteTunnel", "ignoring follow-up error: $message")
+                } else {
+                    _transportState.value = TunnelState.Error(message)
+                }
+            }
             _protocolReady.value = false
         }
     }
 
     /**
      * Start the tunnel: connect WebSocket and wait for peer_connected.
+     * Uses forceConnect to ensure a fresh connection even if a previous
+     * attempt left the client in an error/stuck state.
      */
     fun start() {
         val config = TunnelConfig(
@@ -154,7 +173,9 @@ class RemoteTunnelManager(
             pairingJwt = pairingJwt,
             pairingId = pairingId,
         )
-        tunnelManager.getOrCreate(config, callbacks).connect()
+        // Reset transport state so UI shows "loading" instead of stale error
+        _transportState.value = TunnelState.Connecting
+        tunnelManager.getOrCreate(config, callbacks).forceConnect()
     }
 
     /**

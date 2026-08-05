@@ -993,7 +993,9 @@ fun TerminalScreen(
                 modifier = Modifier.clickable {
                     showSheet = false
                     if (isRemote) {
-                        navController.navigate("remote_terminals")
+                        navController.navigate("terminals") {
+                            popUpTo("terminals") { inclusive = false }
+                        }
                     } else {
                         navController.navigate("terminals/$sessionId")
                     }
