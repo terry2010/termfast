@@ -137,15 +137,26 @@ fun RemoteTerminalScreen(
         }
     }
 
-    // Start tunnel on screen entry
+    // Start tunnel on screen entry — but only if not already connected.
+    // When navigating from RemoteTerminalPickerDialog, the tunnel is already
+    // established (handed off). Calling start() again would forceConnect(),
+    // creating a new WebSocket that kicks the existing peer and causes the
+    // desktop to disconnect/reconnect.
     LaunchedEffect(tunnelManager) {
-        tunnelManager.start()
+        val state = tunnelManager.transportState.value
+        if (state is TunnelState.Disconnected || state is TunnelState.Error) {
+            tunnelManager.start()
+        }
+        // If already Connected/Connecting/WaitingForPeer, the tunnel from the
+        // picker dialog is still active — just reuse it.
     }
 
-    // Send UNSUBSCRIBE on screen exit (but don't stop shared tunnel)
+    // On screen exit: send UNSUBSCRIBE and stop the tunnel to prevent
+    // background reconnection loops that kick the desktop's peer.
     DisposableEffect(tunnelManager) {
         onDispose {
             tunnelManager.sendUnsubscribe(terminalId)
+            tunnelManager.stop()
         }
     }
 

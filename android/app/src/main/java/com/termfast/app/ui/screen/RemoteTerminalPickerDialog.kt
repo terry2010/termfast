@@ -69,6 +69,11 @@ fun RemoteTerminalPickerDialog(
     var error by remember { mutableStateOf<String?>(null) }
     var transportState by remember { mutableStateOf<TunnelState>(TunnelState.Disconnected) }
     var protocolReady by remember { mutableStateOf(false) }
+    // Track whether a terminal was selected (vs dismissed) — when a terminal
+    // is selected, the tunnel is handed off to RemoteTerminalScreen and must
+    // NOT be stopped here (stopping would sever the connection the terminal
+    // screen needs).
+    var terminalSelected by remember { mutableStateOf(false) }
 
     // Create or reuse shared tunnel manager
     val tunnelManager = remember(pairingId) {
@@ -141,13 +146,23 @@ fun RemoteTerminalPickerDialog(
         }
     }
 
-    // Start tunnel when dialog opens
+    // Start tunnel when dialog opens, stop when dialog closes (dismiss only).
+    // When a terminal is selected, the tunnel is handed off to
+    // RemoteTerminalScreen — stopping here would sever the connection.
     LaunchedEffect(tunnelManager, visible) {
         if (visible) {
             loading = true
             error = null
             terminals = emptyList()
+            terminalSelected = false
             tunnelManager.start()
+        } else {
+            if (!terminalSelected) {
+                // Dismissed without selecting — stop tunnel to avoid background
+                // reconnection loops that kick the desktop's peer.
+                tunnelManager.stop()
+            }
+            // If terminalSelected, RemoteTerminalScreen owns the tunnel now.
         }
     }
 
@@ -261,6 +276,7 @@ fun RemoteTerminalPickerDialog(
                             shape = RoundedCornerShape(8.dp),
                             tonalElevation = 1.dp,
                             onClick = {
+                                terminalSelected = true
                                 onTerminalClick(terminal.id, terminal.name)
                             },
                         ) {

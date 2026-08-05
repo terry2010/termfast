@@ -118,6 +118,11 @@ class TunnelConnection(
     private var manuallyClosed = false
     @Volatile
     private var connecting = false
+    // Generation counter: each forceConnect/connectOnce increments this.
+    // Callbacks from old connections check their generation and bail out
+    // if it's stale, preventing concurrent reconnect loops.
+    @Volatile
+    private var generation: Int = 0
 
     /**
      * Start connecting. Auto-reconnects on disconnect with exponential backoff.
@@ -140,14 +145,19 @@ class TunnelConnection(
      */
     fun forceConnect() {
         scope.launch {
+            // Increment generation to invalidate all callbacks from old connections
+            generation++
+            manuallyClosed = true
             connecting = false
-            manuallyClosed = false
-            backoffMs = 1000
             reconnectJob?.cancel()
             webSocket?.close(1000, "force reconnect")
             webSocket = null
+            // Small delay to let old callbacks fire and be suppressed by stale generation
+            kotlinx.coroutines.delay(100)
+            // Now reset for fresh connection
+            manuallyClosed = false
+            backoffMs = 1000
             connecting = true
-            updateState(TunnelState.Connecting)
             connectOnce()
         }
     }
@@ -180,6 +190,9 @@ class TunnelConnection(
     }
 
     private suspend fun connectOnce() {
+        // Capture generation so callbacks from this connection can detect
+        // if a newer forceConnect() has superseded them.
+        val myGen = generation
         updateState(TunnelState.Connecting)
 
         val wsUrl = if (config.relayUrl.startsWith("ws://") || config.relayUrl.startsWith("wss://")) {
@@ -196,6 +209,7 @@ class TunnelConnection(
 
         val ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (myGen != generation) return
                 // Send connect control message
                 val connectMsg = """{"type":"connect","pairing_id":"${config.pairingId}","role":"mobile"}"""
                 webSocket.send(connectMsg)
@@ -204,18 +218,22 @@ class TunnelConnection(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                handleControlMessage(text)
+                if (myGen != generation) return
+                handleControlMessage(text, myGen)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                if (myGen != generation) return
                 callbacks.onBinaryFrame(bytes.toByteArray())
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                handleDisconnect("closed: $code $reason")
+                if (myGen != generation) return
+                handleDisconnect("closed: $code $reason", myGen)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (myGen != generation) return
                 val code = response?.code
                 android.util.Log.e("TunnelClient", "onFailure: code=$code, throwable=${t.javaClass.name}: ${t.message}, response=${response?.message}")
                 if (code == 401) {
@@ -232,11 +250,11 @@ class TunnelConnection(
                     updateState(TunnelState.Error("too many connections (429)"))
                     backoffMs = 60_000
                     connecting = false
-                    scheduleReconnect()
+                    scheduleReconnect(myGen)
                     return
                 }
                 val errMsg = "${t.javaClass.simpleName}: ${t.message ?: "unknown"} (code=$code)"
-                handleDisconnect("failure: $errMsg")
+                handleDisconnect("failure: $errMsg", myGen)
             }
         })
 
@@ -245,13 +263,15 @@ class TunnelConnection(
         // Wait for connection to establish
         val success = withTimeoutOrNull(10_000) { connected.await() }
         if (success == null) {
-            handleDisconnect("connection timeout")
+            if (myGen != generation) return
+            handleDisconnect("connection timeout", myGen)
         }
     }
 
 // === SECTION 2 END ===
 
-    private fun handleControlMessage(text: String) {
+    private fun handleControlMessage(text: String, myGen: Int) {
+        if (myGen != generation) return
         when (val msg = parseControlMessage(text)) {
             is ControlMessage.PeerConnected -> {
                 updateState(TunnelState.Connected)
@@ -265,7 +285,7 @@ class TunnelConnection(
                 // Desktop went offline — proactively close WS and reconnect
                 webSocket?.close(1000, "peer_disconnected")
                 webSocket = null
-                scheduleReconnect()
+                scheduleReconnect(myGen)
             }
             is ControlMessage.PeerTimeout -> {
                 updateState(TunnelState.PeerTimeout)
@@ -290,7 +310,8 @@ class TunnelConnection(
         }
     }
 
-    private fun handleDisconnect(reason: String) {
+    private fun handleDisconnect(reason: String, myGen: Int) {
+        if (myGen != generation) return
         webSocket = null
         connecting = false
         if (manuallyClosed) {
@@ -300,21 +321,22 @@ class TunnelConnection(
         updateState(TunnelState.Disconnected)
         callbacks.onError(reason)
         // Auto-reconnect with exponential backoff (1s → 30s cap)
-        scheduleReconnect()
+        scheduleReconnect(myGen)
     }
 
-    private fun scheduleReconnect() {
+    private fun scheduleReconnect(myGen: Int) {
         if (manuallyClosed) return
+        if (myGen != generation) return
         // Cancel any pending reconnect to avoid duplicate concurrent reconnects
         // (e.g. peer_disconnected closes WS → onClosed also fires → scheduleReconnect twice)
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             delay(backoffMs)
             backoffMs = (backoffMs * 2).coerceAtMost(30_000)
-            if (!manuallyClosed) {
-                connecting = true
-                connectOnce()
-            }
+            // Bail out if a newer connection has superseded us, or we were closed
+            if (manuallyClosed || myGen != generation) return@launch
+            connecting = true
+            connectOnce()
         }
     }
 
