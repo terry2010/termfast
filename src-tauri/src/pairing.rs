@@ -2,7 +2,7 @@
 use reqwest::Client;
 use serde_json::Value;
 
-const BACKEND_URL: &str = "http://sh.zimufan.com";
+const BACKEND_URL: &str = "http://sh.zimufan.com:39527";
 
 fn client() -> Client {
     Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap()

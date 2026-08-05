@@ -3,7 +3,7 @@
 
 use crate::runtime::runtime;
 
-const BACKEND_URL: &str = "http://sh.zimufan.com";
+const BACKEND_URL: &str = "http://sh.zimufan.com:39527";
 
 fn client() -> reqwest::Client {
     reqwest::Client::builder()

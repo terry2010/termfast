@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import com.termfast.app.data.CloudSyncManager
 import com.termfast.app.data.CredentialManager
 import com.termfast.app.data.ErrorMessages
+import com.termfast.app.data.PairingStore
 import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.SettingsRepository
@@ -56,6 +57,7 @@ class MainActivity : ComponentActivity() {
         RustBridge.ensureLoaded()
         val dataDir = filesDir.absolutePath
         RustRepository.init(dataDir)
+        PairingStore.init(this)
         CloudSyncManager.appContext = applicationContext
         // Start global terminal session event collector
         com.termfast.app.ui.screen.TerminalSessionManager.startGlobalCollector()

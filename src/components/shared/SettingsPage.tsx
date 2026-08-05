@@ -1941,7 +1941,7 @@ function PairingSection() {
   };
 
   const qrContent = pairingId
-    ? JSON.stringify({ pairing_id: pairingId, backend_url: "http://sh.zimufan.com" })
+    ? JSON.stringify({ pairing_id: pairingId, backend_url: "http://sh.zimufan.com:39527" })
     : "";
 
   return (

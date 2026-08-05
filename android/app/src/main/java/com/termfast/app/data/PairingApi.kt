@@ -9,7 +9,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 object PairingApi {
-    private const val BACKEND_URL = "http://sh.zimufan.com"
+    private const val BACKEND_URL = "http://sh.zimufan.com:39527"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -33,7 +33,12 @@ object PairingApi {
             .post(body.toRequestBody(jsonMedia))
             .url("$BACKEND_URL/auth/login")
             .build()).execute()
-        return JSONObject(resp.body!!.string())
+        val json = JSONObject(resp.body!!.string())
+        if (!resp.isSuccessful) {
+            val err = json.optString("error", "登录失败 (HTTP ${resp.code})")
+            throw Exception(err)
+        }
+        return json
     }
 
     fun initiatePairing(token: String, deviceId: String): JSONObject {
