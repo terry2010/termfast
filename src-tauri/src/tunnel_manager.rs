@@ -51,8 +51,9 @@ impl DesktopTunnelManager {
         relay_url: String,
         jwt: String,
     ) -> Result<(), String> {
-        // Stop ALL existing tunnels — desktop should only have one active pairing
-        self.stop_all().await;
+        // Stop existing tunnel for THIS pairing_id only (e.g. reconnect).
+        // Do NOT stop_all — multiple phones can be paired simultaneously.
+        self.stop_tunnel(&pairing_id).await;
 
         // Register pairing key in RemoteServer (so handle_tunnel can look it up)
         self.remote_server.add_pairing(pairing_id.clone(), pairing_key);

@@ -1,7 +1,7 @@
 // Main App component — FP-7.3
 // §9.4 GUI information architecture
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   isPermissionGranted,
@@ -44,6 +44,7 @@ export default function App() {
   const config = useConfigStore((s) => s.config);
   const setConfig = useConfigStore((s) => s.setConfig);
   const loadTemplates = useTriggerStore((s) => s.loadTemplates);
+  const didRestoreTunnels = useRef(false);
 
   // Load config and server list from daemon on mount
   useEffect(() => {
@@ -113,7 +114,8 @@ export default function App() {
 
     // Restore remote tunnels on startup (survives app restart)
     const savedToken = localStorage.getItem("pairing_token");
-    if (savedToken) {
+    if (savedToken && !didRestoreTunnels.current) {
+      didRestoreTunnels.current = true;
       ipcInvoke<any>("ipc_restore_tunnels", { jwt: savedToken })
         .then((r) => {
           if (r > 0) console.log(`[App] restored ${r} remote tunnel(s)`);

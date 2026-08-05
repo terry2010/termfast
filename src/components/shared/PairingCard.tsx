@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Smartphone, Plus, LogOut, X } from "lucide-react";
+import { Smartphone, Plus, LogOut, ChevronRight, X } from "lucide-react";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { toast } from "@/components/ui/toast";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { Modal } from "@/components/ui/Modal";
 
 // === SECTION 1 END ===
 
@@ -11,11 +12,9 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
  * Pairing card — macOS Settings style grouped card for device pairing.
  * Shown on the "My Computer" overview page, right side of the connection card.
  *
- * Features:
- * - Login/register with email+password (backend account)
- * - Initiate pairing (generate QR code for mobile to scan)
- * - List paired devices with revoke (with confirmation dialog)
- * - Logout
+ * Card body is compact: shows paired device count.
+ * "配对新设备" opens a modal with QR code.
+ * Clicking the device count row opens a modal with the full device list + revoke.
  */
 export function PairingCard() {
   const { t } = useTranslation();
@@ -27,6 +26,8 @@ export function PairingCard() {
   const [polling, setPolling] = useState(false);
   const [devices, setDevices] = useState<any[]>([]);
   const [revokeTarget, setRevokeTarget] = useState<string | null>(null);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [showDevicesModal, setShowDevicesModal] = useState(false);
 
   // Restore token from localStorage on mount
   useEffect(() => {
@@ -73,6 +74,7 @@ export function PairingCard() {
       setPairingId(result.pairing_id);
       setPairingKey(pairingKey);
       setPolling(true);
+      setShowQrModal(true);
     } catch (e: any) {
       toast.error(t("pairing.initiate_failed"), { description: String(e) });
     }
@@ -112,6 +114,7 @@ export function PairingCard() {
           setDevices(devResult.devices || []);
           setPairingId(null);
           setPairingKey(null);
+          setShowQrModal(false);
           return;
         }
       } catch { /* ignore */ }
@@ -144,6 +147,7 @@ export function PairingCard() {
     setPolling(false);
     setPairingId(null);
     setPairingKey(null);
+    setShowQrModal(false);
   };
 
   const qrContent = pairingId && pairingKey
@@ -172,7 +176,7 @@ export function PairingCard() {
             </div>
           </div>
         </div>
-        {token && !polling && !pairingId && (
+        {token && !polling && (
           <button
             className="px-3.5 py-1.5 text-sm rounded-lg bg-[#007AFF] text-white hover:bg-[#0066DB] font-medium transition-colors flex items-center gap-1.5"
             onClick={handleInitiatePairing}
@@ -222,49 +226,21 @@ export function PairingCard() {
           </div>
         ) : (
           <>
-            {/* Pairing QR code (polling state) */}
-            {polling && pairingId && (
-              <div className="px-4 py-4">
-                <div className="flex items-start justify-between mb-3">
-                  <p className="text-sm text-gray-500">{t("pairing.waiting_scan")}</p>
-                  <button
-                    onClick={handleCancelPairing}
-                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-                <div className="bg-white p-4 rounded-lg flex items-center justify-center">
-                  <QRCodeDisplay content={qrContent} />
-                </div>
-                <div className="mt-2 text-xs text-gray-400 text-center font-mono break-all">{pairingId}</div>
+            {/* Paired devices count row — click to open device list modal */}
+            <button
+              className="flex items-center justify-between w-full px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-[#2C2C2E] transition-colors"
+              onClick={() => setShowDevicesModal(true)}
+            >
+              <span className="text-sm text-gray-500">
+                {t("pairing.paired_devices")}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  {devices.length}
+                </span>
+                <ChevronRight className="w-4 h-4 text-gray-400" />
               </div>
-            )}
-
-            {/* Paired devices list */}
-            {devices.length > 0 && (
-              <div className="px-4 py-3">
-                <h3 className="text-xs font-medium text-gray-500 mb-2">{t("pairing.paired_devices")}</h3>
-                <div className="space-y-1">
-                  {devices.map((d) => (
-                    <div key={d.pairing_id} className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50 dark:bg-[#2C2C2E]">
-                      <div className="min-w-0">
-                        <div className="text-sm text-gray-900 dark:text-gray-100 truncate">
-                          {d.mobile_device_id || d.pairing_id}
-                        </div>
-                        <div className="text-xs text-gray-500">{d.status}</div>
-                      </div>
-                      <button
-                        onClick={() => setRevokeTarget(d.pairing_id)}
-                        className="text-xs text-red-500 hover:text-red-600 font-medium ml-2 flex-shrink-0"
-                      >
-                        {t("pairing.revoke")}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            </button>
 
             {/* Logout */}
             <div className="px-4 py-3">
@@ -279,6 +255,71 @@ export function PairingCard() {
           </>
         )}
       </div>
+
+      {/* QR code modal — shown when pairing is initiated */}
+      {showQrModal && polling && pairingId && (
+        <Modal
+          title={t("pairing.pair_new_device")}
+          onClose={handleCancelPairing}
+          maxWidth="max-w-sm"
+        >
+          <div className="flex flex-col items-center">
+            <p className="text-sm text-gray-500 text-center mb-4">
+              {t("pairing.waiting_scan")}
+            </p>
+            <div className="bg-white p-4 rounded-lg flex items-center justify-center">
+              <QRCodeDisplay content={qrContent} />
+            </div>
+            <div className="mt-3 text-xs text-gray-400 text-center font-mono break-all">
+              {pairingId}
+            </div>
+            <button
+              onClick={handleCancelPairing}
+              className="mt-4 px-4 py-2 rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] text-sm transition-colors flex items-center gap-1.5"
+            >
+              <X className="w-4 h-4" />
+              {t("common.cancel")}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Device list modal — shown when clicking paired devices count */}
+      {showDevicesModal && (
+        <Modal
+          title={t("pairing.paired_devices")}
+          onClose={() => setShowDevicesModal(false)}
+          maxWidth="max-w-md"
+        >
+          {devices.length === 0 ? (
+            <p className="text-sm text-gray-500 text-center py-8">
+              {t("pairing.no_devices", "暂无已配对设备")}
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {devices.map((d) => (
+                <div
+                  key={d.pairing_id}
+                  className="flex items-center justify-between py-2.5 px-3 rounded-lg bg-gray-50 dark:bg-[#2C2C2E]"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm text-gray-900 dark:text-gray-100 truncate">
+                      {d.mobile_device_id || d.pairing_id}
+                    </div>
+                    <div className="text-xs text-gray-500">{d.status}</div>
+                  </div>
+                  <button
+                    onClick={() => setRevokeTarget(d.pairing_id)}
+                    className="text-xs text-red-500 hover:text-red-600 font-medium ml-2 flex-shrink-0"
+                  >
+                    {t("pairing.revoke")}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
 
       {/* Revoke confirmation dialog */}
       {revokeTarget && (

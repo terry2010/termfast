@@ -1855,16 +1855,8 @@ function PairingSection() {
       ipcInvoke<any>("ipc_pairing_list_devices", { token: saved })
         .then((r) => setDevices(r.devices || []))
         .catch(() => {});
-      // Restore tunnels for previously-persisted pairings (survives restart)
-      ipcInvoke<any>("ipc_restore_tunnels", { jwt: saved })
-        .then((r) => {
-          if (r > 0) {
-            toast.success(`已恢复 ${r} 个远程隧道`);
-          }
-        })
-        .catch((e) => {
-          console.warn("restore tunnels failed", e);
-        });
+      // Note: ipc_restore_tunnels is called by App.tsx on startup,
+      // do NOT call it here to avoid duplicate tunnel connections (429).
     }
   }, []);
 
