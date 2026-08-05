@@ -51,8 +51,8 @@ impl DesktopTunnelManager {
         relay_url: String,
         jwt: String,
     ) -> Result<(), String> {
-        // Stop existing tunnel for this pairing_id
-        self.stop_tunnel(&pairing_id).await;
+        // Stop ALL existing tunnels — desktop should only have one active pairing
+        self.stop_all().await;
 
         // Register pairing key in RemoteServer (so handle_tunnel can look it up)
         self.remote_server.add_pairing(pairing_id.clone(), pairing_key);
