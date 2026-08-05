@@ -23,6 +23,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { dispatchTerminalOutput } from "@/components/shared/TerminalView";
 import { TmuxSessionPicker } from "@/components/shared/TmuxSessionPicker";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { PairingCard } from "@/components/shared/PairingCard";
 import {
   showContextMenu,
   type ContextMenuEntry,
@@ -1706,6 +1707,9 @@ export function ServerDetail() {
                     </div>
                   )}
                 </div>
+
+                {/* Device pairing card — shown for local terminal (right side of grid) */}
+                {isLocal && <PairingCard />}
 
                 {/* Proxy card — macOS Settings style grouped list (hidden for local terminal) */}
                 {!isLocal && (

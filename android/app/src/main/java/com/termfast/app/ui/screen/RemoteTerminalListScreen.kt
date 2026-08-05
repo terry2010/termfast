@@ -5,6 +5,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -291,15 +292,27 @@ fun RemoteTerminalListContent(
                     }
                 }
                 else -> {
+                    // Group terminals by serverName
+                    val grouped = terminals.groupBy { it.serverName }
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(terminals) { terminal ->
-                            TerminalCard(terminal, onClick = {
-                                onTerminalClick(terminal.id, terminal.name)
-                            })
+                        grouped.forEach { (serverName, groupTerminals) ->
+                            item(key = "header_$serverName") {
+                                Text(
+                                    serverName,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                                )
+                            }
+                            items(groupTerminals, key = { it.id }) { terminal ->
+                                TerminalCard(terminal, onClick = {
+                                    onTerminalClick(terminal.id, terminal.name)
+                                })
+                            }
                         }
                     }
                 }
@@ -320,14 +333,13 @@ private fun TerminalCard(terminal: TerminalEntry, onClick: () -> Unit) {
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.Devices, contentDescription = null)
+            Icon(
+                if (terminal.isLocal) Icons.Default.Devices else Icons.Default.Computer,
+                contentDescription = null
+            )
             Spacer(Modifier.width(16.dp))
             Column {
                 Text(terminal.name, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    if (terminal.isLocal) "Local terminal" else "SSH: ${terminal.serverId}",
-                    style = MaterialTheme.typography.bodySmall
-                )
                 terminal.tmuxSessionName?.let {
                     Text("tmux: $it", style = MaterialTheme.typography.bodySmall)
                 }
@@ -344,7 +356,9 @@ data class TerminalEntry(
     val id: Int,
     val name: String,
     val serverId: String,
+    val serverName: String,
     val isLocal: Boolean,
+    val terminalType: String,
     val tmuxSessionName: String?,
 )
 
@@ -354,7 +368,9 @@ private data class TerminalJson(
     val id: Int? = null,
     val name: String? = null,
     val server_id: String? = null,
+    val server_name: String? = null,
     val is_local: Boolean? = null,
+    val terminal_type: String? = null,
     val tmux_session_name: String? = null,
 )
 
@@ -371,11 +387,15 @@ internal fun parseTerminalList(json: String): List<TerminalEntry> {
     return try {
         val items = terminalListJson.decodeFromString<List<TerminalJson>>(json)
         items.map { item ->
+            val serverId = item.server_id ?: ""
+            val isLocal = item.is_local ?: (serverId == "__local__")
             TerminalEntry(
                 id = item.terminal_id ?: item.id ?: -1,
                 name = item.name ?: "Terminal",
-                serverId = item.server_id ?: "",
-                isLocal = item.is_local ?: false,
+                serverId = serverId,
+                serverName = item.server_name ?: if (isLocal) "桌面端" else serverId,
+                isLocal = isLocal,
+                terminalType = item.terminal_type ?: if (isLocal) "local" else "ssh",
                 tmuxSessionName = item.tmux_session_name?.ifEmpty { null },
             )
         }

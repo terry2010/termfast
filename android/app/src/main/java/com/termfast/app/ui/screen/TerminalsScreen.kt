@@ -189,8 +189,12 @@ fun TerminalsScreen(
             grouped.forEach { (serverId, serverSessions) ->
                 // Server group header
                 item(key = "header_$serverId") {
-                    val serverName = servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: serverId }
-                        ?: serverId
+                    val serverName = if (serverId.startsWith("remote:")) {
+                        "远程终端"
+                    } else {
+                        servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: serverId }
+                            ?: serverId
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -221,7 +225,11 @@ fun TerminalsScreen(
                 items(serverSessions, key = { it.sessionId }) { session ->
                     TerminalCard(
                         session = session,
-                        serverName = servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: "" } ?: "",
+                        serverName = if (serverId.startsWith("remote:")) {
+                            "远程终端"
+                        } else {
+                            servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: "" } ?: ""
+                        },
                         isFocused = session.sessionId == focusSessionId,
                         onClick = {
                             navController.navigate("terminal/${session.serverId}/${session.sessionId}")
