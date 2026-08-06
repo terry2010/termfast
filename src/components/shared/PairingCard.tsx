@@ -5,6 +5,7 @@ import { ipcInvoke } from "@/hooks/useIpc";
 import { toast } from "@/components/ui/toast";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Modal } from "@/components/ui/Modal";
+import { getDesktopDeviceId, fetchPairedDevices } from "@/lib/pairing";
 
 // === SECTION 1 END ===
 
@@ -32,27 +33,20 @@ export function PairingCard() {
   const [desktopDeviceId, setDesktopDeviceId] = useState<string>("");
   const [showAllDevices, setShowAllDevices] = useState(false);
 
-  // On mount: get local info + restore token, then fetch devices filtered
-  // by this desktop's device_id. All in one effect to avoid race conditions.
+  // On mount: get desktop_device_id + restore token, then fetch devices
   useEffect(() => {
     const saved = localStorage.getItem("pairing_token");
-    ipcInvoke<any>("ipc_get_local_info")
-      .then((info) => {
-        const hostname = info?.hostname || "unknown";
-        const username = info?.username || "unknown";
-        const deviceId = `${hostname}-${username}`;
+    getDesktopDeviceId()
+      .then((deviceId) => {
         setDesktopDeviceId(deviceId);
         if (saved) {
           setToken(saved);
-          return ipcInvoke<any>("ipc_pairing_list_devices", {
-            token: saved,
-            desktop_device_id: deviceId,
-          });
+          return fetchPairedDevices(saved);
         }
         return null;
       })
-      .then((r) => {
-        if (r) setDevices(r.devices || []);
+      .then((devs) => {
+        if (devs) setDevices(devs);
       })
       .catch(() => {});
   }, []);
@@ -88,16 +82,10 @@ export function PairingCard() {
       localStorage.setItem("pairing_token", tok);
       toast.success(t("pairing.login_success"));
       // Fetch devices filtered by this desktop's device_id
-      const info = await ipcInvoke<any>("ipc_get_local_info");
-      const hostname = info?.hostname || "unknown";
-      const username = info?.username || "unknown";
-      const deviceId = `${hostname}-${username}`;
+      const deviceId = await getDesktopDeviceId();
       setDesktopDeviceId(deviceId);
-      const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", {
-        token: tok,
-        desktop_device_id: deviceId,
-      });
-      setDevices(devResult.devices || []);
+      const devs = await fetchPairedDevices(tok);
+      setDevices(devs);
       // Restore tunnels for previously-persisted pairings (survives logout/login)
       ipcInvoke<any>("ipc_restore_tunnels", { jwt: tok }).catch((e) =>
         console.warn("[PairingCard] restore tunnels failed:", e),
@@ -161,11 +149,8 @@ export function PairingCard() {
               toast.error("隧道启动失败", { description: String(e) });
             }
           }
-          const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", {
-            token,
-            desktop_device_id: desktopDeviceId,
-          });
-          setDevices(devResult.devices || []);
+          const devs = await fetchPairedDevices(token!);
+          setDevices(devs);
           setPairingId(null);
           setPairingKey(null);
           setShowQrModal(false);
