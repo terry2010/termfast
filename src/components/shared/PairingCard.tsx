@@ -32,43 +32,37 @@ export function PairingCard() {
   const [desktopDeviceId, setDesktopDeviceId] = useState<string>("");
   const [showAllDevices, setShowAllDevices] = useState(false);
 
-  // Get local desktop_device_id on mount (used to filter ListDevices
-  // to only this desktop's pairings, not all pairings in the account)
+  // On mount: get local info + restore token, then fetch devices filtered
+  // by this desktop's device_id. All in one effect to avoid race conditions.
   useEffect(() => {
+    const saved = localStorage.getItem("pairing_token");
     ipcInvoke<any>("ipc_get_local_info")
       .then((info) => {
         const hostname = info?.hostname || "unknown";
         const username = info?.username || "unknown";
-        setDesktopDeviceId(`${hostname}-${username}`);
-      })
-      .catch(() => {});
-  }, []);
-
-  // Restore token from localStorage on mount — fetch devices filtered by
-  // this desktop's device_id so we only show pairings initiated here.
-  useEffect(() => {
-    const saved = localStorage.getItem("pairing_token");
-    if (saved) {
-      setToken(saved);
-      ipcInvoke<any>("ipc_get_local_info")
-        .then((info) => {
-          const hostname = info?.hostname || "unknown";
-          const username = info?.username || "unknown";
-          const deviceId = `${hostname}-${username}`;
-          setDesktopDeviceId(deviceId);
+        const deviceId = `${hostname}-${username}`;
+        setDesktopDeviceId(deviceId);
+        if (saved) {
+          setToken(saved);
           return ipcInvoke<any>("ipc_pairing_list_devices", {
             token: saved,
             desktop_device_id: deviceId,
           });
-        })
-        .then((r) => setDevices(r.devices || []))
-        .catch(() => {});
-    }
+        }
+        return null;
+      })
+      .then((r) => {
+        if (r) setDevices(r.devices || []);
+      })
+      .catch(() => {});
   }, []);
 
-  // Reload devices when showAllDevices toggles
+  // Reload devices when showAllDevices toggles or modal opens.
+  // Wait for desktopDeviceId to be set before fetching (unless showAllDevices
+  // is true, in which case we intentionally pass empty to get all pairings).
   useEffect(() => {
     if (!token || !showDevicesModal) return;
+    if (!showAllDevices && !desktopDeviceId) return; // not ready yet
     ipcInvoke<any>("ipc_pairing_list_devices", {
       token,
       desktop_device_id: showAllDevices ? "" : desktopDeviceId,
