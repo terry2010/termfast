@@ -48,6 +48,7 @@ fn make_test_server(id: &str, name: &str) -> ServerConfig {
         suppress_firewall_badge: false,
         test_url: String::new(),
         port_forwards: Vec::new(),
+        tmux_mode: "ask".to_string(),
     }
 }
 
