@@ -55,6 +55,17 @@ fun TermFastApp() {
     val showBottomBar = currentRoute?.startsWith("terminal/") != true &&
         currentRoute?.startsWith("remote_terminal") != true
 
+    // Determine which bottom tab should be highlighted. Routes like
+    // "terminals/{focusSessionId}" and "terminals_by_server/{serverId}" should
+    // highlight the "终端" tab, same as the base "terminals" route.
+    val selectedRoute = when {
+        currentRoute == null -> null
+        currentRoute.startsWith("terminals") -> Screen.Terminals.route
+        currentRoute.startsWith("servers") || currentRoute.startsWith("server_") -> Screen.Servers.route
+        currentRoute.startsWith("settings") -> Screen.Settings.route
+        else -> currentRoute
+    }
+
     Scaffold(
         bottomBar = {
             if (showBottomBar) {
@@ -63,7 +74,7 @@ fun TermFastApp() {
                         NavigationBarItem(
                             icon = { Icon(s.icon, contentDescription = s.label) },
                             label = { Text(s.label) },
-                            selected = current?.hierarchy?.any { it.route == s.route } == true,
+                            selected = selectedRoute == s.route,
                             onClick = {
                                 navController.navigate(s.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
