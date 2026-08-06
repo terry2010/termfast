@@ -199,7 +199,12 @@ class RemoteTunnelManager(
             // Connection in progress — wait for it.
             return
         }
-        // Disconnected or Error — need a fresh connection
+        // Disconnected or Error — clean up stale FFI state before reconnecting.
+        // Without this, the Rust-side tunnel session retains old encryption
+        // keys and the HELLO exchange silently fails after reconnection.
+        try {
+            ffi.close(pairingId)
+        } catch (_: Exception) {}
         _transportState.value = TunnelState.Connecting
         _protocolReady.value = false
         conn.forceConnect()

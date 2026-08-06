@@ -84,12 +84,34 @@ fun RemoteTerminalScreen(
 
     var sessionId by remember { mutableStateOf<String?>(null) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+    var connecting by remember { mutableStateOf(false) }
 
     // Collect tunnel state
     LaunchedEffect(tunnelManager) {
         tunnelManager.transportState.collect { state ->
-            if (state is TunnelState.Error) {
-                errorMsg = state.message
+            when (state) {
+                is TunnelState.Error -> {
+                    errorMsg = state.message
+                    connecting = false
+                }
+                is TunnelState.Disconnected -> {
+                    // Transport disconnected — if we had a session, show error
+                    // so user can retry (otherwise just keep waiting for reconnect)
+                    if (sessionId != null) {
+                        errorMsg = "连接已断开"
+                        connecting = false
+                    }
+                }
+                is TunnelState.Connecting -> {
+                    connecting = true
+                }
+                is TunnelState.WaitingForPeer -> {
+                    connecting = true
+                }
+                is TunnelState.Connected -> {
+                    connecting = false
+                }
+                else -> {}
             }
         }
     }
@@ -152,6 +174,20 @@ fun RemoteTerminalScreen(
         // picker dialog is still active — just reuse it.
     }
 
+    // Timeout: if still connecting after 30 seconds with no session, show error.
+    // This handles cases where the tunnel is stuck in WaitingForPeer (desktop
+    // offline) or HELLO exchange silently fails after a network reconnection.
+    LaunchedEffect(tunnelManager, connecting, sessionId, errorMsg) {
+        if (connecting && sessionId == null && errorMsg == null) {
+            kotlinx.coroutines.delay(30_000)
+            // Still connecting after 30s — show timeout error
+            if (connecting && sessionId == null && errorMsg == null) {
+                errorMsg = "连接超时，请重试"
+                connecting = false
+            }
+        }
+    }
+
     // On screen exit: send UNSUBSCRIBE and stop the tunnel to prevent
     // background reconnection loops that kick the desktop's peer.
     DisposableEffect(tunnelManager) {
@@ -196,7 +232,15 @@ fun RemoteTerminalScreen(
                         Button(onClick = {
                             errorMsg = null
                             sessionId = null
-                            scope.launch { tunnelManager.start() }
+                            connecting = true
+                            // Stop first to clean up stale FFI state + close old WebSocket,
+                            // then start fresh. Without stop(), the Rust-side tunnel
+                            // session retains old encryption keys and HELLO fails silently.
+                            scope.launch {
+                                tunnelManager.stop()
+                                kotlinx.coroutines.delay(200)
+                                tunnelManager.start()
+                            }
                         }) { Text("Retry") }
                     }
                 } else {
