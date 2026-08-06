@@ -76,12 +76,20 @@ fun TermFastApp() {
                             label = { Text(s.label) },
                             selected = selectedRoute == s.route,
                             onClick = {
+                                // Check if we're on a deep-linked route (not a direct tab route).
+                                // If so, navigate without restoreState to force a fresh navigation,
+                                // otherwise the tab switch may be silently skipped.
+                                val isDeepLinked = currentRoute != null &&
+                                    currentRoute != s.route &&
+                                    !currentRoute.startsWith(s.route)
                                 navController.navigate(s.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
                                         saveState = true
                                     }
                                     launchSingleTop = true
-                                    restoreState = true
+                                    if (!isDeepLinked) {
+                                        restoreState = true
+                                    }
                                 }
                             }
                         )
