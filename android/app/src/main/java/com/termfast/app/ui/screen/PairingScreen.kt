@@ -47,7 +47,7 @@ fun PairingScreen(navController: NavController) {
             token = saved
             scope.launch {
                 try {
-                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(saved) }
+                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(saved, PairingApi.getDeviceName()) }
                 } catch (_: Exception) {}
             }
         }
@@ -71,26 +71,14 @@ fun PairingScreen(navController: NavController) {
                         loading = true
                         try {
                             val result = withContext(Dispatchers.IO) {
-                                val marketName = try {
-                                    val process = ProcessBuilder("getprop", "ro.product.vendor.marketname").start()
-                                    val out = process.inputStream.bufferedReader().readText().trim()
-                                    if (out.isNotEmpty()) out else {
-                                        val p2 = ProcessBuilder("getprop", "ro.product.marketname").start()
-                                        p2.inputStream.bufferedReader().readText().trim()
-                                    }
-                                } catch (_: Exception) { "" }
-                                val deviceName = if (marketName.isNotEmpty()) {
-                                    "${Build.MANUFACTURER} $marketName".trim()
-                                } else {
-                                    "${Build.MANUFACTURER}-${Build.MODEL}".replace(" ", "-")
-                                }
+                                val deviceName = PairingApi.getDeviceName()
                                 PairingApi.completePairing(pairingId, "phone-pubkey", deviceName, deviceName)
                             }
                             val status = result.optString("status")
                             if (status == "completed") {
                                 val jwt = result.optString("pairing_jwt")
                                 // Refresh device list to get desktop_device_id for dedup
-                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices(token!!) }
+                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices(token!!, PairingApi.getDeviceName()) }
                                 val desktopDeviceId = updatedDevices.find { it.pairingId == pairingId }?.desktopDeviceId ?: ""
                                 if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
                                     PairingStore.savePairing(
@@ -189,7 +177,7 @@ fun PairingScreen(navController: NavController) {
                                     val tok = result.getString("access_token")
                                     token = tok
                                     PairingStore.saveToken(tok)
-                                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(tok) }
+                                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(tok, PairingApi.getDeviceName()) }
                                     Toast.makeText(context, "登录成功", Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "登录失败: ${e.message}", Toast.LENGTH_SHORT).show()
