@@ -6,6 +6,7 @@ import { test, expect } from "@playwright/test";
 import {
   mockTauri,
   waitForAppReady,
+  dismissModal,
   getCallsFor,
   defaultServers,
   defaultTemplates,
@@ -102,6 +103,8 @@ test.describe("Manual fire trigger (U5)", () => {
       )
       .toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(1000);
+    // Dismiss any modal that may have appeared (e.g. connection dialog)
+    await dismissModal(page);
     // Click the Overview tab to return to the overview view (where triggers are visible)
     await page.locator("text=Overview").first().click();
     await page.waitForTimeout(500);

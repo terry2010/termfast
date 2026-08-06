@@ -3,7 +3,7 @@
 // rapid server switching stability, proxy status display.
 
 import { test, expect } from "@playwright/test";
-import { mockTauri, waitForAppReady, getCallsFor, getMockStore } from "./fixtures";
+import { mockTauri, waitForAppReady, dismissModal, getCallsFor, getMockStore } from "./fixtures";
 
 // === SECTION 1 END ===
 
@@ -159,6 +159,8 @@ test.describe("Stability under rapid interaction (FP-9.9)", () => {
       if (await connectBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
         await connectBtn.click();
         await page.waitForTimeout(500);
+        // Dismiss any modal that may have appeared (e.g. connection dialog)
+        await dismissModal(page);
         // Click Overview tab to return to overview
         const overviewTab = page.locator("text=Overview").first();
         if (await overviewTab.isVisible({ timeout: 1000 }).catch(() => false)) {

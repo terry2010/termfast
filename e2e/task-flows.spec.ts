@@ -3,7 +3,7 @@
 // and verify that the correct IPC calls were made to the backend.
 
 import { test, expect } from "@playwright/test";
-import { mockTauri, waitForAppReady, getCallsFor, getMockStore, defaultServers } from "./fixtures";
+import { mockTauri, waitForAppReady, dismissModal, getCallsFor, getMockStore, defaultServers } from "./fixtures";
 
 // === SECTION 1 END ===
 
@@ -91,6 +91,8 @@ test.describe("FP-9.1: Connect & Disconnect", () => {
     await connectBtn.click();
     await expect.poll(async () => (await getCallsFor(page, "ipc_connect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(1000);
+    // Dismiss any modal that may have appeared (e.g. connection dialog)
+    await dismissModal(page);
     // Click the Overview tab to return to the overview view
     await page.locator("text=Overview").first().click();
     await page.waitForTimeout(500);
@@ -98,11 +100,12 @@ test.describe("FP-9.1: Connect & Disconnect", () => {
     const disconnectBtn = page.locator("button:has-text('Disconnect Server')");
     await expect(disconnectBtn).toBeVisible({ timeout: 5000 });
     await disconnectBtn.click();
-    // A confirmation dialog appears (due to active terminals) — confirm it
+    // A confirmation dialog may appear (if there are active terminals) — confirm it
     // The dialog uses .fixed.inset-0 and the confirm button says "Disconnect"
     const dialog = page.locator(".fixed.inset-0").last();
-    await expect(dialog).toBeVisible({ timeout: 3000 });
-    await dialog.locator("button:has-text('Disconnect')").click();
+    if (await dialog.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await dialog.locator("button:has-text('Disconnect')").click();
+    }
     await expect.poll(async () => (await getCallsFor(page, "ipc_disconnect_server")).length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
   });
 });

@@ -626,3 +626,21 @@ export async function waitForAppReady(
   // Give stores time to hydrate from IPC
   await page.waitForTimeout(500);
 }
+
+/**
+ * Dismiss any visible modal overlay (e.g. connection dialog, pairing dialog).
+ * Useful when a modal appears unexpectedly and blocks subsequent interactions.
+ */
+export async function dismissModal(page: Page): Promise<void> {
+  const overlay = page.locator(".fixed.inset-0.bg-black\\/40").last();
+  if (await overlay.isVisible({ timeout: 500 }).catch(() => false)) {
+    // Try clicking the overlay backdrop to dismiss (if modal supports click-outside)
+    await overlay.click({ position: { x: 10, y: 10 } }).catch(() => {});
+    await page.waitForTimeout(300);
+    // If still visible, try Escape key
+    if (await overlay.isVisible({ timeout: 300 }).catch(() => false)) {
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
+    }
+  }
+}
