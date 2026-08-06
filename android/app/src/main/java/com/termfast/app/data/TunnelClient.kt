@@ -303,6 +303,10 @@ class TunnelConnection(
                 if (msg.code == 4030 || msg.message.contains("desktop_offline")) {
                     manuallyClosed = true
                 }
+                // pairing revoked: desktop revoked the pairing, stop reconnecting.
+                if (msg.message.contains("pairing revoked") || msg.message.contains("pairing not found")) {
+                    manuallyClosed = true
+                }
             }
             is ControlMessage.Unknown -> {
                 // Ignore unknown control messages

@@ -91,7 +91,14 @@ fun RemoteTerminalScreen(
         tunnelManager.transportState.collect { state ->
             when (state) {
                 is TunnelState.Error -> {
-                    errorMsg = state.message
+                    if (state.message == "pairing_revoked") {
+                        // Pairing was revoked by the desktop — remove from local
+                        // store and show error (no retry possible).
+                        PairingStore.removePairing(pairingId)
+                        errorMsg = "配对已被撤销，请重新配对"
+                    } else {
+                        errorMsg = state.message
+                    }
                     connecting = false
                 }
                 is TunnelState.Disconnected -> {
