@@ -209,6 +209,18 @@ pub fn run() {
                 store: cred_store.clone(),
             });
 
+            // Pre-manage AppState with daemon=None so IPC commands that
+            // reference AppState don't fail with "state not managed" if the
+            // frontend calls them before the daemon finishes starting.
+            // forward_to_daemon already retries until daemon is Some.
+            let initial_state = AppState {
+                daemon: tokio::sync::Mutex::new(None),
+                is_quitting: std::sync::atomic::AtomicBool::new(false),
+                terminal_channels: std::sync::Mutex::new(std::collections::HashMap::new()),
+                tunnel_manager: tokio::sync::Mutex::new(None),
+            };
+            app.manage(initial_state);
+
             // Start embedded daemon in background, passing the shared credential store.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -241,13 +253,11 @@ pub fn run() {
                             },
                         ));
 
-                        let state = AppState {
-                            daemon: tokio::sync::Mutex::new(Some(Arc::new(daemon))),
-                            is_quitting: std::sync::atomic::AtomicBool::new(false),
-                            terminal_channels: std::sync::Mutex::new(std::collections::HashMap::new()),
-                            tunnel_manager: tokio::sync::Mutex::new(None),
-                        };
-                        handle.manage(state);
+                        // Update the pre-managed AppState with the started daemon.
+                        use tauri::Manager;
+                        if let Some(app_state) = handle.try_state::<AppState>() {
+                            *app_state.daemon.lock().await = Some(Arc::new(daemon));
+                        }
                         tracing::info!("Tauri app state initialized with event forwarding");
                     }
                     Err(e) => {

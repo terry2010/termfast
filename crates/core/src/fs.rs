@@ -24,7 +24,7 @@ use std::path::Path;
 ///
 /// Creates parent directories if needed. Sets 0600 permissions on Unix
 /// when `restrictive_perms` is true (use for credential/key files).
-pub fn write_atomic(path: &Path, data: &[u8], restrictive_perms: bool) -> std::io::Result<()> {
+pub fn write_atomic(path: &Path, data: &[u8], _restrictive_perms: bool) -> std::io::Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -45,7 +45,7 @@ pub fn write_atomic(path: &Path, data: &[u8], restrictive_perms: bool) -> std::i
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = if restrictive_perms { 0o600 } else { 0o644 };
+        let mode = if _restrictive_perms { 0o600 } else { 0o644 };
         let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode));
     }
 

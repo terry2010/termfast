@@ -635,6 +635,11 @@ impl TerminalManager {
                     data = read_rx.recv() => {
                         match data {
                             Some(data) => {
+                                // Note: Windows ConPTY DSR (ESC[6n) is handled
+                                // preemptively in open_local_pty, which writes
+                                // a CPR (ESC[1;1R) to the writer before returning
+                                // LocalPty. By the time data reaches here, ConPTY
+                                // is already unblocked.
                                 forward_and_broadcast(&task_bin_fwd, &task_history, &task_remote_subs, &task_sid, &data, false);
                             }
                             None => {

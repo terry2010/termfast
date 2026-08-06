@@ -10,7 +10,9 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 
-use super::shell::{detect_default_shell, resolve_full_path};
+use super::shell::detect_default_shell;
+#[cfg(unix)]
+use super::shell::resolve_full_path;
 
 /// An open local PTY session.
 ///
@@ -84,7 +86,25 @@ pub fn open_local_pty(
     let reader = pair.master.try_clone_reader()?;
     // take_writer takes &self, so master is still valid for resize after this call.
     // No need to clone master — just move it into the struct.
-    let writer = pair.master.take_writer()?;
+    let mut writer = pair.master.take_writer()?;
+
+    // Windows ConPTY (portable-pty 0.9) creates the pseudoconsole with the
+    // PSEUDOCONSOLE_INHERIT_CURSOR flag. On init, ConPTY emits a Device Status
+    // Report request (DSR, `\x1b[6n`) on the output pipe and then BLOCKS until
+    // the host responds with a Cursor Position Report (CPR, `\x1b[<row>;<col>R`)
+    // on the input pipe. If no response is written, ConPTY hangs indefinitely
+    // and the reader never produces any output — the terminal appears dead.
+    //
+    // Write a CPR (row 1, col 1) preemptively to unblock ConPTY. The data sits
+    // in the pipe buffer and ConPTY reads it when ready. Verified working with
+    // both cmd.exe and pwsh (PowerShell 7) — first keystroke is NOT consumed.
+    // The frontend (xterm.js) also handles DSR responses as a secondary path.
+    // See: https://github.com/vercel/turborepo/pull/11816
+    #[cfg(target_os = "windows")]
+    {
+        let _ = writer.write_all(b"\x1b[1;1R");
+        let _ = writer.flush();
+    }
 
     Ok(LocalPty {
         writer,
@@ -120,8 +140,53 @@ mod tests {
                 _ => std::thread::sleep(Duration::from_millis(50)),
             }
         }
-        assert!(output.contains("hello_termfast"), "output was: {}", output);
+        // Strip ANSI escape sequences (e.g. \x1b[93m) so we can check the
+        // plain text content. PowerShell's PSReadLine wraps echoed commands
+        // in color codes, so raw output may look like "\x1b[93mecho\x1b[m hello".
+        let plain = strip_ansi(&output);
+        // Assert the full "echo hello_termfast" appears in the stripped output.
+        // This verifies the first character 'e' was NOT consumed by the
+        // preemptive CPR response (if it were, the echo would show
+        // "cho hello_termfast" instead).
+        assert!(
+            plain.contains("echo hello_termfast"),
+            "expected 'echo hello_termfast' in stripped output (first char not eaten), got: {}",
+            plain
+        );
         let _ = pty.child.kill();
+    }
+
+    /// Strip ANSI escape sequences (CSI ... m and similar) from a string.
+    fn strip_ansi(s: &str) -> String {
+        let mut result = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // Skip ESC [ ... <final byte 0x40-0x7e>
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    while let Some(&c2) = chars.peek() {
+                        chars.next();
+                        if c2 as u32 >= 0x40 && c2 as u32 <= 0x7e {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                // Skip ESC ] ... BEL (OSC sequences)
+                if chars.peek() == Some(&']') {
+                    chars.next();
+                    while let Some(c2) = chars.next() {
+                        if c2 == '\x07' {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+            result.push(c);
+        }
+        result
     }
 
     #[test]
@@ -136,24 +201,38 @@ mod tests {
                 pixel_height: 0,
             })
             .unwrap();
-        // Verify resize took effect: `stty size` should output "40 120"
-        pty.writer.write_all(b"stty size\n").unwrap();
-        pty.writer.flush().unwrap();
-        let mut output = String::new();
-        let mut buf = vec![0u8; 4096];
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            match pty.reader.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    output.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    if output.contains("40 120") {
-                        break;
+        // Verify resize took effect.
+        // On Unix, `stty size` outputs "rows cols" (e.g. "40 120").
+        // On Windows, `$host.UI.RawUI.WindowSize` outputs the size, but
+        // the simplest cross-platform check is to use the master's get_size()
+        // which queries the PTY directly without relying on shell commands.
+        #[cfg(unix)]
+        {
+            pty.writer.write_all(b"stty size\n").unwrap();
+            pty.writer.flush().unwrap();
+            let mut output = String::new();
+            let mut buf = vec![0u8; 4096];
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                match pty.reader.read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        output.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        if output.contains("40 120") {
+                            break;
+                        }
                     }
+                    _ => std::thread::sleep(Duration::from_millis(50)),
                 }
-                _ => std::thread::sleep(Duration::from_millis(50)),
             }
+            assert!(output.contains("40 120"), "resize output was: {}", output);
         }
-        assert!(output.contains("40 120"), "resize output was: {}", output);
+        #[cfg(windows)]
+        {
+            // On Windows, verify via the master's get_size() API
+            let size = pty.master.get_size().unwrap();
+            assert_eq!(size.rows, 40, "resize rows mismatch");
+            assert_eq!(size.cols, 120, "resize cols mismatch");
+        }
         let _ = pty.child.kill();
     }
 }
