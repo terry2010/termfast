@@ -28,6 +28,7 @@ export function PairingCard() {
   const [revokeTarget, setRevokeTarget] = useState<string | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
   const [showDevicesModal, setShowDevicesModal] = useState(false);
+  const [desktopName, setDesktopName] = useState<string>("");
 
   // Restore token from localStorage on mount
   useEffect(() => {
@@ -70,13 +71,20 @@ export function PairingCard() {
   const handleInitiatePairing = async () => {
     if (!token) return;
     try {
+      const info = await ipcInvoke<any>("ipc_get_local_info");
+      const hostname = info?.hostname || "unknown";
+      const username = info?.username || "unknown";
+      const desktopDeviceId = `${hostname}-${username}`;
+      const dName = hostname;
       const result = await ipcInvoke<any>("ipc_pairing_initiate", {
         token,
-        desktop_device_id: "desktop-" + Date.now(),
+        desktop_device_id: desktopDeviceId,
+        desktop_name: dName,
       });
       const pairingKey = await ipcInvoke<string>("ipc_generate_pairing_key");
       setPairingId(result.pairing_id);
       setPairingKey(pairingKey);
+      setDesktopName(dName);
       setPolling(true);
       setShowQrModal(true);
     } catch (e: any) {
@@ -154,6 +162,7 @@ export function PairingCard() {
     setPolling(false);
     setPairingId(null);
     setPairingKey(null);
+    setDesktopName("");
     setShowQrModal(false);
   };
 
@@ -163,6 +172,7 @@ export function PairingCard() {
         backend_url: "http://sh.zimufan.com:39527",
         pairing_key: pairingKey,
         relay_url: "ws://sh.zimufan.com:39527/tunnel",
+        desktop_name: desktopName,
       })
     : "";
 

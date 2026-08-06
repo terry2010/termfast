@@ -38,11 +38,11 @@ pub async fn auth_login(email: &str, password: &str) -> Result<Value, String> {
     Ok(body)
 }
 
-pub async fn pair_initiate(token: &str, desktop_device_id: &str) -> Result<Value, String> {
+pub async fn pair_initiate(token: &str, desktop_device_id: &str, desktop_name: &str) -> Result<Value, String> {
     let resp = client()
         .post(format!("{}/pair/initiate", BACKEND_URL))
         .header("Authorization", format!("Bearer {}", token))
-        .json(&serde_json::json!({"desktop_device_id": desktop_device_id}))
+        .json(&serde_json::json!({"desktop_device_id": desktop_device_id, "desktop_name": desktop_name}))
         .send()
         .await
         .map_err(|e| e.to_string())?;

@@ -2035,8 +2035,8 @@ async fn ipc_pairing_login(email: String, password: String) -> Result<serde_json
 }
 
 #[tauri::command]
-async fn ipc_pairing_initiate(token: String, desktop_device_id: String) -> Result<serde_json::Value, String> {
-    pairing::pair_initiate(&token, &desktop_device_id).await
+async fn ipc_pairing_initiate(token: String, desktop_device_id: String, desktop_name: String) -> Result<serde_json::Value, String> {
+    pairing::pair_initiate(&token, &desktop_device_id, &desktop_name).await
 }
 
 /// Generate a random 32-byte pairing key (hex-encoded) for tunnel crypto.
