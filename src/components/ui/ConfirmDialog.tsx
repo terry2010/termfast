@@ -18,6 +18,8 @@ interface ConfirmDialogProps {
   /** List of actions that will be performed (for high danger) */
   actions?: string[];
   confirmLabel?: string;
+  /** Use red confirm button (for destructive actions like revoke/delete) */
+  danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -29,6 +31,7 @@ export function ConfirmDialog({
   confirmName,
   actions,
   confirmLabel,
+  danger,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -54,7 +57,7 @@ export function ConfirmDialog({
           </button>
           <button
             className={`px-4 py-2 text-sm rounded-lg text-white transition-colors font-medium ${
-              level === "high"
+              level === "high" || danger
                 ? "bg-red-500 hover:bg-red-600"
                 : "bg-blue-500 hover:bg-blue-600"
             } ${!canConfirm ? "opacity-40 cursor-not-allowed" : ""}`}

@@ -342,6 +342,7 @@ export function PairingCard() {
       {revokeTarget && (
         <ConfirmDialog
           level="medium"
+          danger
           title={t("pairing.revoke")}
           message={t("pairing.revoke_confirm", "撤销配对后，该设备将无法再远程访问您的终端。确定要撤销吗？")}
           confirmLabel={t("pairing.revoke")}
