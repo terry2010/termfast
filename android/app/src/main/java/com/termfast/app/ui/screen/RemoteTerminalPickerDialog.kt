@@ -224,7 +224,14 @@ private fun TerminalListContent(
             transportState = state
             when (state) {
                 is TunnelState.Error -> {
-                    error = state.message
+                    if (state.message == "pairing_revoked") {
+                        // Pairing was revoked by the desktop — remove from local
+                        // store so it doesn't show up in the list anymore.
+                        PairingStore.removePairing(pairingId)
+                        error = "配对已被撤销"
+                    } else {
+                        error = state.message
+                    }
                     loading = false
                 }
                 is TunnelState.Disconnected -> {

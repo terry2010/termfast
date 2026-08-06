@@ -2094,8 +2094,8 @@ async fn ipc_pairing_upload_config(pairing_jwt: String, ciphertext: String, nonc
 }
 
 #[tauri::command]
-async fn ipc_pairing_list_devices(token: String) -> Result<serde_json::Value, String> {
-    pairing::list_devices(&token).await
+async fn ipc_pairing_list_devices(token: String, desktop_device_id: String) -> Result<serde_json::Value, String> {
+    pairing::list_devices(&token, &desktop_device_id).await
 }
 
 #[tauri::command]

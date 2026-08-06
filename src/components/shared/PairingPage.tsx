@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { toast } from "@/components/ui/toast";
 import { useTranslation } from "react-i18next";
+import { fetchPairedDevices } from "@/lib/pairing";
 
 interface PairingPageProps {
   onClose: () => void;
@@ -38,9 +39,9 @@ export function PairingPage({ onClose }: PairingPageProps) {
       setToken(tok);
       localStorage.setItem("pairing_token", tok);
       toast.success(t("pairing.login_success"));
-      // Load devices
-      const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token: tok });
-      setDevices(devResult.devices || []);
+      // Load devices filtered by this desktop's device_id
+      const devs = await fetchPairedDevices(tok);
+      setDevices(devs);
     } catch (e: any) {
       toast.error(t("pairing.login_failed"), { description: String(e) });
     }
@@ -85,8 +86,8 @@ export function PairingPage({ onClose }: PairingPageProps) {
           setPolling(false);
           toast.success(t("pairing.completed"));
           // Refresh devices
-          const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token });
-          setDevices(devResult.devices || []);
+          const devs = await fetchPairedDevices(token);
+          setDevices(devs);
           return;
         }
       } catch {

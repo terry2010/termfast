@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Smartphone, Plus, LogOut, ChevronRight, X } from "lucide-react";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { toast } from "@/components/ui/toast";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Modal } from "@/components/ui/Modal";
+import { getDesktopDeviceId, fetchPairedDevices } from "@/lib/pairing";
 
 // === SECTION 1 END ===
 
@@ -29,17 +30,45 @@ export function PairingCard() {
   const [showQrModal, setShowQrModal] = useState(false);
   const [showDevicesModal, setShowDevicesModal] = useState(false);
   const [desktopName, setDesktopName] = useState<string>("");
+  const [desktopDeviceId, setDesktopDeviceId] = useState<string>("");
+  const [showAllDevices, setShowAllDevices] = useState(false);
 
-  // Restore token from localStorage on mount
+  // On mount: get desktop_device_id + restore token, then fetch devices
   useEffect(() => {
     const saved = localStorage.getItem("pairing_token");
-    if (saved) {
-      setToken(saved);
-      ipcInvoke<any>("ipc_pairing_list_devices", { token: saved })
-        .then((r) => setDevices(r.devices || []))
-        .catch(() => {});
-    }
+    getDesktopDeviceId()
+      .then((deviceId) => {
+        setDesktopDeviceId(deviceId);
+        if (saved) {
+          setToken(saved);
+          return fetchPairedDevices(saved);
+        }
+        return null;
+      })
+      .then((devs) => {
+        if (devs) setDevices(devs);
+      })
+      .catch(() => {});
   }, []);
+
+  // Reload devices ONLY when showAllDevices actually changes.
+  // The mount effect already loaded the correct filtered list, so we
+  // don't need to reload when the modal opens.
+  const prevShowAll = useRef(false);
+  useEffect(() => {
+    if (!token || !showDevicesModal) return;
+    // Skip if showAllDevices didn't actually change (e.g. modal just opened)
+    if (prevShowAll.current === showAllDevices) return;
+    prevShowAll.current = showAllDevices;
+    const filterId = showAllDevices ? "" : desktopDeviceId;
+    if (!showAllDevices && !desktopDeviceId) return;
+    ipcInvoke<any>("ipc_pairing_list_devices", {
+      token,
+      desktop_device_id: filterId,
+    })
+      .then((r) => setDevices(r.devices || []))
+      .catch(() => {});
+  }, [showAllDevices, showDevicesModal, token, desktopDeviceId]);
 
   const handleRegister = async () => {
     try {
@@ -57,8 +86,11 @@ export function PairingCard() {
       setToken(tok);
       localStorage.setItem("pairing_token", tok);
       toast.success(t("pairing.login_success"));
-      const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token: tok });
-      setDevices(devResult.devices || []);
+      // Fetch devices filtered by this desktop's device_id
+      const deviceId = await getDesktopDeviceId();
+      setDesktopDeviceId(deviceId);
+      const devs = await fetchPairedDevices(tok);
+      setDevices(devs);
       // Restore tunnels for previously-persisted pairings (survives logout/login)
       ipcInvoke<any>("ipc_restore_tunnels", { jwt: tok }).catch((e) =>
         console.warn("[PairingCard] restore tunnels failed:", e),
@@ -122,8 +154,8 @@ export function PairingCard() {
               toast.error("隧道启动失败", { description: String(e) });
             }
           }
-          const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token });
-          setDevices(devResult.devices || []);
+          const devs = await fetchPairedDevices(token!);
+          setDevices(devs);
           setPairingId(null);
           setPairingKey(null);
           setShowQrModal(false);
@@ -134,7 +166,7 @@ export function PairingCard() {
     };
     poll();
     return () => { stopped = true; };
-  }, [polling, pairingId, pairingKey, token, t]);
+  }, [polling, pairingId, pairingKey, token, desktopDeviceId, t]);
 
   const handleRevoke = async (pid: string) => {
     if (!token) return;
@@ -305,9 +337,21 @@ export function PairingCard() {
       {showDevicesModal && (
         <Modal
           title={t("pairing.paired_devices")}
-          onClose={() => setShowDevicesModal(false)}
+          onClose={() => { setShowDevicesModal(false); setShowAllDevices(false); prevShowAll.current = false; }}
           maxWidth="max-w-md"
         >
+          {/* Toggle: show all pairings in account (for emergency revoke) */}
+          <div className="flex items-center justify-between mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
+            <label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showAllDevices}
+                onChange={(e) => setShowAllDevices(e.target.checked)}
+                className="w-4 h-4 rounded"
+              />
+              {t("pairing.show_all_devices", "显示全部配对（紧急撤销）")}
+            </label>
+          </div>
           {devices.length === 0 ? (
             <p className="text-sm text-gray-500 text-center py-8">
               {t("pairing.no_devices", "暂无已配对设备")}
@@ -321,7 +365,15 @@ export function PairingCard() {
                 >
                   <div className="min-w-0">
                     <div className="text-sm text-gray-900 dark:text-gray-100 truncate">
-                      {d.mobile_device_id || d.pairing_id}
+                      {showAllDevices ? (
+                        <span>
+                          <span className="font-medium">{d.desktop_name || d.desktop_device_id || "Unknown"}</span>
+                          <span className="text-gray-400 mx-1">↔</span>
+                          <span className="font-medium">{d.mobile_name || d.mobile_device_id || "Unknown"}</span>
+                        </span>
+                      ) : (
+                        d.mobile_name || d.mobile_device_id || d.pairing_id
+                      )}
                     </div>
                     <div className="text-xs text-gray-500">{d.status}</div>
                   </div>

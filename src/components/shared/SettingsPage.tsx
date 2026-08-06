@@ -7,6 +7,7 @@ import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { getVersion } from "@tauri-apps/api/app";
 import { useConfigStore } from "@/stores/configStore";
 import { ipcInvoke } from "@/hooks/useIpc";
+import { fetchPairedDevices } from "@/lib/pairing";
 import type { SupportedLanguage } from "@/i18n/config";
 import i18n, { asyncResolveLanguage } from "@/i18n/config";
 import { Modal } from "@/components/ui/Modal";
@@ -1852,8 +1853,8 @@ function PairingSection() {
     const saved = localStorage.getItem("pairing_token");
     if (saved) {
       setToken(saved);
-      ipcInvoke<any>("ipc_pairing_list_devices", { token: saved })
-        .then((r) => setDevices(r.devices || []))
+      fetchPairedDevices(saved)
+        .then((devs) => setDevices(devs))
         .catch(() => {});
       // Note: ipc_restore_tunnels is called by App.tsx on startup,
       // do NOT call it here to avoid duplicate tunnel connections (429).
@@ -1876,8 +1877,8 @@ function PairingSection() {
       setToken(tok);
       localStorage.setItem("pairing_token", tok);
       toast.success(t("pairing.login_success"));
-      const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token: tok });
-      setDevices(devResult.devices || []);
+      const devs = await fetchPairedDevices(tok);
+      setDevices(devs);
     } catch (e: any) {
       toast.error(t("pairing.login_failed"), { description: String(e) });
     }
@@ -1929,8 +1930,8 @@ function PairingSection() {
               toast.error("隧道启动失败", { description: String(e) });
             }
           }
-          const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token });
-          setDevices(devResult.devices || []);
+          const devs = await fetchPairedDevices(token);
+          setDevices(devs);
           return;
         }
       } catch { /* ignore */ }

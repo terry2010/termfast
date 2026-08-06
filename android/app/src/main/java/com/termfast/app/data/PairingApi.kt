@@ -1,11 +1,13 @@
 package com.termfast.app.data
 
+import android.os.Build
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 object PairingApi {
@@ -17,6 +19,26 @@ object PairingApi {
         .build()
 
     private val jsonMedia = "application/json".toMediaType()
+
+    /**
+     * Get this device's name (used as mobile_device_id and mobile_name).
+     * e.g. "samsung SM-S9210" or "Google-Pixel-9".
+     */
+    fun getDeviceName(): String {
+        val marketName = try {
+            val process = ProcessBuilder("getprop", "ro.product.vendor.marketname").start()
+            val out = process.inputStream.bufferedReader().readText().trim()
+            if (out.isNotEmpty()) out else {
+                val p2 = ProcessBuilder("getprop", "ro.product.marketname").start()
+                p2.inputStream.bufferedReader().readText().trim()
+            }
+        } catch (_: Exception) { "" }
+        return if (marketName.isNotEmpty()) {
+            "${Build.MANUFACTURER} $marketName".trim()
+        } else {
+            "${Build.MANUFACTURER}-${Build.MODEL}".replace(" ", "-")
+        }
+    }
 
     fun register(email: String, password: String): JSONObject {
         val body = JSONObject().put("email", email).put("password", password).toString()
@@ -60,11 +82,16 @@ object PairingApi {
         return JSONObject(resp.body!!.string())
     }
 
-    fun listDevices(token: String): List<DeviceInfo> {
+    fun listDevices(token: String, mobileDeviceId: String = ""): List<DeviceInfo> {
+        val url = if (mobileDeviceId.isNotEmpty()) {
+            "$BACKEND_URL/devices?mobile_device_id=${URLEncoder.encode(mobileDeviceId, "UTF-8")}"
+        } else {
+            "$BACKEND_URL/devices"
+        }
         val resp = client.newCall(Request.Builder()
             .get()
             .header("Authorization", "Bearer $token")
-            .url("$BACKEND_URL/devices")
+            .url(url)
             .build()).execute()
         val json = JSONObject(resp.body!!.string())
         val arr = json.optJSONArray("devices") ?: return emptyList()
@@ -90,11 +117,12 @@ object PairingApi {
             .build()).execute()
     }
 
-    fun completePairing(pairingId: String, phonePubkey: String, deviceId: String): JSONObject {
+    fun completePairing(pairingId: String, phonePubkey: String, deviceId: String, mobileName: String): JSONObject {
         val body = JSONObject()
             .put("pairing_id", pairingId)
             .put("phone_pubkey", phonePubkey)
             .put("device_id", deviceId)
+            .put("mobile_name", mobileName)
             .toString()
         val resp = client.newCall(Request.Builder()
             .post(body.toRequestBody(jsonMedia))

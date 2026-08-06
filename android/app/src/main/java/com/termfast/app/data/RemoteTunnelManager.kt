@@ -145,6 +145,11 @@ class RemoteTunnelManager(
             // will retry silently. Only set Error state for real failures.
             if (message.startsWith("closed: 1000")) {
                 _transportState.value = TunnelState.Disconnected
+            } else if (message.contains("pairing revoked") || message.contains("pairing not found")) {
+                // Pairing was revoked by the desktop — stop reconnecting and
+                // set a special error so UI can remove it from PairingStore.
+                android.util.Log.i("RemoteTunnel", "pairing revoked, stopping reconnection")
+                _transportState.value = TunnelState.Error("pairing_revoked")
             } else if (message.contains("desktop_offline")) {
                 _transportState.value = TunnelState.Error(message)
             } else {
