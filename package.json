@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "start": "kill -9 $(lsof -ti:1420) 2>/dev/null; kill -9 $(lsof -ti:1421) 2>/dev/null; tauri dev",
+    "startwin": "node scripts/kill-port.js 1420 1421 && tauri dev",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
