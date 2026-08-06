@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Smartphone, Plus, LogOut, ChevronRight, X } from "lucide-react";
 import { ipcInvoke } from "@/hooks/useIpc";
@@ -51,15 +51,20 @@ export function PairingCard() {
       .catch(() => {});
   }, []);
 
-  // Reload devices when showAllDevices toggles or modal opens.
-  // Wait for desktopDeviceId to be set before fetching (unless showAllDevices
-  // is true, in which case we intentionally pass empty to get all pairings).
+  // Reload devices ONLY when showAllDevices actually changes.
+  // The mount effect already loaded the correct filtered list, so we
+  // don't need to reload when the modal opens.
+  const prevShowAll = useRef(false);
   useEffect(() => {
     if (!token || !showDevicesModal) return;
-    if (!showAllDevices && !desktopDeviceId) return; // not ready yet
+    // Skip if showAllDevices didn't actually change (e.g. modal just opened)
+    if (prevShowAll.current === showAllDevices) return;
+    prevShowAll.current = showAllDevices;
+    const filterId = showAllDevices ? "" : desktopDeviceId;
+    if (!showAllDevices && !desktopDeviceId) return;
     ipcInvoke<any>("ipc_pairing_list_devices", {
       token,
-      desktop_device_id: showAllDevices ? "" : desktopDeviceId,
+      desktop_device_id: filterId,
     })
       .then((r) => setDevices(r.devices || []))
       .catch(() => {});
@@ -332,7 +337,7 @@ export function PairingCard() {
       {showDevicesModal && (
         <Modal
           title={t("pairing.paired_devices")}
-          onClose={() => { setShowDevicesModal(false); setShowAllDevices(false); }}
+          onClose={() => { setShowDevicesModal(false); setShowAllDevices(false); prevShowAll.current = false; }}
           maxWidth="max-w-md"
         >
           {/* Toggle: show all pairings in account (for emergency revoke) */}
