@@ -17,7 +17,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use base64::Engine;
 use termfast_daemon::frame_crypto::{
     generate_random_32, FrameCipher, DIR_DESKTOP_TO_MOBILE, DIR_MOBILE_TO_DESKTOP,
 };
@@ -180,6 +179,7 @@ fn dispatch_ready(pairing_id: &str) {
 fn dispatch_frame_event(pairing_id: &str, frame_type: u8, terminal_id: u32, payload: &[u8]) {
     #[cfg(target_os = "android")]
     {
+        use base64::Engine;
         use termfast_daemon::remote_frame::{
             ERROR, HISTORY, LIST_RESPONSE, NOTIFY, OK, OUTPUT, RESIZE,
         };

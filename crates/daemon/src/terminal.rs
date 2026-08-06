@@ -88,6 +88,9 @@ pub struct RemoteSubscriber {
 /// Type alias for the on_closed callback function.
 pub type OnClosedCallback = Box<dyn Fn(&str) + Send + Sync>;
 
+/// Type alias for the on_opened callback function.
+pub type OnOpenedCallback = Box<dyn Fn() + Send + Sync>;
+
 /// Manages all active terminal sessions
 pub struct TerminalManager {
     sessions: Mutex<HashMap<String, TerminalSession>>,
@@ -106,7 +109,7 @@ pub struct TerminalManager {
     /// Set by RemoteServer via set_on_closed_callback.
     on_closed_callback: Arc<std::sync::Mutex<Option<OnClosedCallback>>>,
     /// Callback invoked when a terminal is opened (for RemoteServer to broadcast LIST_CHANGED).
-    on_opened_callback: Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
+    on_opened_callback: Arc<std::sync::Mutex<Option<OnOpenedCallback>>>,
 }
 
 impl TerminalManager {
@@ -132,7 +135,7 @@ impl TerminalManager {
     }
 
     /// Set a callback invoked when a terminal is opened (for broadcasting LIST_CHANGED).
-    pub fn set_on_opened_callback(&self, callback: Box<dyn Fn() + Send + Sync>) {
+    pub fn set_on_opened_callback(&self, callback: OnOpenedCallback) {
         *self.on_opened_callback.lock().unwrap() = Some(callback);
     }
 
