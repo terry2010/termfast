@@ -123,13 +123,39 @@ mod tests {
     #[test]
     fn test_open_local_pty() {
         let mut pty = open_local_pty(80, 24, None).unwrap();
-        pty.writer.write_all(b"echo hello_termfast\n").unwrap();
-        pty.writer.flush().unwrap();
-        // Poll for output (shell startup time varies; .zshrc may take 500ms+)
+
+        // Phase 1: Wait for the shell to finish starting up.
+        // Shells emit a prompt (PS> on PowerShell, $/# on Unix) before they
+        // are ready to accept commands. Sending input too early can cause
+        // the first command to be lost or garbled.
         let mut output = String::new();
         let mut buf = vec![0u8; 4096];
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
+        let startup_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < startup_deadline {
+            match pty.reader.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    output.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    // Detect shell prompt: PowerShell "PS ", bash "$ ",
+                    // root "# ", cmd.exe "> ", zsh "% ".
+                    let plain = strip_ansi(&output);
+                    if plain.contains("PS ")
+                        || plain.contains("$ ")
+                        || plain.contains("# ")
+                        || plain.contains("> ")
+                        || plain.contains("% ")
+                    {
+                        break;
+                    }
+                }
+                _ => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+
+        // Phase 2: Send the echo command and wait for output.
+        pty.writer.write_all(b"echo hello_termfast\n").unwrap();
+        pty.writer.flush().unwrap();
+        let echo_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < echo_deadline {
             match pty.reader.read(&mut buf) {
                 Ok(n) if n > 0 => {
                     output.push_str(&String::from_utf8_lossy(&buf[..n]));
