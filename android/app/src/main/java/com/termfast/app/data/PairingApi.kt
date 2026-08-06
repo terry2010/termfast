@@ -90,11 +90,12 @@ object PairingApi {
             .build()).execute()
     }
 
-    fun completePairing(pairingId: String, phonePubkey: String, deviceId: String): JSONObject {
+    fun completePairing(pairingId: String, phonePubkey: String, deviceId: String, mobileName: String): JSONObject {
         val body = JSONObject()
             .put("pairing_id", pairingId)
             .put("phone_pubkey", phonePubkey)
             .put("device_id", deviceId)
+            .put("mobile_name", mobileName)
             .toString()
         val resp = client.newCall(Request.Builder()
             .post(body.toRequestBody(jsonMedia))

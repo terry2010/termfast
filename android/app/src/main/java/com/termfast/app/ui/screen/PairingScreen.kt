@@ -84,7 +84,7 @@ fun PairingScreen(navController: NavController) {
                                 } else {
                                     "${Build.MANUFACTURER}-${Build.MODEL}".replace(" ", "-")
                                 }
-                                PairingApi.completePairing(pairingId, "phone-pubkey", deviceName)
+                                PairingApi.completePairing(pairingId, "phone-pubkey", deviceName, deviceName)
                             }
                             val status = result.optString("status")
                             if (status == "completed") {

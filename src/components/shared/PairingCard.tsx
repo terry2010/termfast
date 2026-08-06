@@ -30,6 +30,7 @@ export function PairingCard() {
   const [showDevicesModal, setShowDevicesModal] = useState(false);
   const [desktopName, setDesktopName] = useState<string>("");
   const [desktopDeviceId, setDesktopDeviceId] = useState<string>("");
+  const [showAllDevices, setShowAllDevices] = useState(false);
 
   // Get local desktop_device_id on mount (used to filter ListDevices
   // to only this desktop's pairings, not all pairings in the account)
@@ -64,6 +65,17 @@ export function PairingCard() {
         .catch(() => {});
     }
   }, []);
+
+  // Reload devices when showAllDevices toggles
+  useEffect(() => {
+    if (!token || !showDevicesModal) return;
+    ipcInvoke<any>("ipc_pairing_list_devices", {
+      token,
+      desktop_device_id: showAllDevices ? "" : desktopDeviceId,
+    })
+      .then((r) => setDevices(r.devices || []))
+      .catch(() => {});
+  }, [showAllDevices, showDevicesModal, token, desktopDeviceId]);
 
   const handleRegister = async () => {
     try {
@@ -341,9 +353,21 @@ export function PairingCard() {
       {showDevicesModal && (
         <Modal
           title={t("pairing.paired_devices")}
-          onClose={() => setShowDevicesModal(false)}
+          onClose={() => { setShowDevicesModal(false); setShowAllDevices(false); }}
           maxWidth="max-w-md"
         >
+          {/* Toggle: show all pairings in account (for emergency revoke) */}
+          <div className="flex items-center justify-between mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
+            <label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showAllDevices}
+                onChange={(e) => setShowAllDevices(e.target.checked)}
+                className="w-4 h-4 rounded"
+              />
+              {t("pairing.show_all_devices", "显示全部配对（紧急撤销）")}
+            </label>
+          </div>
           {devices.length === 0 ? (
             <p className="text-sm text-gray-500 text-center py-8">
               {t("pairing.no_devices", "暂无已配对设备")}
@@ -357,7 +381,15 @@ export function PairingCard() {
                 >
                   <div className="min-w-0">
                     <div className="text-sm text-gray-900 dark:text-gray-100 truncate">
-                      {d.mobile_device_id || d.pairing_id}
+                      {showAllDevices ? (
+                        <span>
+                          <span className="font-medium">{d.desktop_name || d.desktop_device_id || "Unknown"}</span>
+                          <span className="text-gray-400 mx-1">↔</span>
+                          <span className="font-medium">{d.mobile_name || d.mobile_device_id || "Unknown"}</span>
+                        </span>
+                      ) : (
+                        d.mobile_name || d.mobile_device_id || d.pairing_id
+                      )}
                     </div>
                     <div className="text-xs text-gray-500">{d.status}</div>
                   </div>
