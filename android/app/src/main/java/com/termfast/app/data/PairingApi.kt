@@ -74,6 +74,8 @@ object PairingApi {
             list.add(DeviceInfo(
                 pairingId = d.optString("pairing_id"),
                 deviceId = d.optString("mobile_device_id", d.optString("pairing_id")),
+                desktopName = d.optString("desktop_name"),
+                desktopDeviceId = d.optString("desktop_device_id"),
                 status = d.optString("status", "active"),
             ))
         }
@@ -104,6 +106,8 @@ object PairingApi {
     data class DeviceInfo(
         val pairingId: String,
         val deviceId: String,
+        val desktopName: String,
+        val desktopDeviceId: String,
         val status: String,
     )
 }

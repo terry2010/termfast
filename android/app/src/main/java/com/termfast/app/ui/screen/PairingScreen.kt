@@ -65,6 +65,7 @@ fun PairingScreen(navController: NavController) {
                     val pairingId = json.getString("pairing_id")
                     val pairingKey = json.optString("pairing_key", "")
                     val relayUrl = json.optString("relay_url", "")
+                    val desktopName = json.optString("desktop_name", "")
                     // Auto-complete pairing
                     scope.launch {
                         loading = true
@@ -88,15 +89,23 @@ fun PairingScreen(navController: NavController) {
                             val status = result.optString("status")
                             if (status == "completed") {
                                 val jwt = result.optString("pairing_jwt")
+                                // Refresh device list to get desktop_device_id for dedup
+                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices(token!!) }
+                                val desktopDeviceId = updatedDevices.find { it.pairingId == pairingId }?.desktopDeviceId ?: ""
                                 if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
-                                    PairingStore.saveRemoteTunnelConfig(
-                                        pairingId, pairingKey, relayUrl, jwt
+                                    PairingStore.savePairing(
+                                        com.termfast.app.data.RemoteTunnelConfig(
+                                            pairingId = pairingId,
+                                            pairingKey = pairingKey,
+                                            relayUrl = relayUrl,
+                                            pairingJwt = jwt,
+                                            desktopName = desktopName,
+                                            desktopDeviceId = desktopDeviceId,
+                                        )
                                     )
-                                } else if (jwt.isNotEmpty()) {
-                                    PairingStore.savePairingJwt(jwt)
                                 }
                                 Toast.makeText(context, "配对成功", Toast.LENGTH_SHORT).show()
-                                devices = withContext(Dispatchers.IO) { PairingApi.listDevices(token!!) }
+                                devices = updatedDevices
                             } else {
                                 Toast.makeText(context, "配对失败: ${result.optString("error", "未知错误")}", Toast.LENGTH_SHORT).show()
                             }
@@ -228,6 +237,7 @@ fun PairingScreen(navController: NavController) {
                                 scope.launch {
                                     try {
                                         withContext(Dispatchers.IO) { PairingApi.revoke(token!!, d.pairingId) }
+                                        PairingStore.removePairing(d.pairingId)
                                         devices = devices.filter { it.pairingId != d.pairingId }
                                         Toast.makeText(context, "已撤销", Toast.LENGTH_SHORT).show()
                                     } catch (e: Exception) {
@@ -242,7 +252,7 @@ fun PairingScreen(navController: NavController) {
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(d.deviceId, style = MaterialTheme.typography.bodyMedium)
+                                    Text(d.desktopName.ifEmpty { d.deviceId }, style = MaterialTheme.typography.bodyMedium)
                                     Text(d.status, style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }

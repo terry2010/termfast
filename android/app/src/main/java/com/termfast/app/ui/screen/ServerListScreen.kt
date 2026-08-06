@@ -77,7 +77,7 @@ fun ServerListScreen(navController: NavController) {
     var proxyRunningIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var proxyStartingIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showRemotePicker by remember { mutableStateOf(false) }
-    val hasRemoteConfig = remember { PairingStore.hasRemoteTunnelConfig() }
+    val hasRemoteConfig = remember { PairingStore.getAllPairings().isNotEmpty() }
 
     val vpnLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -335,11 +335,10 @@ fun ServerListScreen(navController: NavController) {
         // Remote terminal picker dialog
         RemoteTerminalPickerDialog(
             visible = showRemotePicker,
-            onTerminalClick = { terminalId, name ->
+            onTerminalClick = { terminalId, name, pairingId ->
                 showRemotePicker = false
-                val pid = PairingStore.getPairingId() ?: return@RemoteTerminalPickerDialog
                 val encodedName = URLEncoder.encode(name, "UTF-8")
-                navController.navigate("remote_terminal/$pid/$terminalId/$encodedName")
+                navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName")
             },
             onDismiss = { showRemotePicker = false },
         )

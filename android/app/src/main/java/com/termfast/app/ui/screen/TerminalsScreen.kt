@@ -134,7 +134,7 @@ fun TerminalsScreen(
                     Text("去服务器列表")
                 }
                 // Remote terminals entry (only if paired)
-                if (com.termfast.app.data.PairingStore.hasRemoteTunnelConfig()) {
+                if (com.termfast.app.data.PairingStore.getAllPairings().isNotEmpty()) {
                     Spacer(Modifier.height(16.dp))
                     var showRemotePicker by remember { mutableStateOf(false) }
                     OutlinedButton(onClick = { showRemotePicker = true }) {
@@ -144,11 +144,10 @@ fun TerminalsScreen(
                     }
                     RemoteTerminalPickerDialog(
                         visible = showRemotePicker,
-                        onTerminalClick = { terminalId, name ->
+                        onTerminalClick = { terminalId, name, pairingId ->
                             showRemotePicker = false
-                            val pid = com.termfast.app.data.PairingStore.getPairingId() ?: return@RemoteTerminalPickerDialog
                             val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
-                            navController.navigate("remote_terminal/$pid/$terminalId/$encodedName")
+                            navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName")
                         },
                         onDismiss = { showRemotePicker = false },
                     )

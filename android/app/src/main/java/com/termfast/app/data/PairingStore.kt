@@ -2,16 +2,27 @@ package com.termfast.app.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.encodeToString
+
+@Serializable
+data class RemoteTunnelConfig(
+    val pairingId: String,
+    val pairingKey: String,
+    val relayUrl: String,
+    val pairingJwt: String,
+    val desktopName: String,
+    val desktopDeviceId: String,
+)
 
 object PairingStore {
     private const val PREFS_NAME = "pairing"
     private const val KEY_TOKEN = "token"
-    private const val KEY_PAIRING_JWT = "pairing_jwt"
-    private const val KEY_PAIRING_ID = "pairing_id"
-    private const val KEY_PAIRING_KEY = "pairing_key"
-    private const val KEY_RELAY_URL = "relay_url"
+    private const val KEY_PAIRINGS = "pairings_json"
 
     private var ctx: Context? = null
+    private val json = Json { ignoreUnknownKeys = true }
 
     fun init(context: Context) {
         ctx = context.applicationContext
@@ -21,6 +32,8 @@ object PairingStore {
         val c = ctx ?: throw IllegalStateException("PairingStore not initialized")
         return c.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
+
+    // --- User account token (not per-pairing) ---
 
     fun saveToken(token: String) {
         prefs().edit().putString(KEY_TOKEN, token).apply()
@@ -32,64 +45,38 @@ object PairingStore {
         prefs().edit().remove(KEY_TOKEN).apply()
     }
 
-    fun savePairingJwt(jwt: String) {
-        prefs().edit().putString(KEY_PAIRING_JWT, jwt).apply()
+    // --- Multi-pairing storage ---
+
+    private fun readMap(): MutableMap<String, RemoteTunnelConfig> {
+        val raw = prefs().getString(KEY_PAIRINGS, null) ?: return mutableMapOf()
+        return try {
+            val list = json.decodeFromString<List<RemoteTunnelConfig>>(raw)
+            list.associateBy { it.pairingId }.toMutableMap()
+        } catch (_: Exception) {
+            mutableMapOf()
+        }
     }
 
-    fun getPairingJwt(): String? = prefs().getString(KEY_PAIRING_JWT, null)
-
-    fun clearPairingJwt() {
-        prefs().edit().remove(KEY_PAIRING_JWT).apply()
+    private fun writeMap(map: Map<String, RemoteTunnelConfig>) {
+        prefs().edit().putString(KEY_PAIRINGS, json.encodeToString(map.values.toList())).apply()
     }
 
-    // --- Remote terminal tunnel credentials ---
-
-    /** Save pairing ID for remote terminal tunnel. */
-    fun savePairingId(pairingId: String) {
-        prefs().edit().putString(KEY_PAIRING_ID, pairingId).apply()
+    /** Save a pairing. Overwrites any existing pairing with the same desktopDeviceId. */
+    fun savePairing(config: RemoteTunnelConfig) {
+        val map = readMap()
+        // Dedup by desktopDeviceId: remove old pairing for same desktop
+        map.values.removeAll { it.desktopDeviceId == config.desktopDeviceId && it.pairingId != config.pairingId }
+        map[config.pairingId] = config
+        writeMap(map)
     }
 
-    fun getPairingId(): String? = prefs().getString(KEY_PAIRING_ID, null)
+    fun getAllPairings(): List<RemoteTunnelConfig> = readMap().values.toList()
 
-    /** Save pairing key (hex-encoded 32-byte key) for frame crypto. */
-    fun savePairingKey(pairingKey: String) {
-        prefs().edit().putString(KEY_PAIRING_KEY, pairingKey).apply()
-    }
+    fun getPairing(pairingId: String): RemoteTunnelConfig? = readMap()[pairingId]
 
-    fun getPairingKey(): String? = prefs().getString(KEY_PAIRING_KEY, null)
-
-    /** Save relay URL for WebSocket tunnel. */
-    fun saveRelayUrl(relayUrl: String) {
-        prefs().edit().putString(KEY_RELAY_URL, relayUrl).apply()
-    }
-
-    fun getRelayUrl(): String? = prefs().getString(KEY_RELAY_URL, null)
-
-    /** Save all remote tunnel credentials at once. */
-    fun saveRemoteTunnelConfig(pairingId: String, pairingKey: String, relayUrl: String, jwt: String) {
-        prefs().edit()
-            .putString(KEY_PAIRING_ID, pairingId)
-            .putString(KEY_PAIRING_KEY, pairingKey)
-            .putString(KEY_RELAY_URL, relayUrl)
-            .putString(KEY_PAIRING_JWT, jwt)
-            .apply()
-    }
-
-    /** Check if remote tunnel config is complete (all 4 fields present). */
-    fun hasRemoteTunnelConfig(): Boolean {
-        return getPairingId() != null &&
-            getPairingKey() != null &&
-            getRelayUrl() != null &&
-            getPairingJwt() != null
-    }
-
-    /** Clear all remote tunnel credentials. */
-    fun clearRemoteTunnelConfig() {
-        prefs().edit()
-            .remove(KEY_PAIRING_ID)
-            .remove(KEY_PAIRING_KEY)
-            .remove(KEY_RELAY_URL)
-            .remove(KEY_PAIRING_JWT)
-            .apply()
+    fun removePairing(pairingId: String) {
+        val map = readMap()
+        map.remove(pairingId)
+        writeMap(map)
     }
 }

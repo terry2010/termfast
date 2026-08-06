@@ -44,10 +44,11 @@ fun RemoteTerminalScreen(
     val terminalBg = Color(0xFF1E1E2E)
     val terminalFg = Color(0xFFCDD6F4)
 
-    // Load tunnel credentials
-    val pairingKeyHex = PairingStore.getPairingKey()
-    val relayUrl = PairingStore.getRelayUrl()
-    val pairingJwt = PairingStore.getPairingJwt()
+    // Load tunnel credentials for this specific pairing
+    val pairing = remember { PairingStore.getPairing(pairingId) }
+    val pairingKeyHex = pairing?.pairingKey
+    val relayUrl = pairing?.relayUrl
+    val pairingJwt = pairing?.pairingJwt
 
     if (pairingKeyHex == null || relayUrl == null || pairingJwt == null) {
         Scaffold(
@@ -66,7 +67,7 @@ fun RemoteTerminalScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("未配对桌面端，无法打开远程终端")
+                Text("配对不存在，请重新配对")
             }
         }
         return

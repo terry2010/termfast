@@ -158,13 +158,6 @@ fun TermFastApp() {
                 val serverId = backStack.arguments?.getString("serverId") ?: ""
                 com.termfast.app.ui.screen.TerminalsScreen(navController, focusServerId = serverId)
             }
-            // Remote terminal list — shows terminals shared from desktop via relay tunnel
-            composable("remote_terminals") {
-                com.termfast.app.ui.screen.RemoteTerminalListScreen(
-                    navController = navController,
-                    onBack = { navController.popBackStack() },
-                )
-            }
             // Remote terminal rendering — opens a specific remote terminal session
             composable("remote_terminal/{pairingId}/{terminalId}/{terminalName}") { backStack ->
                 val pairingId = backStack.arguments?.getString("pairingId") ?: ""
