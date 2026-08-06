@@ -29,13 +29,37 @@ export function PairingCard() {
   const [showQrModal, setShowQrModal] = useState(false);
   const [showDevicesModal, setShowDevicesModal] = useState(false);
   const [desktopName, setDesktopName] = useState<string>("");
+  const [desktopDeviceId, setDesktopDeviceId] = useState<string>("");
 
-  // Restore token from localStorage on mount
+  // Get local desktop_device_id on mount (used to filter ListDevices
+  // to only this desktop's pairings, not all pairings in the account)
+  useEffect(() => {
+    ipcInvoke<any>("ipc_get_local_info")
+      .then((info) => {
+        const hostname = info?.hostname || "unknown";
+        const username = info?.username || "unknown";
+        setDesktopDeviceId(`${hostname}-${username}`);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Restore token from localStorage on mount — fetch devices filtered by
+  // this desktop's device_id so we only show pairings initiated here.
   useEffect(() => {
     const saved = localStorage.getItem("pairing_token");
     if (saved) {
       setToken(saved);
-      ipcInvoke<any>("ipc_pairing_list_devices", { token: saved })
+      ipcInvoke<any>("ipc_get_local_info")
+        .then((info) => {
+          const hostname = info?.hostname || "unknown";
+          const username = info?.username || "unknown";
+          const deviceId = `${hostname}-${username}`;
+          setDesktopDeviceId(deviceId);
+          return ipcInvoke<any>("ipc_pairing_list_devices", {
+            token: saved,
+            desktop_device_id: deviceId,
+          });
+        })
         .then((r) => setDevices(r.devices || []))
         .catch(() => {});
     }
@@ -57,7 +81,16 @@ export function PairingCard() {
       setToken(tok);
       localStorage.setItem("pairing_token", tok);
       toast.success(t("pairing.login_success"));
-      const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token: tok });
+      // Fetch devices filtered by this desktop's device_id
+      const info = await ipcInvoke<any>("ipc_get_local_info");
+      const hostname = info?.hostname || "unknown";
+      const username = info?.username || "unknown";
+      const deviceId = `${hostname}-${username}`;
+      setDesktopDeviceId(deviceId);
+      const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", {
+        token: tok,
+        desktop_device_id: deviceId,
+      });
       setDevices(devResult.devices || []);
       // Restore tunnels for previously-persisted pairings (survives logout/login)
       ipcInvoke<any>("ipc_restore_tunnels", { jwt: tok }).catch((e) =>
@@ -122,7 +155,10 @@ export function PairingCard() {
               toast.error("隧道启动失败", { description: String(e) });
             }
           }
-          const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", { token });
+          const devResult = await ipcInvoke<any>("ipc_pairing_list_devices", {
+            token,
+            desktop_device_id: desktopDeviceId,
+          });
           setDevices(devResult.devices || []);
           setPairingId(null);
           setPairingKey(null);
@@ -134,7 +170,7 @@ export function PairingCard() {
     };
     poll();
     return () => { stopped = true; };
-  }, [polling, pairingId, pairingKey, token, t]);
+  }, [polling, pairingId, pairingKey, token, desktopDeviceId, t]);
 
   const handleRevoke = async (pid: string) => {
     if (!token) return;
