@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.termfast.app.data.PairingStore
 import com.termfast.app.data.RustRepository
 import kotlinx.coroutines.launch
 
@@ -36,6 +37,11 @@ fun TerminalsScreen(
     var sessions by remember { mutableStateOf(TerminalSessionManager.getAllSessions()) }
     val servers by remember { mutableStateOf(repo.listServers().associateBy { it.id }) }
     val listState = rememberLazyListState()
+
+    // Pre-load pairing desktop names for remote terminal display
+    val pairingNames by remember {
+        mutableStateOf(PairingStore.getAllPairings().associate { it.pairingId to it.desktopName })
+    }
 
     // Group sessions by serverId, with the focused server first (if any)
     val grouped = sessions.groupBy { it.serverId }.let { map ->
@@ -169,7 +175,8 @@ fun TerminalsScreen(
                 // Server group header
                 item(key = "header_$serverId") {
                     val serverName = if (serverId.startsWith("remote:")) {
-                        "远程终端"
+                        val pid = serverId.removePrefix("remote:")
+                        pairingNames[pid]?.ifBlank { null } ?: "远程终端"
                     } else {
                         servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: serverId }
                             ?: serverId
@@ -205,7 +212,8 @@ fun TerminalsScreen(
                     TerminalCard(
                         session = session,
                         serverName = if (serverId.startsWith("remote:")) {
-                            "远程终端"
+                            val pid = serverId.removePrefix("remote:")
+                            pairingNames[pid]?.ifBlank { null } ?: "远程终端"
                         } else {
                             servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: "" } ?: ""
                         },
