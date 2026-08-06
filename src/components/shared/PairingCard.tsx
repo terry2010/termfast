@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Smartphone, Plus, LogOut, ChevronRight, X } from "lucide-react";
 import { ipcInvoke } from "@/hooks/useIpc";
@@ -51,23 +51,22 @@ export function PairingCard() {
       .catch(() => {});
   }, []);
 
-  // Reload devices ONLY when showAllDevices actually changes.
-  // The mount effect already loaded the correct filtered list, so we
-  // don't need to reload when the modal opens.
-  const prevShowAll = useRef(false);
+  // When showAllDevices is toggled, reload with/without filter.
+  // When toggled off, restore the filtered list from fetchPairedDevices.
   useEffect(() => {
     if (!token || !showDevicesModal) return;
-    // Skip if showAllDevices didn't actually change (e.g. modal just opened)
-    if (prevShowAll.current === showAllDevices) return;
-    prevShowAll.current = showAllDevices;
-    const filterId = showAllDevices ? "" : desktopDeviceId;
-    if (!showAllDevices && !desktopDeviceId) return;
-    ipcInvoke<any>("ipc_pairing_list_devices", {
-      token,
-      desktop_device_id: filterId,
-    })
-      .then((r) => setDevices(r.devices || []))
-      .catch(() => {});
+    if (showAllDevices) {
+      // Show all pairings in account (no desktop_device_id filter)
+      ipcInvoke<any>("ipc_pairing_list_devices", {
+        token,
+        desktop_device_id: "",
+      })
+        .then((r) => setDevices(r.devices || []))
+        .catch(() => {});
+    } else {
+      // Restore filtered list (only this desktop's pairings)
+      fetchPairedDevices(token).then((devs) => setDevices(devs));
+    }
   }, [showAllDevices, showDevicesModal, token, desktopDeviceId]);
 
   const handleRegister = async () => {
@@ -337,7 +336,7 @@ export function PairingCard() {
       {showDevicesModal && (
         <Modal
           title={t("pairing.paired_devices")}
-          onClose={() => { setShowDevicesModal(false); setShowAllDevices(false); prevShowAll.current = false; }}
+          onClose={() => { setShowDevicesModal(false); setShowAllDevices(false); }}
           maxWidth="max-w-md"
         >
           {/* Toggle: show all pairings in account (for emergency revoke) */}
