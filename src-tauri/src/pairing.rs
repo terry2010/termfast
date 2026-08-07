@@ -168,3 +168,35 @@ pub async fn send_push(
     }
     Ok(body)
 }
+
+/// Initiate a desktop-to-desktop pairing (FP-1 backend API).
+pub async fn pair_initiate_desktop(
+    token: &str,
+    server_user_id: u64,
+    server_device_id: &str,
+    server_name: &str,
+    client_user_id: u64,
+    client_device_id: &str,
+    client_name: &str,
+) -> Result<Value, String> {
+    let resp = client()
+        .post(format!("{}/pair/initiate-desktop", BACKEND_URL))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&serde_json::json!({
+            "server_user_id": server_user_id,
+            "server_device_id": server_device_id,
+            "server_name": server_name,
+            "client_user_id": client_user_id,
+            "client_device_id": client_device_id,
+            "client_name": client_name,
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(body.get("error").and_then(|v| v.as_str()).unwrap_or("error").to_string());
+    }
+    Ok(body)
+}

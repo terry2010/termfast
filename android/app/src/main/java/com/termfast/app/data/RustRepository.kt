@@ -221,4 +221,9 @@ object RustRepository {
     /** Close tunnel session: send GOODBYE + remove session state. Returns GOODBYE ciphertext. */
     fun remoteTunnelClose(pairingId: String): ByteArray? =
         RustBridge.nativeRemoteTunnelClose(pairingId)
+
+    /** Create + encrypt a DESKTOP_PAIR frame. Used to instruct a desktop to start
+     *  a desktop-to-desktop pairing. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendDesktopPair(pairingId: String, payloadJson: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendDesktopPair(pairingId, payloadJson)
 }

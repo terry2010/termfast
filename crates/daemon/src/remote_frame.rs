@@ -31,6 +31,7 @@ pub const OK: u8 = 0x0D;
 pub const INPUT_ANSWER: u8 = 0x0E;
 pub const QUESTION_RESOLVED: u8 = 0x0F;
 pub const FILE_REQUEST: u8 = 0x10;
+pub const DESKTOP_PAIR: u8 = 0x11;
 
 /// In-memory frame representation.
 #[derive(Debug, Clone)]
@@ -150,6 +151,19 @@ impl Frame {
     /// payload = file_path (UTF-8 string)
     pub fn file_request(terminal_id: u32, file_path: &str) -> Self {
         Self::new(FILE_REQUEST, terminal_id, file_path.as_bytes().to_vec())
+    }
+
+    /// Construct a DESKTOP_PAIR frame.
+    /// payload = JSON {action, pairing_id, pairing_key_hex, pairing_jwt, peer_name, pairing_type, role}
+    pub fn desktop_pair(json: &str) -> Self {
+        Self::new(DESKTOP_PAIR, 0, json.as_bytes().to_vec())
+    }
+
+    /// Construct a DESKTOP_PAIR response frame (pair_ok / pair_error).
+    /// Uses the same DESKTOP_PAIR frame type so the sender can deserialize it
+    /// with the same message struct (action field distinguishes request vs response).
+    pub fn desktop_pair_response(json: &str) -> Self {
+        Self::new(DESKTOP_PAIR, 0, json.as_bytes().to_vec())
     }
 
     /// Serialize frame to bytes (for encryption + transmission).
@@ -332,5 +346,36 @@ mod tests {
         let seq = u32::from_be_bytes([frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3]]);
         assert_eq!(seq, 0);
         assert_eq!(frame.payload[4], 1); // is_last
+    }
+
+    #[test]
+    fn test_frame_desktop_pair() {
+        let json = r#"{"action":"pair","pairing_id":"abc","role":"server"}"#;
+        let frame = Frame::desktop_pair(json);
+        assert_eq!(frame.frame_type, DESKTOP_PAIR);
+        assert_eq!(frame.terminal_id, 0);
+        assert_eq!(frame.payload, json.as_bytes());
+
+        // Round-trip serialize → deserialize
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, DESKTOP_PAIR);
+        assert_eq!(deserialized.terminal_id, 0);
+        assert_eq!(deserialized.payload, json.as_bytes());
+    }
+
+    #[test]
+    fn test_frame_desktop_pair_response() {
+        let json = r#"{"action":"pair_ok","pairing_id":"abc"}"#;
+        let frame = Frame::desktop_pair_response(json);
+        assert_eq!(frame.frame_type, DESKTOP_PAIR);
+        assert_eq!(frame.terminal_id, 0);
+        assert_eq!(frame.payload, json.as_bytes());
+
+        // Round-trip
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, DESKTOP_PAIR);
+        assert_eq!(deserialized.payload, json.as_bytes());
     }
 }

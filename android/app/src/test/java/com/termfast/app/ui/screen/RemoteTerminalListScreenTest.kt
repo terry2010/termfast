@@ -94,7 +94,9 @@ class RemoteTerminalListScreenTest {
             id = 7,
             name = "test",
             serverId = "srv2",
+            serverName = "Server2",
             isLocal = false,
+            terminalType = "bash",
             tmuxSessionName = "session1",
         )
         assertEquals(7, entry.id)

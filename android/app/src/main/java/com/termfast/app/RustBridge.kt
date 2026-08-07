@@ -115,6 +115,9 @@ object RustBridge {
     external fun nativeRemoteTunnelSendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray?
     external fun nativeRemoteTunnelClose(pairingId: String): ByteArray?
 
+    // --- Desktop-to-desktop pairing (send DESKTOP_PAIR frame via existing tunnel) ---
+    external fun nativeRemoteTunnelSendDesktopPair(pairingId: String, payloadJson: String): ByteArray?
+
     // --- Cloud Sync ---
     external fun nativeCloudSyncAuthUrl(provider: String): String
     external fun nativeCloudSyncExchangeCode(code: String): String

@@ -9,6 +9,7 @@ pub mod lock;
 pub mod proto;
 pub mod remote_frame;
 pub mod remote_server;
+pub mod remote_client;
 pub mod server;
 pub mod terminal;
 pub mod tunnel_client;

@@ -143,6 +143,9 @@ fun TermFastApp() {
             composable("pairing") {
                 com.termfast.app.ui.screen.PairingScreen(navController)
             }
+            composable("desktop_pairing") {
+                com.termfast.app.ui.screen.DesktopPairingScreen(navController)
+            }
             composable("qr_scanner") {
                 com.termfast.app.ui.screen.QrScannerScreen(
                     onScanned = { content ->

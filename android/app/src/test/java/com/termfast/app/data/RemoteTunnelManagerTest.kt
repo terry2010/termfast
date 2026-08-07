@@ -20,6 +20,7 @@ class MockRemoteTunnelFfi : RemoteTunnelFfi {
     var unsubscribeCalls = mutableListOf<Int>()
     var inputCalls = mutableListOf<Pair<Int, ByteArray>>()
     var resizeCalls = mutableListOf<Triple<Int, Int, Int>>()
+    var desktopPairCalls = mutableListOf<Pair<String, String>>()
     var closeCalls = 0
 
     /** Configurable return values (null = simulate FFI error). */
@@ -29,6 +30,7 @@ class MockRemoteTunnelFfi : RemoteTunnelFfi {
     var unsubscribeResult: ByteArray? = byteArrayOf(0x30)
     var inputResult: ByteArray? = byteArrayOf(0x40)
     var resizeResult: ByteArray? = byteArrayOf(0x50)
+    var desktopPairResult: ByteArray? = byteArrayOf(0x70)
     var closeResult: ByteArray? = byteArrayOf(0x60)
 
     /** If set, init() throws this exception (simulates FFI failure). */
@@ -67,6 +69,11 @@ class MockRemoteTunnelFfi : RemoteTunnelFfi {
     override fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray? {
         resizeCalls.add(Triple(terminalId, cols, rows))
         return resizeResult
+    }
+
+    override fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray? {
+        desktopPairCalls.add(pairingId to payloadJson)
+        return desktopPairResult
     }
 
     override fun close(pairingId: String): ByteArray? {
@@ -238,6 +245,38 @@ class RemoteTunnelManagerTest {
         assertEquals(40, mockFfi.resizeCalls[0].third)
     }
 
+    // === FP-6: sendDesktopPair tests ===
+
+    @Test
+    fun testSendDesktopPairBeforeProtocolReadyFails() {
+        val manager = createManager()
+        val result = manager.sendDesktopPair("""{"action":"pair"}""")
+        assertFalse(result)
+        assertEquals(0, mockFfi.desktopPairCalls.size)
+    }
+
+    @Test
+    fun testSendDesktopPairAfterProtocolReadyCallsFfi() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        val payload = """{"action":"pair","pairing_id":"dpair-123","role":"server"}"""
+        manager.sendDesktopPair(payload)
+        // FFI should be called with correct args (sendRaw returns false in test
+        // because there's no real WebSocket connection, but FFI is still invoked)
+        assertEquals(1, mockFfi.desktopPairCalls.size)
+        assertEquals("test-pairing-id", mockFfi.desktopPairCalls[0].first)
+        assertEquals(payload, mockFfi.desktopPairCalls[0].second)
+    }
+
+    @Test
+    fun testSendDesktopPairFfiReturnsNullFails() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        mockFfi.desktopPairResult = null
+        val result = manager.sendDesktopPair("""{"action":"pair"}""")
+        assertFalse(result)
+    }
+
     @Test
     fun testStopCallsFfiCloseAndResetsState() {
         val manager = createManager()
@@ -269,6 +308,7 @@ class RemoteTunnelManagerTest {
             override fun unsubscribe(pairingId: String, terminalId: Int) = null
             override fun sendInput(pairingId: String, terminalId: Int, data: ByteArray) = null
             override fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int) = null
+            override fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray? = null
             override fun close(pairingId: String) = null
         }
         val mgr = RemoteTunnelManager(

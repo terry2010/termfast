@@ -27,6 +27,7 @@ import { AddServerDialog } from "@/components/shared/AddServerDialog";
 import { LogViewer } from "@/components/shared/LogViewer";
 import { UndoToast } from "@/components/shared/UndoToast";
 import { HostKeyMismatchDialog } from "@/components/shared/HostKeyMismatchDialog";
+import { RemoteDesktopPanel, cleanupRemoteDesktopConnection } from "@/components/remote-desktop/RemoteDesktopPanel";
 import { ConfirmDialog, type DangerLevel } from "@/components/ui/ConfirmDialog";
 import { ContextMenuProvider } from "@/components/ui/ContextMenu";
 import { Toaster, toast } from "sonner";
@@ -176,6 +177,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showAddServer, setShowAddServer] = useState(false);
+  const [showRemoteDesktop, setShowRemoteDesktop] = useState(false);
   const [editServer, setEditServer] = useState<{
     id: string;
     name: string;
@@ -369,6 +371,7 @@ export default function App() {
               onAddServer={() => setShowAddServer(true)}
               onOpenSettings={() => setShowSettings(true)}
               onOpenTemplates={() => setShowTemplates(true)}
+              onOpenRemoteDesktop={() => setShowRemoteDesktop(true)}
               collapsed={sidebarCollapsed}
               onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
             />
@@ -387,6 +390,28 @@ export default function App() {
           )}
           {showTemplates && (
             <TemplateLibrary onClose={() => setShowTemplates(false)} />
+          )}
+          {showRemoteDesktop && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+              <div className="w-full max-w-4xl h-[80vh] bg-white dark:bg-[#1E1E1E] rounded-xl shadow-2xl overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                  <h2 className="text-lg font-semibold">{t("remote_desktop.title", "远程桌面")}</h2>
+                  <button
+                    onClick={async () => {
+                      // Clean up active connection before closing
+                      await cleanupRemoteDesktopConnection();
+                      setShowRemoteDesktop(false);
+                    }}
+                    className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-xl"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="h-[calc(80vh-3.5rem)]">
+                  <RemoteDesktopPanel />
+                </div>
+              </div>
+            </div>
           )}
           {showAddServer && (
             <AddServerDialog

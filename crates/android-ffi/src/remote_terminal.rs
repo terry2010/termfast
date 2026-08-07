@@ -314,6 +314,16 @@ pub fn send_resize(
     encrypt_outgoing(pairing_id, Frame::resize(terminal_id, cols, rows))
 }
 
+/// Create and encrypt a DESKTOP_PAIR frame.
+/// Used by the phone to instruct a desktop to start a desktop-to-desktop pairing.
+/// `payload_json` is the JSON-encoded DesktopPairMessage.
+pub fn send_desktop_pair(pairing_id: &str, payload_json: &str) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(
+        pairing_id,
+        Frame::desktop_pair(payload_json),
+    )
+}
+
 /// Create and encrypt a GOODBYE frame, then remove the session.
 pub fn close_tunnel(pairing_id: &str) -> Result<Vec<u8>, String> {
     let mut map = sessions().lock().unwrap();
@@ -556,6 +566,47 @@ mod tests {
         assert!(!ct.is_empty());
 
         close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_desktop_pair() {
+        let pairing_id = "test-dpair-pid";
+        let pairing_key = [0xEEu8; 32];
+        do_hello_exchange(pairing_id, &pairing_key);
+
+        let payload = serde_json::json!({
+            "action": "pair",
+            "pairing_id": "dpair-123",
+            "pairing_key_hex": "ab".repeat(32),
+            "pairing_jwt": "jwt-token",
+            "peer_name": "Desktop-B",
+            "pairing_type": "desktop",
+            "role": "server",
+            "relay_url": "wss://relay.example.com/tunnel",
+        }).to_string();
+
+        let ct = send_desktop_pair(pairing_id, &payload).unwrap();
+        assert!(!ct.is_empty());
+
+        // Verify the ciphertext can be decrypted back to a DESKTOP_PAIR frame
+        let map = sessions().lock().unwrap();
+        let session = map.get(pairing_id).unwrap();
+        let cipher = session.recv_cipher.as_ref().unwrap();
+        let plaintext = cipher.decrypt(&ct).unwrap();
+        let frame = Frame::deserialize(&plaintext).unwrap();
+        assert_eq!(frame.frame_type, termfast_daemon::remote_frame::DESKTOP_PAIR);
+        let payload_str = std::str::from_utf8(&frame.payload).unwrap();
+        assert!(payload_str.contains("\"action\":\"pair\""));
+        assert!(payload_str.contains("\"role\":\"server\""));
+        drop(map);
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_desktop_pair_no_session() {
+        let result = send_desktop_pair("nonexistent-pid", "{}");
+        assert!(result.is_err());
     }
 
     #[test]

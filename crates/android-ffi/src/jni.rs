@@ -2444,4 +2444,23 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelClos
 
 // === SECTION: Remote tunnel JNI part 2 END ===
 
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendDesktopPair(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    payload_json: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let json = jstring_to_string(&mut env, &payload_json);
+    match crate::remote_terminal::send_desktop_pair(&pid, &json) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendDesktopPair: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
 // === Pairing END ===

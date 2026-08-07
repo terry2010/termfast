@@ -21,6 +21,22 @@ pub struct StoredPairing {
     pub pairing_id: String,
     pub pairing_key_hex: String,
     pub relay_url: String,
+    /// JWT for relay auth. For mobile pairing: user JWT. For desktop pairing (client): pairing JWT.
+    #[serde(default)]
+    pub jwt: String,
+    /// "mobile" or "desktop"
+    #[serde(default = "default_pairing_type")]
+    pub pairing_type: String,
+    /// Peer desktop name (for desktop pairings)
+    #[serde(default)]
+    pub peer_name: String,
+    /// "server" (this desktop is server B) or "client" (this desktop is client A)
+    #[serde(default)]
+    pub peer_role: String,
+}
+
+fn default_pairing_type() -> String {
+    "mobile".to_string()
 }
 
 /// On-disk JSON structure.
@@ -106,5 +122,93 @@ fn write_all(pairings: &[StoredPairing]) {
             }
         }
         Err(e) => tracing::warn!("failed to serialize pairings: {}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test StoredPairing with all new fields serializes correctly
+    #[test]
+    fn test_stored_pairing_full_serialization() {
+        let pairing = StoredPairing {
+            pairing_id: "dpair-123".to_string(),
+            pairing_key_hex: "ab".repeat(32),
+            relay_url: "wss://relay.example.com/tunnel".to_string(),
+            jwt: "jwt-token".to_string(),
+            pairing_type: "desktop".to_string(),
+            peer_name: "Desktop-B".to_string(),
+            peer_role: "server".to_string(),
+        };
+        let json = serde_json::to_string(&pairing).unwrap();
+        let decoded: StoredPairing = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.pairing_id, "dpair-123");
+        assert_eq!(decoded.pairing_key_hex, "ab".repeat(32));
+        assert_eq!(decoded.relay_url, "wss://relay.example.com/tunnel");
+        assert_eq!(decoded.jwt, "jwt-token");
+        assert_eq!(decoded.pairing_type, "desktop");
+        assert_eq!(decoded.peer_name, "Desktop-B");
+        assert_eq!(decoded.peer_role, "server");
+    }
+
+    /// Test backward compatibility: old JSON without new fields deserializes with defaults
+    #[test]
+    fn test_stored_pairing_backward_compatibility() {
+        let old_json = format!(
+            r#"{{
+            "pairing_id": "pair-old",
+            "pairing_key_hex": "{}",
+            "relay_url": "wss://old.relay.com/tunnel"
+        }}"#,
+            "cd".repeat(32)
+        );
+        let decoded: StoredPairing = serde_json::from_str(&old_json).unwrap();
+        assert_eq!(decoded.pairing_id, "pair-old");
+        assert_eq!(decoded.relay_url, "wss://old.relay.com/tunnel");
+        // New fields should have defaults
+        assert_eq!(decoded.jwt, "");
+        assert_eq!(decoded.pairing_type, "mobile");
+        assert_eq!(decoded.peer_name, "");
+        assert_eq!(decoded.peer_role, "");
+    }
+
+    /// Test PairingsFile serialization with desktop and mobile pairings
+    #[test]
+    fn test_pairings_file_mixed_types() {
+        let file = PairingsFile {
+            pairings: vec![
+                StoredPairing {
+                    pairing_id: "mobile-1".to_string(),
+                    pairing_key_hex: "ab".repeat(32),
+                    relay_url: "wss://relay.com/tunnel".to_string(),
+                    jwt: "user-jwt".to_string(),
+                    pairing_type: "mobile".to_string(),
+                    peer_name: "".to_string(),
+                    peer_role: "".to_string(),
+                },
+                StoredPairing {
+                    pairing_id: "desktop-1".to_string(),
+                    pairing_key_hex: "cd".repeat(32),
+                    relay_url: "wss://relay.com/tunnel".to_string(),
+                    jwt: "pairing-jwt".to_string(),
+                    pairing_type: "desktop".to_string(),
+                    peer_name: "Desktop-A".to_string(),
+                    peer_role: "client".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&file).unwrap();
+        let decoded: PairingsFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.pairings.len(), 2);
+        assert_eq!(decoded.pairings[0].pairing_type, "mobile");
+        assert_eq!(decoded.pairings[1].pairing_type, "desktop");
+        assert_eq!(decoded.pairings[1].peer_role, "client");
+    }
+
+    /// Test default_pairing_type function
+    #[test]
+    fn test_default_pairing_type() {
+        assert_eq!(default_pairing_type(), "mobile");
     }
 }
