@@ -93,7 +93,7 @@ impl DaemonLock {
             return false;
         }
         match Self::read(path) {
-            Ok(lock) => Self::is_daemon_process_alive(lock.pid),
+            Ok(lock) => Self::is_daemon_process_alive(lock.pid, &default_process_checker()),
             Err(_) => false,
         }
     }
@@ -105,52 +105,22 @@ impl DaemonLock {
     /// the stale lock's PID.  We additionally verify the process image name
     /// contains "termfast" to avoid false positives that would permanently
     /// block daemon startup.
-    fn is_daemon_process_alive(pid: u32) -> bool {
-        if !Self::is_pid_alive(pid) {
+    ///
+    /// Accepts a `ProcessChecker` trait so the decision logic can be unit
+    /// tested with a fake checker (the Windows FFI path itself is not
+    /// mockable, but the AND-combination of pid-alive + image-name-check is).
+    fn is_daemon_process_alive(pid: u32, checker: &dyn ProcessChecker) -> bool {
+        if !checker.is_pid_alive(pid) {
             return false;
         }
         #[cfg(not(unix))]
         {
-            Self::is_termfast_process(pid)
+            checker.process_image_contains(pid, "termfast")
         }
         #[cfg(unix)]
         {
+            let _ = checker;
             true
-        }
-    }
-
-    /// Windows-only: check if the process with the given PID has an image
-    /// path containing "termfast".  Returns false if the PID doesn't exist
-    /// or can't be queried.
-    #[cfg(not(unix))]
-    fn is_termfast_process(pid: u32) -> bool {
-        use std::ffi::c_void;
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
-            fn CloseHandle(h: *mut c_void) -> i32;
-            fn QueryFullProcessImageNameW(
-                handle: *mut c_void,
-                flags: u32,
-                lpexename: *mut u16,
-                size: *mut u32,
-            ) -> i32;
-        }
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle.is_null() {
-                return false;
-            }
-            let mut buf = [0u16; 512];
-            let mut size = buf.len() as u32;
-            let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
-            CloseHandle(handle);
-            if ok == 0 {
-                return false;
-            }
-            let path = String::from_utf16_lossy(&buf[..size as usize]);
-            path.to_lowercase().contains("termfast")
         }
     }
 
@@ -180,6 +150,80 @@ impl DaemonLock {
     }
 }
 
+// === SECTION 1 END ===
+
+/// Abstraction over OS process queries used by `is_daemon_process_alive`.
+///
+/// Exists so the decision logic (PID alive AND image name matches) can be
+/// unit tested without touching real OS APIs — the Windows FFI path calls
+/// `kernel32!QueryFullProcessImageNameW` which cannot be mocked directly.
+pub trait ProcessChecker {
+    /// Returns true if `pid` identifies a currently running process.
+    fn is_pid_alive(&self, pid: u32) -> bool;
+
+    /// Returns true if the running process at `pid` has an image path that
+    /// contains `needle` (case-insensitive).  On Unix this is unused.
+    fn process_image_contains(&self, pid: u32, needle: &str) -> bool;
+}
+
+/// Default `ProcessChecker` that delegates to the real OS APIs.
+struct DefaultProcessChecker;
+
+impl ProcessChecker for DefaultProcessChecker {
+    fn is_pid_alive(&self, pid: u32) -> bool {
+        DaemonLock::is_pid_alive(pid)
+    }
+
+    #[cfg(not(unix))]
+    fn process_image_contains(&self, pid: u32, needle: &str) -> bool {
+        process_image_contains_windows(pid, needle)
+    }
+
+    #[cfg(unix)]
+    fn process_image_contains(&self, _pid: u32, _needle: &str) -> bool {
+        true
+    }
+}
+
+fn default_process_checker() -> DefaultProcessChecker {
+    DefaultProcessChecker
+}
+
+/// Windows-only: query the full image path of `pid` and check whether it
+/// contains `needle` (case-insensitive).  Returns false if the PID doesn't
+/// exist or can't be queried.
+#[cfg(not(unix))]
+fn process_image_contains_windows(pid: u32, needle: &str) -> bool {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn CloseHandle(h: *mut c_void) -> i32;
+        fn QueryFullProcessImageNameW(
+            handle: *mut c_void,
+            flags: u32,
+            lpexename: *mut u16,
+            size: *mut u32,
+        ) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut buf = [0u16; 512];
+        let mut size = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if ok == 0 {
+            return false;
+        }
+        let path = String::from_utf16_lossy(&buf[..size as usize]);
+        path.to_lowercase().contains(needle)
+    }
+}
+
 /// Find the daemon socket path from lock file
 pub fn find_daemon_socket() -> Result<Option<String>> {
     let lock_path = DaemonLock::default_path()?;
@@ -188,7 +232,7 @@ pub fn find_daemon_socket() -> Result<Option<String>> {
     }
     match DaemonLock::read(&lock_path) {
         Ok(lock) => {
-            if DaemonLock::is_daemon_process_alive(lock.pid) {
+            if DaemonLock::is_daemon_process_alive(lock.pid, &default_process_checker()) {
                 Ok(Some(lock.socket_path))
             } else {
                 // Stale lock file, remove it
@@ -327,5 +371,56 @@ mod tests {
 
         DaemonLock::remove(&path).unwrap();
         assert!(!path.exists());
+    }
+
+    // --- Regression tests for the Windows PID-reuse bug ---
+    //
+    // These use a fake `ProcessChecker` to verify the decision logic in
+    // `is_daemon_process_alive` without touching real OS APIs.
+
+    /// Fake checker that returns canned answers for testing.
+    struct FakeChecker {
+        pid_alive: bool,
+        image_contains: bool,
+    }
+    impl ProcessChecker for FakeChecker {
+        fn is_pid_alive(&self, _pid: u32) -> bool {
+            self.pid_alive
+        }
+        fn process_image_contains(&self, _pid: u32, _needle: &str) -> bool {
+            self.image_contains
+        }
+    }
+
+    #[test]
+    fn test_is_daemon_process_alive_pid_dead() {
+        // PID not alive → false regardless of image check
+        let checker = FakeChecker { pid_alive: false, image_contains: true };
+        assert!(!DaemonLock::is_daemon_process_alive(999999, &checker));
+    }
+
+    #[test]
+    fn test_is_daemon_process_alive_pid_alive_image_matches() {
+        // PID alive + image contains "termfast" → true (normal happy path)
+        let checker = FakeChecker { pid_alive: true, image_contains: true };
+        assert!(DaemonLock::is_daemon_process_alive(50612, &checker));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn test_is_daemon_process_alive_pid_reuse_by_non_termfast() {
+        // Regression for the original bug: PID is alive (reused by another
+        // program) but the image does not contain "termfast" → must return
+        // false so the stale lock is treated as dead and overwritten.
+        let checker = FakeChecker { pid_alive: true, image_contains: false };
+        assert!(!DaemonLock::is_daemon_process_alive(50612, &checker));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_daemon_process_alive_unix_no_image_check() {
+        // On Unix, PID liveness alone is sufficient (no PID-reuse issue).
+        let checker = FakeChecker { pid_alive: true, image_contains: false };
+        assert!(DaemonLock::is_daemon_process_alive(50612, &checker));
     }
 }
