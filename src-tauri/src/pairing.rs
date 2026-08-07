@@ -38,6 +38,23 @@ pub async fn auth_login(email: &str, password: &str) -> Result<Value, String> {
     Ok(body)
 }
 
+/// Refresh the user access token using a refresh token.
+/// Returns { "access_token": "...", "token_type": "Bearer" }
+pub async fn auth_refresh(refresh_token: &str) -> Result<Value, String> {
+    let resp = client()
+        .post(format!("{}/auth/refresh", BACKEND_URL))
+        .json(&serde_json::json!({"refresh_token": refresh_token}))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(body.get("error").and_then(|v| v.as_str()).unwrap_or("refresh failed").to_string());
+    }
+    Ok(body)
+}
+
 pub async fn pair_initiate(token: &str, desktop_device_id: &str, desktop_name: &str) -> Result<Value, String> {
     let resp = client()
         .post(format!("{}/pair/initiate", BACKEND_URL))

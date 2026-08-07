@@ -33,20 +33,59 @@ export function PairingCard() {
   const [desktopDeviceId, setDesktopDeviceId] = useState<string>("");
   const [showAllDevices, setShowAllDevices] = useState(false);
 
-  // On mount: get desktop_device_id + restore token, then fetch devices
+  // On mount: get desktop_device_id + restore token, then fetch devices.
+  // If the saved token is expired, try refresh; if refresh also fails,
+  // clear token so user can re-login.
   useEffect(() => {
     const saved = localStorage.getItem("pairing_token");
+    if (!saved) return;
     getDesktopDeviceId()
       .then((deviceId) => {
         setDesktopDeviceId(deviceId);
-        if (saved) {
-          setToken(saved);
-          return fetchPairedDevices(saved);
-        }
-        return null;
+        setToken(saved);
+        return ipcInvoke<any>("ipc_pairing_list_devices", {
+          token: saved,
+          desktop_device_id: deviceId,
+        });
       })
-      .then((devs) => {
-        if (devs) setDevices(devs);
+      .then((r) => {
+        setDevices(r?.devices || []);
+      })
+      .catch(async (e: any) => {
+        console.warn("[PairingCard] mount: token invalid, trying refresh:", String(e));
+        if (String(e).includes("invalid token")) {
+          // Try refresh token
+          const refreshToken = localStorage.getItem("pairing_refresh_token");
+          if (refreshToken) {
+            try {
+              const result = await ipcInvoke<any>("ipc_pairing_refresh", {
+                refresh_token: refreshToken,
+              });
+              const newToken = result.access_token;
+              if (newToken) {
+                console.log("[PairingCard] mount: token refreshed on startup");
+                setToken(newToken);
+                localStorage.setItem("pairing_token", newToken);
+                const deviceId = await getDesktopDeviceId();
+                setDesktopDeviceId(deviceId);
+                const r2 = await ipcInvoke<any>("ipc_pairing_list_devices", {
+                  token: newToken,
+                  desktop_device_id: deviceId,
+                });
+                setDevices(r2?.devices || []);
+                return;
+              }
+            } catch (e2: any) {
+              console.warn("[PairingCard] mount: refresh also failed:", String(e2));
+            }
+          }
+          // Both access token and refresh token are invalid — clear and let user re-login
+          console.warn("[PairingCard] mount: clearing expired tokens");
+          localStorage.removeItem("pairing_token");
+          localStorage.removeItem("pairing_refresh_token");
+          setToken(null);
+          setDevices([]);
+        }
       })
       .catch(() => {});
   }, []);
@@ -83,8 +122,12 @@ export function PairingCard() {
     try {
       const result = await ipcInvoke<any>("ipc_pairing_login", { email, password });
       const tok = result.access_token;
+      const refreshToken = result.refresh_token;
       setToken(tok);
       localStorage.setItem("pairing_token", tok);
+      if (refreshToken) {
+        localStorage.setItem("pairing_refresh_token", refreshToken);
+      }
       toast.success(t("pairing.login_success"));
       // Fetch devices filtered by this desktop's device_id
       const deviceId = await getDesktopDeviceId();
@@ -100,9 +143,40 @@ export function PairingCard() {
     }
   };
 
+  /// Try to refresh the access token using the stored refresh token.
+  /// Returns the new token on success, or null on failure.
+  const tryRefreshToken = async (): Promise<string | null> => {
+    const refreshToken = localStorage.getItem("pairing_refresh_token");
+    if (!refreshToken) {
+      console.warn("[PairingCard] no refresh_token in localStorage");
+      return null;
+    }
+    try {
+      console.log("[PairingCard] attempting token refresh");
+      const result = await ipcInvoke<any>("ipc_pairing_refresh", {
+        refresh_token: refreshToken,
+      });
+      const newToken = result.access_token;
+      if (newToken) {
+        console.log("[PairingCard] token refresh succeeded");
+        setToken(newToken);
+        localStorage.setItem("pairing_token", newToken);
+        return newToken;
+      }
+    } catch (e: any) {
+      console.warn("[PairingCard] token refresh failed:", String(e));
+      // Refresh failed — refresh token may also be expired, need re-login
+      localStorage.removeItem("pairing_token");
+      localStorage.removeItem("pairing_refresh_token");
+      setToken(null);
+    }
+    return null;
+  };
+
   const handleInitiatePairing = async () => {
     if (!token) return;
     try {
+      console.log("[PairingCard] initiate pairing with token:", token.substring(0, 20) + "...");
       const info = await ipcInvoke<any>("ipc_get_local_info");
       const hostname = info?.hostname || "unknown";
       const username = info?.username || "unknown";
@@ -120,6 +194,37 @@ export function PairingCard() {
       setPolling(true);
       setShowQrModal(true);
     } catch (e: any) {
+      console.warn("[PairingCard] initiate failed:", String(e));
+      // If token expired, try refresh and retry
+      if (String(e).includes("invalid token")) {
+        const newToken = await tryRefreshToken();
+        if (newToken) {
+          try {
+            const info = await ipcInvoke<any>("ipc_get_local_info");
+            const hostname = info?.hostname || "unknown";
+            const username = info?.username || "unknown";
+            const desktopDeviceId = `${hostname}-${username}`;
+            const dName = hostname;
+            const result = await ipcInvoke<any>("ipc_pairing_initiate", {
+              token: newToken,
+              desktop_device_id: desktopDeviceId,
+              desktop_name: dName,
+            });
+            const pairingKey = await ipcInvoke<string>("ipc_generate_pairing_key");
+            setPairingId(result.pairing_id);
+            setPairingKey(pairingKey);
+            setDesktopName(dName);
+            setPolling(true);
+            setShowQrModal(true);
+            return;
+          } catch (e2: any) {
+            toast.error(t("pairing.initiate_failed"), { description: String(e2) });
+            return;
+          }
+        }
+        toast.error(t("pairing.login_expired", "登录已过期，请重新登录"));
+        return;
+      }
       toast.error(t("pairing.initiate_failed"), { description: String(e) });
     }
   };
@@ -188,6 +293,7 @@ export function PairingCard() {
     setPairingId(null);
     setPairingKey(null);
     localStorage.removeItem("pairing_token");
+    localStorage.removeItem("pairing_refresh_token");
   };
 
   const handleCancelPairing = () => {

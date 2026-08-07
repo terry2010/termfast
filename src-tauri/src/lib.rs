@@ -336,6 +336,7 @@ pub fn run() {
             // Pairing
             ipc_pairing_register,
             ipc_pairing_login,
+            ipc_pairing_refresh,
             ipc_pairing_initiate,
             ipc_generate_pairing_key,
             ipc_pairing_status,
@@ -2044,6 +2045,12 @@ async fn ipc_pairing_login(email: String, password: String) -> Result<serde_json
     pairing::auth_login(&email, &password).await
 }
 
+/// Refresh the user access token using a stored refresh token.
+#[tauri::command]
+async fn ipc_pairing_refresh(refresh_token: String) -> Result<serde_json::Value, String> {
+    pairing::auth_refresh(&refresh_token).await
+}
+
 #[tauri::command]
 async fn ipc_pairing_initiate(token: String, desktop_device_id: String, desktop_name: String) -> Result<serde_json::Value, String> {
     pairing::pair_initiate(&token, &desktop_device_id, &desktop_name).await
@@ -2268,35 +2275,62 @@ async fn ipc_tunnel_start(
 
     // Get or create the DesktopTunnelManager
     let state = app.state::<AppState>();
-    let mut tm_guard = state.tunnel_manager.lock().await;
-    if tm_guard.is_none() {
-        // Initialize: get TerminalManager + ConfigManager from daemon
-        let daemon_guard = state.daemon.lock().await;
-        if let Some(daemon) = daemon_guard.as_ref() {
-            let terminal_manager = daemon.server.state().terminal_manager.clone();
-            let config_manager = daemon.server.state().config_manager.clone();
-            let file_upload_config = daemon.server.state().file_upload_config.clone();
-            let tm = Arc::new(tunnel_manager::DesktopTunnelManager::new(
-                terminal_manager,
-                config_manager.clone(),
-            ));
-            // Register file upload callback for FILE_REQUEST (local terminal file transfer)
-            let config_mgr_cb = config_manager.clone();
-            tm.remote_server().set_file_upload_callback(Box::new(move |file_path: String| {
-                let file_upload_config = file_upload_config.clone();
-                let config_mgr = config_mgr_cb.clone();
-                Box::pin(async move {
-                    upload_file_to_cloud(file_path, file_upload_config, config_mgr).await
-                })
-            }));
-            *tm_guard = Some(tm);
-            tracing::info!("DesktopTunnelManager initialized");
+
+    // If tunnel_manager is not initialized yet, we need the daemon to be ready.
+    // The daemon starts asynchronously, so retry for up to 10 seconds.
+    // We must NOT hold tunnel_manager lock while waiting for daemon, to avoid
+    // potential lock ordering issues.
+    let tm: Arc<tunnel_manager::DesktopTunnelManager> = {
+        // Fast path: tunnel_manager already initialized
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(tm) = tm_guard.as_ref() {
+            tm.clone()
         } else {
-            return Err("daemon not started".to_string());
+            drop(tm_guard);
+            // Need to initialize from daemon — wait for daemon to be ready
+            let mut daemon_ready = false;
+            for _attempt in 0..100 {
+                let daemon_guard = state.daemon.lock().await;
+                if daemon_guard.is_some() {
+                    daemon_ready = true;
+                    break;
+                }
+                drop(daemon_guard);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            if !daemon_ready {
+                return Err("daemon not started after 10s".to_string());
+            }
+            // Now initialize tunnel_manager from daemon
+            let mut tm_guard = state.tunnel_manager.lock().await;
+            // Double-check: another thread may have initialized it while we waited
+            if let Some(tm) = tm_guard.as_ref() {
+                tm.clone()
+            } else {
+                let daemon_guard = state.daemon.lock().await;
+                let daemon = daemon_guard.as_ref().expect("daemon should be ready");
+                let terminal_manager = daemon.server.state().terminal_manager.clone();
+                let config_manager = daemon.server.state().config_manager.clone();
+                let file_upload_config = daemon.server.state().file_upload_config.clone();
+                let tm = Arc::new(tunnel_manager::DesktopTunnelManager::new(
+                    terminal_manager,
+                    config_manager.clone(),
+                ));
+                // Register file upload callback for FILE_REQUEST (local terminal file transfer)
+                let config_mgr_cb = config_manager.clone();
+                tm.remote_server().set_file_upload_callback(Box::new(move |file_path: String| {
+                    let file_upload_config = file_upload_config.clone();
+                    let config_mgr = config_mgr_cb.clone();
+                    Box::pin(async move {
+                        upload_file_to_cloud(file_path, file_upload_config, config_mgr).await
+                    })
+                }));
+                *tm_guard = Some(tm.clone());
+                tracing::info!("DesktopTunnelManager initialized");
+                tm
+            }
         }
-    }
-    let tm = tm_guard.as_ref().unwrap().clone();
-    drop(tm_guard);
+    };
 
     tm.start_tunnel(pairing_id.clone(), pairing_key, relay_url.clone(), jwt).await?;
 
