@@ -5,6 +5,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { listen } from "@tauri-apps/api/event";
 import { useServerStore } from "@/stores/serverStore";
 import { useLogStore } from "@/stores/logStore";
 import { useTriggerStore } from "@/stores/triggerStore";
@@ -159,17 +160,43 @@ export function ServerList({
     }
   }, []);
 
+  // Listen for daemon:ready — if the initial load failed because the daemon
+  // hadn't finished starting yet, reload once it's ready.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen("daemon:ready", () => {
+      loadServers();
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+
+  // Listen for daemon:error — stop the loading spinner and show an error
+  // toast so the user knows the backend failed to start.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen("daemon:error", (event) => {
+      setLoading(false);
+      const msg = (event.payload as string) || "daemon failed to start";
+      console.error("[ServerList] daemon startup error:", msg);
+      toast.error(t("server.daemon_error"), { description: msg });
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, [t]);
+
   const loadServers = async () => {
     setLoading(true);
     try {
+      // forward_to_daemon (Rust) already retries for 10s while the daemon
+      // starts.  No additional retry loop here — if it still fails the
+      // daemon:error event will fire and we show a toast.
       const data = await ipcInvoke<{ servers: ServerState[] }>(
         "ipc_list_servers",
       );
       if (data?.servers && data.servers.length > 0) {
         useServerStore.setState({ servers: data.servers });
       }
-    } catch (e) {
-      console.error("load servers failed:", e);
+    } catch (e: any) {
+      console.warn("load servers failed:", String(e));
     } finally {
       setLoading(false);
     }

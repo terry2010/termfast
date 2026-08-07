@@ -7,6 +7,7 @@ import {
   isPermissionGranted,
   requestPermission,
 } from "@tauri-apps/plugin-notification";
+import { listen } from "@tauri-apps/api/event";
 import { useServerStore } from "@/stores/serverStore";
 import { useConfigStore } from "@/stores/configStore";
 import { useTriggerStore } from "@/stores/triggerStore";
@@ -49,14 +50,12 @@ export default function App() {
 
   // Load config and server list from daemon on mount
   useEffect(() => {
-    // Request notification permission on macOS
+    // Request notification permission (Windows/macOS)
     (async () => {
       try {
         let granted = await isPermissionGranted();
-        console.log("[App] notification permission granted:", granted);
         if (!granted) {
           const perm = await requestPermission();
-          console.log("[App] requestPermission result:", perm);
           granted = perm === "granted";
         }
         if (granted) {
@@ -66,20 +65,19 @@ export default function App() {
             title: "TermFast",
             body: "Notifications enabled",
           });
-          console.log("[App] test notification sent");
         }
       } catch (e) {
-        console.error("[App] notification init failed:", e);
+        // Notification init failure is non-fatal (common in Windows dev mode
+        // where the exe lacks a proper AppUserModelID for toast notifications).
+        console.debug("[App] notification init skipped:", String(e));
       }
     })();
 
-    // Try auto-unlock with cached key on startup (no UI blocking).
-    ipcInvoke<boolean>("ipc_try_cached_unlock").catch(() => {
-      // Silently ignore — user can unlock manually in settings.
-    });
-
-    ipcInvoke<any>("ipc_get_config")
-      .then(async (data) => {
+    // Load config + apply language.  Wrapped in a function so it can be
+    // re-invoked when the daemon:ready event fires.
+    const loadConfig = async () => {
+      try {
+        const data = await ipcInvoke<any>("ipc_get_config");
         if (data) {
           setConfig(data);
           // Open DevTools on startup if developer option is enabled
@@ -104,14 +102,37 @@ export default function App() {
           const detected = await asyncResolveLanguage("system");
           i18n.changeLanguage(detected);
         }
-      })
-      .catch((e) => console.error("load config failed:", e));
+      } catch (e) {
+        console.warn("[App] load config failed:", String(e));
+      }
+    };
 
-    ipcInvoke<any>("ipc_list_servers")
-      .then((data) => {
+    // Load server list.  Wrapped so daemon:ready can re-trigger it.
+    const loadServerList = async () => {
+      try {
+        const data = await ipcInvoke<{ servers: any[] }>("ipc_list_servers");
         if (data?.servers) setServers(data.servers);
-      })
-      .catch((e) => console.error("load servers failed:", e));
+      } catch (e) {
+        console.warn("[App] load servers failed:", String(e));
+      }
+    };
+
+    // Try auto-unlock with cached key on startup (no UI blocking).
+    ipcInvoke<boolean>("ipc_try_cached_unlock").catch(() => {
+      // Silently ignore — user can unlock manually in settings.
+    });
+
+    loadConfig();
+    loadServerList();
+
+    // If the daemon wasn't ready when the above IPC calls fired, retry
+    // once it finishes starting.  This handles slow Windows startup where
+    // the embedded daemon takes a few seconds to initialise.
+    let daemonReadyUnlisten: (() => void) | undefined;
+    listen("daemon:ready", () => {
+      loadConfig();
+      loadServerList();
+    }).then((fn) => { daemonReadyUnlisten = fn; });
 
     // Restore remote tunnels on startup (survives app restart)
     const savedToken = localStorage.getItem("pairing_token");
@@ -126,7 +147,7 @@ export default function App() {
 
     // Pre-load trigger templates so the selector in TriggerEditor has data
     // before the TemplateLibrary modal is ever opened.
-    loadTemplates().catch((e) => console.error("load templates failed:", e));
+    loadTemplates().catch((e) => console.warn("[App] load templates failed:", String(e)));
 
     // Silent auto-check for updates 5s after startup (FP-10.2)
     const cancelAutoCheck = scheduleAutoUpdateCheck(5000, (result) => {
@@ -169,7 +190,10 @@ export default function App() {
       );
     });
 
-    return () => cancelAutoCheck();
+    return () => {
+      cancelAutoCheck();
+      daemonReadyUnlisten?.();
+    };
   }, []);
 
   // UI state for modals

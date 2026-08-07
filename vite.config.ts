@@ -5,8 +5,22 @@ import path from "path";
 
 const host = process.env.TAURI_DEV_HOST;
 
+// Custom plugin to send no-cache headers for all dev server responses.
+// This prevents WebView2 (Tauri's browser engine on Windows) from caching
+// JS modules, which would mask HMR updates.
+const noCachePlugin = () => ({
+  name: "no-cache-headers",
+  configureServer(server: any) {
+    server.middlewares.use((_req: any, res: any, next: any) => {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      next();
+    });
+  },
+});
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), noCachePlugin()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -26,7 +40,7 @@ export default defineConfig({
       : {
           protocol: "ws",
           host: "localhost",
-          port: 1420,
+          port: 1421,
         },
     watch: {
       ignored: ["**/src-tauri/**", "**/docs/**", "**/android/**", "**/backend/**", "**/crates/**", "**/server/**", "**/scripts/**"],

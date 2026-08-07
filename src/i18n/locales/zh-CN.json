@@ -137,6 +137,7 @@
     "test_proxy_success": "出口 IP: {{ip}}  延迟: {{latency}}ms",
     "test_proxy_failed": "测试失败",
     "connect_failed": "连接失败",
+    "daemon_error": "后台服务启动失败",
     "disconnect_failed": "断开失败",
     "proxy_toggle_failed": "代理切换失败",
     "proxy_update_failed": "代理端口更新失败",

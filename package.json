@@ -6,8 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js",
-    "start": "kill -9 $(lsof -ti:1420) 2>/dev/null; kill -9 $(lsof -ti:1421) 2>/dev/null; tauri dev",
-    "startwin": "node scripts/kill-port.cjs 1420 1421 && tauri dev",
+    "start": "node scripts/dev-start.cjs && tauri dev",
+    "startwin": "node scripts/dev-start.cjs && tauri dev",
     "build": "node node_modules/typescript/bin/tsc && node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview",
     "tauri": "tauri",

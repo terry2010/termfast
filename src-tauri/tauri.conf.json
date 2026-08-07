@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "node scripts/dev-start.cjs && npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
@@ -20,7 +20,9 @@
         "decorations": false,
         "transparent": false,
         "resizable": true,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disk-cache-size=1 --disable-http-cache",
+        "dataDirectory": "../target/webview2-data"
       }
     ],
     "security": {

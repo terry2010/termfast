@@ -93,8 +93,64 @@ impl DaemonLock {
             return false;
         }
         match Self::read(path) {
-            Ok(lock) => Self::is_pid_alive(lock.pid),
+            Ok(lock) => Self::is_daemon_process_alive(lock.pid),
             Err(_) => false,
+        }
+    }
+
+    /// Check if the PID in the lock file belongs to a live termfast process.
+    ///
+    /// On Windows, PIDs are aggressively reused, so a bare `is_pid_alive`
+    /// check can return true for an unrelated process that happened to reuse
+    /// the stale lock's PID.  We additionally verify the process image name
+    /// contains "termfast" to avoid false positives that would permanently
+    /// block daemon startup.
+    fn is_daemon_process_alive(pid: u32) -> bool {
+        if !Self::is_pid_alive(pid) {
+            return false;
+        }
+        #[cfg(not(unix))]
+        {
+            Self::is_termfast_process(pid)
+        }
+        #[cfg(unix)]
+        {
+            true
+        }
+    }
+
+    /// Windows-only: check if the process with the given PID has an image
+    /// path containing "termfast".  Returns false if the PID doesn't exist
+    /// or can't be queried.
+    #[cfg(not(unix))]
+    fn is_termfast_process(pid: u32) -> bool {
+        use std::ffi::c_void;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn CloseHandle(h: *mut c_void) -> i32;
+            fn QueryFullProcessImageNameW(
+                handle: *mut c_void,
+                flags: u32,
+                lpexename: *mut u16,
+                size: *mut u32,
+            ) -> i32;
+        }
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut buf = [0u16; 512];
+            let mut size = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
+            CloseHandle(handle);
+            if ok == 0 {
+                return false;
+            }
+            let path = String::from_utf16_lossy(&buf[..size as usize]);
+            path.to_lowercase().contains("termfast")
         }
     }
 
@@ -132,7 +188,7 @@ pub fn find_daemon_socket() -> Result<Option<String>> {
     }
     match DaemonLock::read(&lock_path) {
         Ok(lock) => {
-            if DaemonLock::is_pid_alive(lock.pid) {
+            if DaemonLock::is_daemon_process_alive(lock.pid) {
                 Ok(Some(lock.socket_path))
             } else {
                 // Stale lock file, remove it

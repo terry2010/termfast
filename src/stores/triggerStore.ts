@@ -75,7 +75,7 @@ export const useTriggerStore = create<TriggerStore>((set, get) => ({
       );
       set({ templates: data?.templates || [] });
     } catch (e) {
-      console.error("load templates failed:", e);
+      console.warn("load templates failed:", String(e));
     }
   },
 

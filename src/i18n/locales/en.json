@@ -135,6 +135,7 @@
     "test_proxy_success": "Exit IP: {{ip}}  Latency: {{latency}}ms",
     "test_proxy_failed": "Test failed",
     "connect_failed": "Connection Failed",
+    "daemon_error": "Background service failed to start",
     "disconnect_failed": "Disconnect Failed",
     "proxy_toggle_failed": "Proxy Toggle Failed",
     "proxy_update_failed": "Proxy Port Update Failed",

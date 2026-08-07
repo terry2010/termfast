@@ -89,7 +89,7 @@ export function TriggerList({ serverId }: { serverId: string }) {
         }
       })
       .catch((e) =>
-        console.error(`[TriggerList] ${ipcName} failed:`, e),
+        console.warn(`[TriggerList] ${ipcName} failed:`, String(e)),
       );
   }, [serverId, setServerTriggers]);
 

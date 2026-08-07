@@ -263,6 +263,12 @@ pub fn run() {
                             *app_state.daemon.lock().await = Some(Arc::new(daemon));
                         }
 
+                        // Notify frontend that the daemon is ready so it can
+                        // reload server list / config if earlier IPC calls
+                        // failed with "daemon not ready".
+                        let _ = handle.emit("daemon:ready", ());
+
+
                         // Initialize RemoteClientManager for desktop-to-desktop pairings
                         let rcm = Arc::new(termfast_daemon::remote_client::RemoteClientManager::new());
                         if let Some(app_state) = handle.try_state::<AppState>() {
@@ -369,6 +375,9 @@ pub fn run() {
                     }
                     Err(e) => {
                         tracing::error!("failed to start embedded daemon: {}", e);
+                        // Notify frontend so it can show an error instead of
+                        // spinning the loading skeleton forever.
+                        let _ = handle.emit("daemon:error", &e.to_string());
                     }
                 }
             });
@@ -531,8 +540,9 @@ async fn forward_to_daemon(
     action: termfast_daemon::proto::Action,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    // Daemon may not be ready yet (async startup) — retry briefly
-    for _attempt in 0..20 {
+    // Daemon may not be ready yet (async startup) — retry for up to 10s
+    // (Windows daemon startup is slower due to ConPTY/credential init)
+    for _attempt in 0..100 {
         // Clone the Arc<DaemonState> and release the lock BEFORE calling
         // handle_request.  Holding the lock during handle_request serializes
         // all IPC calls — a slow request (e.g. terminal input waiting for SSH
@@ -560,7 +570,7 @@ async fn forward_to_daemon(
         // Daemon not ready yet, wait and retry
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    Err("daemon not ready after 2s".to_string())
+    Err("daemon not ready after 10s".to_string())
 }
 
 // === SECTION 2 END ===
