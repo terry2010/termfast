@@ -78,12 +78,14 @@ export function ServerList({
   onAddServer,
   onOpenTemplates,
   onOpenSettings,
+  onOpenRemoteDesktop,
   collapsed = false,
   onToggleCollapse,
 }: {
   onAddServer?: () => void;
   onOpenTemplates?: () => void;
   onOpenSettings?: () => void;
+  onOpenRemoteDesktop?: () => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
@@ -530,6 +532,27 @@ export function ServerList({
             >
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+            </svg>
+          </button>
+          <button
+            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-[#2C2C2E] text-gray-500 dark:text-gray-400 transition-colors"
+            onClick={() => onOpenRemoteDesktop?.()}
+            title={t("remote_desktop.title", "远程桌面")}
+            aria-label={t("remote_desktop.title", "远程桌面")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect width="20" height="14" x="2" y="3" rx="2" />
+              <line x1="8" x2="16" y1="21" y2="21" />
+              <line x1="12" x2="12" y1="17" y2="21" />
             </svg>
           </button>
           <button

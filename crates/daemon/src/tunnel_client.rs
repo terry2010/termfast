@@ -30,6 +30,16 @@ pub enum ControlMessage {
     Unknown(String),
 }
 
+/// Extract host from a URL string for the Host header.
+/// Strips protocol (wss://, ws://) and path.
+pub fn extract_host(url: &str) -> &str {
+    let stripped = url
+        .strip_prefix("wss://")
+        .or_else(|| url.strip_prefix("ws://"))
+        .unwrap_or(url);
+    stripped.split('/').next().unwrap_or(stripped)
+}
+
 /// Parse a relay control message from a text frame.
 /// Returns ControlMessage enum; non-JSON or missing "type" field → Unknown.
 pub fn parse_control_message(text: &str) -> ControlMessage {
@@ -300,13 +310,7 @@ impl TunnelClient {
 
     /// Extract host from relay URL for Host header.
     fn extract_host(&self) -> &str {
-        // Strip protocol
-        let url = self.config.relay_url
-            .strip_prefix("wss://")
-            .or_else(|| self.config.relay_url.strip_prefix("ws://"))
-            .unwrap_or(&self.config.relay_url);
-        // Strip path
-        url.split('/').next().unwrap_or(url)
+        extract_host(&self.config.relay_url)
     }
 }
 

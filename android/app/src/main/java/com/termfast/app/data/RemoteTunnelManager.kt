@@ -36,6 +36,9 @@ interface RemoteTunnelFfi {
     /** Create + encrypt RESIZE. Returns ciphertext or null on error. */
     fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray?
 
+    /** Create + encrypt DESKTOP_PAIR frame. Returns ciphertext or null on error. */
+    fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray?
+
     /** Close tunnel: send GOODBYE + remove session. Returns GOODBYE ciphertext or null. */
     fun close(pairingId: String): ByteArray?
 }
@@ -65,6 +68,9 @@ object DefaultRemoteTunnelFfi : RemoteTunnelFfi {
 
     override fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray? =
         RustRepository.remoteTunnelSendResize(pairingId, terminalId, cols, rows)
+
+    override fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray? =
+        RustRepository.remoteTunnelSendDesktopPair(pairingId, payloadJson)
 
     override fun close(pairingId: String): ByteArray? =
         RustRepository.remoteTunnelClose(pairingId)
@@ -276,6 +282,17 @@ class RemoteTunnelManager(
     fun sendResize(terminalId: Int, cols: Int, rows: Int): Boolean {
         if (!_protocolReady.value) return false
         val ct = ffi.sendResize(pairingId, terminalId, cols, rows) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
+     * Send a DESKTOP_PAIR frame to instruct this desktop to start a
+     * desktop-to-desktop pairing. Only valid after protocolReady == true.
+     * `payloadJson` is the JSON-encoded DesktopPairMessage.
+     */
+    fun sendDesktopPair(payloadJson: String): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendDesktopPair(pairingId, payloadJson) ?: return false
         return sendRaw(ct)
     }
 

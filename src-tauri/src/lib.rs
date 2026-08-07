@@ -27,6 +27,9 @@ pub struct AppState {
     /// Desktop tunnel manager — manages WebSocket tunnels to relay for paired phones.
     /// Initialized after daemon starts (needs TerminalManager from DaemonState).
     pub tunnel_manager: tokio::sync::Mutex<Option<Arc<tunnel_manager::DesktopTunnelManager>>>,
+    /// Remote client manager — manages RemoteClient connections for desktop-to-desktop
+    /// pairings where this desktop is the client (Desktop A).
+    pub remote_client_manager: tokio::sync::Mutex<Option<Arc<termfast_daemon::remote_client::RemoteClientManager>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -218,6 +221,7 @@ pub fn run() {
                 is_quitting: std::sync::atomic::AtomicBool::new(false),
                 terminal_channels: std::sync::Mutex::new(std::collections::HashMap::new()),
                 tunnel_manager: tokio::sync::Mutex::new(None),
+                remote_client_manager: tokio::sync::Mutex::new(None),
             };
             app.manage(initial_state);
 
@@ -258,6 +262,109 @@ pub fn run() {
                         if let Some(app_state) = handle.try_state::<AppState>() {
                             *app_state.daemon.lock().await = Some(Arc::new(daemon));
                         }
+
+                        // Initialize RemoteClientManager for desktop-to-desktop pairings
+                        let rcm = Arc::new(termfast_daemon::remote_client::RemoteClientManager::new());
+                        if let Some(app_state) = handle.try_state::<AppState>() {
+                            *app_state.remote_client_manager.lock().await = Some(rcm.clone());
+                        }
+
+                        // Set desktop_pair_callback on RemoteServer — called when a
+                        // DESKTOP_PAIR frame arrives from the phone via an existing tunnel.
+                        // The callback stores the pairing and starts a tunnel (server) or
+                        // RemoteClient (client) depending on the role.
+                        let handle_for_cb = handle.clone();
+                        let rcm_for_cb = rcm.clone();
+                        let tm_for_cb = {
+                            let app_state = handle.state::<AppState>();
+                            let tm = app_state.tunnel_manager.lock().await.clone();
+                            tm
+                        };
+                        if let Some(tm) = tm_for_cb {
+                            tm.remote_server().set_desktop_pair_callback(Box::new(
+                                move |msg: termfast_daemon::remote_server::DesktopPairMessage| {
+                                    let pairing_id = msg.pairing_id.clone();
+                                    let pairing_key_hex = msg.pairing_key_hex.clone();
+                                    let relay_url = msg.relay_url.clone();
+                                    let peer_name = msg.peer_name.clone();
+                                    let role = msg.role.clone();
+                                    let pairing_jwt = msg.pairing_jwt.clone();
+                                    let handle = handle_for_cb.clone();
+                                    let rcm = rcm_for_cb.clone();
+                                    Box::pin(async move {
+                                        // Decode pairing key
+                                        let pairing_key = decode_hex_32(&pairing_key_hex)
+                                            .map_err(|e| format!("decode key: {}", e))?;
+
+                                        // Store pairing persistently
+                                        pairing_store::save(pairing_store::StoredPairing {
+                                            pairing_id: pairing_id.clone(),
+                                            pairing_key_hex: pairing_key_hex.clone(),
+                                            relay_url: relay_url.clone(),
+                                            jwt: pairing_jwt.clone(),
+                                            pairing_type: "desktop".to_string(),
+                                            peer_name: peer_name.clone(),
+                                            peer_role: role.clone(),
+                                        });
+
+                                        if role == "server" {
+                                            // Desktop B: start a tunnel (register as server)
+                                            // B uses its own user JWT — get from existing tunnel manager
+                                            // The user JWT is stored in the existing mobile pairing's store
+                                            let user_jwt = get_user_jwt(&handle).await
+                                                .ok_or_else(|| "no user JWT available".to_string())?;
+                                            let tm = {
+                                                let app_state = handle.state::<AppState>();
+                                                let tm = app_state.tunnel_manager.lock().await.clone();
+                                                tm
+                                            };
+                                            if let Some(tm) = tm {
+                                                tm.start_tunnel(
+                                                    pairing_id.clone(),
+                                                    pairing_key,
+                                                    relay_url.clone(),
+                                                    user_jwt,
+                                                ).await?;
+                                            }
+                                        } else if role == "client" {
+                                            // Desktop A: start a RemoteClient (connect as client)
+                                            let app_handle = handle.clone();
+                                            let config = termfast_daemon::remote_client::RemoteClientConfig {
+                                                relay_url: relay_url.clone(),
+                                                pairing_jwt: pairing_jwt.clone(),
+                                                pairing_id: pairing_id.clone(),
+                                                pairing_key,
+                                            };
+                                            rcm.start_client(
+                                                config,
+                                                move |pid, frame_type, terminal_id, payload| {
+                                                    use tauri::Emitter;
+                                                    use base64::Engine;
+                                                    let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                                                    let _ = app_handle.emit("remote_client_frame", serde_json::json!({
+                                                        "pairing_id": pid,
+                                                        "frame_type": frame_type,
+                                                        "terminal_id": terminal_id,
+                                                        "data": data_b64,
+                                                    }));
+                                                },
+                                                move |pid, connected| {
+                                                    use tauri::Emitter;
+                                                    let _ = handle.emit("remote_client_state", serde_json::json!({
+                                                        "pairing_id": pid,
+                                                        "connected": connected,
+                                                    }));
+                                                },
+                                            ).await?;
+                                        } else {
+                                            return Err(format!("unknown role: {}", role));
+                                        }
+                                        Ok(())
+                                    })
+                                },
+                            ));
+                        }
+
                         tracing::info!("Tauri app state initialized with event forwarding");
                     }
                     Err(e) => {
@@ -388,6 +495,16 @@ pub fn run() {
             ipc_start_port_forward,
             ipc_stop_port_forward,
             ipc_get_port_forward_status,
+            // Remote client (desktop-to-desktop)
+            ipc_remote_client_connect,
+            ipc_remote_client_disconnect,
+            ipc_remote_client_list_terminals,
+            ipc_remote_client_subscribe,
+            ipc_remote_client_send_input,
+            ipc_remote_client_send_resize,
+            ipc_remote_client_unsubscribe,
+            ipc_list_desktop_pairings,
+            ipc_initiate_desktop_pairing,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -2298,13 +2415,17 @@ async fn ipc_tunnel_start(
     let tm = tm_guard.as_ref().unwrap().clone();
     drop(tm_guard);
 
-    tm.start_tunnel(pairing_id.clone(), pairing_key, relay_url.clone(), jwt).await?;
+    tm.start_tunnel(pairing_id.clone(), pairing_key, relay_url.clone(), jwt.clone()).await?;
 
     // Persist pairing so tunnel can be restored after restart
     pairing_store::save(pairing_store::StoredPairing {
         pairing_id,
         pairing_key_hex,
         relay_url,
+        jwt,
+        pairing_type: "mobile".to_string(),
+        peer_name: String::new(),
+        peer_role: String::new(),
     });
     Ok(())
 }
@@ -2355,12 +2476,24 @@ async fn ipc_restore_tunnels(
     let count = stored.len();
     tracing::info!("ipc_restore_tunnels: {} persisted pairing(s)", count);
     for p in stored {
+        let pairing_id = p.pairing_id.clone();
+        // Skip desktop pairings — they are managed by RemoteClientManager,
+        // not the tunnel manager. Desktop pairings where this desktop is the
+        // server (role=server) do use the tunnel manager, but with the user JWT.
+        if p.pairing_type == "desktop" && p.peer_role == "client" {
+            tracing::info!("ipc_restore_tunnels: skipping desktop client pairing {}", pairing_id);
+            continue;
+        }
         // Reuse ipc_tunnel_start logic by calling start_tunnel directly.
         // We must initialize the tunnel manager the same way ipc_tunnel_start does.
-        let pairing_id = p.pairing_id.clone();
         let pairing_key_hex = p.pairing_key_hex.clone();
         let relay_url = p.relay_url.clone();
-        let jwt_clone = jwt.clone();
+        // For desktop server pairings, use the stored jwt; for mobile, use the passed jwt
+        let jwt_clone = if p.pairing_type == "desktop" {
+            p.jwt.clone()
+        } else {
+            jwt.clone()
+        };
         let app_clone = app.clone();
         // Delegate to ipc_tunnel_start to keep init logic in one place.
         if let Err(e) = ipc_tunnel_start(
@@ -2392,3 +2525,192 @@ fn decode_hex_32(hex: &str) -> Result<[u8; 32], String> {
 }
 
 // === SECTION: Remote terminal tunnel IPC commands END ===
+
+/// Get the user JWT from the first stored mobile pairing (for Desktop B to
+/// start a tunnel for desktop pairing). The user JWT is the same across all
+/// mobile pairings for the same user.
+async fn get_user_jwt(handle: &tauri::AppHandle) -> Option<String> {
+    let pairings = pairing_store::load();
+    // Find a mobile pairing with a jwt stored
+    for p in &pairings {
+        if p.pairing_type == "mobile" && !p.jwt.is_empty() {
+            return Some(p.jwt.clone());
+        }
+    }
+    // Fallback: check desktop pairings with jwt
+    for p in &pairings {
+        if !p.jwt.is_empty() {
+            return Some(p.jwt.clone());
+        }
+    }
+    let _ = handle;
+    None
+}
+
+/// Start a RemoteClient connection for a desktop-to-desktop pairing.
+/// Called by the frontend when the user clicks "Connect" on a remote desktop.
+#[tauri::command]
+async fn ipc_remote_client_connect(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    pairing_key_hex: String,
+    pairing_jwt: String,
+    relay_url: String,
+) -> Result<(), String> {
+    let pairing_key = decode_hex_32(&pairing_key_hex)?;
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?.clone();
+    drop(rcm_guard);
+
+    let app_handle = app.clone();
+    rcm.start_client(
+        termfast_daemon::remote_client::RemoteClientConfig {
+            relay_url,
+            pairing_jwt,
+            pairing_id: pairing_id.clone(),
+            pairing_key,
+        },
+        move |pid, frame_type, terminal_id, payload| {
+            use tauri::Emitter;
+            use base64::Engine;
+            let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+            let _ = app_handle.emit("remote_client_frame", serde_json::json!({
+                "pairing_id": pid,
+                "frame_type": frame_type,
+                "terminal_id": terminal_id,
+                "data": data_b64,
+            }));
+        },
+        move |pid, connected| {
+            use tauri::Emitter;
+            let _ = app.emit("remote_client_state", serde_json::json!({
+                "pairing_id": pid,
+                "connected": connected,
+            }));
+        },
+    ).await
+}
+
+/// Disconnect a RemoteClient.
+#[tauri::command]
+async fn ipc_remote_client_disconnect(
+    app: tauri::AppHandle,
+    pairing_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    if let Some(rcm) = rcm_guard.as_ref() {
+        rcm.stop_client(&pairing_id).await;
+    }
+    Ok(())
+}
+
+/// Send a LIST_REQUEST to the remote desktop.
+#[tauri::command]
+async fn ipc_remote_client_list_terminals(
+    app: tauri::AppHandle,
+    pairing_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::List).await
+}
+
+/// Subscribe to a terminal on the remote desktop.
+#[tauri::command]
+async fn ipc_remote_client_subscribe(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    terminal_id: u32,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Subscribe(terminal_id)).await
+}
+
+/// Send input to a remote terminal.
+#[tauri::command]
+async fn ipc_remote_client_send_input(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    terminal_id: u32,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Input(terminal_id, data)).await
+}
+
+/// Send resize to a remote terminal.
+#[tauri::command]
+async fn ipc_remote_client_send_resize(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    terminal_id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Resize(terminal_id, cols, rows)).await
+}
+
+/// Unsubscribe from a terminal on the remote desktop.
+#[tauri::command]
+async fn ipc_remote_client_unsubscribe(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    terminal_id: u32,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Unsubscribe(terminal_id)).await
+}
+
+/// List desktop-to-desktop pairings from the local store.
+/// Returns pairings where pairing_type = "desktop".
+#[tauri::command]
+async fn ipc_list_desktop_pairings(
+    _app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let all = pairing_store::load();
+    let desktop_pairings: Vec<_> = all.into_iter()
+        .filter(|p| p.pairing_type == "desktop")
+        .collect();
+    Ok(serde_json::json!({ "pairings": desktop_pairings }))
+}
+
+/// Initiate a desktop-to-desktop pairing from the desktop (not phone).
+/// This calls the backend API and then sends DESKTOP_PAIR frames to both
+/// desktops via existing tunnels. Currently, the phone initiates this,
+/// but this IPC command allows the desktop to do it too.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn ipc_initiate_desktop_pairing(
+    _app: tauri::AppHandle,
+    token: String,
+    server_user_id: u64,
+    server_device_id: String,
+    server_name: String,
+    client_user_id: u64,
+    client_device_id: String,
+    client_name: String,
+) -> Result<serde_json::Value, String> {
+    pairing::pair_initiate_desktop(
+        &token,
+        server_user_id,
+        &server_device_id,
+        &server_name,
+        client_user_id,
+        &client_device_id,
+        &client_name,
+    ).await
+}
+
+// === SECTION: Remote client IPC commands END ===

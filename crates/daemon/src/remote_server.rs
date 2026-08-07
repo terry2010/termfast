@@ -96,6 +96,35 @@ pub type FileUploadCallback = Box<
         + Sync,
 >;
 
+/// Parsed DESKTOP_PAIR frame payload (JSON).
+/// Sent by the phone via an existing phone↔desktop encrypted tunnel to
+/// instruct the desktop to store a new desktop-to-desktop pairing and
+/// start acting as server (role=server) or client (role=client).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DesktopPairMessage {
+    pub action: String,
+    pub pairing_id: String,
+    pub pairing_key_hex: String,
+    /// For role=client (Desktop A): scope=tunnel pairing JWT to connect relay.
+    /// For role=server (Desktop B): empty (B uses its own user JWT).
+    pub pairing_jwt: String,
+    pub peer_name: String,
+    pub pairing_type: String,
+    /// "server" (Desktop B) or "client" (Desktop A).
+    pub role: String,
+    /// Relay URL that both A and B should connect to.
+    pub relay_url: String,
+}
+
+/// Type alias for the desktop pair callback function.
+/// Called when a DESKTOP_PAIR frame is received. The callback is responsible
+/// for storing the pairing and starting a tunnel (server) or RemoteClient (client).
+pub type DesktopPairCallback = Box<
+    dyn Fn(DesktopPairMessage) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'static>>
+        + Send
+        + Sync,
+>;
+
 /// Broadcast a LIST_CHANGED NOTIFY frame to all active tunnels.
 /// Uses try_send (non-blocking) since this is called from sync callbacks.
 /// Mobile clients receiving this frame should re-send LIST_REQUEST.
@@ -138,6 +167,9 @@ pub struct RemoteServer {
     /// Callback for uploading local files to cloud (set by desktop app).
     /// Receives (file_path, terminal_id) → FileUploadResult or error message.
     file_upload_callback: Arc<std::sync::Mutex<Option<FileUploadCallback>>>,
+    /// Callback for handling DESKTOP_PAIR frames (set by desktop app).
+    /// Receives the parsed DesktopPairMessage → Ok or error message.
+    desktop_pair_callback: Arc<std::sync::Mutex<Option<DesktopPairCallback>>>,
     /// Active tunnel connections: pairing_id → async_tx (for pushing frames to mobile).
     /// Used to broadcast LIST_CHANGED notifications when terminals are created/closed.
     active_tunnels: Arc<StdMutex<HashMap<String, mpsc::Sender<Frame>>>>,
@@ -178,6 +210,7 @@ impl RemoteServer {
             auth_keys: Arc::new(RwLock::new(HashMap::new())),
             answered_questions: Arc::new(StdMutex::new(HashMap::new())),
             file_upload_callback: Arc::new(std::sync::Mutex::new(None)),
+            desktop_pair_callback: Arc::new(std::sync::Mutex::new(None)),
             active_tunnels,
         }
     }
@@ -188,6 +221,13 @@ impl RemoteServer {
     /// uploading the file to cloud storage.
     pub fn set_file_upload_callback(&self, callback: FileUploadCallback) {
         *self.file_upload_callback.lock().unwrap() = Some(callback);
+    }
+
+    /// Set the desktop pair callback (called when a DESKTOP_PAIR frame is received).
+    /// The callback is responsible for storing the pairing and starting a tunnel
+    /// (for role=server) or RemoteClient (for role=client).
+    pub fn set_desktop_pair_callback(&self, callback: DesktopPairCallback) {
+        *self.desktop_pair_callback.lock().unwrap() = Some(callback);
     }
 
     /// Add a pairing (called when pairing completes).
@@ -491,6 +531,10 @@ impl RemoteServer {
             }
             remote_frame::FILE_REQUEST => {
                 let resp = self.handle_file_request(frame, async_tx).await;
+                (resp, false)
+            }
+            remote_frame::DESKTOP_PAIR => {
+                let resp = self.handle_desktop_pair_frame(frame).await;
                 (resp, false)
             }
             remote_frame::GOODBYE => {
@@ -812,6 +856,79 @@ impl RemoteServer {
             }
         });
         Some(Frame::ok(frame.terminal_id))
+    }
+
+    /// Handle a DESKTOP_PAIR frame (B1 + B6).
+    ///
+    /// The frame payload is a JSON `DesktopPairMessage`. The `role` field
+    /// determines what the desktop should do:
+    /// - "server": store pairing + start tunnel (register as server for the new pairing)
+    /// - "client": store pairing + start RemoteClient (connect to the peer desktop)
+    ///
+    /// The actual tunnel/client startup is delegated to the `desktop_pair_callback`
+    /// set by the app layer. This keeps RemoteServer decoupled from relay_url/user_jwt.
+    async fn handle_desktop_pair_frame(&self, frame: Frame) -> Option<Frame> {
+        let payload = match std::str::from_utf8(&frame.payload) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("DESKTOP_PAIR: utf8 error: {}", e);
+                return Some(Frame::desktop_pair_response(&serde_json::json!({
+                    "action": "pair_error",
+                    "message": format!("utf8: {}", e),
+                }).to_string()));
+            }
+        };
+        let msg: DesktopPairMessage = match serde_json::from_str(payload) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!("DESKTOP_PAIR: parse error: {}", e);
+                return Some(Frame::desktop_pair_response(&serde_json::json!({
+                    "action": "pair_error",
+                    "message": format!("parse: {}", e),
+                }).to_string()));
+            }
+        };
+        if msg.action != "pair" {
+            return Some(Frame::desktop_pair_response(&serde_json::json!({
+                "action": "pair_error",
+                "message": format!("unexpected action: {}", msg.action),
+            }).to_string()));
+        }
+        // Check callback is set
+        let callback_is_set = self.desktop_pair_callback.lock().unwrap().is_some();
+        if !callback_is_set {
+            tracing::warn!("DESKTOP_PAIR: no callback set — cannot handle");
+            return Some(Frame::desktop_pair_response(&serde_json::json!({
+                "action": "pair_error",
+                "message": "desktop_pair_not_configured",
+            }).to_string()));
+        }
+        // Invoke callback (async). Clone the callback out of the mutex before awaiting.
+        let cb_future = {
+            let guard = self.desktop_pair_callback.lock().unwrap();
+            guard.as_ref().map(|cb| cb(msg.clone()))
+        };
+        let result = match cb_future {
+            Some(fut) => fut.await,
+            None => Err("callback disappeared".to_string()),
+        };
+        match result {
+            Ok(()) => {
+                tracing::info!("DESKTOP_PAIR: callback succeeded for pairing {} role={}", msg.pairing_id, msg.role);
+                Some(Frame::desktop_pair_response(&serde_json::json!({
+                    "action": "pair_ok",
+                    "pairing_id": msg.pairing_id,
+                }).to_string()))
+            }
+            Err(e) => {
+                tracing::error!("DESKTOP_PAIR: callback failed for pairing {}: {}", msg.pairing_id, e);
+                Some(Frame::desktop_pair_response(&serde_json::json!({
+                    "action": "pair_error",
+                    "pairing_id": msg.pairing_id,
+                    "message": e,
+                }).to_string()))
+            }
+        }
     }
 }
 
@@ -1922,6 +2039,208 @@ mod tests {
         let term_id_2 = do_list_and_get_first_id(&mut mobile_ss, &desktop_sc, &inbound_tx, &mut outbound_rx).await;
 
         assert_eq!(term_id_1, term_id_2, "terminal_id should be stable across LIST_REQUEST calls (persistent IdMap)");
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    // === FP-3: DESKTOP_PAIR frame handling tests ===
+
+    /// Helper: build a valid DesktopPairMessage JSON payload
+    fn make_desktop_pair_payload(action: &str, role: &str) -> String {
+        serde_json::json!({
+            "action": action,
+            "pairing_id": "dpair-123",
+            "pairing_key_hex": "ab".repeat(32),
+            "pairing_jwt": if role == "client" { "jwt-client" } else { "" },
+            "peer_name": "Desktop-B",
+            "pairing_type": "desktop",
+            "role": role,
+            "relay_url": "wss://relay.example.com/tunnel",
+        }).to_string()
+    }
+
+    /// Test DESKTOP_PAIR with no callback set → pair_error (desktop_pair_not_configured)
+    #[tokio::test]
+    async fn test_desktop_pair_no_callback() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        // Send DESKTOP_PAIR frame — no callback set
+        let payload = make_desktop_pair_payload("pair", "server");
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::desktop_pair(&payload)).await;
+
+        // Should receive DESKTOP_PAIR_RESPONSE with pair_error
+        let resp = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+        assert_eq!(resp.frame_type, remote_frame::DESKTOP_PAIR);
+        let resp_json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap();
+        assert_eq!(resp_json["action"].as_str().unwrap(), "pair_error");
+        assert!(resp_json["message"].as_str().unwrap().contains("desktop_pair_not_configured"));
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test DESKTOP_PAIR with callback set → callback invoked → pair_ok
+    #[tokio::test]
+    async fn test_desktop_pair_with_callback_success() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        remote_server.set_desktop_pair_callback(Box::new(|msg: DesktopPairMessage| {
+            Box::pin(async move {
+                // Verify the message fields
+                assert_eq!(msg.action, "pair");
+                assert_eq!(msg.pairing_id, "dpair-123");
+                assert_eq!(msg.role, "server");
+                assert_eq!(msg.pairing_type, "desktop");
+                Ok(())
+            })
+        }));
+
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        let payload = make_desktop_pair_payload("pair", "server");
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::desktop_pair(&payload)).await;
+
+        let resp = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+        assert_eq!(resp.frame_type, remote_frame::DESKTOP_PAIR);
+        let resp_json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap();
+        assert_eq!(resp_json["action"].as_str().unwrap(), "pair_ok");
+        assert_eq!(resp_json["pairing_id"].as_str().unwrap(), "dpair-123");
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test DESKTOP_PAIR with callback that returns error → pair_error
+    #[tokio::test]
+    async fn test_desktop_pair_callback_error() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        remote_server.set_desktop_pair_callback(Box::new(|_msg: DesktopPairMessage| {
+            Box::pin(async move {
+                Err("mock failure".to_string())
+            })
+        }));
+
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        let payload = make_desktop_pair_payload("pair", "client");
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::desktop_pair(&payload)).await;
+
+        let resp = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+        assert_eq!(resp.frame_type, remote_frame::DESKTOP_PAIR);
+        let resp_json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap();
+        assert_eq!(resp_json["action"].as_str().unwrap(), "pair_error");
+        assert!(resp_json["message"].as_str().unwrap().contains("mock failure"));
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test DESKTOP_PAIR with invalid JSON → pair_error (parse)
+    #[tokio::test]
+    async fn test_desktop_pair_invalid_json() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        // Send invalid JSON
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::desktop_pair("not json")).await;
+
+        let resp = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+        assert_eq!(resp.frame_type, remote_frame::DESKTOP_PAIR);
+        let resp_json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap();
+        assert_eq!(resp_json["action"].as_str().unwrap(), "pair_error");
+        assert!(resp_json["message"].as_str().unwrap().contains("parse:"));
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test DESKTOP_PAIR with wrong action → pair_error (unexpected action)
+    #[tokio::test]
+    async fn test_desktop_pair_wrong_action() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        remote_server.set_desktop_pair_callback(Box::new(|_msg: DesktopPairMessage| {
+            Box::pin(async move { Ok(()) })
+        }));
+
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        let payload = make_desktop_pair_payload("unpair", "server");
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::desktop_pair(&payload)).await;
+
+        let resp = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+        assert_eq!(resp.frame_type, remote_frame::DESKTOP_PAIR);
+        let resp_json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap();
+        assert_eq!(resp_json["action"].as_str().unwrap(), "pair_error");
+        assert!(resp_json["message"].as_str().unwrap().contains("unexpected action:"));
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test DESKTOP_PAIR with role=client → callback receives client role
+    #[tokio::test]
+    async fn test_desktop_pair_role_client() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        remote_server.set_desktop_pair_callback(Box::new(|msg: DesktopPairMessage| {
+            Box::pin(async move {
+                assert_eq!(msg.role, "client");
+                assert_eq!(msg.pairing_jwt, "jwt-client");
+                Ok(())
+            })
+        }));
+
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        let payload = make_desktop_pair_payload("pair", "client");
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::desktop_pair(&payload)).await;
+
+        let resp = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+        assert_eq!(resp.frame_type, remote_frame::DESKTOP_PAIR);
+        let resp_json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap();
+        assert_eq!(resp_json["action"].as_str().unwrap(), "pair_ok");
 
         drop(inbound_tx);
         let _ = handle.await;

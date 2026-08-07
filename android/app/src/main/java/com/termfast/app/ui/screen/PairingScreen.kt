@@ -7,6 +7,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -209,6 +210,17 @@ fun PairingScreen(navController: NavController) {
                     Icon(Icons.Filled.QrCodeScanner, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("扫码配对")
+                }
+
+                // Desktop-to-desktop pairing entry
+                OutlinedButton(
+                    onClick = { navController.navigate("desktop_pairing") },
+                    enabled = !loading,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Filled.Computer, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("桌面互配")
                 }
 
                 if (loading) {

@@ -103,6 +103,10 @@ object PairingApi {
                 deviceId = d.optString("mobile_device_id", d.optString("pairing_id")),
                 desktopName = d.optString("desktop_name"),
                 desktopDeviceId = d.optString("desktop_device_id"),
+                desktopUserId = d.optLong("desktop_user_id", 0),
+                clientUserId = d.optLong("client_user_id", 0),
+                pairingType = d.optString("pairing_type", "mobile"),
+                mobileName = d.optString("mobile_name", ""),
                 status = d.optString("status", "active"),
             ))
         }
@@ -131,11 +135,80 @@ object PairingApi {
         return JSONObject(resp.body!!.string())
     }
 
+    /**
+     * Initiate a desktop-to-desktop pairing (FP-1 backend API).
+     * Returns the pairing_id, pairing_key, pairing_jwt, etc.
+     */
+    fun initiateDesktopPairing(
+        token: String,
+        serverUserId: Long,
+        serverDeviceId: String,
+        serverName: String,
+        clientUserId: Long,
+        clientDeviceId: String,
+        clientName: String,
+    ): JSONObject {
+        val body = JSONObject()
+            .put("server_user_id", serverUserId)
+            .put("server_device_id", serverDeviceId)
+            .put("server_name", serverName)
+            .put("client_user_id", clientUserId)
+            .put("client_device_id", clientDeviceId)
+            .put("client_name", clientName)
+            .toString()
+        val resp = client.newCall(Request.Builder()
+            .post(body.toRequestBody(jsonMedia))
+            .header("Authorization", "Bearer $token")
+            .url("$BACKEND_URL/pair/initiate-desktop")
+            .build()).execute()
+        val json = JSONObject(resp.body!!.string())
+        if (!resp.isSuccessful) {
+            val err = json.optString("error", "互配失败 (HTTP ${resp.code})")
+            throw Exception(err)
+        }
+        return json
+    }
+
+    /**
+     * List devices filtered by pairing_type.
+     * Pass pairingType="desktop" to get desktop-to-desktop pairings.
+     */
+    fun listDevicesByType(token: String, pairingType: String): List<DeviceInfo> {
+        val url = "$BACKEND_URL/devices?pairing_type=${URLEncoder.encode(pairingType, "UTF-8")}"
+        val resp = client.newCall(Request.Builder()
+            .get()
+            .header("Authorization", "Bearer $token")
+            .url(url)
+            .build()).execute()
+        val json = JSONObject(resp.body!!.string())
+        val arr = json.optJSONArray("devices") ?: return emptyList()
+        val list = mutableListOf<DeviceInfo>()
+        for (i in 0 until arr.length()) {
+            val d = arr.getJSONObject(i)
+            list.add(DeviceInfo(
+                pairingId = d.optString("pairing_id"),
+                deviceId = d.optString("mobile_device_id", d.optString("pairing_id")),
+                desktopName = d.optString("desktop_name"),
+                desktopDeviceId = d.optString("desktop_device_id"),
+                desktopUserId = d.optLong("desktop_user_id", 0),
+                clientUserId = d.optLong("client_user_id", 0),
+                pairingType = d.optString("pairing_type", "mobile"),
+                mobileName = d.optString("mobile_name", ""),
+                status = d.optString("status", "active"),
+            ))
+        }
+        return list
+    }
+
     data class DeviceInfo(
         val pairingId: String,
         val deviceId: String,
         val desktopName: String,
         val desktopDeviceId: String,
+        val desktopUserId: Long = 0,
+        val clientUserId: Long = 0,
+        val pairingType: String = "mobile",
+        val mobileName: String = "",
         val status: String,
     )
 }
