@@ -276,6 +276,8 @@ export function PairingCard() {
     if (!token) return;
     try {
       await ipcInvoke("ipc_pairing_revoke", { token, pairing_id: pid });
+      // Also stop tunnel + remove local pairing record so it won't be restored
+      ipcInvoke("ipc_tunnel_stop", { pairing_id: pid }).catch(() => {});
       setDevices(devices.filter((d) => d.pairing_id !== pid));
       toast.success(t("pairing.revoked"));
     } catch (e: any) {

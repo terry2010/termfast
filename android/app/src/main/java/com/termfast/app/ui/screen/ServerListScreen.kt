@@ -161,6 +161,36 @@ fun ServerListScreen(navController: NavController) {
 
     LaunchedEffect(Unit) {
         PairingStore.init(context)
+        // Sync with backend: remove locally-stored pairings that are revoked
+        // or no longer exist on the backend.
+        val token = PairingStore.getToken()
+        if (token != null) {
+            scope.launch {
+                try {
+                    val localPairings = PairingStore.getAllPairings()
+                    if (localPairings.isNotEmpty()) {
+                        val backendDevices = withContext(Dispatchers.IO) {
+                            PairingApi.listDevices(token)
+                        }
+                        val backendPairingIds = backendDevices
+                            .filter { it.status == "completed" }
+                            .map { it.pairingId }
+                            .toSet()
+                        // Remove local pairings that are revoked or missing on backend
+                        localPairings.forEach { local ->
+                            if (local.pairingId !in backendPairingIds) {
+                                PairingStore.removePairing(local.pairingId)
+                            }
+                        }
+                        // Trigger recomposition of remotePairings
+                        remoteVersion++
+                    }
+                } catch (e: Exception) {
+                    // Backend unreachable — keep local pairings as-is
+                    android.util.Log.w("ServerList", "sync pairings failed: ${e.message}")
+                }
+            }
+        }
         refresh()
     }
 
