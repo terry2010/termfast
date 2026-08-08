@@ -22,6 +22,20 @@
 - 如果 `git add .` 或 `git add -A` 误加了 `backend/`，提交前必须 `git reset HEAD backend/`
 - `.gitignore` 已包含 `backend/` 规则（若缺失，发现时补上）
 - 已经误提交的 backend 文件，需要 `git rm -r --cached backend/` 从 git 跟踪中移除
+- **pre-commit hook** 会自动拦截包含 `backend/` 或 `docs/` 的提交（即使 `git add -f` 强制添加也会被拒绝）。clone 新仓库后需重新安装：
+  ```bash
+  cat > .git/hooks/pre-commit << 'HOOK'
+  #!/bin/bash
+  for dir in backend docs; do
+      staged=$(git diff --cached --name-only -- "$dir/")
+      if [ -n "$staged" ]; then
+          echo "ERROR: $dir/ must NOT be committed. Run: git reset HEAD $dir/" >&2
+          exit 1
+      fi
+  done
+  HOOK
+  chmod +x .git/hooks/pre-commit
+  ```
 
 ### 其他提交规则
 
