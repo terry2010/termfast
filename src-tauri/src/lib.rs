@@ -6,6 +6,8 @@
 
 mod daemon_embed;
 mod credential_manager;
+mod device_id_store;
+mod device_key_store;
 mod pairing;
 mod pairing_store;
 mod tunnel_manager;
@@ -454,6 +456,10 @@ pub fn run() {
             ipc_pairing_login,
             ipc_pairing_refresh,
             ipc_pairing_initiate,
+            ipc_get_device_key_info,
+            ipc_sign_device_payload,
+            ipc_approve_join,
+            ipc_get_batch_info,
             ipc_generate_pairing_key,
             ipc_pairing_status,
             ipc_pairing_revoke,
@@ -2045,6 +2051,9 @@ fn ipc_get_local_info() -> serde_json::Value {
 
     let available_shells = termfast_core::local::shell::list_available_shells();
 
+    // D9: device_id random suffix (4-digit hex, persisted)
+    let device_suffix = device_id_store::get_or_create_suffix();
+
     serde_json::json!({
         "default_shell": default_shell,
         "shell_name": shell_name,
@@ -2055,6 +2064,7 @@ fn ipc_get_local_info() -> serde_json::Value {
         "username": username,
         "real_name": real_name,
         "available_shells": available_shells,
+        "device_suffix": device_suffix,
     })
 }
 
@@ -2178,9 +2188,70 @@ async fn ipc_pairing_refresh(refresh_token: String) -> Result<serde_json::Value,
     pairing::auth_refresh(&refresh_token).await
 }
 
+/// D3: Extract device key info for Initiate (testable helper).
+/// Returns (public_key_base64, security_level_str).
+/// On failure, returns empty strings (Initiate will proceed without key,
+/// backend will handle empty public key gracefully).
+fn attach_device_key_info() -> (String, String) {
+    match device_key_store::get_or_create_key() {
+        Ok(key) => (key.public_key_base64(), key.security_level.as_str().to_string()),
+        Err(e) => {
+            tracing::warn!("Failed to get device key for Initiate: {}, sending empty", e);
+            (String::new(), String::new())
+        }
+    }
+}
+
 #[tauri::command]
 async fn ipc_pairing_initiate(token: String, desktop_device_id: String, desktop_name: String) -> Result<serde_json::Value, String> {
-    pairing::pair_initiate(&token, &desktop_device_id, &desktop_name).await
+    let (public_key_b64, security_level) = attach_device_key_info();
+    pairing::pair_initiate(&token, &desktop_device_id, &desktop_name, &public_key_b64, &security_level).await
+}
+
+/// D3: Get device key info (public key base64 + security level) for UI display.
+#[tauri::command]
+fn ipc_get_device_key_info() -> Result<serde_json::Value, String> {
+    let key = device_key_store::get_or_create_key()?;
+    Ok(serde_json::json!({
+        "public_key": key.public_key_base64(),
+        "security_level": key.security_level.as_str(),
+    }))
+}
+
+/// D4: Sign a payload with the device private key (for ApproveJoin).
+/// Only called from UI handler code path (not exposed via CLI).
+/// Accepts base64-encoded canonical JSON, decodes it, and signs the raw bytes.
+/// This avoids encoding ambiguity (atob returns Latin-1, Rust expects UTF-8).
+#[tauri::command]
+#[allow(non_snake_case)]
+fn ipc_sign_device_payload(payloadBase64: String) -> Result<String, String> {
+    use base64::Engine;
+    let payload_bytes = base64::engine::general_purpose::STANDARD
+        .decode(payloadBase64.as_bytes())
+        .map_err(|e| format!("base64 decode failed: {}", e))?;
+    device_key_store::sign_payload(&payload_bytes)
+}
+
+/// D4: Submit ApproveJoin to backend (calls POST /join/approve).
+#[tauri::command]
+async fn ipc_approve_join(
+    token: String,
+    batch_id: String,
+    approver_device_id: String,
+    payload: String,
+    signature: String,
+) -> Result<serde_json::Value, String> {
+    pairing::approve_join(&token, &batch_id, &approver_device_id, &payload, &signature).await
+}
+
+/// D8: Get batch info from backend (calls GET /join/batch-info).
+#[tauri::command]
+async fn ipc_get_batch_info(
+    token: String,
+    batch_id: String,
+    device_id: String,
+) -> Result<serde_json::Value, String> {
+    pairing::get_batch_info(&token, &batch_id, &device_id).await
 }
 
 /// Generate a random 32-byte pairing key (hex-encoded) for tunnel crypto.
@@ -2758,3 +2829,89 @@ async fn ipc_initiate_desktop_pairing(
 }
 
 // === SECTION: Remote client IPC commands END ===
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pairing::build_initiate_body;
+    use p256::ecdsa::signature::Verifier;
+    use base64::Engine;
+
+    #[test]
+    fn test_build_initiate_body_includes_all_fields() {
+        let body = build_initiate_body(
+            "dev-123",
+            "My Mac",
+            "BASE64PUBKEY==",
+            "low",
+        );
+        assert_eq!(body["desktop_device_id"], "dev-123");
+        assert_eq!(body["desktop_name"], "My Mac");
+        assert_eq!(body["device_public_key"], "BASE64PUBKEY==");
+        assert_eq!(body["key_security_level"], "low");
+    }
+
+    #[test]
+    fn test_build_initiate_body_with_empty_key() {
+        // Simulates the failure path where get_or_create_key fails
+        let body = build_initiate_body("dev-123", "My Mac", "", "");
+        assert_eq!(body["device_public_key"], "");
+        assert_eq!(body["key_security_level"], "");
+        // Other fields should still be present
+        assert_eq!(body["desktop_device_id"], "dev-123");
+    }
+
+    #[test]
+    fn test_attach_device_key_info_returns_non_empty_on_success() {
+        // This test calls the real get_or_create_key() which writes to the real data dir.
+        // We verify it returns non-empty public key and a valid security level.
+        let (pub_key, level) = attach_device_key_info();
+        assert!(!pub_key.is_empty(), "public key should not be empty on success");
+        assert!(
+            level == "high" || level == "medium" || level == "low",
+            "security level should be valid, got: {}",
+            level
+        );
+    }
+
+    #[test]
+    fn test_ipc_get_device_key_info_returns_valid_json() {
+        let result = ipc_get_device_key_info().unwrap();
+        let pub_key = result["public_key"].as_str().unwrap();
+        let level = result["security_level"].as_str().unwrap();
+        assert!(!pub_key.is_empty(), "public key should not be empty");
+        assert!(
+            level == "high" || level == "medium" || level == "low",
+            "security level should be valid, got: {}",
+            level
+        );
+    }
+
+    #[test]
+    fn test_ipc_sign_device_payload_returns_valid_signature() {
+        let payload = "test payload for ipc_sign_device_payload";
+        // ipc_sign_device_payload now expects base64-encoded payload
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let sig_b64 = ipc_sign_device_payload(payload_b64).unwrap();
+
+        // Decode signature
+        let sig_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&sig_b64)
+            .unwrap();
+        let sig = p256::ecdsa::Signature::from_der(&sig_bytes).unwrap();
+
+        // Get the public key to verify
+        let key_info = ipc_get_device_key_info().unwrap();
+        let pub_key_b64 = key_info["public_key"].as_str().unwrap();
+        let pub_key_der = base64::engine::general_purpose::STANDARD
+            .decode(pub_key_b64)
+            .unwrap();
+
+        use p256::pkcs8::DecodePublicKey;
+        let pub_key = p256::ecdsa::VerifyingKey::from_public_key_der(&pub_key_der).unwrap();
+        // Verify against the original payload bytes (not the base64)
+        pub_key
+            .verify(payload.as_bytes(), &sig)
+            .expect("signature should verify");
+    }
+}

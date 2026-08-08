@@ -305,6 +305,7 @@ private suspend fun performDesktopPairing(
                 phonePubkey = "",
                 deviceId = desktopA.desktopDeviceId,
                 mobileName = desktopA.desktopName,
+                token = token,
             )
         }
         val pairingJwt = completeResult.optString("pairing_jwt", "")

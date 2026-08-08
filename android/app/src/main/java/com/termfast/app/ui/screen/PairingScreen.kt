@@ -18,6 +18,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
@@ -39,6 +40,11 @@ fun PairingScreen(navController: NavController) {
     var token by remember { mutableStateOf<String?>(null) }
     var devices by remember { mutableStateOf<List<PairingApi.DeviceInfo>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
+
+    // M3/D5: Trust level selection — shown before completing pairing
+    var showTrustLevelDialog by remember { mutableStateOf(false) }
+    var pendingQrData by remember { mutableStateOf<PairingApi.QrData?>(null) }
+    var selectedTrustLevel by remember { mutableStateOf("full") } // "local_only" or "full"
 
     // Init PairingStore and load saved token
     LaunchedEffect(Unit) {
@@ -67,42 +73,10 @@ fun PairingScreen(navController: NavController) {
                     val pairingKey = json.optString("pairing_key", "")
                     val relayUrl = json.optString("relay_url", "")
                     val desktopName = json.optString("desktop_name", "")
-                    // Auto-complete pairing
-                    scope.launch {
-                        loading = true
-                        try {
-                            val result = withContext(Dispatchers.IO) {
-                                val deviceName = PairingApi.getDeviceName()
-                                PairingApi.completePairing(pairingId, "phone-pubkey", deviceName, deviceName)
-                            }
-                            val status = result.optString("status")
-                            if (status == "completed") {
-                                val jwt = result.optString("pairing_jwt")
-                                // Refresh device list to get desktop_device_id for dedup
-                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices(token!!, PairingApi.getDeviceName()) }
-                                val desktopDeviceId = updatedDevices.find { it.pairingId == pairingId }?.desktopDeviceId ?: ""
-                                if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
-                                    PairingStore.savePairing(
-                                        com.termfast.app.data.RemoteTunnelConfig(
-                                            pairingId = pairingId,
-                                            pairingKey = pairingKey,
-                                            relayUrl = relayUrl,
-                                            pairingJwt = jwt,
-                                            desktopName = desktopName,
-                                            desktopDeviceId = desktopDeviceId,
-                                        )
-                                    )
-                                }
-                                Toast.makeText(context, "配对成功", Toast.LENGTH_SHORT).show()
-                                devices = updatedDevices
-                            } else {
-                                Toast.makeText(context, "配对失败: ${result.optString("error", "未知错误")}", Toast.LENGTH_SHORT).show()
-                            }
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "配对失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                        }
-                        loading = false
-                    }
+                    // D5: Show trust level dialog before completing pairing
+                    pendingQrData = PairingApi.QrData(pairingId, pairingKey, relayUrl, desktopName)
+                    selectedTrustLevel = "full"
+                    showTrustLevelDialog = true
                 } catch (e: Exception) {
                     Toast.makeText(context, "无效的二维码", Toast.LENGTH_SHORT).show()
                 }
@@ -223,6 +197,17 @@ fun PairingScreen(navController: NavController) {
                     Text("桌面互配")
                 }
 
+                // M2: Join network entry — interconnect two desktops
+                OutlinedButton(
+                    onClick = { navController.navigate("join_network") },
+                    enabled = !loading,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Filled.Computer, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("桌面互联")
+                }
+
                 if (loading) {
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
                 }
@@ -273,5 +258,114 @@ fun PairingScreen(navController: NavController) {
                 ) { Text("退出登录") }
             }
         }
+    }
+
+    // M3/D5: Trust level selection dialog — shown before completing pairing
+    if (showTrustLevelDialog && pendingQrData != null) {
+        val qr = pendingQrData!!
+        AlertDialog(
+            onDismissRequest = {
+                showTrustLevelDialog = false
+                pendingQrData = null
+            },
+            title = { Text("信任级别") },
+            text = {
+                Column {
+                    Text(
+                        "选择此设备的信任级别：",
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = selectedTrustLevel == "full",
+                            onClick = { selectedTrustLevel = "full" },
+                        )
+                        Column(modifier = Modifier.padding(start = 8.dp)) {
+                            Text("全部信任", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                "允许此设备参与网络互联",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = selectedTrustLevel == "local_only",
+                            onClick = { selectedTrustLevel = "local_only" },
+                        )
+                        Column(modifier = Modifier.padding(start = 8.dp)) {
+                            Text("仅本机", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                "仅与本机通信，不参与网络互联",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    // D5: Complete pairing with selected trust_level
+                    showTrustLevelDialog = false
+                    scope.launch {
+                        loading = true
+                        try {
+                            val result = withContext(Dispatchers.IO) {
+                                val deviceName = PairingApi.getDeviceName()
+                                PairingApi.completePairing(
+                                    qr.pairingId, "phone-pubkey", deviceName, deviceName,
+                                    token!!, selectedTrustLevel,
+                                )
+                            }
+                            val status = result.optString("status")
+                            if (status == "completed") {
+                                val jwt = result.optString("pairing_jwt")
+                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices(token!!) }
+                                val desktopDeviceId = updatedDevices.find { it.pairingId == qr.pairingId }?.desktopDeviceId ?: ""
+                                if (jwt.isNotEmpty() && qr.pairingKey.isNotEmpty() && qr.relayUrl.isNotEmpty()) {
+                                    PairingStore.savePairing(
+                                        com.termfast.app.data.RemoteTunnelConfig(
+                                            pairingId = qr.pairingId,
+                                            pairingKey = qr.pairingKey,
+                                            relayUrl = qr.relayUrl,
+                                            pairingJwt = jwt,
+                                            desktopName = qr.desktopName,
+                                            desktopDeviceId = desktopDeviceId,
+                                        )
+                                    )
+                                }
+                                Toast.makeText(context, "配对成功", Toast.LENGTH_SHORT).show()
+                                devices = updatedDevices
+                            } else {
+                                Toast.makeText(context, "配对失败: ${result.optString("error", "未知错误")}", Toast.LENGTH_SHORT).show()
+                            }
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "配对失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                        loading = false
+                        pendingQrData = null
+                    }
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showTrustLevelDialog = false
+                    pendingQrData = null
+                }) { Text("取消") }
+            },
+        )
     }
 }

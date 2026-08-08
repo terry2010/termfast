@@ -47,6 +47,7 @@ fun RemoteTerminalPickerDialog(
     visible: Boolean,
     onTerminalClick: (terminalId: Int, name: String, pairingId: String) -> Unit,
     onDismiss: () -> Unit,
+    initialPairing: RemoteTunnelConfig? = null,
 ) {
     if (!visible) return
 
@@ -64,11 +65,17 @@ fun RemoteTerminalPickerDialog(
         return
     }
 
-    // If only 1 desktop, skip DesktopList stage
+    // If initialPairing is set, skip DesktopList stage and go directly to TerminalList.
+    // If only 1 desktop and no initialPairing, also skip DesktopList.
     var stage by remember {
         mutableStateOf<PickerStage>(
-            if (pairings.size == 1) PickerStage.TerminalList(pairings[0])
-            else PickerStage.DesktopList
+            if (initialPairing != null) {
+                PickerStage.TerminalList(initialPairing)
+            } else if (pairings.size == 1) {
+                PickerStage.TerminalList(pairings[0])
+            } else {
+                PickerStage.DesktopList
+            }
         )
     }
     // Track whether a terminal was selected (vs dismissed) — when selected,

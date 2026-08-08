@@ -121,17 +121,21 @@ object PairingApi {
             .build()).execute()
     }
 
-    fun completePairing(pairingId: String, phonePubkey: String, deviceId: String, mobileName: String): JSONObject {
+    fun completePairing(pairingId: String, phonePubkey: String, deviceId: String, mobileName: String, token: String = "", trustLevel: String = "full"): JSONObject {
         val body = JSONObject()
             .put("pairing_id", pairingId)
             .put("phone_pubkey", phonePubkey)
             .put("device_id", deviceId)
             .put("mobile_name", mobileName)
+            .put("trust_level", trustLevel)
             .toString()
-        val resp = client.newCall(Request.Builder()
+        val builder = Request.Builder()
             .post(body.toRequestBody(jsonMedia))
             .url("$BACKEND_URL/pair/complete")
-            .build()).execute()
+        if (token.isNotEmpty()) {
+            builder.header("Authorization", "Bearer $token")
+        }
+        val resp = client.newCall(builder.build()).execute()
         return JSONObject(resp.body!!.string())
     }
 
@@ -211,4 +215,70 @@ object PairingApi {
         val mobileName: String = "",
         val status: String,
     )
+
+    /** Parsed QR code data for pairing. */
+    data class QrData(
+        val pairingId: String,
+        val pairingKey: String,
+        val relayUrl: String,
+        val desktopName: String,
+    )
+
+    // === M2: Join Network (desktop interconnection) ===
+
+    /**
+     * Request a join network operation — mobile initiates interconnection
+     * between two desktop devices. The backend creates a JoinBatch and
+     * notifies the target desktops via WebSocket.
+     *
+     * Returns: { batch_id, flow_type, required_approvals, target_members, expires_at }
+     */
+    fun requestJoinNetwork(
+        token: String,
+        desktopAUserId: Long,
+        desktopADeviceId: String,
+        desktopAName: String,
+        desktopBUserId: Long,
+        desktopBDeviceId: String,
+        desktopBName: String,
+    ): JSONObject {
+        val body = JSONObject()
+            .put("desktop_a_user_id", desktopAUserId)
+            .put("desktop_a_device_id", desktopADeviceId)
+            .put("desktop_a_name", desktopAName)
+            .put("desktop_b_user_id", desktopBUserId)
+            .put("desktop_b_device_id", desktopBDeviceId)
+            .put("desktop_b_name", desktopBName)
+            .toString()
+        val resp = client.newCall(Request.Builder()
+            .post(body.toRequestBody(jsonMedia))
+            .header("Authorization", "Bearer $token")
+            .url("$BACKEND_URL/join/request")
+            .build()).execute()
+        val json = JSONObject(resp.body!!.string())
+        if (!resp.isSuccessful) {
+            val err = json.optString("error", "互联请求失败 (HTTP ${resp.code})")
+            throw Exception(err)
+        }
+        return json
+    }
+
+    /**
+     * Get join batch info — poll batch status after requesting join.
+     * Returns: { batch_id, flow_type, status, required_approvals, received_approvals, ... }
+     */
+    fun getJoinBatchInfo(token: String, batchId: String, deviceId: String): JSONObject {
+        val url = "$BACKEND_URL/join/batch-info?batch_id=${URLEncoder.encode(batchId, "UTF-8")}&device_id=${URLEncoder.encode(deviceId, "UTF-8")}"
+        val resp = client.newCall(Request.Builder()
+            .get()
+            .header("Authorization", "Bearer $token")
+            .url(url)
+            .build()).execute()
+        val json = JSONObject(resp.body!!.string())
+        if (!resp.isSuccessful) {
+            val err = json.optString("error", "获取批次信息失败 (HTTP ${resp.code})")
+            throw Exception(err)
+        }
+        return json
+    }
 }

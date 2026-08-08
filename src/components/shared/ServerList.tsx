@@ -561,6 +561,7 @@ export function ServerList({
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
             </svg>
           </button>
+          {onOpenRemoteDesktop && (
           <button
             className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-[#2C2C2E] text-gray-500 dark:text-gray-400 transition-colors"
             onClick={() => onOpenRemoteDesktop?.()}
@@ -582,6 +583,7 @@ export function ServerList({
               <line x1="12" x2="12" y1="17" y2="21" />
             </svg>
           </button>
+          )}
           <button
             className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-[#2C2C2E] text-gray-500 dark:text-gray-400 transition-colors"
             onClick={() => onOpenSettings?.()}

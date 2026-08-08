@@ -29,6 +29,7 @@ import { LogViewer } from "@/components/shared/LogViewer";
 import { UndoToast } from "@/components/shared/UndoToast";
 import { HostKeyMismatchDialog } from "@/components/shared/HostKeyMismatchDialog";
 import { RemoteDesktopPanel, cleanupRemoteDesktopConnection } from "@/components/remote-desktop/RemoteDesktopPanel";
+import { useTrustLevelCheck } from "@/lib/useTrustLevelCheck";
 import { ConfirmDialog, type DangerLevel } from "@/components/ui/ConfirmDialog";
 import { ContextMenuProvider } from "@/components/ui/ContextMenu";
 import { Toaster, toast } from "sonner";
@@ -202,6 +203,9 @@ export default function App() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [showAddServer, setShowAddServer] = useState(false);
   const [showRemoteDesktop, setShowRemoteDesktop] = useState(false);
+  // D7: Check trust level — hide interconnect terminal UI for local_only pairings
+  const pairingToken = typeof window !== "undefined" ? localStorage.getItem("pairing_token") : null;
+  const { hasLocalOnlyPairing } = useTrustLevelCheck(pairingToken);
   const [editServer, setEditServer] = useState<{
     id: string;
     name: string;
@@ -395,7 +399,7 @@ export default function App() {
               onAddServer={() => setShowAddServer(true)}
               onOpenSettings={() => setShowSettings(true)}
               onOpenTemplates={() => setShowTemplates(true)}
-              onOpenRemoteDesktop={() => setShowRemoteDesktop(true)}
+              onOpenRemoteDesktop={hasLocalOnlyPairing ? undefined : () => setShowRemoteDesktop(true)}
               collapsed={sidebarCollapsed}
               onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
             />

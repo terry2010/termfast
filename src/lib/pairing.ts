@@ -1,13 +1,18 @@
 import { ipcInvoke } from "@/hooks/useIpc";
 
 /**
- * Get this desktop's device_id (hostname-username format).
+ * Get this desktop's device_id (hostname-username-xxxx format).
+ * D9: Includes 4-digit random hex suffix to prevent device_id collisions.
  * Used to filter ListDevices to only this desktop's pairings.
  */
 export async function getDesktopDeviceId(): Promise<string> {
   const info = await ipcInvoke<any>("ipc_get_local_info");
   const hostname = info?.hostname || "unknown";
   const username = info?.username || "unknown";
+  const suffix = info?.device_suffix || "";
+  if (suffix) {
+    return `${hostname}-${username}-${suffix}`;
+  }
   return `${hostname}-${username}`;
 }
 

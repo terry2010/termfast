@@ -85,4 +85,27 @@ describe("ServerList", () => {
     // the first real server is items[1], which should be the abnormal one.
     expect(items[1]).toHaveTextContent("Abnormal");
   });
+
+  // D7: Trust level conditional rendering — hide remote desktop button when onOpenRemoteDesktop is undefined
+  it("hides remote desktop button when onOpenRemoteDesktop is undefined (D7: local_only)", async () => {
+    useServerStore.setState({
+      servers: [mockServer("s1", "Test VPS")],
+      selected_server_id: null,
+    });
+    render(<ServerList onOpenRemoteDesktop={undefined} />);
+    await waitFor(() => expect(screen.getByText("Test VPS")).toBeInTheDocument());
+    // Remote desktop button should NOT be in the DOM
+    expect(screen.queryByLabelText("远程桌面")).toBeNull();
+  });
+
+  it("shows remote desktop button when onOpenRemoteDesktop is provided", async () => {
+    useServerStore.setState({
+      servers: [mockServer("s1", "Test VPS")],
+      selected_server_id: null,
+    });
+    render(<ServerList onOpenRemoteDesktop={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("Test VPS")).toBeInTheDocument());
+    // Remote desktop button should be in the DOM
+    expect(screen.getByLabelText("远程桌面")).toBeInTheDocument();
+  });
 });

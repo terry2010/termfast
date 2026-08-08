@@ -21,7 +21,7 @@ default-members = [
     "crates/cloud-sync",
     "src-tauri",
 ]
-exclude = ["spikes/russh-stress"]
+exclude = ["spikes/russh-stress", "spikes/crypto-spike"]
 
 [workspace.package]
 version = "0.4.10"
@@ -44,6 +44,7 @@ serde_json = "1"
 ring = "0.17"
 aes-gcm = "0.10"
 argon2 = "0.5"
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
 
 # WebSocket
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }

@@ -2,6 +2,7 @@ package com.termfast.app.ui.screen
 
 import android.app.Activity
 import android.net.VpnService
+import android.widget.Toast
 import com.termfast.app.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Speed
@@ -44,6 +46,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
+import com.termfast.app.data.PairingApi
 import com.termfast.app.data.PairingStore
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.ServerConfig
@@ -77,7 +80,28 @@ fun ServerListScreen(navController: NavController) {
     var proxyRunningIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var proxyStartingIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showRemotePicker by remember { mutableStateOf(false) }
-    val hasRemoteConfig = remember { PairingStore.getAllPairings().isNotEmpty() }
+    var selectedPairing by remember { mutableStateOf<com.termfast.app.data.RemoteTunnelConfig?>(null) }
+    var showLoginPrompt by remember { mutableStateOf(false) }
+    var remoteVersion by remember { mutableStateOf(0) }
+    val isLoggedIn = remember(remoteVersion) { PairingStore.getToken() != null }
+    val remotePairings = remember(remoteVersion) {
+        if (isLoggedIn) PairingStore.getAllPairings() else emptyList()
+    }
+    val hasRemoteConfig = remotePairings.isNotEmpty()
+
+    // Login dialog state
+    var loginEmail by remember { mutableStateOf("") }
+    var loginPassword by remember { mutableStateOf("") }
+    var loginLoading by remember { mutableStateOf(false) }
+
+    // Scan button click — navigate to scanner or prompt login
+    val onScanClick: () -> Unit = {
+        if (isLoggedIn) {
+            navController.navigate("qr_scanner")
+        } else {
+            showLoginPrompt = true
+        }
+    }
 
     val vpnLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -135,7 +159,66 @@ fun ServerListScreen(navController: NavController) {
         }
     }
 
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(Unit) {
+        PairingStore.init(context)
+        refresh()
+    }
+
+    // Listen for QR scan result — auto-complete pairing when scanned from ServerList
+    val savedStateHandle = navController.currentBackStackEntry?.savedStateHandle
+    LaunchedEffect(savedStateHandle) {
+        savedStateHandle?.getStateFlow<String?>("qr_result", null)?.collect { content ->
+            if (content != null) {
+                savedStateHandle.remove<String>("qr_result")
+                val token = PairingStore.getToken()
+                if (token == null) {
+                    Toast.makeText(context, "请先在设备配对页面登录", Toast.LENGTH_SHORT).show()
+                    return@collect
+                }
+                try {
+                    val json = org.json.JSONObject(content)
+                    val pairingId = json.getString("pairing_id")
+                    val pairingKey = json.optString("pairing_key", "")
+                    val relayUrl = json.optString("relay_url", "")
+                    val desktopName = json.optString("desktop_name", "")
+                    scope.launch {
+                        try {
+                            val result = withContext(Dispatchers.IO) {
+                                val deviceName = PairingApi.getDeviceName()
+                                PairingApi.completePairing(pairingId, "phone-pubkey", deviceName, deviceName, token)
+                            }
+                            val status = result.optString("status")
+                            if (status == "completed") {
+                                val jwt = result.optString("pairing_jwt")
+                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices(token) }
+                                val desktopDeviceId = updatedDevices.find { it.pairingId == pairingId }?.desktopDeviceId ?: ""
+                                if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
+                                    PairingStore.savePairing(
+                                        com.termfast.app.data.RemoteTunnelConfig(
+                                            pairingId = pairingId,
+                                            pairingKey = pairingKey,
+                                            relayUrl = relayUrl,
+                                            pairingJwt = jwt,
+                                            desktopName = desktopName,
+                                            desktopDeviceId = desktopDeviceId,
+                                        )
+                                    )
+                                }
+                                Toast.makeText(context, "配对成功: $desktopName", Toast.LENGTH_SHORT).show()
+                                remoteVersion++
+                            } else {
+                                Toast.makeText(context, "配对失败: ${result.optString("error", "未知错误")}", Toast.LENGTH_SHORT).show()
+                            }
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "配对失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(context, "无效的二维码", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -164,6 +247,7 @@ fun ServerListScreen(navController: NavController) {
                 vpnFailed = SshVpnService.isFailed(context)
                 vpnError = SshVpnService.lastError
                 vpnServerId = SshVpnService.activeServerId
+                remoteVersion++
                 refresh()
             }
         }
@@ -179,15 +263,6 @@ fun ServerListScreen(navController: NavController) {
                     containerColor = MaterialTheme.colorScheme.surface,
                 ),
             )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { navController.navigate("server_add") },
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text("添加服务器") },
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
         }
     ) { padding ->
         if (loading) {
@@ -195,19 +270,50 @@ fun ServerListScreen(navController: NavController) {
                 CircularProgressIndicator()
             }
         } else if (servers.isEmpty()) {
-            EmptyServerState(modifier = Modifier.padding(padding))
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                EmptyServerState(modifier = Modifier.fillMaxSize())
+                // Floating buttons — overlaid on empty state too
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    ExtendedFloatingActionButton(
+                        onClick = onScanClick,
+                        icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
+                        text = { Text("扫码添加设备") },
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    ExtendedFloatingActionButton(
+                        onClick = { navController.navigate("server_add") },
+                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                        text = { Text("添加服务器") },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
         } else {
-            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+                Column(modifier = Modifier.fillMaxSize()) {
                 LazyColumn(
-                modifier = Modifier.fillMaxSize().weight(1f),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 80.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Remote terminal card — shown when paired with desktop
+                // Remote paired devices — show each as a card
                 if (hasRemoteConfig) {
-                    item(key = "remote_terminal_card") {
-                        RemoteTerminalCard(
-                            onClick = { showRemotePicker = true },
+                    items(remotePairings, key = { "remote_${it.pairingId}" }) { pairing ->
+                        RemoteDeviceCard(
+                            desktopName = pairing.desktopName.ifEmpty { pairing.pairingId.take(8) },
+                            desktopDeviceId = pairing.desktopDeviceId,
+                            onClick = {
+                                selectedPairing = pairing
+                                showRemotePicker = true
+                            },
                         )
                     }
                 }
@@ -330,25 +436,123 @@ fun ServerListScreen(navController: NavController) {
                 }
             }
             }
+                // Floating buttons — overlaid at bottom of Box
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    ExtendedFloatingActionButton(
+                        onClick = onScanClick,
+                        icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
+                        text = { Text("扫码添加设备") },
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    ExtendedFloatingActionButton(
+                        onClick = { navController.navigate("server_add") },
+                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                        text = { Text("添加服务器") },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
         }
 
-        // Remote terminal picker dialog
+        // Remote terminal picker dialog — when selectedPairing is set,
+        // skip desktop list and go directly to terminal list for that pairing
         RemoteTerminalPickerDialog(
             visible = showRemotePicker,
+            initialPairing = selectedPairing,
             onTerminalClick = { terminalId, name, pairingId ->
                 showRemotePicker = false
+                selectedPairing = null
                 val encodedName = URLEncoder.encode(name, "UTF-8")
                 navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName")
             },
-            onDismiss = { showRemotePicker = false },
+            onDismiss = {
+                showRemotePicker = false
+                selectedPairing = null
+            },
         )
+
+        // Login dialog — shown when scanning without login
+        if (showLoginPrompt) {
+            AlertDialog(
+                onDismissRequest = { showLoginPrompt = false },
+                title = { Text("登录账号", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = loginEmail,
+                            onValueChange = { loginEmail = it },
+                            label = { Text("邮箱") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            value = loginPassword,
+                            onValueChange = { loginPassword = it },
+                            label = { Text("密码") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+                                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                            ),
+                        )
+                        if (loginLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.align(Alignment.CenterHorizontally),
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            scope.launch {
+                                loginLoading = true
+                                try {
+                                    val result = withContext(Dispatchers.IO) {
+                                        PairingApi.login(loginEmail, loginPassword)
+                                    }
+                                    val tok = result.getString("access_token")
+                                    PairingStore.saveToken(tok)
+                                    loginLoading = false
+                                    showLoginPrompt = false
+                                    remoteVersion++
+                                    Toast.makeText(context, "登录成功", Toast.LENGTH_SHORT).show()
+                                    navController.navigate("qr_scanner")
+                                } catch (e: Exception) {
+                                    loginLoading = false
+                                    Toast.makeText(context, "登录失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        enabled = !loginLoading && loginEmail.isNotBlank() && loginPassword.length >= 8,
+                    ) { Text("登录") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showLoginPrompt = false }) { Text("取消") }
+                },
+            )
+        }
     }
 }
 
 // === SECTION 1 END ===
 
 @Composable
-private fun RemoteTerminalCard(onClick: () -> Unit) {
+private fun RemoteDeviceCard(
+    desktopName: String,
+    desktopDeviceId: String,
+    onClick: () -> Unit,
+) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -373,7 +577,7 @@ private fun RemoteTerminalCard(onClick: () -> Unit) {
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Filled.Devices,
+                    Icons.Filled.Computer,
                     contentDescription = null,
                     modifier = Modifier.size(22.dp),
                     tint = MaterialTheme.colorScheme.onPrimary,
@@ -382,37 +586,22 @@ private fun RemoteTerminalCard(onClick: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "远程终端",
+                    desktopName,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "连接桌面端共享的终端",
+                    desktopDeviceId.ifEmpty { "远程桌面端" },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                 )
             }
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.primary)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(
-                    Icons.Filled.Terminal,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                )
-                Text(
-                    "选择终端",
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Medium,
-                )
-            }
+            Icon(
+                Icons.Filled.Terminal,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f),
+            )
         }
     }
 }

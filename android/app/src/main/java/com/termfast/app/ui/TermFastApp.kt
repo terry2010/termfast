@@ -23,6 +23,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.termfast.app.data.PairingStore
 import com.termfast.app.ui.screen.LogScreen
 import com.termfast.app.ui.screen.ServerListScreen
 import com.termfast.app.ui.screen.SettingsScreen
@@ -145,6 +146,10 @@ fun TermFastApp() {
             }
             composable("desktop_pairing") {
                 com.termfast.app.ui.screen.DesktopPairingScreen(navController)
+            }
+            composable("join_network") {
+                val token = PairingStore.getToken() ?: ""
+                com.termfast.app.ui.screen.JoinNetworkScreen(navController, token)
             }
             composable("qr_scanner") {
                 com.termfast.app.ui.screen.QrScannerScreen(

@@ -79,4 +79,9 @@ object PairingStore {
         map.remove(pairingId)
         writeMap(map)
     }
+
+    /** Clear all stored data (token + pairings). Used on logout. */
+    fun clearAll() {
+        prefs().edit().clear().apply()
+    }
 }
