@@ -50,6 +50,7 @@ hex = { workspace = true }
 termfast-cloud-sync = { workspace = true }
 getrandom = "0.4.3"
 p256 = { workspace = true }
+x25519-dalek = { workspace = true }
 rand = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
 aes-gcm = { workspace = true }
@@ -62,3 +63,6 @@ keyring = { version = "4", features = ["windows-native-keyring-store"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "4", features = ["zbus-secret-service-keyring-store"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

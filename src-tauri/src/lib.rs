@@ -8,6 +8,7 @@ mod daemon_embed;
 mod credential_manager;
 mod device_id_store;
 mod device_key_store;
+mod ecdh_key_store;
 mod pairing;
 mod pairing_store;
 mod tunnel_manager;
@@ -293,6 +294,7 @@ pub fn run() {
                                 move |msg: termfast_daemon::remote_server::DesktopPairMessage| {
                                     let pairing_id = msg.pairing_id.clone();
                                     let pairing_key_hex = msg.pairing_key_hex.clone();
+                                    let peer_ecdh_public_key = msg.peer_ecdh_public_key.clone();
                                     let relay_url = msg.relay_url.clone();
                                     let peer_name = msg.peer_name.clone();
                                     let role = msg.role.clone();
@@ -300,14 +302,26 @@ pub fn run() {
                                     let handle = handle_for_cb.clone();
                                     let rcm = rcm_for_cb.clone();
                                     Box::pin(async move {
-                                        // Decode pairing key
-                                        let pairing_key = decode_hex_32(&pairing_key_hex)
-                                            .map_err(|e| format!("decode key: {}", e))?;
+                                        // Compute pairing key: prefer ECDH, fall back to legacy hex
+                                        let (pairing_key, stored_key_hex) = if !peer_ecdh_public_key.is_empty() {
+                                            // ECDH: compute shared secret from peer's public key
+                                            let shared_hex = ecdh_key_store::compute_shared_secret_hex(&peer_ecdh_public_key)?;
+                                            let key = decode_hex_32(&shared_hex)
+                                                .map_err(|e| format!("decode ECDH shared secret: {}", e))?;
+                                            (key, shared_hex)
+                                        } else if !pairing_key_hex.is_empty() {
+                                            // Legacy: use pairing_key_hex from frame
+                                            let key = decode_hex_32(&pairing_key_hex)
+                                                .map_err(|e| format!("decode key: {}", e))?;
+                                            (key, pairing_key_hex.clone())
+                                        } else {
+                                            return Err("no pairing key: both pairing_key_hex and peer_ecdh_public_key are empty".to_string());
+                                        };
 
                                         // Store pairing persistently
                                         pairing_store::save(pairing_store::StoredPairing {
                                             pairing_id: pairing_id.clone(),
-                                            pairing_key_hex: pairing_key_hex.clone(),
+                                            pairing_key_hex: stored_key_hex.clone(),
                                             relay_url: relay_url.clone(),
                                             jwt: pairing_jwt.clone(),
                                             pairing_type: "desktop".to_string(),
@@ -461,6 +475,8 @@ pub fn run() {
             ipc_approve_join,
             ipc_get_batch_info,
             ipc_generate_pairing_key,
+            ipc_get_ecdh_public_key,
+            ipc_compute_ecdh_shared_secret,
             ipc_pairing_status,
             ipc_pairing_revoke,
             ipc_pairing_upload_config,
@@ -2263,6 +2279,21 @@ async fn ipc_generate_pairing_key() -> Result<String, String> {
     Ok(hex::encode(key))
 }
 
+/// Get the ECDH public key (base64) for QR code generation.
+/// The desktop enters pairing mode and displays a QR code containing this key.
+#[tauri::command]
+async fn ipc_get_ecdh_public_key() -> Result<String, String> {
+    ecdh_key_store::get_public_key_base64()
+}
+
+/// Compute the ECDH shared secret with a peer's public key.
+/// Called after receiving DESKTOP_PAIR frame or from ListDevices recovery.
+/// Returns 32-byte shared secret as hex string (used as pairing_key for tunnel crypto).
+#[tauri::command]
+async fn ipc_compute_ecdh_shared_secret(peer_public_key_b64: String) -> Result<String, String> {
+    ecdh_key_store::compute_shared_secret_hex(&peer_public_key_b64)
+}
+
 #[tauri::command]
 async fn ipc_pairing_status(token: String, pairing_id: String) -> Result<serde_json::Value, String> {
     pairing::pair_status(&token, &pairing_id).await
@@ -2890,12 +2921,38 @@ async fn ipc_list_desktop_pairings(
             (desktop_name, "client")
         };
 
-        // pairing_key_hex: prefer local (from DESKTOP_PAIR frame), fall back to backend
+        // pairing_key_hex: prefer local (from DESKTOP_PAIR frame), fall back to backend,
+        // then try ECDH recovery (compute from peer's ECDH public key)
         let backend_key_hex = bp.get("pairing_key_hex").and_then(|v| v.as_str()).unwrap_or("");
-        let pairing_key_hex = local
+        let mut pairing_key_hex = local
             .map(|p| p.pairing_key_hex.clone())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| backend_key_hex.to_string());
+
+        // ECDH recovery: if no key from local or backend, try computing from peer's ECDH public key
+        if pairing_key_hex.is_empty() {
+            // Determine which ECDH key belongs to the peer
+            let desktop_a_ecdh = bp.get("desktop_a_ecdh_key").and_then(|v| v.as_str()).unwrap_or("");
+            let desktop_b_ecdh = bp.get("desktop_b_ecdh_key").and_then(|v| v.as_str()).unwrap_or("");
+            // If this device is server (B), peer is client (A) → use A's ECDH key
+            // If this device is client (A), peer is server (B) → use B's ECDH key
+            let peer_ecdh = if peer_role == "server" {
+                desktop_a_ecdh // peer is client (A)
+            } else {
+                desktop_b_ecdh // peer is server (B)
+            };
+            if !peer_ecdh.is_empty() {
+                match ecdh_key_store::compute_shared_secret_hex(peer_ecdh) {
+                    Ok(shared) => {
+                        tracing::info!("ECDH recovery: computed shared secret for pairing {}", pid);
+                        pairing_key_hex = shared;
+                    }
+                    Err(e) => {
+                        tracing::warn!("ECDH recovery failed for pairing {}: {}", pid, e);
+                    }
+                }
+            }
+        }
 
         let entry = serde_json::json!({
             "pairing_id": pid,

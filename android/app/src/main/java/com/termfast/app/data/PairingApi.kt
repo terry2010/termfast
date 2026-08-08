@@ -152,6 +152,8 @@ object PairingApi {
         clientDeviceId: String,
         clientName: String,
         pairingKeyHex: String,
+        serverEcdhKey: String = "",
+        clientEcdhKey: String = "",
     ): JSONObject {
         val body = JSONObject()
             .put("server_user_id", serverUserId)
@@ -161,7 +163,12 @@ object PairingApi {
             .put("client_device_id", clientDeviceId)
             .put("client_name", clientName)
             .put("pairing_key_hex", pairingKeyHex)
-            .toString()
+        if (serverEcdhKey.isNotEmpty()) {
+            body.put("server_ecdh_key", serverEcdhKey)
+        }
+        if (clientEcdhKey.isNotEmpty()) {
+            body.put("client_ecdh_key", clientEcdhKey)
+        }
         val resp = client.newCall(Request.Builder()
             .post(body.toRequestBody(jsonMedia))
             .header("Authorization", "Bearer $token")

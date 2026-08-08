@@ -74,6 +74,10 @@ object PairingStore {
 
     fun getPairing(pairingId: String): RemoteTunnelConfig? = readMap()[pairingId]
 
+    /** Find a mobile pairing by desktop device ID (used by desktop-pair QR scan flow). */
+    fun getPairingByDeviceId(desktopDeviceId: String): RemoteTunnelConfig? =
+        readMap().values.find { it.desktopDeviceId == desktopDeviceId }
+
     fun removePairing(pairingId: String) {
         val map = readMap()
         map.remove(pairingId)

@@ -104,7 +104,15 @@ pub type FileUploadCallback = Box<
 pub struct DesktopPairMessage {
     pub action: String,
     pub pairing_id: String,
+    /// Legacy: pairing key hex (64 chars). Empty when using ECDH key agreement.
+    /// Kept for backward compatibility; new flow uses peer_ecdh_public_key.
+    #[serde(default)]
     pub pairing_key_hex: String,
+    /// Peer's X25519 ECDH public key (base64, 32 bytes).
+    /// When present, the desktop computes shared_secret = ECDH(my_private, peer_public)
+    /// and uses it as the pairing key. When absent, falls back to pairing_key_hex.
+    #[serde(default)]
+    pub peer_ecdh_public_key: String,
     /// For role=client (Desktop A): scope=tunnel pairing JWT to connect relay.
     /// For role=server (Desktop B): empty (B uses its own user JWT).
     pub pairing_jwt: String,

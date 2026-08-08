@@ -11,6 +11,7 @@ import { fetchPairedDevices } from "@/lib/pairing";
 import type { SupportedLanguage } from "@/i18n/config";
 import i18n, { asyncResolveLanguage } from "@/i18n/config";
 import { Modal } from "@/components/ui/Modal";
+import { DesktopPairMode } from "@/components/shared/DesktopPairMode";
 import { toast } from "sonner";
 import {
   checkForUpdate,
@@ -1848,6 +1849,7 @@ function PairingSection() {
   const [pairingKey, setPairingKey] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
   const [devices, setDevices] = useState<any[]>([]);
+  const [showDesktopPairMode, setShowDesktopPairMode] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem("pairing_token");
@@ -2050,7 +2052,25 @@ function PairingSection() {
           <button onClick={handleLogout} className="text-xs text-gray-500">
             {t("pairing.logout", "退出登录")}
           </button>
+
+          {/* Desktop interconnect pairing mode */}
+          <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+            <h3 className="text-sm font-medium mb-2">桌面互联</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              进入配对模式，显示二维码供手机端扫描，与其他桌面端建立互联
+            </p>
+            <button
+              onClick={() => setShowDesktopPairMode(true)}
+              className="px-4 py-2 rounded-lg bg-[#5856D6] text-white text-sm font-medium hover:bg-[#4B4AC7]"
+            >
+              进入配对模式
+            </button>
+          </div>
         </div>
+      )}
+
+      {showDesktopPairMode && (
+        <DesktopPairMode onClose={() => setShowDesktopPairMode(false)} />
       )}
     </section>
   );
