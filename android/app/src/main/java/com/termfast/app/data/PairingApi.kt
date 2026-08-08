@@ -151,6 +151,7 @@ object PairingApi {
         clientUserId: Long,
         clientDeviceId: String,
         clientName: String,
+        pairingKeyHex: String,
     ): JSONObject {
         val body = JSONObject()
             .put("server_user_id", serverUserId)
@@ -159,6 +160,7 @@ object PairingApi {
             .put("client_user_id", clientUserId)
             .put("client_device_id", clientDeviceId)
             .put("client_name", clientName)
+            .put("pairing_key_hex", pairingKeyHex)
             .toString()
         val resp = client.newCall(Request.Builder()
             .post(body.toRequestBody(jsonMedia))

@@ -63,7 +63,7 @@ func (s *PairingService) Initiate(userID uint, desktopDeviceID, desktopName stri
 // B2: Does NOT clean up pending pairings — desktop pairing is explicitly
 // triggered by the phone, no stale-pending cleanup needed.
 func (s *PairingService) InitiateDesktop(initiatorUserID uint, serverUserID uint, serverDeviceID, serverName string,
-	clientUserID uint, clientDeviceID, clientName string) (*model.Pairing, error) {
+	clientUserID uint, clientDeviceID, clientName, pairingKeyHex string) (*model.Pairing, error) {
 	// Security check: initiator must have completed mobile pairings with both desktops.
 	// The mobile pairing must have mobile_user_id = initiatorUserID, proving the initiator
 	// is the phone user who paired with these desktops (not just any user who knows the desktop user_ids).
@@ -95,6 +95,7 @@ func (s *PairingService) InitiateDesktop(initiatorUserID uint, serverUserID uint
 		MobileName:      clientName,
 		PairingType:     "desktop",
 		Status:          "pending",
+		PairingKeyHex:   pairingKeyHex,
 	}
 	if err := s.db.Create(&p).Error; err != nil {
 		return nil, err

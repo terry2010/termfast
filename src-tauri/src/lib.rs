@@ -2872,9 +2872,16 @@ async fn ipc_list_desktop_pairings(
             (desktop_name, "client")
         };
 
+        // pairing_key_hex: prefer local (from DESKTOP_PAIR frame), fall back to backend
+        let backend_key_hex = bp.get("pairing_key_hex").and_then(|v| v.as_str()).unwrap_or("");
+        let pairing_key_hex = local
+            .map(|p| p.pairing_key_hex.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| backend_key_hex.to_string());
+
         let entry = serde_json::json!({
             "pairing_id": pid,
-            "pairing_key_hex": local.map(|p| p.pairing_key_hex.clone()).unwrap_or_default(),
+            "pairing_key_hex": pairing_key_hex,
             "relay_url": local.map(|p| p.relay_url.clone()).unwrap_or_else(|| {
                 // Default relay URL (same as mobile pairings)
                 "ws://sh.zimufan.com:39527/tunnel".to_string()

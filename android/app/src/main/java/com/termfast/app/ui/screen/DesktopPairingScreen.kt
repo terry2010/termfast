@@ -280,7 +280,12 @@ private suspend fun performDesktopPairing(
 ) {
     onLoading(true)
     try {
-        // 1. Create pairing via backend
+        // 1. Generate pairing key (32 random bytes) — needed before initiate
+        //    so the backend can store it for recovery by desktops.
+        val pairingKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val pairingKeyHex = pairingKey.joinToString("") { "%02x".format(it) }
+
+        // 2. Create pairing via backend (stores pairing_key_hex)
         val result = withContext(Dispatchers.IO) {
             PairingApi.initiateDesktopPairing(
                 token = token,
@@ -290,13 +295,10 @@ private suspend fun performDesktopPairing(
                 clientUserId = desktopA.desktopUserId,
                 clientDeviceId = desktopA.desktopDeviceId,
                 clientName = desktopA.desktopName,
+                pairingKeyHex = pairingKeyHex,
             )
         }
         val pairingId = result.getString("pairing_id")
-
-        // 2. Generate pairing key (32 random bytes)
-        val pairingKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        val pairingKeyHex = pairingKey.joinToString("") { "%02x".format(it) }
 
         // 3. Complete pairing to get JWT
         val completeResult = withContext(Dispatchers.IO) {

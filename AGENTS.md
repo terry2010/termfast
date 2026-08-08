@@ -322,6 +322,77 @@ pub const CLOUD_SYNC_SERVER: &str = "https://termfast.xisj.com/tools/cloud-sync.
 - 当前 CI 不配置 Apple Developer ID / Windows EV 代码签名证书，安装包首次打开会有系统安全提示，属正常行为
 - 发布前确保四个版本号文件一致，否则自动更新会失败
 
+## 后端服务器部署
+
+### 服务器信息
+
+- **服务器**：`sh.zimufan.com`（SSH 用户 `root`）
+- **后端二进制路径**：`/root/termfast-server/termfast-backend`
+- **后端源码路径**：`/root/termfast-server/`（独立 git 仓库 `termfast-server`，remote: `github.com/terry2010/termfast-server`）
+- **监听端口**：`:39527`
+- **日志文件**：`/root/termfast-server/backend.log`
+- **数据库**：Docker 容器 `mysql`，MySQL，用户 `root`，密码 `654321`，数据库名 `termfast`
+
+### 本地后端源码 vs 服务器源码
+
+本地 `ssh-proxy/backend/` 目录是后端源码的副本，服务器上 `/root/termfast-server/` 是独立的 git 仓库。
+两边代码需要手动同步：
+
+1. 本地修改 `ssh-proxy/backend/` 后提交到 `ssh-proxy` 仓库
+2. 服务器上 `/root/termfast-server/` 需要手动拉取或直接修改源文件
+3. **注意**：`ssh-proxy/backend/` 的 git push 不会自动同步到 `termfast-server` 仓库
+
+### 部署流程
+
+```bash
+# 1. 在服务器上拉取最新代码（如果 termfast-server 仓库已更新）
+ssh root@sh.zimufan.com "cd /root/termfast-server && git pull origin main"
+
+# 2. 如果本地改了 backend/ 但 termfast-server 仓库还没同步，
+#    可以直接在服务器上修改源文件，或用 scp 传过去
+scp ssh-proxy/backend/internal/service/pairing.go root@sh.zimufan.com:/root/termfast-server/internal/service/pairing.go
+
+# 3. 编译新二进制（先 clean cache 避免 Go 编译缓存问题）
+ssh root@sh.zimufan.com "cd /root/termfast-server && go clean -cache && go build -o termfast-backend-new cmd/main.go"
+
+# 4. 验证新二进制包含改动（用 strings 检查关键字符串）
+ssh root@sh.zimufan.com "strings /root/termfast-server/termfast-backend-new | grep '<关键字符串>'"
+
+# 5. 停旧进程 + 换新二进制 + 启动
+ssh root@sh.zimufan.com "pkill -f termfast-backend; sleep 2; cd /root/termfast-server && cp termfast-backend-new termfast-backend && setsid bash -c './termfast-backend > backend.log 2>&1' &"
+
+# 6. 等待启动后验证
+sleep 5
+ssh root@sh.zimufan.com "curl -s http://127.0.0.1:39527/health"
+```
+
+### 部署注意事项
+
+- **Go 编译缓存问题**：Go 有编译缓存，如果源文件修改了但缓存没清，`go build` 可能用旧的缓存对象，导致新二进制不包含改动。部署前务必 `go clean -cache`。
+- **进程管理**：后端没有用 systemd，用 `setsid` + nohup 方式后台运行。`pkill -f termfast-backend` 停止旧进程。
+- **验证新二进制**：编译后用 `strings termfast-backend-new | grep '<关键字符串>'` 确认改动已编入二进制，避免部署了旧二进制。
+- **文件替换时机**：必须先 `pkill` 停旧进程再 `cp` 替换二进制，否则旧进程可能仍占用文件。
+- **启动后等待**：`setsid` 启动后需 `sleep 3-5` 秒等后端就绪，再调 API 验证。
+
+### 常用运维命令
+
+```bash
+# 查看后端进程状态
+ssh root@sh.zimufan.com "ps aux | grep termfast-backend | grep -v grep"
+
+# 查看后端日志
+ssh root@sh.zimufan.com "tail -30 /root/termfast-server/backend.log"
+
+# 查看数据库中的配对记录
+ssh root@sh.zimufan.com "docker exec mysql mysql -uroot -p654321 termfast -e 'SELECT pairing_id, pairing_type, status, desktop_device_id, mobile_device_id FROM pairings;'"
+
+# 调用 API 验证
+ssh root@sh.zimufan.com "curl -s 'http://127.0.0.1:39527/devices' -H 'Authorization: Bearer <JWT>' | python3 -m json.tool"
+
+# 重启后端
+ssh root@sh.zimufan.com "pkill -f termfast-backend; sleep 2; cd /root/termfast-server && setsid bash -c './termfast-backend > backend.log 2>&1' &"
+```
+
 ## 构建与测试命令
 
 ### 启动开发环境
