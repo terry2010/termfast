@@ -48,9 +48,6 @@ server/config.local.php
 # 文档目录（设计稿/项目文档不纳入版本管理）
 docs/
 
-# 后端源码（独立仓库 termfast-server，不提交到本仓库）
-backend/
-
 # 官网项目（单独的私有仓库管理）
 website/
 

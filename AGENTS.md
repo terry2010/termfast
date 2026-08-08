@@ -11,36 +11,30 @@
 - `.gitignore` 应包含 `docs/` 规则（若缺失，发现时补上）
 - 已经误提交的 docs 文件，需要从 git 历史中清除（用 `git filter-repo` 或 `git filter-branch`）
 
-### 禁止提交 backend 目录
+### 项目目录结构
 
-**`backend/` 目录禁止提交到 git。** 后端源码属于独立的 `termfast-server` 仓库（`github.com/terry2010/termfast-server`），不是 `ssh-proxy` 仓库的一部分。
+后端源码已拆分为独立仓库，与本项目平级：
 
-- 本地 `ssh-proxy/backend/` 只是工作副本，用于本地编译测试
-- 服务器上 `/root/termfast-server/` 是独立 git 仓库，后端改动通过 scp 传到服务器或直接在服务器上修改
-- **`ssh-proxy/backend/` 的 git push 不会同步到 `termfast-server` 仓库**
-- 提交前必须检查 `git status`，如果 `backend/` 下有改动，**不要 `git add backend/`**
-- 如果 `git add .` 或 `git add -A` 误加了 `backend/`，提交前必须 `git reset HEAD backend/`
-- `.gitignore` 已包含 `backend/` 规则（若缺失，发现时补上）
-- 已经误提交的 backend 文件，需要 `git rm -r --cached backend/` 从 git 跟踪中移除
-- **pre-commit hook** 会自动拦截包含 `backend/` 或 `docs/` 的提交（即使 `git add -f` 强制添加也会被拒绝）。clone 新仓库后需重新安装：
-  ```bash
-  cat > .git/hooks/pre-commit << 'HOOK'
-  #!/bin/bash
-  for dir in backend docs; do
-      staged=$(git diff --cached --name-only -- "$dir/")
-      if [ -n "$staged" ]; then
-          echo "ERROR: $dir/ must NOT be committed. Run: git reset HEAD $dir/" >&2
-          exit 1
-      fi
-  done
-  HOOK
-  chmod +x .git/hooks/pre-commit
-  ```
+```
+code/
+├── termfast/                 ← 本仓库（前端 + 桌面端 + Android + PHP 服务器）
+│   ├── src/                  ← React 前端
+│   ├── src-tauri/            ← Tauri 桌面端（Rust）
+│   ├── android/              ← Android 端
+│   └── server/               ← PHP 服务器（更新清单、云同步代理）
+└── termfast-server/          ← 独立仓库（Go 后端）
+    ├── cmd/
+    └── internal/
+```
+
+- **后端改动**：在 `termfast-server/` 目录里改，commit + push 到 `github.com/terry2010/termfast-server`
+- **本项目改动**：在 `termfast/` 目录里改，commit + push 到 `github.com/terry2010/termfast`
+- 两个仓库物理隔离，不存在交叉污染的可能
 
 ### 其他提交规则
 
 - 提交前运行 `git status` 确认改动范围，避免误提交
-- **特别检查 `backend/` 和 `docs/` 不要出现在暂存区**
+- **特别检查 `docs/` 不要出现在暂存区**
 - 不要提交临时文件、日志、IDE 配置
 - 不要提交密钥、凭证、`.env` 等敏感文件
 
@@ -356,39 +350,36 @@ pub const CLOUD_SYNC_SERVER: &str = "https://termfast.xisj.com/tools/cloud-sync.
 - **服务器**：`sh.zimufan.com`（SSH 用户 `root`）
 - **后端二进制路径**：`/root/termfast-server/termfast-backend`
 - **后端源码路径**：`/root/termfast-server/`（独立 git 仓库 `termfast-server`，remote: `github.com/terry2010/termfast-server`）
+- **本地后端源码路径**：`/Volumes/2t/code/termfast-server/`（同仓库 clone）
 - **监听端口**：`:39527`
 - **日志文件**：`/root/termfast-server/backend.log`
 - **数据库**：Docker 容器 `mysql`，MySQL，用户 `root`，密码 `654321`，数据库名 `termfast`
 
-### 本地后端源码 vs 服务器源码
+### 本地后端开发流程
 
-本地 `ssh-proxy/backend/` 目录是后端源码的副本，服务器上 `/root/termfast-server/` 是独立的 git 仓库。
-两边代码需要手动同步：
+后端源码在平级目录 `termfast-server/`（独立 git 仓库），不在本仓库内：
 
-1. 本地修改 `ssh-proxy/backend/` 后提交到 `ssh-proxy` 仓库
-2. 服务器上 `/root/termfast-server/` 需要手动拉取或直接修改源文件
-3. **注意**：`ssh-proxy/backend/` 的 git push 不会自动同步到 `termfast-server` 仓库
+1. 在 `/Volumes/2t/code/termfast-server/` 修改代码
+2. `cd /Volumes/2t/code/termfast-server && go build ./... && go test ./...` 编译测试
+3. `git add && git commit && git push origin main` 提交到 termfast-server 仓库
+4. 服务器上 `git pull` 拉取最新代码
 
 ### 部署流程
 
 ```bash
-# 1. 在服务器上拉取最新代码（如果 termfast-server 仓库已更新）
+# 1. 在服务器上拉取最新代码
 ssh root@sh.zimufan.com "cd /root/termfast-server && git pull origin main"
 
-# 2. 如果本地改了 backend/ 但 termfast-server 仓库还没同步，
-#    可以直接在服务器上修改源文件，或用 scp 传过去
-scp ssh-proxy/backend/internal/service/pairing.go root@sh.zimufan.com:/root/termfast-server/internal/service/pairing.go
-
-# 3. 编译新二进制（先 clean cache 避免 Go 编译缓存问题）
+# 2. 编译新二进制（先 clean cache 避免 Go 编译缓存问题）
 ssh root@sh.zimufan.com "cd /root/termfast-server && go clean -cache && go build -o termfast-backend-new cmd/main.go"
 
-# 4. 验证新二进制包含改动（用 strings 检查关键字符串）
+# 3. 验证新二进制包含改动（用 strings 检查关键字符串）
 ssh root@sh.zimufan.com "strings /root/termfast-server/termfast-backend-new | grep '<关键字符串>'"
 
-# 5. 停旧进程 + 换新二进制 + 启动
+# 4. 停旧进程 + 换新二进制 + 启动
 ssh root@sh.zimufan.com "pkill -f termfast-backend; sleep 2; cd /root/termfast-server && cp termfast-backend-new termfast-backend && setsid bash -c './termfast-backend > backend.log 2>&1' &"
 
-# 6. 等待启动后验证
+# 5. 等待启动后验证
 sleep 5
 ssh root@sh.zimufan.com "curl -s http://127.0.0.1:39527/health"
 ```

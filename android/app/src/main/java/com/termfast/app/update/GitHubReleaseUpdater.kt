@@ -34,7 +34,7 @@ data class GitHubRelease(
 class GitHubReleaseUpdater(
     private val context: Context,
     private val owner: String = "termfast",
-    private val repo: String = "ssh-proxy",
+    private val repo: String = "termfast",
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
