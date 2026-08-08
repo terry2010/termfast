@@ -11,9 +11,22 @@
 - `.gitignore` 应包含 `docs/` 规则（若缺失，发现时补上）
 - 已经误提交的 docs 文件，需要从 git 历史中清除（用 `git filter-repo` 或 `git filter-branch`）
 
+### 禁止提交 backend 目录
+
+**`backend/` 目录禁止提交到 git。** 后端源码属于独立的 `termfast-server` 仓库（`github.com/terry2010/termfast-server`），不是 `ssh-proxy` 仓库的一部分。
+
+- 本地 `ssh-proxy/backend/` 只是工作副本，用于本地编译测试
+- 服务器上 `/root/termfast-server/` 是独立 git 仓库，后端改动通过 scp 传到服务器或直接在服务器上修改
+- **`ssh-proxy/backend/` 的 git push 不会同步到 `termfast-server` 仓库**
+- 提交前必须检查 `git status`，如果 `backend/` 下有改动，**不要 `git add backend/`**
+- 如果 `git add .` 或 `git add -A` 误加了 `backend/`，提交前必须 `git reset HEAD backend/`
+- `.gitignore` 已包含 `backend/` 规则（若缺失，发现时补上）
+- 已经误提交的 backend 文件，需要 `git rm -r --cached backend/` 从 git 跟踪中移除
+
 ### 其他提交规则
 
 - 提交前运行 `git status` 确认改动范围，避免误提交
+- **特别检查 `backend/` 和 `docs/` 不要出现在暂存区**
 - 不要提交临时文件、日志、IDE 配置
 - 不要提交密钥、凭证、`.env` 等敏感文件
 
