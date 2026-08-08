@@ -72,8 +72,16 @@ export function RemoteDesktopList() {
 
   if (peers.length === 0) {
     return (
-      <div className="p-4 text-sm text-gray-500 dark:text-gray-400">
-        {t("remote_desktop.no_peers", "暂无桌面互配。请在手机端发起桌面互配。")}
+      <div className="p-6 flex flex-col items-center gap-3 text-center">
+        <div className="text-4xl">🖥️</div>
+        <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
+          {t("remote_desktop.no_peers_title", "暂无互联设备")}
+        </div>
+        <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
+          <p>{t("remote_desktop.no_peers_step1", "在手机端 TermFast 首页点击「设备互联」按钮")}</p>
+          <p>{t("remote_desktop.no_peers_step2", "选择两台已配对的电脑，点击「建立互配」")}</p>
+          <p>{t("remote_desktop.no_peers_step3", "配对完成后，互联设备将显示在此处")}</p>
+        </div>
       </div>
     );
   }

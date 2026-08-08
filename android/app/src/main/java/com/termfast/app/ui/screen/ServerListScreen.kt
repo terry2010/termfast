@@ -327,30 +327,35 @@ fun ServerListScreen(navController: NavController) {
         } else if (servers.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding)) {
                 EmptyServerState(modifier = Modifier.fillMaxSize())
-                // Floating buttons — overlaid on empty state too
-                Column(
+                // Floating buttons — left: interconnect + scan, right: add server
+                Row(
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalAlignment = Alignment.End,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
                 ) {
-                    if (showInterconnectButton) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (showInterconnectButton) {
+                            ExtendedFloatingActionButton(
+                                onClick = { showInterconnectIntro = true },
+                                icon = { Icon(Icons.Filled.Link, contentDescription = null) },
+                                text = { Text("设备互联") },
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            )
+                        }
                         ExtendedFloatingActionButton(
-                            onClick = { showInterconnectIntro = true },
-                            icon = { Icon(Icons.Filled.Link, contentDescription = null) },
-                            text = { Text("设备互联") },
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            onClick = onScanClick,
+                            icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
+                            text = { Text("扫码添加设备") },
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                     }
-                    ExtendedFloatingActionButton(
-                        onClick = onScanClick,
-                        icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
-                        text = { Text("扫码添加设备") },
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
                     ExtendedFloatingActionButton(
                         onClick = { navController.navigate("server_add") },
                         icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -500,30 +505,35 @@ fun ServerListScreen(navController: NavController) {
                 }
             }
             }
-                // Floating buttons — overlaid at bottom of Box
-                Column(
+                // Floating buttons — left: interconnect + scan, right: add server
+                Row(
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalAlignment = Alignment.End,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
                 ) {
-                    if (showInterconnectButton) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (showInterconnectButton) {
+                            ExtendedFloatingActionButton(
+                                onClick = { showInterconnectIntro = true },
+                                icon = { Icon(Icons.Filled.Link, contentDescription = null) },
+                                text = { Text("设备互联") },
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            )
+                        }
                         ExtendedFloatingActionButton(
-                            onClick = { showInterconnectIntro = true },
-                            icon = { Icon(Icons.Filled.Link, contentDescription = null) },
-                            text = { Text("设备互联") },
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            onClick = onScanClick,
+                            icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
+                            text = { Text("扫码添加设备") },
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                     }
-                    ExtendedFloatingActionButton(
-                        onClick = onScanClick,
-                        icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
-                        text = { Text("扫码添加设备") },
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
                     ExtendedFloatingActionButton(
                         onClick = { navController.navigate("server_add") },
                         icon = { Icon(Icons.Filled.Add, contentDescription = null) },
