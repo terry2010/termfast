@@ -10,7 +10,37 @@ vi.mock("@/hooks/useIpc", () => ({
     const servers = useServerStore.getState().servers;
     return Promise.resolve({ servers });
   }),
+  useTauriEvent: vi.fn(),
+  formatIpcError: vi.fn((e: unknown) => String(e)),
+  IpcErrorImpl: class IpcErrorImpl extends Error {
+    code?: string;
+    detail?: string;
+    constructor(message: string, code?: string, detail?: string) {
+      super(message);
+      this.code = code;
+      this.detail = detail;
+    }
+  },
 }));
+
+vi.mock("@/stores/remoteDesktopStore", () => {
+  const store = {
+    peers: [],
+    loading: false,
+    error: null,
+    activeConnection: null,
+    remoteTerminals: [],
+    loadPeers: vi.fn(),
+    setPeerOnline: vi.fn(),
+    setActiveConnection: vi.fn(),
+    setRemoteTerminals: vi.fn(),
+  };
+  return {
+    useRemoteDesktopStore: vi.fn((selector?: (s: typeof store) => unknown) =>
+      selector ? selector(store) : store
+    ),
+  };
+});
 
 function mockServer(id: string, name: string, status: ServerState["current_status"] = "disconnected"): ServerState {
   return {

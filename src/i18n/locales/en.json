@@ -218,6 +218,7 @@
     "reconnect_timeout": "Retry duration",
     "reconnect_timeout_unlimited": "Unlimited",
     "my_computer": "My Computer",
+    "interconnected": "Interconnected",
     "open_local_terminal": "Open Local Terminal",
     "local_ready": "Local Ready",
     "local_shell": "Shell",

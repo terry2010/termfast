@@ -220,6 +220,7 @@
     "reconnect_timeout": "重连时长",
     "reconnect_timeout_unlimited": "无限",
     "my_computer": "我的电脑",
+    "interconnected": "互联设备",
     "open_local_terminal": "打开本地终端",
     "local_ready": "本地就绪",
     "local_shell": "Shell",

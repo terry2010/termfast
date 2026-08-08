@@ -9,7 +9,8 @@ import { listen } from "@tauri-apps/api/event";
 import { useServerStore } from "@/stores/serverStore";
 import { useLogStore } from "@/stores/logStore";
 import { useTriggerStore } from "@/stores/triggerStore";
-import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
+import { useRemoteDesktopStore } from "@/stores/remoteDesktopStore";
+import { ipcInvoke, formatIpcError, IpcErrorImpl, useTauriEvent } from "@/hooks/useIpc";
 import { openTerminalWithChannel } from "@/lib/terminal";
 import { AddServerDialog } from "@/components/shared/AddServerDialog";
 import { SkeletonList } from "@/components/ui/Skeleton";
@@ -99,6 +100,33 @@ export function ServerList({
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dragOverPos, setDragOverPos] = useState<"before" | "after">("before");
+
+  // Remote desktop peers (interconnected desktops)
+  const remotePeers = useRemoteDesktopStore((s) => s.peers);
+  const loadPeers = useRemoteDesktopStore((s) => s.loadPeers);
+  const setPeerOnline = useRemoteDesktopStore((s) => s.setPeerOnline);
+  const remoteActiveConnection = useRemoteDesktopStore((s) => s.activeConnection);
+  const setRemoteActiveConnection = useRemoteDesktopStore((s) => s.setActiveConnection);
+
+  // Load remote desktop peers on mount
+  useEffect(() => {
+    loadPeers();
+  }, [loadPeers]);
+
+  // Listen for remote client connection state events
+  const handleRemoteStateEvent = useCallback(
+    (data: { pairing_id: string; connected: boolean }) => {
+      setPeerOnline(data.pairing_id, data.connected);
+      if (data.connected) {
+        setRemoteActiveConnection(data.pairing_id);
+      }
+    },
+    [setPeerOnline, setRemoteActiveConnection]
+  );
+  useTauriEvent<{ pairing_id: string; connected: boolean }>(
+    "remote_client_state",
+    handleRemoteStateEvent
+  );
 
   // Hover-expand state for collapsed sidebar: sidebar expands when hovered,
   // overlays the right content, and auto-collapses on mouse leave. The expand
@@ -672,6 +700,77 @@ export function ServerList({
                 ]);
               }}
             />
+            {/* Interconnected remote desktops — shown below "我的电脑", above SSH servers */}
+            {remotePeers.length > 0 && (
+              <>
+                {showFullContent && (
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                    {t("server.interconnected", "互联设备")}
+                  </div>
+                )}
+                {remotePeers.map((peer) => {
+                  const peerSelected = selectedId === `remote:${peer.pairingId}`;
+                  const isConnected = remoteActiveConnection === peer.pairingId && peer.online;
+                  return (
+                    <div
+                      key={peer.pairingId}
+                      className={`group relative flex items-center gap-3 cursor-pointer transition-all duration-150 rounded-lg mx-2 my-0.5 ${
+                        collapsed && !hoverExpanded ? "justify-center px-2 py-2" : "px-3 py-2"
+                      } ${
+                        peerSelected
+                          ? "bg-[#007AFF] text-white shadow-[0_2px_8px_rgba(0,122,255,0.35)]"
+                          : "hover:bg-gray-100/80 dark:hover:bg-white/8"
+                      }`}
+                      onClick={async () => {
+                        selectServer(`remote:${peer.pairingId}`);
+                        // If not connected, connect now
+                        if (!isConnected && peer.pairingKeyHex) {
+                          try {
+                            await ipcInvoke("ipc_remote_client_connect", {
+                              pairing_id: peer.pairingId,
+                              pairing_key_hex: peer.pairingKeyHex,
+                              pairing_jwt: peer.jwt,
+                              relay_url: peer.relayUrl,
+                            });
+                          } catch (e: any) {
+                            toast.error(`Connection failed: ${e?.message || e}`);
+                          }
+                        }
+                        // Open remote desktop modal to show terminals
+                        onOpenRemoteDesktop?.();
+                      }}
+                      role="listitem"
+                      tabIndex={0}
+                      title={collapsed && !hoverExpanded ? (peer.peerName || peer.pairingId) : undefined}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          (e.currentTarget as HTMLElement).click();
+                        }
+                      }}
+                    >
+                      <div
+                        className={`w-2.5 h-2.5 flex-shrink-0 rounded-full ${peerSelected ? "bg-white border-white" : isConnected ? "bg-status-connected" : "bg-status-disconnected"} ${peerSelected ? "" : "rounded-full"}`}
+                        aria-hidden
+                      />
+                      {showFullContent && (
+                        <div className="flex-1 min-w-0">
+                          <div className={`text-sm font-medium truncate flex items-center gap-1 ${peerSelected ? "text-white" : "text-gray-900 dark:text-gray-100"}`}>
+                            <span className="text-xs">🖥️</span>
+                            <span className="truncate">{peer.peerName || peer.pairingId}</span>
+                          </div>
+                          <div className={`text-xs truncate ${peerSelected ? "text-white/80" : "text-gray-500 dark:text-gray-400"}`}>
+                            {isConnected
+                              ? t("remote_desktop.online", "在线")
+                              : t("remote_desktop.offline", "离线")}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            )}
             {sorted.length === 0 ? (
               <button
                 className={`w-full p-3 text-center text-sm text-gray-500 hover:text-[#007AFF] hover:bg-gray-100/80 transition-colors rounded-lg ${!showFullContent ? "hidden" : ""}`}
