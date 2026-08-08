@@ -58,12 +58,12 @@ permissions:
 执行以下命令并贴出实际输出（不是总结，是原始输出）：
 
 ```bash
-# Go 后端：编译 + 单元测试 + 静态检查
-cd backend && go build ./... 2>&1
-cd backend && go test ./... 2>&1
-cd backend && go vet ./... 2>&1
+# Go 后端：编译 + 单元测试 + 静态检查（后端在平级目录 termfast-server/）
+cd ../termfast-server && go build ./... 2>&1
+cd ../termfast-server && go test ./... 2>&1
+cd ../termfast-server && go vet ./... 2>&1
 
-# Rust 后端：编译检查 + clippy + 单元测试
+# Rust：编译检查 + clippy + 单元测试
 cd src-tauri && cargo check --lib 2>&1
 cd src-tauri && cargo clippy --lib 2>&1
 cd src-tauri && cargo test --lib 2>&1
