@@ -2801,6 +2801,24 @@ fn get_this_device_id() -> String {
     }
 }
 
+/// Check if a backend device_id matches this device, accounting for the
+/// D9 suffix: backend may store "host-user" while this device reports
+/// "host-user-a1b2" (or vice versa).
+fn device_id_matches(backend_id: &str, this_id: &str) -> bool {
+    if backend_id == this_id {
+        return true;
+    }
+    // this_id may have suffix that backend_id doesn't
+    if this_id.starts_with(backend_id) && this_id[backend_id.len()..].starts_with('-') {
+        return true;
+    }
+    // backend_id may have suffix that this_id doesn't
+    if backend_id.starts_with(this_id) && backend_id[this_id.len()..].starts_with('-') {
+        return true;
+    }
+    false
+}
+
 /// List desktop-to-desktop pairings.
 /// Merges backend API data (authoritative pairing records) with local
 /// pairings.json (which has pairing_key_hex + jwt needed for tunnel connect).
@@ -2866,7 +2884,7 @@ async fn ipc_list_desktop_pairings(
         let desktop_device_id = bp.get("desktop_device_id").and_then(|v| v.as_str()).unwrap_or("");
         // If this device is the server (B), peer is client (A)
         let this_device_id = get_this_device_id();
-        let (peer_name, peer_role) = if desktop_device_id == this_device_id {
+        let (peer_name, peer_role) = if device_id_matches(desktop_device_id, &this_device_id) {
             (mobile_name, "server")
         } else {
             (desktop_name, "client")
