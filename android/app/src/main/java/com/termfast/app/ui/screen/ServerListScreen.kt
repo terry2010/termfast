@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Public
@@ -33,6 +34,7 @@ import androidx.compose.material3.*
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,6 +90,24 @@ fun ServerListScreen(navController: NavController) {
         if (isLoggedIn) PairingStore.getAllPairings() else emptyList()
     }
     val hasRemoteConfig = remotePairings.isNotEmpty()
+
+    // Desktop interconnection state
+    var desktopPairings by remember { mutableStateOf<List<PairingApi.DeviceInfo>>(emptyList()) }
+    var showInterconnectIntro by remember { mutableStateOf(false) }
+    val showInterconnectButton by remember(remotePairings, desktopPairings) {
+        derivedStateOf {
+            if (remotePairings.size < 2) return@derivedStateOf false
+            val mobilePairedDesktopIds = remotePairings.map { it.desktopDeviceId }.toSet()
+            val interconnectedDesktopIds = mutableSetOf<String>()
+            desktopPairings.filter { it.status == "completed" }.forEach { dp ->
+                interconnectedDesktopIds.add(dp.desktopDeviceId)
+                if (dp.pairingType == "desktop") {
+                    interconnectedDesktopIds.add(dp.deviceId)
+                }
+            }
+            mobilePairedDesktopIds.any { it !in interconnectedDesktopIds }
+        }
+    }
 
     // Login dialog state
     var loginEmail by remember { mutableStateOf("") }
@@ -162,7 +182,8 @@ fun ServerListScreen(navController: NavController) {
     LaunchedEffect(Unit) {
         PairingStore.init(context)
         // Sync with backend: remove locally-stored pairings that are revoked
-        // or no longer exist on the backend.
+        // or no longer exist on the backend. Also load desktop pairings to
+        // determine whether to show the "设备互联" button.
         val token = PairingStore.getToken()
         if (token != null) {
             scope.launch {
@@ -184,6 +205,10 @@ fun ServerListScreen(navController: NavController) {
                         }
                         // Trigger recomposition of remotePairings
                         remoteVersion++
+                    }
+                    // Load desktop pairings to check interconnection status
+                    desktopPairings = withContext(Dispatchers.IO) {
+                        PairingApi.listDevicesByType(token, "desktop")
                     }
                 } catch (e: Exception) {
                     // Backend unreachable — keep local pairings as-is
@@ -303,13 +328,22 @@ fun ServerListScreen(navController: NavController) {
             Box(Modifier.fillMaxSize().padding(padding)) {
                 EmptyServerState(modifier = Modifier.fillMaxSize())
                 // Floating buttons — overlaid on empty state too
-                Row(
+                Column(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
+                        .align(Alignment.BottomEnd)
                         .padding(horizontal = 16.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.End,
                 ) {
+                    if (showInterconnectButton) {
+                        ExtendedFloatingActionButton(
+                            onClick = { showInterconnectIntro = true },
+                            icon = { Icon(Icons.Filled.Link, contentDescription = null) },
+                            text = { Text("设备互联") },
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                    }
                     ExtendedFloatingActionButton(
                         onClick = onScanClick,
                         icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
@@ -467,13 +501,22 @@ fun ServerListScreen(navController: NavController) {
             }
             }
                 // Floating buttons — overlaid at bottom of Box
-                Row(
+                Column(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
+                        .align(Alignment.BottomEnd)
                         .padding(horizontal = 16.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.End,
                 ) {
+                    if (showInterconnectButton) {
+                        ExtendedFloatingActionButton(
+                            onClick = { showInterconnectIntro = true },
+                            icon = { Icon(Icons.Filled.Link, contentDescription = null) },
+                            text = { Text("设备互联") },
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                    }
                     ExtendedFloatingActionButton(
                         onClick = onScanClick,
                         icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
@@ -490,6 +533,49 @@ fun ServerListScreen(navController: NavController) {
                     )
                 }
             }
+        }
+
+        // Device interconnection intro dialog
+        if (showInterconnectIntro) {
+            AlertDialog(
+                onDismissRequest = { showInterconnectIntro = false },
+                title = { Text("设备互联", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "设备互联可以让两台已配对的电脑互相访问对方的终端。",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            "使用步骤：",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text("1. 选择两台已配对的电脑", style = MaterialTheme.typography.bodySmall)
+                        Text("2. 点击「建立互配」", style = MaterialTheme.typography.bodySmall)
+                        Text("3. 两台电脑将自动建立加密连接", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "建立互联后，你可以在电脑端的左侧列表中看到互联的设备，直接点击即可远程访问对方的终端。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showInterconnectIntro = false
+                            navController.navigate("desktop_pairing")
+                        }
+                    ) { Text("知道了") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showInterconnectIntro = false }) {
+                        Text("取消")
+                    }
+                },
+            )
         }
 
         // Remote terminal picker dialog — when selectedPairing is set,
