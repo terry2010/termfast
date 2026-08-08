@@ -35,8 +35,8 @@ describe("parseOsc0", () => {
 
   it("detects Devin in lowercase title (devin: workspace)", () => {
     // Devin CLI v3000+ emits lowercase "devin: <workspace>" as OSC 0 title
-    const result = parseOsc0("devin: ssh-proxy");
-    expect(result).toEqual({ kind: "title", cli: "devin", title: "devin: ssh-proxy" });
+    const result = parseOsc0("devin: termfast");
+    expect(result).toEqual({ kind: "title", cli: "devin", title: "devin: termfast" });
   });
 
   it("returns null for non-CLI title", () => {

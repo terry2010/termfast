@@ -1008,7 +1008,7 @@ describe("useAgentStatus — screen scraping for non-Devin CLIs", () => {
     expect(result.current.cli).toBe("devin");
 
     // User exits devin — screen now shows shell prompt
-    term._setScreenLines(["terry@mac-mini ssh-proxy %"]);
+    term._setScreenLines(["terry@mac-mini termfast %"]);
 
     // Advance tick — should detect shell prompt and reset to unknown
     act(() => {
@@ -1044,7 +1044,7 @@ describe("useAgentStatus — screen scraping for non-Devin CLIs", () => {
     // is still visible above. The old code checked detectCli on full screen
     // which would return "devin" from the banner, preventing reset.
     // The new code checks only the last line for shell prompt.
-    const screen = ["Devin CLI v3000.3.27", "❭ some old output", "terry@mac-mini ssh-proxy %"];
+    const screen = ["Devin CLI v3000.3.27", "❭ some old output", "terry@mac-mini termfast %"];
     const term = createMockTerminal(screen);
     const { result } = renderHook(() => useAgentStatus(term as any, "s1"));
 
@@ -1134,7 +1134,7 @@ describe("useAgentStatus — screen scraping for non-Devin CLIs", () => {
     expect(result.current.status).toBe("idle");
 
     // Phase 6: User exits Devin — shell prompt appears on last line
-    term._setScreenLines(["terry@mac-mini ssh-proxy %"]);
+    term._setScreenLines(["terry@mac-mini termfast %"]);
     act(() => { vi.advanceTimersByTime(600); });
     expect(result.current.cli).toBe("unknown");
     expect(result.current.status).toBe("unknown");
