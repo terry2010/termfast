@@ -2788,17 +2788,125 @@ async fn ipc_remote_client_unsubscribe(
     rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Unsubscribe(terminal_id)).await
 }
 
-/// List desktop-to-desktop pairings from the local store.
-/// Returns pairings where pairing_type = "desktop".
+/// Get this desktop's device_id (hostname-username-xxxx format).
+/// D9: Includes 4-digit random hex suffix to prevent device_id collisions.
+fn get_this_device_id() -> String {
+    let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".to_string());
+    let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
+    let suffix = device_id_store::get_or_create_suffix();
+    if suffix.is_empty() {
+        format!("{}-{}", hostname, username)
+    } else {
+        format!("{}-{}-{}", hostname, username, suffix)
+    }
+}
+
+/// List desktop-to-desktop pairings.
+/// Merges backend API data (authoritative pairing records) with local
+/// pairings.json (which has pairing_key_hex + jwt needed for tunnel connect).
+/// This handles the case where desktop pairings were created via JoinBatch
+/// or the old initiate-desktop API but never saved locally (e.g. the
+/// DESKTOP_PAIR frame wasn't delivered because the mobile tunnel was down).
 #[tauri::command]
 async fn ipc_list_desktop_pairings(
     _app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let all = pairing_store::load();
-    let desktop_pairings: Vec<_> = all.into_iter()
+    // 1. Load local pairings (have pairing_key_hex + jwt for tunnel connect)
+    let local_all = pairing_store::load();
+    let local_desktop: Vec<_> = local_all.into_iter()
         .filter(|p| p.pairing_type == "desktop")
         .collect();
-    Ok(serde_json::json!({ "pairings": desktop_pairings }))
+    let local_by_id: std::collections::HashMap<String, &pairing_store::StoredPairing> =
+        local_desktop.iter().map(|p| (p.pairing_id.clone(), p)).collect();
+
+    // 2. Query backend for all desktop pairings for this user
+    //    (needs user JWT from localStorage → pairing_token)
+    let mut merged: Vec<serde_json::Value> = Vec::new();
+
+    // Try to fetch from backend API
+    let token = {
+        // Read user JWT from pairing_store (mobile pairing jwt is user JWT)
+        let pairings = pairing_store::load();
+        pairings.iter()
+            .find(|p| p.pairing_type == "mobile" && !p.jwt.is_empty())
+            .map(|p| p.jwt.clone())
+    };
+    let backend_pairings: Vec<serde_json::Value> = match token {
+        Some(token) => {
+            let device_id = get_this_device_id();
+            match pairing::list_devices(&token, &device_id).await {
+                Ok(resp) => {
+                    let devs = resp.get("devices").and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    devs.into_iter()
+                        .filter(|d| {
+                            d.get("pairing_type").and_then(|v| v.as_str()) == Some("desktop")
+                                && d.get("status").and_then(|v| v.as_str()) == Some("completed")
+                        })
+                        .collect()
+                }
+                Err(e) => {
+                    tracing::warn!("ipc_list_desktop_pairings: backend query failed: {}", e);
+                    Vec::new()
+                }
+            }
+        }
+        None => Vec::new(),
+    };
+
+    // 3. Merge: backend records are authoritative; local provides key+jwt
+    for bp in &backend_pairings {
+        let pid = bp.get("pairing_id").and_then(|v| v.as_str()).unwrap_or("");
+        let local = local_by_id.get(pid);
+        // Determine peer name: for server (B), peer is client (A) = mobile_name;
+        // for client (A), peer is server (B) = desktop_name.
+        let desktop_name = bp.get("desktop_name").and_then(|v| v.as_str()).unwrap_or("");
+        let mobile_name = bp.get("mobile_name").and_then(|v| v.as_str()).unwrap_or("");
+        let desktop_device_id = bp.get("desktop_device_id").and_then(|v| v.as_str()).unwrap_or("");
+        // If this device is the server (B), peer is client (A)
+        let this_device_id = get_this_device_id();
+        let (peer_name, peer_role) = if desktop_device_id == this_device_id {
+            (mobile_name, "server")
+        } else {
+            (desktop_name, "client")
+        };
+
+        let entry = serde_json::json!({
+            "pairing_id": pid,
+            "pairing_key_hex": local.map(|p| p.pairing_key_hex.clone()).unwrap_or_default(),
+            "relay_url": local.map(|p| p.relay_url.clone()).unwrap_or_else(|| {
+                // Default relay URL (same as mobile pairings)
+                "ws://sh.zimufan.com:39527/tunnel".to_string()
+            }),
+            "jwt": local.map(|p| p.jwt.clone()).unwrap_or_default(),
+            "pairing_type": "desktop",
+            "peer_name": peer_name,
+            "peer_role": peer_role,
+        });
+        merged.push(entry);
+    }
+
+    // 4. Add local-only desktop pairings (not in backend, e.g. revoked on
+    //    backend but still in local store)
+    let backend_ids: std::collections::HashSet<String> = backend_pairings.iter()
+        .filter_map(|bp| bp.get("pairing_id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    for lp in &local_desktop {
+        if !backend_ids.contains(&lp.pairing_id) {
+            merged.push(serde_json::json!({
+                "pairing_id": lp.pairing_id,
+                "pairing_key_hex": lp.pairing_key_hex,
+                "relay_url": lp.relay_url,
+                "jwt": lp.jwt,
+                "pairing_type": "desktop",
+                "peer_name": lp.peer_name,
+                "peer_role": lp.peer_role,
+            }));
+        }
+    }
+
+    Ok(serde_json::json!({ "pairings": merged }))
 }
 
 /// Initiate a desktop-to-desktop pairing from the desktop (not phone).
