@@ -13,10 +13,10 @@
 
 ### 项目目录结构
 
-后端源码已拆分为独立仓库，与本项目平级：
+后端源码已拆分为独立仓库，两个仓库平级放在 `termfast-all/` 下：
 
 ```
-code/
+/Volumes/2t/code/termfast-all/
 ├── termfast/                 ← 本仓库（前端 + 桌面端 + Android + PHP 服务器）
 │   ├── src/                  ← React 前端
 │   ├── src-tauri/            ← Tauri 桌面端（Rust）
@@ -27,7 +27,8 @@ code/
     └── internal/
 ```
 
-- **后端改动**：在 `termfast-server/` 目录里改，commit + push 到 `github.com/terry2010/termfast-server`
+- **工作目录**：`/Volumes/2t/code/termfast-all/termfast/`
+- **后端改动**：在 `../termfast-server/` 目录里改，commit + push 到 `github.com/terry2010/termfast-server`
 - **本项目改动**：在 `termfast/` 目录里改，commit + push 到 `github.com/terry2010/termfast`
 - 两个仓库物理隔离，不存在交叉污染的可能
 
@@ -350,7 +351,7 @@ pub const CLOUD_SYNC_SERVER: &str = "https://termfast.xisj.com/tools/cloud-sync.
 - **服务器**：`sh.zimufan.com`（SSH 用户 `root`）
 - **后端二进制路径**：`/root/termfast-server/termfast-backend`
 - **后端源码路径**：`/root/termfast-server/`（独立 git 仓库 `termfast-server`，remote: `github.com/terry2010/termfast-server`）
-- **本地后端源码路径**：`/Volumes/2t/code/termfast-server/`（同仓库 clone）
+- **本地后端源码路径**：`/Volumes/2t/code/termfast-all/termfast-server/`（同仓库 clone）
 - **监听端口**：`:39527`
 - **日志文件**：`/root/termfast-server/backend.log`
 - **数据库**：Docker 容器 `mysql`，MySQL，用户 `root`，密码 `654321`，数据库名 `termfast`
@@ -359,8 +360,8 @@ pub const CLOUD_SYNC_SERVER: &str = "https://termfast.xisj.com/tools/cloud-sync.
 
 后端源码在平级目录 `termfast-server/`（独立 git 仓库），不在本仓库内：
 
-1. 在 `/Volumes/2t/code/termfast-server/` 修改代码
-2. `cd /Volumes/2t/code/termfast-server && go build ./... && go test ./...` 编译测试
+1. 在 `/Volumes/2t/code/termfast-all/termfast-server/` 修改代码
+2. `cd /Volumes/2t/code/termfast-all/termfast-server && go build ./... && go test ./...` 编译测试
 3. `git add && git commit && git push origin main` 提交到 termfast-server 仓库
 4. 服务器上 `git pull` 拉取最新代码
 
