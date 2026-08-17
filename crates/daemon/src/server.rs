@@ -1291,14 +1291,15 @@ async fn run_named_pipe_listener(pipe_name: String, state: Arc<DaemonState>) {
     use tokio::net::windows::named_pipe::ServerOptions;
     let mut client_id_counter: u64 = 0;
 
-    // Set security descriptor to restrict access to current user only (FP-1.7)
-    // SDDL: D:P(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;AU) — Admins, System, Authenticated Users
-    // NOTE (P1-1): tokio's ServerOptions does not expose security_attributes,
-    // so the SDDL is constructed but not applied to the pipe instance.
-    // The pipe is created with default security (same-user access only via DACL inheritance).
-    // A full fix requires a custom named pipe builder using CreateNamedPipeW with
-    // SECURITY_ATTRIBUTES. Tracked as known limitation.
-    set_pipe_security(&pipe_name);
+    // Log the named pipe security status (FP-1.7, D-7).
+    // The pipe is created by tokio's ServerOptions with default DACL, which
+    // restricts access to the same user (via inherited DACL). A custom SDDL
+    // (e.g. restricting to Admins/System/Authenticated Users) would require
+    // a custom named pipe builder using CreateNamedPipeW with
+    // SECURITY_ATTRIBUTES — tokio's ServerOptions does not expose this.
+    // The default DACL is sufficient for single-user machines; the log
+    // honestly reflects this rather than claiming SDDL was applied.
+    log_pipe_security_notice(&pipe_name);
 
     loop {
         tokio::select! {
@@ -1409,57 +1410,25 @@ async fn handle_named_pipe_client(
 
 // === SECTION 4 END ===
 
-/// Set Windows named pipe security descriptor to restrict access (FP-1.7)
-/// Only Admins (BA), System (SY), and Authenticated Users (AU) get full access.
+/// Log the Windows named pipe security status (D-7).
+///
+/// tokio's `ServerOptions` does not expose `security_attributes`, so the pipe
+/// is created with the default DACL (same-user access only via inheritance).
+/// This function honestly logs that fact rather than claiming a custom SDDL
+/// was applied. A full fix would require a custom named pipe builder using
+/// `CreateNamedPipeW` with `SECURITY_ATTRIBUTES`.
 #[cfg(windows)]
-fn set_pipe_security(_pipe_name: &str) {
-    use std::ffi::CString;
-    use std::os::raw::c_void;
-
-    // SDDL: D:P(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;AU)
-    // D:P = DACL, Protected
-    // A = Allow, GA = Generic All
-    // BA = Built-in Admins, SY = System, AU = Authenticated Users
-    let sddl = CString::new("D:P(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;AU)").unwrap();
-
-    #[link(name = "advapi32")]
-    extern "system" {
-        fn ConvertStringSecurityDescriptorToSecurityDescriptorA(
-            sddl: *const i8,
-            revision: u32,
-            sd: *mut *mut c_void,
-            sd_size: *mut u32,
-        ) -> i32;
-        fn LocalFree(h: *mut c_void) -> *mut c_void;
-    }
-
-    // For named pipes, security is set per-instance via the security_attributes
-    // parameter of CreateNamedPipe. Since tokio's ServerOptions doesn't expose this,
-    // we log a warning. A full implementation would require a custom pipe builder.
-    let mut sd: *mut c_void = std::ptr::null_mut();
-    let mut sd_size: u32 = 0;
-    unsafe {
-        let ok = ConvertStringSecurityDescriptorToSecurityDescriptorA(
-            sddl.as_ptr(),
-            1, // SDDL_REVISION_1
-            &mut sd,
-            &mut sd_size,
-        );
-        if ok != 0 && !sd.is_null() {
-            // SDDL was parsed but NOT applied to the pipe — tokio's
-            // ServerOptions does not expose security_attributes. The
-            // pipe uses default DACL (same-user access only).
-            tracing::warn!("named pipe SDDL parsed but not applied (tokio limitation); pipe uses default DACL");
-            LocalFree(sd);
-        } else {
-            tracing::warn!("failed to parse named pipe security descriptor");
-        }
-    }
+fn log_pipe_security_notice(pipe_name: &str) {
+    tracing::info!(
+        "named pipe {} created with default DACL (same-user access); \
+         custom SDDL not applied (tokio ServerOptions limitation, D-7)",
+        pipe_name
+    );
 }
 
 #[cfg(not(windows))]
 #[allow(dead_code)]
-fn set_pipe_security(_pipe_name: &str) {
+fn log_pipe_security_notice(_pipe_name: &str) {
     // No-op on non-Windows platforms
 }
 

@@ -506,3 +506,46 @@ cd android
 "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify -v \
   android/app/build/outputs/apk/release/app-release.apk
 ```
+
+## v1 验收遗留缺陷处理（P2）
+
+> 来源：`docs/acceptance-report-final.md`（2026-07-13 甲方独立复核）。
+> P0/P1 缺陷（D-1~D-9, D-14）已全部修复，仅剩 2 项 P2 待补，处理方式如下。
+
+### D-12: spike S1-S9 真实 VPS 执行记录
+
+- **VPS**：`sh.zimufan.com`（已配置 root 免密 SSH 登录，同后端部署服务器）
+- **spike 代码**：`spikes/russh-stress/src/stress_test.rs`（S1-S9 函数齐全）
+- **执行方式**：通过环境变量注入真实 VPS 凭据后本地运行，留存输出日志到 `docs/`
+  ```bash
+  # 示例（具体环境变量名见 stress_test.rs 的 using_real_vps()）
+  SSH_TEST_HOST=sh.zimufan.com SSH_TEST_USER=root \
+    cargo run --bin russh-stress 2>&1 | tee docs/spike-s1-s9-real-vps-log.txt
+  ```
+- **完成标志**：`docs/` 下有 S1-S9 在真实 VPS 上通过的日志文件
+
+### D-13: `cargo tauri build` 双平台 release 构建
+
+- **职责划分**：
+  - **本地开发调试**：在本地编译验证（macOS 上 `cargo tauri build` 出 macOS 包；Windows 上由 Windows 开发机/VM 出 Windows 包）
+  - **正式发版**：由 GitHub CI 完成，不在本地手动跑
+- **发版 workflow**：`.github/workflows/release.yml`（Windows + macOS runner 自动构建安装包 + 签名 + 发布 Release）
+- **发版触发方式**：打 tag 并推送
+  ```bash
+  git tag v0.x.x
+  git push origin v0.x.x
+  ```
+- **发版完成标志**：GitHub Release 页面有 Windows + macOS 双平台安装包产物
+- **本地验证（开发期）**：macOS 本地可 `cargo tauri build` 验证 macOS 包构建无误；Windows 包需 Windows 机器或等 CI
+
+### Android 构建环境
+
+- **本地编译使用 Android Studio 的环境**（JDK / SDK / NDK 均由 Android Studio 安装）
+- **环境变量**（需在 shell 中设置或写入 `android/local.properties`）：
+  ```bash
+  export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+  export ANDROID_HOME=/Users/terry/Library/Android/sdk
+  export ANDROID_SDK_ROOT=$ANDROID_HOME
+  ```
+- **Rust native 库 + Gradle 构建命令**：见上方「构建与测试命令 → Android 构建」章节
+- **正式发版**：由 GitHub CI（`release.yml` 的 `build-android` job）完成 release APK 构建并上传到 GitHub Release

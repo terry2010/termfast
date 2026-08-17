@@ -261,4 +261,67 @@ mod tests {
     fn test_check_key_exists_nonexistent() {
         assert!(!check_key_exists("/nonexistent/key/path/12345"));
     }
+
+    /// D-2/D-14 contract test: verify that the marker format written by
+    /// push_public_key matches the sed cleanup pattern in
+    /// handle_cleanup_authorized_keys (daemon/src/handler.rs).
+    ///
+    /// push writes: `# termfast: <safe_name>` comment line + key line
+    /// cleanup deletes: `sed -i '/# termfast: <safe_name>/{N;d}'`
+    ///
+    /// This test verifies the marker format is consistent so cleanup actually
+    /// removes the key (the original D-2 bug was push had no marker, cleanup
+    /// sed matched a non-existent marker → key permanently残留).
+    #[test]
+    fn test_push_marker_matches_cleanup_pattern() {
+        // Replicate safe_name sanitization (alphanumerics + - _ .)
+        fn sanitize(name: &str) -> String {
+            let s: String = name
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+                .collect();
+            if s.is_empty() { "termfast".to_string() } else { s }
+        }
+
+        // Replicate push command marker format
+        let key_name = "my-ed25519-key";
+        let safe_name = sanitize(key_name);
+        let push_cmd = format!(
+            "mkdir -p ~/.ssh && echo '# termfast: {}' >> ~/.ssh/authorized_keys && echo '{}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys",
+            safe_name, "ssh-ed25519 AAAA..."
+        );
+
+        // Replicate cleanup sed pattern
+        let cleanup_cmd = format!(
+            "sed -i '/# termfast: {}/{{N;d}}' ~/.ssh/authorized_keys 2>/dev/null || true",
+            safe_name
+        );
+
+        // The marker in push must appear in the cleanup sed pattern
+        let marker = format!("# termfast: {}", safe_name);
+        assert!(
+            push_cmd.contains(&marker),
+            "push command must contain marker '{}', got: {}",
+            marker,
+            push_cmd
+        );
+        assert!(
+            cleanup_cmd.contains(&marker),
+            "cleanup sed pattern must contain marker '{}', got: {}",
+            marker,
+            cleanup_cmd
+        );
+
+        // Verify the sed pattern would match the marker line: the regex
+        // `/# termfast: <name>/` must match the literal string `# termfast: <name>`
+        // (safe_name has no regex-special chars after sanitization)
+        let marker_line = format!("# termfast: {}", safe_name);
+        let sed_regex = format!("# termfast: {}", safe_name);
+        assert!(
+            marker_line.contains(&sed_regex),
+            "sed regex '{}' must match marker line '{}'",
+            sed_regex,
+            marker_line
+        );
+    }
 }

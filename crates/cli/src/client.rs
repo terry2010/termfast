@@ -1,11 +1,10 @@
 //! Daemon socket client — FP-6.3
 //!
-//! Connects to the daemon via Unix socket and sends/receives IPC messages.
+//! Connects to the daemon via Unix socket (macOS/Linux) or Windows named pipe
+//! and sends/receives IPC messages.
 
 use anyhow::{bail, Result};
-#[cfg(unix)]
 use termfast_daemon::frame;
-#[cfg(unix)]
 use termfast_daemon::Request;
 use termfast_daemon::{Action, Response};
 
@@ -13,6 +12,8 @@ use termfast_daemon::{Action, Response};
 pub struct DaemonClient {
     #[cfg(unix)]
     stream: tokio::net::UnixStream,
+    #[cfg(windows)]
+    stream: tokio::net::windows::named_pipe::NamedPipeClient,
 }
 
 impl DaemonClient {
@@ -27,8 +28,6 @@ impl DaemonClient {
                 bail!("daemon is not running. Start it with `termfast --daemon` or launch the GUI")
             }
         };
-        #[cfg(not(unix))]
-        let _ = socket_path;
 
         #[cfg(unix)]
         {
@@ -40,8 +39,26 @@ impl DaemonClient {
             Ok(Self { stream })
         }
 
-        #[cfg(not(unix))]
-        bail!("Windows named pipe client not yet implemented")
+        #[cfg(windows)]
+        {
+            use tokio::net::windows::named_pipe::ClientOptions;
+            let stream = ClientOptions::new()
+                .open(&socket_path)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to connect to daemon named pipe {}: {}",
+                        socket_path,
+                        e
+                    )
+                })?;
+            Ok(Self { stream })
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = socket_path;
+            bail!("unsupported platform: only unix and windows are supported")
+        }
     }
 
     /// Send a request and wait for the response
@@ -50,34 +67,25 @@ impl DaemonClient {
         action: Action,
         params: serde_json::Value,
     ) -> Result<Response> {
-        #[cfg(not(unix))]
-        {
-            let _ = action;
-            let _ = params;
-            bail!("not supported on this platform")
+        // Tag CLI requests so daemon can broadcast focus events to GUI
+        let mut params = params;
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("_cli".to_string(), serde_json::Value::Bool(true));
+        } else {
+            params = serde_json::json!({ "_cli": true, "_data": params });
         }
-        #[cfg(unix)]
-        {
-            // Tag CLI requests so daemon can broadcast focus events to GUI
-            let mut params = params;
-            if let Some(obj) = params.as_object_mut() {
-                obj.insert("_cli".to_string(), serde_json::Value::Bool(true));
-            } else {
-                params = serde_json::json!({ "_cli": true, "_data": params });
-            }
-            let request = Request::new(action, params);
-            let request_data = serde_json::to_vec(&request)?;
+        let request = Request::new(action, params);
+        let request_data = serde_json::to_vec(&request)?;
 
-            let (mut read_half, mut write_half) = self.stream.split();
+        let (mut read_half, mut write_half) = tokio::io::split(&mut self.stream);
 
-            // Send request
-            frame::write_frame(&mut write_half, &request_data).await?;
+        // Send request
+        frame::write_frame(&mut write_half, &request_data).await?;
 
-            // Read response
-            let response_data = frame::read_frame(&mut read_half).await?;
-            let response: Response = serde_json::from_slice(&response_data)?;
-            Ok(response)
-        }
+        // Read response
+        let response_data = frame::read_frame(&mut read_half).await?;
+        let response: Response = serde_json::from_slice(&response_data)?;
+        Ok(response)
     }
 
     /// Send a simple request (no params)
@@ -149,42 +157,37 @@ impl DaemonClient {
 
     /// Continuously read events from the socket (for --follow mode)
     pub async fn follow_events(&mut self, json: bool) -> Result<()> {
-        #[cfg(not(unix))]
-        let _ = json;
-        #[cfg(unix)]
-        {
-            let (mut read_half, _write_half) = self.stream.split();
-            loop {
-                // Read next frame (blocks until data available)
-                let data = match frame::read_frame(&mut read_half).await {
-                    Ok(data) => data,
-                    Err(e)
-                        if e.to_string().contains("EOF")
-                            || e.to_string().contains("unexpected end") =>
-                    {
-                        break
-                    }
-                    Err(e) => return Err(e),
-                };
-
-                if let Ok(Response::Event {
-                    ref event,
-                    ref data,
-                }) = serde_json::from_slice::<Response>(&data)
+        let (mut read_half, _write_half) = tokio::io::split(&mut self.stream);
+        loop {
+            // Read next frame (blocks until data available)
+            let data = match frame::read_frame(&mut read_half).await {
+                Ok(data) => data,
+                Err(e)
+                    if e.to_string().contains("EOF")
+                        || e.to_string().contains("unexpected end") =>
                 {
-                    if json {
-                        println!(
-                            "{{\"event\":\"{}\",\"data\":{}}}",
-                            event,
-                            serde_json::to_string(data).unwrap_or_default()
-                        );
-                    } else {
-                        println!(
-                            "[{}] {}",
-                            event,
-                            serde_json::to_string_pretty(data).unwrap_or_default()
-                        );
-                    }
+                    break
+                }
+                Err(e) => return Err(e),
+            };
+
+            if let Ok(Response::Event {
+                ref event,
+                ref data,
+            }) = serde_json::from_slice::<Response>(&data)
+            {
+                if json {
+                    println!(
+                        "{{\"event\":\"{}\",\"data\":{}}}",
+                        event,
+                        serde_json::to_string(data).unwrap_or_default()
+                    );
+                } else {
+                    println!(
+                        "[{}] {}",
+                        event,
+                        serde_json::to_string_pretty(data).unwrap_or_default()
+                    );
                 }
             }
         }

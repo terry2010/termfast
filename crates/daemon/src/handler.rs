@@ -3750,10 +3750,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unimplemented_action() {
+    async fn test_cleanup_authorized_keys_missing_server_id() {
         let state = test_state();
-        // CleanupAuthorizedKeys is not yet implemented
+        // CleanupAuthorizedKeys IS implemented (handler.rs::handle_cleanup_authorized_keys).
+        // Without server_id param it returns InvalidParams — this verifies the
+        // param validation path, not "not implemented" (D-14).
         let req = Request::new_simple(Action::CleanupAuthorizedKeys);
+        let resp = handle_request(&req, &state).await;
+        assert!(matches!(resp, Response::Err { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_authorized_keys_server_not_found() {
+        let state = test_state();
+        // Provide server_id but the server doesn't exist in state — verifies
+        // the error is "server not found", not "not implemented" (D-14).
+        let req = Request::new(
+            Action::CleanupAuthorizedKeys,
+            serde_json::json!({"server_id": "nonexistent"}),
+        );
         let resp = handle_request(&req, &state).await;
         assert!(matches!(resp, Response::Err { .. }));
     }

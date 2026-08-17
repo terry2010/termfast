@@ -63,7 +63,7 @@ pub fn get_platform_adapter() -> Box<dyn PlatformAdapter> {
     }
 }
 
-/// Unsupported platform adapter (Linux etc.)
+/// Unsupported platform adapter (non-macOS/Windows/Linux)
 pub struct UnsupportedAdapter;
 
 #[async_trait::async_trait]

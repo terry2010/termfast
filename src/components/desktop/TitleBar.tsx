@@ -96,7 +96,7 @@ function ConnectionSummary() {
 
   return (
     <div className="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-300" data-tauri-drag-region>
-      <span className="font-medium" data-tauri-drag-region>termfast</span>
+      <span className="font-medium" data-tauri-drag-region>TermFast</span>
       {connected.length > 0 && (
         <span className="flex items-center gap-1" data-tauri-drag-region>
           <span className="w-2 h-2 rounded-full bg-green-500" />
