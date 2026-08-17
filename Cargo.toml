@@ -83,5 +83,8 @@ termfast-desktop = { path = "crates/desktop" }
 termfast-cloud-sync = { path = "crates/cloud-sync" }
 termfast-test-utils = { path = "crates/test-utils" }
 
+# SQLCipher (bundled + vendored OpenSSL for cross-compilation)
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
+
 # Test dependencies
 tempfile = "3"

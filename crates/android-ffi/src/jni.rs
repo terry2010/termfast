@@ -210,26 +210,35 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetDataDir(
     path: JString,
 ) {
     let dir = jstring_to_string(&mut env, &path);
-    // Initialize credential store for this data directory
-    crate::credential::init_credential_store(&dir);
-    // Initialize config manager for this data directory
-    let path_buf = std::path::PathBuf::from(&dir);
-    // Do all async work OUTSIDE the state lock to avoid blocking
-    // other JNI calls during startup.
-    let (servers, config_manager) = if let Ok(cm) = crate::config::config_manager_for_dir(path_buf) {
-        let rt = runtime();
-        let config = cm.get_blocking();
-        let templates = config.trigger_templates.clone();
-        let mut servers = std::collections::HashMap::new();
-        for server in config.servers.iter() {
-            let instance = Arc::new(ServerInstance::new(server.clone()));
-            let _ = rt.block_on(instance.set_trigger_templates(templates.clone()));
-            let _ = rt.block_on(instance.set_triggers(server.triggers.clone()));
-            let _ = rt.block_on(instance.set_socket_protector(Arc::new(crate::network::AndroidSocketProtector)));
-            servers.insert(server.id.clone(), instance);
+    // Initialize SqlCipherStorage singleton for this data directory.
+    // If the user has set a master password, this returns "NEED_UNLOCK"
+    // and the Kotlin layer should call nativeCredentialUnlockWithKey first,
+    // then call nativeSetDataDir again.
+    let storage_ok = crate::config::init_sqlcipher_storage(&dir).is_ok();
+    // Initialize credential store from the shared SqlCipherStorage (only if storage initialized)
+    if storage_ok {
+        crate::credential::init_credential_store();
+    }
+    // Initialize config manager from SqlCipherStorage (NOT config.json)
+    let (servers, config_manager) = if storage_ok {
+        if let Ok(cm) = crate::config::config_manager_from_sqlcipher() {
+            let rt = runtime();
+            let config = cm.get_blocking();
+            let templates = config.trigger_templates.clone();
+            let mut servers = std::collections::HashMap::new();
+            for server in config.servers.iter() {
+                let instance = Arc::new(ServerInstance::new(server.clone()));
+                let _ = rt.block_on(instance.set_trigger_templates(templates.clone()));
+                let _ = rt.block_on(instance.set_triggers(server.triggers.clone()));
+                let _ = rt.block_on(instance.set_socket_protector(Arc::new(crate::network::AndroidSocketProtector)));
+                servers.insert(server.id.clone(), instance);
+            }
+            (servers, Some(cm))
+        } else {
+            (std::collections::HashMap::new(), None)
         }
-        (servers, Some(cm))
     } else {
+        // Storage not initialized (NEED_UNLOCK) — config will be loaded after unlock
         (std::collections::HashMap::new(), None)
     };
     // Now briefly acquire the lock to update state.
@@ -1031,9 +1040,10 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialInitia
     let store = crate::credential::android_credential_store();
     let ok = store.initialize(&pw).is_ok();
     if ok {
-        // Clear stale sync password hash — new master password means
+        // Clear stale sync password hash in DB — new master password means
         // the old cloud sync password hash is no longer relevant.
-        let _ = std::fs::remove_file(crate::cloud_sync::data_dir().join("sync_hash.dat"));
+        let storage = crate::config::sqlcipher_storage();
+        let _ = storage.set_sync_meta("sync_hash", "");
     }
     bool_to_jbool(ok)
 }
@@ -1049,10 +1059,12 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialUnlock
 ) -> jboolean {
     let pw = jstring_to_secret(&mut env, &master_password);
     let store = crate::credential::android_credential_store();
-    bool_to_jbool(store.unlock(&pw).is_ok())
+    bool_to_jbool(store.unlock_with_password(&pw).is_ok())
 }
 
 /// Unlock using a cached derived key (raw 32 bytes, base64-encoded by Kotlin).
+/// On Android, this also re-initializes the SqlCipherStorage with the DEK
+/// (needed when nativeSetDataDir returned NEED_UNLOCK), then loads config from DB.
 /// Returns true on success, false on error.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
@@ -1066,9 +1078,40 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialUnlock
         Some(b) if b.len() == 32 => b,
         _ => return false as jboolean,
     };
-    let key = termfast_credential::DerivedKey::from_bytes(&bytes);
+    let key: [u8; 32] = bytes.as_slice().try_into().unwrap_or([0u8; 32]);
+
+    // If SqlCipherStorage wasn't initialized (NEED_UNLOCK case), initialize it with the DEK
+    if !crate::config::is_sqlcipher_initialized() {
+        let st = state().lock().unwrap();
+        let dir = st.data_dir.clone();
+        drop(st);
+        if !dir.is_empty() {
+            if crate::config::init_sqlcipher_storage_with_key(&dir, &key).is_err() {
+                return false as jboolean;
+            }
+            // Initialize credential store and reload config from DB
+            crate::credential::init_credential_store();
+            if let Ok(cm) = crate::config::config_manager_from_sqlcipher() {
+                let rt = runtime();
+                let config = cm.get_blocking();
+                let templates = config.trigger_templates.clone();
+                let mut servers = std::collections::HashMap::new();
+                for server in config.servers.iter() {
+                    let instance = Arc::new(ServerInstance::new(server.clone()));
+                    let _ = rt.block_on(instance.set_trigger_templates(templates.clone()));
+                    let _ = rt.block_on(instance.set_triggers(server.triggers.clone()));
+                    let _ = rt.block_on(instance.set_socket_protector(Arc::new(crate::network::AndroidSocketProtector)));
+                    servers.insert(server.id.clone(), instance);
+                }
+                let mut st = state().lock().unwrap();
+                st.servers = servers;
+                st.config_manager = Some(cm);
+            }
+        }
+    }
+
     let store = crate::credential::android_credential_store();
-    bool_to_jbool(store.unlock_with_key(key).is_ok())
+    bool_to_jbool(store.unlock(&key).is_ok())
 }
 
 /// Get the derived key (base64-encoded 32 bytes) for caching in Android Keystore.
@@ -1082,7 +1125,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialGetKey
     let store = crate::credential::android_credential_store();
     match store.derived_key() {
         Some(key) => {
-            let encoded = base64_encode(key.as_bytes());
+            let encoded = base64_encode(&key);
             string_to_jstring(&mut env, encoded.as_str()).into_raw()
         }
         None => std::ptr::null_mut(),
@@ -1128,9 +1171,10 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialChange
     let store = crate::credential::android_credential_store();
     let ok = store.change_password(&old, &new).is_ok();
     if ok {
-        // Clear stale sync password hash — password changed, old cloud
+        // Clear stale sync password hash in DB — password changed, old cloud
         // sync password hash no longer matches.
-        let _ = std::fs::remove_file(crate::cloud_sync::data_dir().join("sync_hash.dat"));
+        let storage = crate::config::sqlcipher_storage();
+        let _ = storage.set_sync_meta("sync_hash", "");
     }
     bool_to_jbool(ok)
 }
@@ -1146,8 +1190,9 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialReset(
     let store = crate::credential::android_credential_store();
     let ok = store.reset().is_ok();
     if ok {
-        // Clear sync password hash on reset too.
-        let _ = std::fs::remove_file(crate::cloud_sync::data_dir().join("sync_hash.dat"));
+        // Clear sync password hash in DB on reset too.
+        let storage = crate::config::sqlcipher_storage();
+        let _ = storage.set_sync_meta("sync_hash", "");
     }
     bool_to_jbool(ok)
 }

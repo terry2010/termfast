@@ -94,6 +94,8 @@ pub enum Error {
     Crypto(String),
     #[error("Serde error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     #[error("{0}")]
     Other(String),
 }
@@ -108,6 +110,7 @@ impl Error {
             Error::Config(msg) => IpcError::new(ErrorCode::ConfigCorrupt, msg.clone()),
             Error::Crypto(msg) => IpcError::new(ErrorCode::DecryptionFailed, msg.clone()),
             Error::Serde(e) => IpcError::new(ErrorCode::ImportFailed, e.to_string()),
+            Error::Sqlite(e) => IpcError::new(ErrorCode::Internal, e.to_string()),
             Error::Other(msg) => IpcError::new(ErrorCode::Internal, msg.clone()),
         }
     }

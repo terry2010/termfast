@@ -6,9 +6,14 @@ pub mod config;
 pub mod manager;
 pub mod migration;
 pub mod runtime_state;
+pub mod sqlite_storage;
 pub mod storage;
 
 pub use config::*;
 pub use manager::ConfigManager;
 pub use runtime_state::{RuntimeState, RuntimeStateManager};
+pub use sqlite_storage::{
+    open_or_recover, open_with_key, OpenResult, SqlCipherConfigStorage, SqlCipherStorage,
+    DEFAULT_DEK,
+};
 pub use storage::{ConfigStorage, FileConfigStorage, InMemoryConfigStorage};

@@ -18,11 +18,14 @@ mod tests {
     async fn start_test_daemon() -> (DaemonServer, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let socket_path = dir.path().join("test.sock");
-        let rs_path = dir.path().join("runtime_state.json");
+        let rs_db_path = dir.path().join("runtime.db");
         let config = Config::default();
         let mgr = ConfigManager::with_storage(config, Arc::new(InMemoryConfigStorage::new()));
+        let rs_storage = Arc::new(
+            termfast_core::config::SqlCipherStorage::create_new(&rs_db_path, &termfast_core::config::DEFAULT_DEK).unwrap(),
+        );
         let state = DaemonState::new(mgr).with_runtime_state(Arc::new(
-            termfast_core::config::RuntimeStateManager::new(&rs_path),
+            termfast_core::config::RuntimeStateManager::new(rs_storage),
         ));
         let server = DaemonServer::start_with_path(state, socket_path)
             .await

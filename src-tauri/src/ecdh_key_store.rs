@@ -119,9 +119,51 @@ fn decrypt_private_key(ciphertext: &[u8], nonce: &[u8], salt: &[u8]) -> Result<V
 }
 
 /// Get or create the ECDH key pair.
+/// Prefers SQLCipher DB if the global storage singleton is initialized.
+/// Falls back to file-based storage for backward compatibility.
 pub fn get_or_create_key() -> Result<EcdhKeyPair, String> {
+    // Try SQLCipher first
+    if let Some(storage) = crate::storage_singleton::get_storage() {
+        return get_or_create_key_from_storage(storage);
+    }
+    // Fallback to file-based storage
     let path = ecdh_key_path();
     get_or_create_key_at(&path)
+}
+
+/// Get or create ECDH key from SqlCipherStorage.
+fn get_or_create_key_from_storage(
+    storage: &std::sync::Arc<termfast_core::config::SqlCipherStorage>,
+) -> Result<EcdhKeyPair, String> {
+    // Try to load existing key from DB
+    if let Ok(Some((pub_bytes, priv_bytes, _))) = storage.get_ecdh_key() {
+        if priv_bytes.len() == 32 && pub_bytes.len() == 32 {
+            let mut priv_arr = [0u8; 32];
+            priv_arr.copy_from_slice(&priv_bytes);
+            let mut pub_arr = [0u8; 32];
+            pub_arr.copy_from_slice(&pub_bytes);
+            let secret = StaticSecret::from(priv_arr);
+            return Ok(EcdhKeyPair {
+                public_key: pub_arr,
+                secret,
+            });
+        }
+    }
+
+    // Generate new key pair
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let public = PublicKey::from(&secret);
+    let priv_bytes = secret.to_bytes();
+
+    // Save to DB
+    storage
+        .upsert_ecdh_key(&public.to_bytes(), &priv_bytes)
+        .map_err(|e| format!("failed to persist ECDH key to DB: {}", e))?;
+
+    Ok(EcdhKeyPair {
+        public_key: public.to_bytes(),
+        secret,
+    })
 }
 
 /// Get or create key at a specific path (for testing).

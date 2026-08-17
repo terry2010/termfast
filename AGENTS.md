@@ -136,11 +136,20 @@ cd src-tauri && cargo check --lib
 cd src-tauri && cargo clippy --lib
 cd src-tauri && cargo test --lib
 npx tsc --noEmit
+# Android 交叉编译需要设置 NDK 环境变量
+NDK_BIN=~/Library/Android/sdk/ndk/30.0.15729638/toolchains/llvm/prebuilt/darwin-x86_64/bin
+export PATH="$NDK_BIN:$PATH"
+export RANLIB_aarch64_linux_android="$NDK_BIN/aarch64-linux-android-ranlib"
+export AR_aarch64_linux_android="$NDK_BIN/aarch64-linux-android-ar"
 cargo build --target aarch64-linux-android -p termfast-android-ffi
 cd android && ./gradlew :app:assembleDebug
 ```
 
 全部通过。
+
+> **注意**：Android 交叉编译需要 `RANLIB_aarch64_linux_android` 环境变量指向 NDK 的 ranlib，
+> 否则 openssl-sys build script 会因找不到 `aarch64-linux-android-ranlib` 而失败。
+> `.cargo/config.toml` 已配置 `ar`，但 `ranlib` 不是合法的 cargo config 字段，必须用环境变量。
 
 ### 第 9 步：编写验证文档
 
@@ -459,6 +468,12 @@ export ANDROID_SDK_ROOT=$ANDROID_HOME
 **Rust Native 庥编译（arm64-v8a）：**
 
 ```bash
+# 设置 NDK 环境变量（必须，否则 openssl-sys 编译失败）
+NDK_BIN=~/Library/Android/sdk/ndk/30.0.15729638/toolchains/llvm/prebuilt/darwin-x86_64/bin
+export PATH="$NDK_BIN:$PATH"
+export RANLIB_aarch64_linux_android="$NDK_BIN/aarch64-linux-android-ranlib"
+export AR_aarch64_linux_android="$NDK_BIN/aarch64-linux-android-ar"
+
 # Debug 编译
 cargo build --target aarch64-linux-android -p termfast-android-ffi
 

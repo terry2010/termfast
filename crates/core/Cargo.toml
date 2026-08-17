@@ -33,6 +33,7 @@ which = "7"
 reqwest = { workspace = true }
 if-addrs = "0.13"
 cron = "0.17.0"
+rusqlite = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

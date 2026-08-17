@@ -163,9 +163,54 @@ fn decrypt_private_key(ciphertext: &[u8], nonce: &[u8], salt: &[u8]) -> Result<V
 /// Get or create the device key pair.
 /// On first call, generates a new P-256 key pair and persists it.
 /// On subsequent calls, loads the existing key pair.
+/// Prefers SQLCipher DB if the global storage singleton is initialized.
 pub fn get_or_create_key() -> Result<DeviceKeyPair, String> {
+    // Try SQLCipher first
+    if let Some(storage) = crate::storage_singleton::get_storage() {
+        return get_or_create_key_from_storage(storage);
+    }
+    // Fallback to file-based storage
     let path = device_key_path();
     get_or_create_key_at(&path)
+}
+
+/// Get or create device key from SqlCipherStorage.
+fn get_or_create_key_from_storage(
+    storage: &std::sync::Arc<termfast_core::config::SqlCipherStorage>,
+) -> Result<DeviceKeyPair, String> {
+    // Try to load existing key from DB
+    if let Ok(Some((pub_der, priv_bytes, level_str, _))) = storage.get_device_key() {
+        if let Ok(signing_key) = SigningKey::from_slice(&priv_bytes) {
+            let level = match level_str.as_str() {
+                "high" => SecurityLevel::High,
+                "medium" => SecurityLevel::Medium,
+                _ => SecurityLevel::Low,
+            };
+            return Ok(DeviceKeyPair {
+                public_key_der: pub_der,
+                signing_key,
+                security_level: level,
+            });
+        }
+    }
+
+    // Generate new key pair
+    let signing_key = SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let public_key_der = verifying_key.to_sec1_bytes().to_vec();
+    let priv_bytes = signing_key.to_bytes().to_vec();
+    let level = SecurityLevel::Low;
+
+    // Save to DB
+    storage
+        .upsert_device_key(&public_key_der, &priv_bytes, level.as_str())
+        .map_err(|e| format!("failed to persist device key to DB: {}", e))?;
+
+    Ok(DeviceKeyPair {
+        public_key_der,
+        signing_key,
+        security_level: level,
+    })
 }
 
 /// Get or create key at a specific path (for testing).

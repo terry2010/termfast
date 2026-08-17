@@ -108,6 +108,31 @@ impl DaemonState {
             Arc::new(std::sync::Mutex::new(None));
         let binary_event_forwarder: Arc<std::sync::Mutex<Option<BinaryEventForwarder>>> =
             Arc::new(std::sync::Mutex::new(None));
+        // Create a temporary SqlCipherStorage for runtime state.
+        // The production path (daemon_embed) will use with_storage() instead.
+        let temp_dir = std::env::temp_dir().join("termfast_runtime_state_tmp");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let db_path = temp_dir.join("runtime.db");
+        let storage = if db_path.exists() {
+            termfast_core::config::SqlCipherStorage::open(&db_path, &termfast_core::config::DEFAULT_DEK)
+                .ok()
+                .map(std::sync::Arc::new)
+        } else {
+            termfast_core::config::SqlCipherStorage::create_new(&db_path, &termfast_core::config::DEFAULT_DEK)
+                .ok()
+                .map(std::sync::Arc::new)
+        };
+        let runtime_state = match storage {
+            Some(s) => Arc::new(termfast_core::config::RuntimeStateManager::new(s)),
+            None => {
+                tracing::warn!("failed to init runtime_state DB, using in-memory placeholder");
+                // Fallback: create a temp file DB
+                let fallback_path = std::env::temp_dir().join(format!("termfast_rt_{}.db", std::process::id()));
+                let s = termfast_core::config::SqlCipherStorage::create_new(&fallback_path, &termfast_core::config::DEFAULT_DEK)
+                    .expect("failed to create fallback runtime DB");
+                Arc::new(termfast_core::config::RuntimeStateManager::new(std::sync::Arc::new(s)))
+            }
+        };
         Self {
             server_manager: Arc::new(termfast_core::server::ServerManager::new()),
             log_buffer: Arc::new(termfast_core::log::LogBuffer::new(10000)),
@@ -119,14 +144,7 @@ impl DaemonState {
             event_forwarder: event_forwarder.clone(),
             binary_event_forwarder: binary_event_forwarder.clone(),
             terminal_manager: Arc::new(crate::terminal::TerminalManager::new(event_forwarder, binary_event_forwarder)),
-            runtime_state: Arc::new(
-                termfast_core::config::RuntimeStateManager::with_default_path().unwrap_or_else(
-                    |e| {
-                        tracing::warn!("failed to init runtime_state: {}, using temp", e);
-                        termfast_core::config::RuntimeStateManager::new("runtime_state.json")
-                    },
-                ),
-            ),
+            runtime_state,
             cloud_sync_callback: Arc::new(Mutex::new(None)),
             cloud_sync_pending: Arc::new(Mutex::new(None)),
             file_upload_config: Arc::new(Mutex::new(None)),

@@ -170,7 +170,7 @@ object PairingApi {
             body.put("client_ecdh_key", clientEcdhKey)
         }
         val resp = client.newCall(Request.Builder()
-            .post(body.toRequestBody(jsonMedia))
+            .post(body.toString().toRequestBody(jsonMedia))
             .header("Authorization", "Bearer $token")
             .url("$BACKEND_URL/pair/initiate-desktop")
             .build()).execute()

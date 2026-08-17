@@ -2956,6 +2956,7 @@ impl From<termfast_core::Error> for IpcError {
             termfast_core::Error::Io(e) => IpcError::new(ErrorCode::Internal, e.to_string()),
             termfast_core::Error::Crypto(msg) => IpcError::new(ErrorCode::Internal, msg),
             termfast_core::Error::Serde(e) => IpcError::new(ErrorCode::Internal, e.to_string()),
+            termfast_core::Error::Sqlite(e) => IpcError::new(ErrorCode::Internal, e.to_string()),
             termfast_core::Error::Other(msg) => IpcError::new(ErrorCode::Internal, msg),
         }
     }
@@ -4387,13 +4388,132 @@ async fn log_and_broadcast(
 // === SECTION: Cloud sync handlers ===
 #[allow(clippy::items_after_test_module)]
 /// Get the token file path (stored alongside config).
+/// Legacy: used as fallback when SQLCipher storage is not available.
 fn token_file_path(_state: &DaemonState) -> std::path::PathBuf {
     directories::BaseDirs::new()
         .map(|d| d.config_dir().join("termfast").join("cloud_tokens.json"))
         .unwrap_or_else(|| std::path::PathBuf::from("cloud_tokens.json"))
 }
 
+/// Load cloud tokens, preferring SQLCipher DB over legacy file.
+fn load_cloud_tokens(state: &DaemonState) -> termfast_cloud_sync::token_store::TokenStoreData {
+    let storage = state.runtime_state.storage();
+    if let Ok(Some(json)) = storage.get_cloud_token("_all") {
+        if let Ok(data) = serde_json::from_str::<termfast_cloud_sync::token_store::TokenStoreData>(&json) {
+            return data;
+        }
+    }
+    // Fallback to file
+    let path = token_file_path(state);
+    if termfast_cloud_sync::token_store::token_file_exists(&path) {
+        termfast_cloud_sync::token_store::load_tokens(&path).unwrap_or_default()
+    } else {
+        termfast_cloud_sync::token_store::TokenStoreData::default()
+    }
+}
+
+/// Save cloud tokens to SQLCipher DB (and legacy file as backup).
+fn save_cloud_tokens(
+    state: &DaemonState,
+    data: &termfast_cloud_sync::token_store::TokenStoreData,
+) -> Result<(), IpcError> {
+    let json = serde_json::to_string(data)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("serialize tokens: {}", e)))?;
+    let storage = state.runtime_state.storage();
+    storage
+        .upsert_cloud_token("_all", &json)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token to DB: {}", e)))?;
+    // Also save to file for backward compatibility
+    let path = token_file_path(state);
+    let _ = termfast_cloud_sync::token_store::save_tokens(&path, data);
+    Ok(())
+}
+
+/// Load sync state from SQLCipher DB, falling back to legacy file.
+fn load_sync_state_db(
+    state: &DaemonState,
+    provider: &str,
+) -> termfast_cloud_sync::sync_state::SyncState {
+    let storage = state.runtime_state.storage();
+    let mut result = termfast_cloud_sync::sync_state::SyncState::default();
+    // Load both providers from DB
+    if let Ok(Some(baidu_json)) = storage.get_sync_state("baidu") {
+        if let Ok(ps) = serde_json::from_str::<termfast_cloud_sync::sync_state::ProviderState>(&baidu_json) {
+            result.baidu = ps;
+        }
+    }
+    if let Ok(Some(dropbox_json)) = storage.get_sync_state("dropbox") {
+        if let Ok(ps) = serde_json::from_str::<termfast_cloud_sync::sync_state::ProviderState>(&dropbox_json) {
+            result.dropbox = ps;
+        }
+    }
+    let _ = provider; // provider unused — we load all providers
+    result
+}
+
+/// Save sync state to SQLCipher DB.
+fn save_sync_state_db(
+    state: &DaemonState,
+    sync_state: &termfast_cloud_sync::sync_state::SyncState,
+) -> Result<(), IpcError> {
+    let storage = state.runtime_state.storage();
+    let baidu_json = serde_json::to_string(&sync_state.baidu)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("serialize baidu state: {}", e)))?;
+    let dropbox_json = serde_json::to_string(&sync_state.dropbox)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("serialize dropbox state: {}", e)))?;
+    storage
+        .upsert_sync_state("baidu", &baidu_json)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save baidu state: {}", e)))?;
+    storage
+        .upsert_sync_state("dropbox", &dropbox_json)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save dropbox state: {}", e)))?;
+    Ok(())
+}
+
+/// Load sync hash from SQLCipher DB, returning the raw 32-byte hash.
+fn load_sync_hash_db(state: &DaemonState) -> Option<[u8; 32]> {
+    let storage = state.runtime_state.storage();
+    let hex = storage.get_sync_meta("sync_hash").ok().flatten()?;
+    hex_to_hash(&hex)
+}
+
+/// Save sync hash (32 bytes) to SQLCipher DB as hex string.
+fn save_sync_hash_db(state: &DaemonState, hash: &[u8; 32]) -> Result<(), IpcError> {
+    let storage = state.runtime_state.storage();
+    let hex = hash_to_hex(hash);
+    storage
+        .set_sync_meta("sync_hash", &hex)
+        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save sync hash: {}", e)))
+}
+
+/// Convert 32-byte hash to hex string.
+fn hash_to_hex(hash: &[u8; 32]) -> String {
+    hash.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Convert hex string to 32-byte hash.
+fn hex_to_hash(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut result = [0u8; 32];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let byte = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+        result[i] = byte;
+    }
+    Some(result)
+}
+
+/// Clear sync hash from SQLCipher DB.
+#[allow(dead_code)]
+fn clear_sync_hash_db(state: &DaemonState) {
+    let storage = state.runtime_state.storage();
+    let _ = storage.set_sync_meta("sync_hash", "");
+}
+
 /// Path to the encrypted sync state file.
+/// Legacy: kept for backward compatibility, no longer used in SQLCipher mode.
+#[allow(dead_code)]
 fn sync_state_path(_state: &DaemonState) -> std::path::PathBuf {
     directories::BaseDirs::new()
         .map(|d| d.config_dir().join("termfast").join("sync_state.enc"))
@@ -4402,6 +4522,8 @@ fn sync_state_path(_state: &DaemonState) -> std::path::PathBuf {
 
 /// Path to the password hash file (plaintext 32-byte SHA-256).
 /// Used to detect password changes between upload/download operations.
+/// Legacy: kept for backward compatibility, no longer used in SQLCipher mode.
+#[allow(dead_code)]
 fn sync_hash_path(_state: &DaemonState) -> std::path::PathBuf {
     directories::BaseDirs::new()
         .map(|d| d.config_dir().join("termfast").join("sync_hash.dat"))
@@ -4421,6 +4543,12 @@ fn local_config_path(_state: &DaemonState) -> std::path::PathBuf {
 /// Get the mtime (unix epoch seconds) of the local config.json file.
 /// Returns None if the file doesn't exist or mtime can't be read.
 fn local_config_mtime(state: &DaemonState) -> Option<String> {
+    // SQLCipher migration: use version number from sync_meta table instead of file mtime.
+    // Falls back to file mtime if DB is not available (legacy mode).
+    if let Some(version) = local_config_version(state) {
+        return Some(version);
+    }
+    // Fallback: file mtime (legacy mode, for backward compatibility)
     let path = local_config_path(state);
     let meta = std::fs::metadata(&path).ok()?;
     let mtime = meta.modified().ok()?;
@@ -4429,6 +4557,13 @@ fn local_config_mtime(state: &DaemonState) -> Option<String> {
         .ok()?
         .as_secs();
     Some(secs.to_string())
+}
+
+/// Get the local config version from the SQLCipher sync_meta table.
+/// Returns None if the DB is not available or the version is not set.
+fn local_config_version(state: &DaemonState) -> Option<String> {
+    let storage = state.runtime_state.storage();
+    storage.get_sync_meta("local_version").ok().flatten()
 }
 
 /// Get the sync file path on cloud storage.
@@ -4551,15 +4686,8 @@ async fn handle_cloud_sync_save_token(
             .to_string(),
     };
 
-    let path = token_file_path(state);
-
-    // Load existing tokens (if any) and merge
-    let mut data = if termfast_cloud_sync::token_store::token_file_exists(&path) {
-        termfast_cloud_sync::token_store::load_tokens(&path)
-            .unwrap_or_default()
-    } else {
-        termfast_cloud_sync::token_store::TokenStoreData::default()
-    };
+    // Load existing tokens (if any) and merge — uses SQLCipher DB
+    let mut data = load_cloud_tokens(state);
 
     data.tokens.insert(
         provider.to_string(),
@@ -4570,8 +4698,7 @@ async fn handle_cloud_sync_save_token(
         },
     );
 
-    termfast_cloud_sync::token_store::save_tokens(&path, &data)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token: {}", e)))?;
+    save_cloud_tokens(state, &data)?;
 
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -4584,14 +4711,7 @@ async fn handle_cloud_sync_load_token(
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
 
-    let path = token_file_path(state);
-
-    if !termfast_cloud_sync::token_store::token_file_exists(&path) {
-        return Ok(serde_json::json!({ "authenticated": false }));
-    }
-
-    let data = termfast_cloud_sync::token_store::load_tokens(&path)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
+    let data = load_cloud_tokens(state);
 
     let stored = data.tokens.get(provider);
     Ok(serde_json::json!({
@@ -4619,10 +4739,10 @@ async fn handle_cloud_sync_upload(
     // Password change detection: compare input password hash with stored hash.
     // If they differ, return password_mismatch so the frontend can ask the
     // user to confirm the cloud password change.
-    let hash_path = sync_hash_path(state);
+    // SQLCipher migration: sync_hash stored in DB sync_meta table.
     let input_hash = termfast_cloud_sync::sync_crypto::password_hash(&master_password);
     if !force {
-        if let Some(stored_hash) = termfast_cloud_sync::sync_crypto::load_password_hash(&hash_path) {
+        if let Some(stored_hash) = load_sync_hash_db(state) {
             if stored_hash != input_hash {
                 return Ok(serde_json::json!({
                     "ok": false,
@@ -4633,10 +4753,8 @@ async fn handle_cloud_sync_upload(
         }
     }
 
-    // Load cloud token
-    let path = token_file_path(state);
-    let data = termfast_cloud_sync::token_store::load_tokens(&path)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
+    // Load cloud token — uses SQLCipher DB
+    let data = load_cloud_tokens(state);
     let stored = data.tokens.get(provider.as_str()).ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
@@ -4650,14 +4768,8 @@ async fn handle_cloud_sync_upload(
         .await
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("file_info: {}", e)))?;
 
-    // Load local sync state (encrypted) — on blocking thread
-    let state_path = sync_state_path(state);
-    let mp_for_state = master_password.clone();
-    let sync_state = tokio::task::spawn_blocking(move || {
-        termfast_cloud_sync::sync_state::load_state(&state_path, &mp_for_state)
-    })
-    .await
-    .map_err(|e| IpcError::new(ErrorCode::Internal, format!("spawn_blocking: {}", e)))?;
+    // Load local sync state — uses SQLCipher DB (no Argon2id needed)
+    let sync_state = load_sync_state_db(state, &provider);
 
     let local_hash = sync_state.last_hash(&provider);
 
@@ -4708,26 +4820,19 @@ async fn handle_cloud_sync_upload(
 
     let new_hash = new_info.hash.unwrap_or_default();
 
-    // Update sync state — record local config mtime so we can detect
+    // Update sync state — record local config version so we can detect
     // local modifications on future downloads.
-    let state_path = sync_state_path(state);
-    let config_path = local_config_path(state);
-    let mp = master_password.clone();
-    let prov = provider.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let mut st = termfast_cloud_sync::sync_state::load_state(&state_path, &mp);
-        let local_mtime = std::fs::metadata(&config_path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs().to_string());
-        st.set_sync_info(&prov, new_hash, device_name, updated_at, local_mtime);
-        termfast_cloud_sync::sync_state::save_state(&state_path, &mp, &st)
-    })
-    .await;
+    // SQLCipher migration: sync_state stored in DB, no Argon2id needed.
+    let mut st = load_sync_state_db(state, &provider);
+    let local_version = local_config_version(state);
+    st.set_sync_info(&provider, new_hash, device_name, updated_at, local_version);
+    save_sync_state_db(state, &st)?;
 
-    // Save password hash so future uploads can detect password changes.
-    termfast_cloud_sync::sync_crypto::save_password_hash(&hash_path, &input_hash);
+    // Save password hash to DB so future uploads can detect password changes.
+    save_sync_hash_db(state, &input_hash)?;
+
+    // Increment local config version in DB
+    let _ = state.runtime_state.storage().increment_local_version();
 
     Ok(serde_json::json!({ "ok": true, "size": blob.len() }))
 }
@@ -4747,10 +4852,8 @@ async fn handle_cloud_sync_download(
     // force_download=true skips rollback warning (user confirmed)
     let force_download = params["force_download"].as_bool().unwrap_or(false);
 
-    // Load cloud token
-    let path = token_file_path(state);
-    let data = termfast_cloud_sync::token_store::load_tokens(&path)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
+    // Load cloud token — uses SQLCipher DB
+    let data = load_cloud_tokens(state);
     let stored = data.tokens.get(provider.as_str()).ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
@@ -4768,14 +4871,8 @@ async fn handle_cloud_sync_download(
         return Ok(build_no_remote_data_response());
     }
 
-    // Load local sync state for hash comparison + rollback detection
-    let state_path = sync_state_path(state);
-    let mp_for_state = master_password.clone();
-    let sync_state = tokio::task::spawn_blocking(move || {
-        termfast_cloud_sync::sync_state::load_state(&state_path, &mp_for_state)
-    })
-    .await
-    .map_err(|e| IpcError::new(ErrorCode::Internal, format!("spawn_blocking: {}", e)))?;
+    // Load local sync state — uses SQLCipher DB (no Argon2id needed)
+    let sync_state = load_sync_state_db(state, &provider);
 
     let local_hash = sync_state.last_hash(&provider);
     let last_local_mtime = sync_state.last_local_mtime(&provider).map(String::from);
@@ -4869,33 +4966,21 @@ async fn handle_cloud_sync_download(
         master_password: master_password.clone(),
     });
 
-    // Update sync state — record the config.json mtime AFTER apply, so that
+    // Update sync state — record the local config version AFTER apply, so that
     // on next download we can detect if the local config has been modified since.
+    // SQLCipher migration: sync_state stored in DB, no Argon2id needed.
     let new_hash = remote_info.hash.unwrap_or_default();
     let device_name = payload.device_name.clone();
     let updated_at = payload.updated_at.clone();
-    let state_path = sync_state_path(state);
-    let config_path = local_config_path(state);
-    let mp = master_password.clone();
-    let prov = provider.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let mut st = termfast_cloud_sync::sync_state::load_state(&state_path, &mp);
-        // Read config.json mtime after apply (it was just written, so mtime = now)
-        let local_mtime = std::fs::metadata(&config_path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs().to_string());
-        st.set_sync_info(&prov, new_hash, device_name, updated_at, local_mtime);
-        termfast_cloud_sync::sync_state::save_state(&state_path, &mp, &st)
-    })
-    .await;
+    let mut st = load_sync_state_db(state, &provider);
+    let local_version = local_config_version(state);
+    st.set_sync_info(&provider, new_hash, device_name, updated_at, local_version);
+    save_sync_state_db(state, &st)?;
 
     // Download success — update stored password hash to the download password,
     // so future uploads don't warn about password mismatch.
-    let hash_path = sync_hash_path(state);
     let dl_hash = termfast_cloud_sync::sync_crypto::password_hash(&master_password);
-    termfast_cloud_sync::sync_crypto::save_password_hash(&hash_path, &dl_hash);
+    save_sync_hash_db(state, &dl_hash)?;
 
     Ok(serde_json::json!({
         "ok": true,
@@ -4913,9 +4998,7 @@ async fn handle_cloud_sync_file_info(
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
 
-    let path = token_file_path(state);
-    let data = termfast_cloud_sync::token_store::load_tokens(&path)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
+    let data = load_cloud_tokens(state);
     let stored = data.tokens.get(provider).ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
@@ -4948,12 +5031,9 @@ async fn handle_cloud_sync_status(
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing master_password"))?
         .to_string();
 
-    let state_path = sync_state_path(state);
-    let sync_state = tokio::task::spawn_blocking(move || {
-        termfast_cloud_sync::sync_state::load_state(&state_path, &master_password)
-    })
-    .await
-    .map_err(|e| IpcError::new(ErrorCode::Internal, format!("spawn_blocking: {}", e)))?;
+    // SQLCipher migration: sync_state stored in DB, no master_password needed
+    let _ = &master_password; // kept for API compatibility
+    let sync_state = load_sync_state_db(state, &provider);
 
     let info = sync_state.last_sync_info(&provider);
     Ok(serde_json::json!({
@@ -4970,9 +5050,8 @@ async fn handle_cloud_sync_delete_remote(
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
 
-    let path = token_file_path(state);
-    let data = termfast_cloud_sync::token_store::load_tokens(&path)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
+    // Load cloud token — uses SQLCipher DB
+    let data = load_cloud_tokens(state);
     let stored = data.tokens.get(provider).ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
     })?;
@@ -4994,14 +5073,11 @@ async fn handle_cloud_sync_disconnect(
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
 
-    let path = token_file_path(state);
-    let mut data = termfast_cloud_sync::token_store::load_tokens(&path)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
+    let mut data = load_cloud_tokens(state);
 
     data.tokens.remove(provider);
 
-    termfast_cloud_sync::token_store::save_tokens(&path, &data)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token: {}", e)))?;
+    save_cloud_tokens(state, &data)?;
 
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -5014,9 +5090,7 @@ async fn handle_cloud_sync_refresh_token(
         .as_str()
         .ok_or_else(|| IpcError::new(ErrorCode::InvalidParams, "missing provider"))?;
 
-    let path = token_file_path(state);
-    let mut data = termfast_cloud_sync::token_store::load_tokens(&path)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("load token: {}", e)))?;
+    let mut data = load_cloud_tokens(state);
 
     let stored = data.tokens.get(provider).cloned().ok_or_else(|| {
         IpcError::new(ErrorCode::CredentialNotFound, "not authenticated to cloud")
@@ -5038,8 +5112,7 @@ async fn handle_cloud_sync_refresh_token(
         },
     );
 
-    termfast_cloud_sync::token_store::save_tokens(&path, &data)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token: {}", e)))?;
+    save_cloud_tokens(state, &data)?;
 
     Ok(serde_json::json!({
         "ok": true,
@@ -5612,12 +5685,7 @@ async fn handle_cloud_sync_wait_callback(
             IpcError::new(ErrorCode::InvalidParams, e.to_string())
         })?;
 
-    let path = token_file_path(state);
-    let mut data = if termfast_cloud_sync::token_store::token_file_exists(&path) {
-        termfast_cloud_sync::token_store::load_tokens(&path).unwrap_or_default()
-    } else {
-        termfast_cloud_sync::token_store::TokenStoreData::default()
-    };
+    let mut data = load_cloud_tokens(state);
 
     data.tokens.insert(
         pending.provider.clone(),
@@ -5628,8 +5696,7 @@ async fn handle_cloud_sync_wait_callback(
         },
     );
 
-    termfast_cloud_sync::token_store::save_tokens(&path, &data)
-        .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token: {}", e)))?;
+    save_cloud_tokens(state, &data)?;
 
     Ok(serde_json::json!({
         "ok": true,

@@ -11,6 +11,7 @@ mod device_key_store;
 mod ecdh_key_store;
 mod pairing;
 mod pairing_store;
+mod storage_singleton;
 mod tunnel_manager;
 
 use credential_manager::{credential_file_path, CredentialState};

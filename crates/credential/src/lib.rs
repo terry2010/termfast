@@ -10,6 +10,7 @@ pub mod encrypted;
 pub mod encrypted_adapter;
 pub mod envelope;
 pub mod hw_id;
+pub mod sqlite_store;
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod keychain;
@@ -21,6 +22,7 @@ pub use encrypted_adapter::EncryptedFileCredentialStore;
 pub use file::FileCredentialStore;
 pub use memory::InMemoryCredentialStore;
 pub use envelope::{Argon2Params, EnvelopeError};
+pub use sqlite_store::SqlCipherCredentialStore;
 
 /// Credential type prefix in key naming
 pub const SERVICE_NAME: &str = "termfast";

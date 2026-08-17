@@ -57,25 +57,95 @@ pub fn data_dir() -> PathBuf {
     PathBuf::from(&st.data_dir)
 }
 
-/// Path to the cloud token store (plaintext JSON, 0600).
-pub fn token_file_path() -> PathBuf {
-    data_dir().join("cloud_tokens.json")
+// === SQLCipher DB-backed helpers (replace file-based storage) ===
+
+/// Load cloud tokens from DB (cloud_tokens table, provider "_all").
+/// Consistent with daemon handler.rs which uses the same table/provider.
+fn load_cloud_tokens() -> token_store::TokenStoreData {
+    let storage = crate::config::sqlcipher_storage();
+    match storage.get_cloud_token("_all") {
+        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
+        _ => token_store::TokenStoreData::default(),
+    }
 }
 
-/// Path to the encrypted sync state file (TFSS format).
-pub fn sync_state_path() -> PathBuf {
-    data_dir().join("sync_state.enc")
+/// Save cloud tokens to DB (cloud_tokens table, provider "_all").
+fn save_cloud_tokens(data: &token_store::TokenStoreData) -> Result<(), String> {
+    let storage = crate::config::sqlcipher_storage();
+    let json = serde_json::to_string(data).map_err(|e| format!("serialize tokens: {}", e))?;
+    storage.upsert_cloud_token("_all", &json).map_err(|e| format!("save tokens: {}", e))
 }
 
-/// Path to the local config.json file.
-fn local_config_path() -> PathBuf {
-    data_dir().join("config.json")
+/// Load sync state from DB (sync_state table, per-provider).
+/// Consistent with daemon handler.rs which uses the same table structure.
+fn load_sync_state_db() -> sync_state::SyncState {
+    let storage = crate::config::sqlcipher_storage();
+    let mut result = sync_state::SyncState::default();
+    if let Ok(Some(json)) = storage.get_sync_state("baidu") {
+        if let Ok(ps) = serde_json::from_str::<sync_state::ProviderState>(&json) {
+            result.baidu = ps;
+        }
+    }
+    if let Ok(Some(json)) = storage.get_sync_state("dropbox") {
+        if let Ok(ps) = serde_json::from_str::<sync_state::ProviderState>(&json) {
+            result.dropbox = ps;
+        }
+    }
+    result
 }
 
-/// Get the mtime (unix epoch seconds) of the local config.json file.
-/// Returns None if the file doesn't exist or mtime can't be read.
-fn local_config_mtime() -> Option<String> {
-    let path = local_config_path();
+/// Save sync state to DB (sync_state table, per-provider).
+fn save_sync_state_db(state: &sync_state::SyncState) -> Result<(), String> {
+    let storage = crate::config::sqlcipher_storage();
+    let baidu_json = serde_json::to_string(&state.baidu)
+        .map_err(|e| format!("serialize baidu state: {}", e))?;
+    let dropbox_json = serde_json::to_string(&state.dropbox)
+        .map_err(|e| format!("serialize dropbox state: {}", e))?;
+    storage.upsert_sync_state("baidu", &baidu_json).map_err(|e| format!("save baidu state: {}", e))?;
+    storage.upsert_sync_state("dropbox", &dropbox_json).map_err(|e| format!("save dropbox state: {}", e))?;
+    Ok(())
+}
+
+/// Load sync hash from DB (hex string → 32-byte hash).
+fn load_sync_hash_db() -> Option<[u8; 32]> {
+    let storage = crate::config::sqlcipher_storage();
+    let hex = storage.get_sync_meta("sync_hash").ok().flatten()?;
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut result = [0u8; 32];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let byte = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+        result[i] = byte;
+    }
+    Some(result)
+}
+
+/// Save sync hash (32 bytes) to DB as hex string.
+fn save_sync_hash_db(hash: &[u8; 32]) -> Result<(), String> {
+    let storage = crate::config::sqlcipher_storage();
+    let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+    storage.set_sync_meta("sync_hash", &hex).map_err(|e| format!("save sync hash: {}", e))
+}
+
+/// Clear sync hash in DB.
+#[allow(dead_code)]
+fn clear_sync_hash_db() {
+    let storage = crate::config::sqlcipher_storage();
+    let _ = storage.set_sync_meta("sync_hash", "");
+}
+
+/// Get local config version from DB sync_meta table.
+/// Falls back to config.json mtime for backward compatibility.
+fn local_config_version() -> Option<String> {
+    let storage = crate::config::sqlcipher_storage();
+    if let Ok(Some(v)) = storage.get_sync_meta("local_version") {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    // Fallback: use config.json mtime
+    let path = data_dir().join("config.json");
     let meta = std::fs::metadata(&path).ok()?;
     let mtime = meta.modified().ok()?;
     let secs = mtime
@@ -83,6 +153,24 @@ fn local_config_mtime() -> Option<String> {
         .ok()?
         .as_secs();
     Some(secs.to_string())
+}
+
+/// Save local config version to DB.
+#[allow(dead_code)]
+fn save_local_config_version(version: &str) {
+    let storage = crate::config::sqlcipher_storage();
+    let _ = storage.set_sync_meta("local_version", version);
+}
+
+// Legacy path functions kept for backward compatibility (unused in SQLCipher mode)
+#[allow(dead_code)]
+pub fn token_file_path() -> PathBuf {
+    data_dir().join("cloud_tokens.json")
+}
+
+#[allow(dead_code)]
+pub fn sync_state_path() -> PathBuf {
+    data_dir().join("sync_state.enc")
 }
 
 /// Build a provider instance from the provider type string.
@@ -242,12 +330,7 @@ pub fn save_token(token_json: &str) -> Result<(), String> {
             .to_string(),
     };
 
-    let path = token_file_path();
-    let mut data = if token_store::token_file_exists(&path) {
-        token_store::load_tokens(&path).unwrap_or_default()
-    } else {
-        token_store::TokenStoreData::default()
-    };
+    let mut data = load_cloud_tokens();
     data.tokens.insert(
         provider.to_string(),
         StoredToken {
@@ -256,18 +339,14 @@ pub fn save_token(token_json: &str) -> Result<(), String> {
             stored_at: chrono::Utc::now().timestamp(),
         },
     );
-    token_store::save_tokens(&path, &data).map_err(|e| format!("save token: {}", e))?;
+    save_cloud_tokens(&data)?;
     Ok(())
 }
 
 /// Check if a provider is authenticated (has a stored token).
 /// Returns JSON: `{"authenticated":true,"expires_at":...}` or `{"authenticated":false}`.
 pub fn load_token(provider: &str) -> Result<String, String> {
-    let path = token_file_path();
-    if !token_store::token_file_exists(&path) {
-        return Ok(r#"{"authenticated":false}"#.to_string());
-    }
-    let data = token_store::load_tokens(&path).map_err(|e| format!("load token: {}", e))?;
+    let data = load_cloud_tokens();
     let stored = data.tokens.get(provider);
     let json = serde_json::json!({
         "authenticated": stored.is_some(),
@@ -410,7 +489,7 @@ pub fn upload(params_json: &str) -> Result<String, String> {
 
     // Verify the password can unlock the local credential store.
     // If not, tell the frontend to prompt the user to change their password.
-    if let Err(_) = store.unlock(&master_password) {
+    if let Err(_) = store.unlock_with_password(&master_password) {
         return Ok(serde_json::json!({
             "ok": false,
             "reason": "wrong_password",
@@ -418,13 +497,10 @@ pub fn upload(params_json: &str) -> Result<String, String> {
         }).to_string());
     }
 
-    // Password change detection: compare input password hash with stored hash.
-    // If they differ, return password_mismatch so the frontend can ask the
-    // user to confirm the cloud password change.
-    let hash_path = data_dir().join("sync_hash.dat");
+    // Password change detection: compare input password hash with stored hash in DB.
     let input_hash = sync_crypto::password_hash(&master_password);
     if !force {
-        if let Some(stored_hash) = sync_crypto::load_password_hash(&hash_path) {
+        if let Some(stored_hash) = load_sync_hash_db() {
             if stored_hash != input_hash {
                 return Ok(serde_json::json!({
                     "ok": false,
@@ -435,9 +511,8 @@ pub fn upload(params_json: &str) -> Result<String, String> {
         }
     }
 
-    // Load token
-    let path = token_file_path();
-    let data = token_store::load_tokens(&path).map_err(|e| format!("load token: {}", e))?;
+    // Load token from DB
+    let data = load_cloud_tokens();
     let stored = data
         .tokens
         .get(provider.as_str())
@@ -452,14 +527,8 @@ pub fn upload(params_json: &str) -> Result<String, String> {
         .block_on(p.file_info(&stored.token, &sync_path))
         .map_err(|e| format!("file_info: {}", e))?;
 
-    // Load local sync state (encrypted)
-    let state_path = sync_state_path();
-    let mp_for_state = master_password.clone();
-    let sync_state = std::thread::scope(|s| {
-        let h = s.spawn(move || sync_state::load_state(&state_path, &mp_for_state));
-        h.join().map_err(|e| format!("load_state thread: {:?}", e))
-    }).map_err(|e| e)?;
-    let sync_state = sync_state;
+    // Load local sync state from DB (no encryption needed — DB is already encrypted)
+    let sync_state = load_sync_state_db();
     let local_hash = sync_state.last_hash(&provider);
 
     // Conflict detection (unless force=true)
@@ -508,32 +577,20 @@ pub fn upload(params_json: &str) -> Result<String, String> {
         .map_err(|e| format!("file_info after upload: {}", e))?;
     let new_hash = new_info.hash.unwrap_or_default();
 
-    // Update sync state — record local config mtime so we can detect
+    // Update sync state in DB — record local config version so we can detect
     // local modifications on future downloads.
-    let state_path = sync_state_path();
-    let config_path = local_config_path();
-    let mp = master_password.clone();
     let prov = provider.clone();
     let dn = device_name.clone();
     let ua = updated_at.clone();
-    let hash_path_clone = hash_path.clone();
-    let input_hash_clone = input_hash;
-    let _ = std::thread::scope(|s| {
-        s.spawn(move || {
-            let mut st = sync_state::load_state(&state_path, &mp);
-            let local_mtime = std::fs::metadata(&config_path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs().to_string());
-            st.set_sync_info(&prov, new_hash, dn, ua, local_mtime);
-            sync_state::save_state(&state_path, &mp, &st)
-        })
-        .join()
-    });
+    {
+        let mut st = load_sync_state_db();
+        let local_ver = local_config_version();
+        st.set_sync_info(&prov, new_hash, dn, ua, local_ver);
+        let _ = save_sync_state_db(&st);
+    }
 
-    // Save password hash so future uploads can detect password changes.
-    sync_crypto::save_password_hash(&hash_path, &input_hash);
+    // Save password hash to DB so future uploads can detect password changes.
+    let _ = save_sync_hash_db(&input_hash);
 
     Ok(serde_json::json!({ "ok": true, "size": blob.len() }).to_string())
 }
@@ -557,19 +614,17 @@ pub fn download(params_json: &str) -> Result<String, String> {
     let force_download = params["force_download"].as_bool().unwrap_or(false);
 
     // Verify the password can unlock the local credential store.
-    // If the encrypted file exists, the password must match it.
-    // If the file doesn't exist (no master password set), require the
+    // If the store is absent (no DB / no master password), require the
     // user to set a master password first.
     let store = crate::credential::android_credential_store();
-    let cred_path = data_dir().join("credentials.enc");
-    if !cred_path.exists() {
+    if store.is_absent() {
         return Ok(serde_json::json!({
             "ok": false,
             "reason": "not_initialized",
             "message": "请先设置主密码后再从云端下载",
         }).to_string());
     }
-    if let Err(_) = store.unlock(&master_password) {
+    if let Err(_) = store.unlock_with_password(&master_password) {
         return Ok(serde_json::json!({
             "ok": false,
             "reason": "wrong_password",
@@ -577,9 +632,8 @@ pub fn download(params_json: &str) -> Result<String, String> {
         }).to_string());
     }
 
-    // Load token
-    let path = token_file_path();
-    let data = token_store::load_tokens(&path).map_err(|e| format!("load token: {}", e))?;
+    // Load token from DB
+    let data = load_cloud_tokens();
     let stored = data
         .tokens
         .get(provider.as_str())
@@ -603,29 +657,23 @@ pub fn download(params_json: &str) -> Result<String, String> {
         .to_string());
     }
 
-    // Load local sync state
-    let state_path = sync_state_path();
-    let mp_for_state = master_password.clone();
-    let sync_state = std::thread::scope(|s| {
-        let h = s.spawn(move || sync_state::load_state(&state_path, &mp_for_state));
-        h.join().map_err(|e| format!("load_state thread: {:?}", e))
-    }).map_err(|e| e)?;
-    let sync_state = sync_state;
+    // Load local sync state from DB
+    let sync_state = load_sync_state_db();
     let local_hash = sync_state.last_hash(&provider);
-    let last_local_mtime = sync_state.last_local_mtime(&provider).map(String::from);
-    let current_local_mtime = local_config_mtime();
+    let last_local_version = sync_state.last_local_mtime(&provider).map(String::from);
+    let current_local_version = local_config_version();
 
     // If both cloud and local are unchanged since last sync, no update needed.
     // force_download=true skips this check (user confirmed overwrite).
-    // Checking local mtime prevents false "no_update" when user has edited
+    // Checking local version prevents false "no_update" when user has edited
     // local data (new node, changed password, etc.) since last sync.
     if !force_download {
         if let (Some(rh), Some(lh)) = (&remote_info.hash, local_hash) {
             if rh == lh {
                 // Cloud unchanged — now check if local is also unchanged
-                let local_unchanged = match (&last_local_mtime, &current_local_mtime) {
+                let local_unchanged = match (&last_local_version, &current_local_version) {
                     (Some(last), Some(cur)) => last == cur,
-                    _ => false,  // missing mtime info → allow download (safe default)
+                    _ => false,  // missing version info → allow download (safe default)
                 };
                 if local_unchanged {
                     return Ok(serde_json::json!({
@@ -633,14 +681,14 @@ pub fn download(params_json: &str) -> Result<String, String> {
                         "reason": "no_update",
                         "message": "云端无更新",
                         "cloud_updated_at": remote_info.modified,
-                        "local_updated_at": current_local_mtime,
+                        "local_updated_at": current_local_version,
                     })
                     .to_string());
                 }
 
                 // Cloud unchanged but local changed → local is newer than cloud.
                 // Downloading would overwrite newer local data — ask user to confirm.
-                let local_changed = match (&last_local_mtime, &current_local_mtime) {
+                let local_changed = match (&last_local_version, &current_local_version) {
                     (Some(last), Some(cur)) => last != cur,
                     _ => false,
                 };
@@ -650,7 +698,7 @@ pub fn download(params_json: &str) -> Result<String, String> {
                         "reason": "local_newer",
                         "message": "本地数据比云端新，下载将覆盖本地改动",
                         "cloud_updated_at": remote_info.modified,
-                        "local_updated_at": current_local_mtime,
+                        "local_updated_at": current_local_version,
                     })
                     .to_string());
                 }
@@ -711,34 +759,21 @@ pub fn download(params_json: &str) -> Result<String, String> {
 
     apply_full_export(&export_data)?;
 
-    // Update sync state — record config.json mtime AFTER apply, so that
-    // on next download we can detect if local config has been modified.
+    // Update sync state in DB — record local config version AFTER apply.
     let new_hash = remote_info.hash.unwrap_or_default();
     let device_name = payload.device_name.clone();
     let updated_at = payload.updated_at.clone();
-    let state_path = sync_state_path();
-    let config_path = local_config_path();
-    let mp = master_password.clone();
     let prov = provider.clone();
-    let _ = std::thread::scope(|s| {
-        s.spawn(move || {
-            let mut st = sync_state::load_state(&state_path, &mp);
-            // Read config.json mtime after apply (it was just written, so mtime = now)
-            let local_mtime = std::fs::metadata(&config_path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs().to_string());
-            st.set_sync_info(&prov, new_hash, device_name, updated_at, local_mtime);
-            sync_state::save_state(&state_path, &mp, &st)
-        })
-        .join()
-    });
+    {
+        let mut st = load_sync_state_db();
+        let local_ver = local_config_version();
+        st.set_sync_info(&prov, new_hash, device_name, updated_at, local_ver);
+        let _ = save_sync_state_db(&st);
+    }
 
-    // Download success — update stored password hash to the download password,
+    // Download success — update stored password hash in DB to the download password,
     // so future uploads don't warn about password mismatch.
-    let hash_path = data_dir().join("sync_hash.dat");
-    sync_crypto::save_password_hash(&hash_path, &sync_crypto::password_hash(&master_password));
+    let _ = save_sync_hash_db(&sync_crypto::password_hash(&master_password));
 
     Ok(serde_json::json!({
         "ok": true,
@@ -752,16 +787,8 @@ pub fn download(params_json: &str) -> Result<String, String> {
 /// Get cloud sync status for a provider.
 /// Returns JSON: `{"authenticated":true,"has_remote":true,"remote_size":1234,"remote_modified":"...","last_synced":"..."}`
 pub fn status(provider: &str) -> Result<String, String> {
-    // Check if authenticated
-    let path = token_file_path();
-    if !token_store::token_file_exists(&path) {
-        return Ok(serde_json::json!({
-            "authenticated": false,
-            "has_remote": false,
-        })
-        .to_string());
-    }
-    let data = token_store::load_tokens(&path).map_err(|e| format!("load token: {}", e))?;
+    // Check if authenticated (from DB)
+    let data = load_cloud_tokens();
     let stored = match data.tokens.get(provider) {
         Some(s) => s,
         None => {
@@ -774,19 +801,11 @@ pub fn status(provider: &str) -> Result<String, String> {
     };
     let _ = stored;  // token exists, user is authenticated
 
-    // Load local sync state for last_synced info.
+    // Load local sync state from DB for last_synced info.
     // NOTE: We intentionally do NOT call file_info (network request) here,
     // because status() is called from the UI main thread via Compose
     // remember{}. A blocking network call here causes ANR.
-    // has_remote is set to true (token exists → likely has data);
-    // the actual remote check happens when user clicks download/upload.
-    let state_path = sync_state_path();
-    // Use empty password if store is locked — status should work without unlock
-    let mp = String::new();
-    let sync_state = std::thread::scope(|s| {
-        let h = s.spawn(move || sync_state::load_state(&state_path, &mp));
-        h.join().unwrap_or_default()
-    });
+    let sync_state = load_sync_state_db();
     let prov_state = sync_state.get(provider);
 
     Ok(serde_json::json!({
@@ -802,13 +821,9 @@ pub fn status(provider: &str) -> Result<String, String> {
 
 /// Remove a provider's token (disconnect).
 pub fn disconnect(provider: &str) -> Result<(), String> {
-    let path = token_file_path();
-    if !token_store::token_file_exists(&path) {
-        return Ok(());
-    }
-    let mut data = token_store::load_tokens(&path).map_err(|e| format!("load token: {}", e))?;
+    let mut data = load_cloud_tokens();
     data.tokens.remove(provider);
-    token_store::save_tokens(&path, &data).map_err(|e| format!("save token: {}", e))?;
+    save_cloud_tokens(&data)?;
     Ok(())
 }
 

@@ -76,9 +76,37 @@ fn generate_suffix() -> String {
 
 /// Get the persisted device_id suffix, generating and persisting it on first call.
 /// Returns the 4-digit hex suffix (e.g. "a3f7").
+/// Prefers SQLCipher DB if the global storage singleton is initialized.
 pub fn get_or_create_suffix() -> String {
+    // Try SQLCipher first
+    if let Some(storage) = crate::storage_singleton::get_storage() {
+        return get_or_create_suffix_from_storage(storage);
+    }
+    // Fallback to file-based storage
     let path = device_id_path();
     get_or_create_suffix_at(&path)
+}
+
+/// Get or create device_id suffix from SqlCipherStorage.
+fn get_or_create_suffix_from_storage(
+    storage: &std::sync::Arc<termfast_core::config::SqlCipherStorage>,
+) -> String {
+    // Try to load existing suffix from KV
+    if let Ok(Some(suffix)) = storage.get_kv("device_id_suffix") {
+        if is_valid_suffix(&suffix) {
+            return suffix;
+        }
+    }
+
+    // Generate new suffix
+    let suffix = generate_suffix();
+
+    // Persist to DB
+    if let Err(e) = storage.set_kv("device_id_suffix", &suffix) {
+        tracing::warn!("failed to persist device_id suffix to DB: {}", e);
+    }
+
+    suffix
 }
 
 /// Get or create suffix at a specific path (for testing with temp directories).

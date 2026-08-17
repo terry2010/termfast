@@ -78,7 +78,13 @@ fn pairings_path() -> PathBuf {
 }
 
 /// Load all persisted pairings. Returns empty vec if file missing or invalid.
+/// Prefers SQLCipher DB if the global storage singleton is initialized.
 pub fn load() -> Vec<StoredPairing> {
+    // Try SQLCipher first
+    if let Some(storage) = crate::storage_singleton::get_storage() {
+        return load_from_storage(storage);
+    }
+    // Fallback to file-based storage
     let path = pairings_path();
     match fs::read_to_string(&path) {
         Ok(content) => {
@@ -94,16 +100,67 @@ pub fn load() -> Vec<StoredPairing> {
     }
 }
 
+/// Load pairings from SqlCipherStorage.
+fn load_from_storage(
+    storage: &std::sync::Arc<termfast_core::config::SqlCipherStorage>,
+) -> Vec<StoredPairing> {
+    match storage.list_pairings() {
+        Ok(rows) => {
+            let mut result = Vec::new();
+            for (id, data) in rows {
+                match serde_json::from_str::<StoredPairing>(&data) {
+                    Ok(p) => result.push(p),
+                    Err(e) => tracing::warn!("failed to deserialize pairing {}: {}", id, e),
+                }
+            }
+            result
+        }
+        Err(e) => {
+            tracing::warn!("failed to load pairings from DB: {}", e);
+            Vec::new()
+        }
+    }
+}
+
 /// Save or update a pairing entry (upsert by pairing_id).
 pub fn save(pairing: StoredPairing) {
+    // Try SQLCipher first
+    if let Some(storage) = crate::storage_singleton::get_storage() {
+        save_to_storage(storage, &pairing);
+        return;
+    }
+    // Fallback to file-based storage
     let mut all = load();
     all.retain(|p| p.pairing_id != pairing.pairing_id);
     all.push(pairing);
     write_all(&all);
 }
 
+/// Save pairing to SqlCipherStorage.
+fn save_to_storage(
+    storage: &std::sync::Arc<termfast_core::config::SqlCipherStorage>,
+    pairing: &StoredPairing,
+) {
+    match serde_json::to_string(pairing) {
+        Ok(json) => {
+            if let Err(e) = storage.upsert_pairing(&pairing.pairing_id, &json) {
+                tracing::warn!("failed to save pairing to DB: {}", e);
+            }
+        }
+        Err(e) => tracing::warn!("failed to serialize pairing: {}", e),
+    }
+}
+
 /// Remove a pairing entry by pairing_id.
 pub fn remove(pairing_id: &str) {
+    // Try SQLCipher first
+    if let Some(storage) = crate::storage_singleton::get_storage() {
+        if let Err(e) = storage.delete_pairing(pairing_id) {
+            tracing::warn!("failed to delete pairing from DB: {}", e);
+        }
+        return;
+    }
+    // Fallback to file-based storage
     let mut all = load();
     all.retain(|p| p.pairing_id != pairing_id);
     write_all(&all);

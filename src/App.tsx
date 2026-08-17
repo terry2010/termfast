@@ -28,6 +28,7 @@ import { AddServerDialog } from "@/components/shared/AddServerDialog";
 import { LogViewer } from "@/components/shared/LogViewer";
 import { UndoToast } from "@/components/shared/UndoToast";
 import { HostKeyMismatchDialog } from "@/components/shared/HostKeyMismatchDialog";
+import { CredentialGate } from "@/components/shared/CredentialGate";
 import { RemoteDesktopPanel, cleanupRemoteDesktopConnection } from "@/components/remote-desktop/RemoteDesktopPanel";
 import { useTrustLevelCheck } from "@/lib/useTrustLevelCheck";
 import { ConfirmDialog, type DangerLevel } from "@/components/ui/ConfirmDialog";
@@ -391,6 +392,7 @@ export default function App() {
 
   return (
     <ContextMenuProvider>
+      <CredentialGate>
         <div className="flex flex-col h-screen bg-white dark:bg-[#121212] text-gray-900 dark:text-gray-100">
           <TitleBar />
           <PendingEventsBanner />
@@ -489,6 +491,7 @@ export default function App() {
             />
           )}
         </div>
+      </CredentialGate>
       <Toaster position="top-right" richColors closeButton />
     </ContextMenuProvider>
   );
