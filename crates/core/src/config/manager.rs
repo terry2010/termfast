@@ -3,6 +3,7 @@
 //! Provides read/write access to the configuration with proper locking.
 
 use crate::config::{Config, ConfigStorage, FileConfigStorage};
+use crate::config::migration::load_config_with_migration_fallback;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -53,25 +54,23 @@ impl ConfigManager {
         }
     }
 
-    /// Load config from file
+    /// Load config from file.
+    ///
+    /// Uses `load_config_with_migration_fallback` to correctly detect when the
+    /// config file was corrupt (JSON parse error → backed up → replaced with
+    /// default). In that case `corrupt_load` is set to `true`, which prevents
+    /// `modify()` / `save()` from overwriting the backed-up original with an
+    /// empty config until the user explicitly adds data.
     pub fn load(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
-        let storage = FileConfigStorage::new(path);
-        let (config, corrupt) = match storage.load() {
-            Ok(c) => (c, false),
-            Err(e) => {
-                // Log loudly instead of silently using defaults. The storage
-                // layer already backed up the corrupt file (if it was parseable
-                // JSON), so falling back to defaults here won't destroy the
-                // original data — but the user must be told.
-                tracing::error!(
-                    "failed to load config from {}: {} — starting with empty config \
-                     (corrupt file was backed up if it was unparseable JSON)",
-                    storage.path().display(),
-                    e
-                );
-                (Config::default(), true)
-            }
-        };
+        let storage = FileConfigStorage::new(&path);
+        let (config, corrupt) = load_config_with_migration_fallback(storage.path());
+        if corrupt {
+            tracing::warn!(
+                "config loaded as fallback (empty or corrupt) from {} — \
+                 corrupt_load flag set, will not overwrite file until user adds data",
+                storage.path().display()
+            );
+        }
         Ok(Self {
             config: Arc::new(RwLock::new(config)),
             storage: Arc::new(storage),
@@ -270,5 +269,76 @@ mod tests {
             assert_eq!(val, 42);
             assert_eq!(mgr.get().await.general.language, "en");
         }
+    }
+
+    /// Bug 1 regression test: ConfigManager::load must set corrupt_load=true
+    /// when the config file contains corrupt JSON. Previously it used
+    /// storage.load() which returns Ok(default) for corrupt JSON, causing
+    /// corrupt_load=false and subsequent modify() to overwrite the backed-up
+    /// original with an empty config — permanently losing all servers.
+    #[test]
+    fn test_load_corrupt_json_sets_corrupt_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{ invalid json }").unwrap();
+
+        let mgr = ConfigManager::load(&path).unwrap();
+        assert!(mgr.is_corrupt_load(), "corrupt JSON must set corrupt_load=true");
+    }
+
+    /// Bug 1 regression test: ConfigManager::load must NOT set corrupt_load
+    /// when the config file is valid (even if it has 0 servers).
+    #[test]
+    fn test_load_valid_config_does_not_set_corrupt_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let config_json = serde_json::json!({
+            "version": 2,
+            "servers": [],
+            "general": { "theme": "dark" }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&config_json).unwrap()).unwrap();
+
+        let mgr = ConfigManager::load(&path).unwrap();
+        assert!(!mgr.is_corrupt_load(), "valid config must not set corrupt_load");
+    }
+
+    /// Bug 1 regression test: missing config file must NOT set corrupt_load
+    /// (it's a fresh install, not a corrupt file).
+    #[test]
+    fn test_load_missing_file_does_not_set_corrupt_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+
+        let mgr = ConfigManager::load(&path).unwrap();
+        assert!(!mgr.is_corrupt_load(), "missing file must not set corrupt_load");
+    }
+
+    /// Bug 1 integration test: corrupt_load=true must prevent modify() from
+    /// saving an empty config over the backed-up original.
+    #[tokio::test]
+    async fn test_corrupt_load_prevents_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{ invalid json }").unwrap();
+
+        let mgr = ConfigManager::load(&path).unwrap();
+        assert!(mgr.is_corrupt_load());
+
+        // Attempt to modify (e.g. change theme) — should NOT save to disk
+        // because corrupt_load=true and servers still empty
+        mgr.modify(|c| {
+            c.general.theme = "dark".to_string();
+        })
+        .await
+        .unwrap();
+
+        // The file on disk should still be the corrupt original (backed up),
+        // NOT a valid empty config
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("invalid json"),
+            "corrupt original must not be overwritten by empty config"
+        );
     }
 }

@@ -149,8 +149,10 @@ pub fn load_config_with_migration(config_path: &std::path::Path) -> Result<crate
 
     // File doesn't exist → create default
     if !config_path.exists() {
-        // Check for .tmp recovery (crash during atomic write)
-        let tmp_path = config_path.with_extension("json.tmp");
+        // Check for .tmp recovery (crash during atomic write).
+        // write_atomic uses `path.with_extension("tmp")` which replaces the
+        // last extension: `config.json` → `config.tmp`.
+        let tmp_path = config_path.with_extension("tmp");
         if tmp_path.exists() {
             tracing::warn!("config file missing but .tmp exists — attempting recovery");
             if let Err(e) = std::fs::rename(&tmp_path, config_path) {
@@ -297,5 +299,75 @@ mod tests {
         assert!(!config.servers.is_empty(), "should load servers from old config");
         assert_eq!(config.local_triggers.len(), 0, "local_triggers should default to empty");
         assert_ne!(config, crate::config::Config::default(), "should not equal default (has servers)");
+    }
+
+    /// Bug 1 regression test: corrupt JSON → fallback → corrupt_load must be true.
+    /// Previously ConfigManager::load used storage.load() which returns Ok(default)
+    /// for corrupt JSON, causing corrupt_load=false and subsequent modify() to
+    /// overwrite the backed-up original with an empty config.
+    #[test]
+    fn test_fallback_detects_corrupt_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{ invalid json }").unwrap();
+
+        let (config, is_fallback) = load_config_with_migration_fallback(&path);
+        assert!(is_fallback, "corrupt JSON must set is_fallback=true");
+        assert!(config.servers.is_empty());
+        // Corrupt file should have been backed up
+        let entries = std::fs::read_dir(dir.path()).unwrap();
+        let has_backup = entries
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains("corrupt"));
+        assert!(has_backup, "corrupt file should be backed up");
+    }
+
+    /// Bug 1 regression test: valid config with 0 servers must NOT be flagged
+    /// as fallback (would incorrectly block saving).
+    #[test]
+    fn test_fallback_does_not_flag_valid_empty_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        // A valid config with 0 servers but non-default general settings
+        let config_json = serde_json::json!({
+            "version": 2,
+            "servers": [],
+            "general": {
+                "theme": "dark",
+                "language": "en"
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&config_json).unwrap()).unwrap();
+
+        let (config, is_fallback) = load_config_with_migration_fallback(&path);
+        assert!(!is_fallback, "valid config with non-default settings must not be flagged as fallback");
+        assert!(config.servers.is_empty());
+    }
+
+    /// Bug 2 regression test: write_atomic creates `config.tmp` (not `config.json.tmp`).
+    /// The recovery code must look for the correct tmp filename.
+    #[test]
+    fn test_tmp_recovery_uses_correct_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        // Simulate a crash: write_atomic wrote config.tmp but rename didn't happen
+        let tmp_path = path.with_extension("tmp"); // config.tmp — what write_atomic creates
+        assert_eq!(tmp_path.file_name().unwrap(), "config.tmp");
+        let config_json = serde_json::json!({
+            "version": 2,
+            "servers": [],
+            "general": { "theme": "dark" }
+        });
+        std::fs::write(&tmp_path, serde_json::to_string_pretty(&config_json).unwrap()).unwrap();
+
+        // config.json doesn't exist, but config.tmp does → recovery should kick in
+        assert!(!path.exists());
+        assert!(tmp_path.exists());
+
+        let config = load_config_with_migration(&path).unwrap();
+        // Recovery should have renamed config.tmp → config.json
+        assert!(path.exists(), "config.json should exist after tmp recovery");
+        assert!(!tmp_path.exists(), "config.tmp should be gone after recovery");
+        assert_eq!(config.general.theme, "dark");
     }
 }
