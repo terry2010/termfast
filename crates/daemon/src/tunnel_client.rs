@@ -450,14 +450,11 @@ mod tests {
                 if tokio::time::Instant::now() >= deadline {
                     panic!("timeout waiting for binary frame from desktop");
                 }
-                match tokio::time::timeout(Duration::from_millis(100), ws.next()).await {
-                    Ok(Some(Ok(msg))) => {
-                        if msg.is_binary() {
-                            // Got binary frame from desktop
-                            break;
-                        }
+                if let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_millis(100), ws.next()).await {
+                    if msg.is_binary() {
+                        // Got binary frame from desktop
+                        break;
                     }
-                    _ => {}
                 }
             }
 

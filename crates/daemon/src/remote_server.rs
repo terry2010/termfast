@@ -1242,13 +1242,12 @@ mod tests {
         send_encrypted_frame(&mut mobile_send, &inbound_tx, &Frame::resize(term_id, 100, 30)).await;
 
         // Should NOT receive any reply frame (timeout means success — no loop)
-        match tokio::time::timeout(
+        if let Ok(Some(_)) = tokio::time::timeout(
             std::time::Duration::from_millis(500),
             outbound_rx.recv(),
         ).await {
-            Ok(Some(_)) => panic!("expected no reply to RESIZE, but got a frame"),
-            _ => {} // timeout or channel closed — correct
-        }
+            panic!("expected no reply to RESIZE, but got a frame");
+        } // timeout or channel closed — correct
 
         drop(inbound_tx);
         let _ = handle.await;
@@ -1758,7 +1757,7 @@ mod tests {
             Box::pin(async move {
                 // Simulate upload — return a fake result
                 Ok(FileUploadResult {
-                    cloud_path: format!("/TermFast/files/mock.enc"),
+                    cloud_path: "/TermFast/files/mock.enc".to_string(),
                     file_name: std::path::Path::new(&file_path)
                         .file_name()
                         .and_then(|n| n.to_str())

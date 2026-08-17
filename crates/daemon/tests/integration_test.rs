@@ -212,6 +212,7 @@ mod tests {
             suppress_firewall_badge: false,
             test_url: String::new(),
             port_forwards: vec![],
+            tmux_mode: "ask".to_string(),
         }
     }
 

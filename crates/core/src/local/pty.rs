@@ -86,6 +86,8 @@ pub fn open_local_pty(
     let reader = pair.master.try_clone_reader()?;
     // take_writer takes &self, so master is still valid for resize after this call.
     // No need to clone master — just move it into the struct.
+    // `mut` is only used in the Windows ConPTY block below (cfg-gated).
+    #[allow(unused_mut)]
     let mut writer = pair.master.take_writer()?;
 
     // Windows ConPTY (portable-pty 0.9) creates the pseudoconsole with the
@@ -202,7 +204,7 @@ mod tests {
                 // Skip ESC ] ... BEL (OSC sequences)
                 if chars.peek() == Some(&']') {
                     chars.next();
-                    while let Some(c2) = chars.next() {
+                    for c2 in &mut chars {
                         if c2 == '\x07' {
                             break;
                         }

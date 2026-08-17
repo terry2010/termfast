@@ -19,8 +19,21 @@ const noCachePlugin = () => ({
   },
 });
 
+// Exclude docs/ directory from vite's dependency scanning and compilation.
+// docs/ contains third-party reference code (opencode, cli-agent-orchestrator)
+// that has its own dependencies (solid-js, etc.) not installed in this project.
+const excludeDocsPlugin = () => ({
+  name: "exclude-docs",
+  resolveId(source: string, importer: string | undefined) {
+    if (importer && importer.includes("/docs/")) {
+      return { id: source, external: true };
+    }
+    return null;
+  },
+});
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), noCachePlugin()],
+  plugins: [react(), tailwindcss(), noCachePlugin(), excludeDocsPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
