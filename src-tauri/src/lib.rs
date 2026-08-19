@@ -2794,6 +2794,13 @@ async fn ipc_restore_tunnels(
     // recovered via ECDH (using the peer's ECDH public key from the backend).
     let imported = import_desktop_pairings_from_backend(&app, &jwt, &local_ids).await;
     let total = count + imported;
+
+    // Notify frontend to reload desktop pairings so online status reflects
+    // the newly started tunnels (server-role pairings don't emit
+    // remote_client_state events, so the frontend needs a nudge to refresh).
+    use tauri::Emitter;
+    let _ = app.emit("desktop_pairings_changed", ());
+
     Ok(total)
 }
 
@@ -3238,7 +3245,7 @@ async fn ipc_list_desktop_pairings(
     };
 
     // 3. Merge: backend records are authoritative; local provides key+jwt
-    // Get RemoteClientManager to query connection status
+    // Get RemoteClientManager to query connection status (for client-role pairings)
     let rcm = {
         if let Some(app_state) = app.try_state::<AppState>() {
             app_state.remote_client_manager.lock().await.clone()
@@ -3246,15 +3253,17 @@ async fn ipc_list_desktop_pairings(
             None
         }
     };
+    // Get TunnelManager to query connection status (for server-role pairings)
+    let tm = {
+        if let Some(app_state) = app.try_state::<AppState>() {
+            app_state.tunnel_manager.lock().await.clone()
+        } else {
+            None
+        }
+    };
     for bp in &backend_pairings {
         let pid = bp.get("pairing_id").and_then(|v| v.as_str()).unwrap_or("");
         let local = local_by_id.get(pid);
-        // Query connection status from RemoteClientManager
-        let is_online = if let Some(ref rcm) = rcm {
-            rcm.is_connected(pid).await
-        } else {
-            false
-        };
         // Determine peer name and role.
         // Prefer local peer_role (from DESKTOP_PAIR frame, authoritative);
         // fall back to device_id matching for pairings not saved locally.
@@ -3274,6 +3283,20 @@ async fn ipc_list_desktop_pairings(
             (mobile_name, "server")
         } else {
             (desktop_name, "client")
+        };
+        // Query connection status based on role:
+        // - server role (this desktop is server B): check TunnelManager (tunnel to relay)
+        // - client role (this desktop is client A): check RemoteClientManager (remote client)
+        let is_online = if peer_role == "server" {
+            if let Some(ref tm) = tm {
+                tm.is_tunnel_active(pid).await
+            } else {
+                false
+            }
+        } else if let Some(ref rcm) = rcm {
+            rcm.is_connected(pid).await
+        } else {
+            false
         };
 
         // pairing_key_hex: prefer local (from DESKTOP_PAIR frame), fall back to backend,
@@ -3332,7 +3355,14 @@ async fn ipc_list_desktop_pairings(
         .collect();
     for lp in &local_desktop {
         if !backend_ids.contains(&lp.pairing_id) {
-            let is_online = if let Some(ref rcm) = rcm {
+            // Query connection status based on role (same logic as above)
+            let is_online = if lp.peer_role == "server" {
+                if let Some(ref tm) = tm {
+                    tm.is_tunnel_active(&lp.pairing_id).await
+                } else {
+                    false
+                }
+            } else if let Some(ref rcm) = rcm {
                 rcm.is_connected(&lp.pairing_id).await
             } else {
                 false

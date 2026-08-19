@@ -133,6 +133,13 @@ export function ServerList({
     handleRemoteStateEvent
   );
 
+  // Listen for desktop_pairings_changed: reload peers when tunnels are
+  // restored or imported from backend (server-role pairings don't emit
+  // remote_client_state, so we need to reload to update online status).
+  useTauriEvent("desktop_pairings_changed", () => {
+    loadPeers();
+  });
+
   // Hover-expand state for collapsed sidebar: sidebar expands when hovered,
   // overlays the right content, and auto-collapses on mouse leave. The expand
   // button at the top is excluded from the hover trigger.
