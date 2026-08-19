@@ -128,6 +128,27 @@ pub async fn pair_revoke(token: &str, pairing_id: &str) -> Result<Value, String>
     Ok(body)
 }
 
+/// Re-issue a pairing JWT for an already-completed desktop pairing.
+/// Used by desktop clients that lost their local pairing JWT.
+pub async fn reissue_pairing_jwt(token: &str, pairing_id: &str) -> Result<String, String> {
+    let resp = client()
+        .post(format!("{}/pair/reissue-jwt", BACKEND_URL))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&serde_json::json!({ "pairing_id": pairing_id }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(body.get("error").and_then(|v| v.as_str()).unwrap_or("error").to_string());
+    }
+    body.get("pairing_jwt")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "missing pairing_jwt in response".to_string())
+}
+
 pub async fn sync_upload_config(pairing_jwt: &str, ciphertext: &str, nonce: &str) -> Result<Value, String> {
     let resp = client()
         .post(format!("{}/sync/config", BACKEND_URL))

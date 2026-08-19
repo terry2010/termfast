@@ -2831,8 +2831,8 @@ async fn import_desktop_pairings_from_backend(
                 // Re-save with correct desktop type (ipc_tunnel_start overwrote as mobile)
                 pairing_store::save(pairing_store::StoredPairing {
                     pairing_id: pid.to_string(),
-                    pairing_key_hex,
-                    relay_url,
+                    pairing_key_hex: pairing_key_hex.clone(),
+                    relay_url: relay_url.clone(),
                     jwt: String::new(),
                     pairing_type: "desktop".to_string(),
                     peer_name: peer_name.to_string(),
@@ -2841,9 +2841,79 @@ async fn import_desktop_pairings_from_backend(
                 imported += 1;
             }
         }
-        // For client role: skip — RemoteClientManager needs the pairing JWT
-        // which is only available from the DESKTOP_PAIR frame. The pairing
-        // is saved to store for display; the user can re-pair to get the JWT.
+        // For client role: reissue pairing JWT from backend, then start remote client
+        if peer_role == "client" {
+            match pairing::reissue_pairing_jwt(jwt, pid).await {
+                Ok(pairing_jwt) => {
+                    // Save with the reissued JWT
+                    pairing_store::save(pairing_store::StoredPairing {
+                        pairing_id: pid.to_string(),
+                        pairing_key_hex: pairing_key_hex.clone(),
+                        relay_url: relay_url.clone(),
+                        jwt: pairing_jwt.clone(),
+                        pairing_type: "desktop".to_string(),
+                        peer_name: peer_name.to_string(),
+                        peer_role: peer_role.to_string(),
+                    });
+                    // Start remote client
+                    let pairing_key = match decode_hex_32(&pairing_key_hex) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            tracing::warn!("import_desktop_pairings: bad key for client {}: {}", pid, e);
+                            continue;
+                        }
+                    };
+                    let config = termfast_daemon::remote_client::RemoteClientConfig {
+                        relay_url: relay_url.clone(),
+                        pairing_jwt,
+                        pairing_id: pid.to_string(),
+                        pairing_key,
+                    };
+                    let app_handle = app.clone();
+                    let app_handle_state = app.clone();
+                    let rcm = {
+                        if let Some(app_state) = app.try_state::<AppState>() {
+                            app_state.remote_client_manager.lock().await.clone()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(rcm) = rcm {
+                        if let Err(e) = rcm.start_client(
+                            config,
+                            move |pid2, frame_type, terminal_id, payload| {
+                                use tauri::Emitter;
+                                use base64::Engine;
+                                let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                                let _ = app_handle.emit("remote_client_frame", serde_json::json!({
+                                    "pairing_id": pid2,
+                                    "frame_type": frame_type,
+                                    "terminal_id": terminal_id,
+                                    "data": data_b64,
+                                }));
+                            },
+                            move |pid2, connected| {
+                                use tauri::Emitter;
+                                let _ = app_handle_state.emit("remote_client_state", serde_json::json!({
+                                    "pairing_id": pid2,
+                                    "connected": connected,
+                                }));
+                            },
+                        ).await {
+                            tracing::warn!("import_desktop_pairings: failed to start remote client for {}: {}", pid, e);
+                        } else {
+                            tracing::info!("import_desktop_pairings: started remote client for pairing {} (client)", pid);
+                            imported += 1;
+                        }
+                    } else {
+                        tracing::warn!("import_desktop_pairings: RemoteClientManager not initialized, cannot start client for {}", pid);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("import_desktop_pairings: reissue JWT failed for {}: {} — saved for display only", pid, e);
+                }
+            }
+        }
     }
     imported
 }
