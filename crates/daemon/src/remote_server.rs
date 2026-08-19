@@ -546,14 +546,17 @@ impl RemoteServer {
                 (resp, false)
             }
             remote_frame::INFO_REQUEST => {
+                tracing::info!("INFO_REQUEST received from pairing {}", pairing_id);
                 let resp = self.handle_info_request().await;
                 (Some(resp), false)
             }
             remote_frame::NEW_TERMINAL => {
+                tracing::info!("NEW_TERMINAL received from pairing {}", pairing_id);
                 let resp = self.handle_new_terminal(frame, async_tx).await;
                 (resp, false)
             }
             remote_frame::CLOSE_TERMINAL => {
+                tracing::info!("CLOSE_TERMINAL received from pairing {}, terminal_id={}", pairing_id, frame.terminal_id);
                 let resp = self.handle_close_terminal(frame).await;
                 (resp, false)
             }
@@ -983,6 +986,7 @@ impl RemoteServer {
             "real_name": real_name,
             "available_shells": available_shells,
         });
+        tracing::info!("INFO_RESPONSE: sending system info to remote client");
         Frame::info_response(&json.to_string())
     }
 

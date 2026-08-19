@@ -63,6 +63,7 @@ pub struct RemoteClientManager {
 }
 
 /// An outbound frame to be encrypted and sent via WebSocket.
+#[derive(Debug)]
 pub enum OutboundFrame {
     List,
     Subscribe(u32),
@@ -140,6 +141,7 @@ impl RemoteClientManager {
         let tx = senders
             .get(pairing_id)
             .ok_or_else(|| format!("no remote client for pairing_id={}", pairing_id))?;
+        tracing::info!("remote_client: send_frame pairing={} type={:?}", pairing_id, frame);
         tx.send(frame).await.map_err(|e| format!("send: {}", e))
     }
 
