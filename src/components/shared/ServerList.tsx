@@ -108,9 +108,14 @@ export function ServerList({
   const remoteActiveConnection = useRemoteDesktopStore((s) => s.activeConnection);
   const setRemoteActiveConnection = useRemoteDesktopStore((s) => s.setActiveConnection);
 
-  // Load remote desktop peers on mount
+  // Load remote desktop peers on mount, retry on failure
   useEffect(() => {
     loadPeers();
+    // Retry after 3s if load failed (backend may be temporarily unreachable)
+    const retryTimer = setTimeout(() => {
+      loadPeers();
+    }, 3000);
+    return () => clearTimeout(retryTimer);
   }, [loadPeers]);
 
   // Listen for remote client connection state events

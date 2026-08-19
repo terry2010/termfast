@@ -3332,6 +3332,11 @@ async fn ipc_list_desktop_pairings(
         .collect();
     for lp in &local_desktop {
         if !backend_ids.contains(&lp.pairing_id) {
+            let is_online = if let Some(ref rcm) = rcm {
+                rcm.is_connected(&lp.pairing_id).await
+            } else {
+                false
+            };
             merged.push(serde_json::json!({
                 "pairing_id": lp.pairing_id,
                 "pairing_key_hex": lp.pairing_key_hex,
@@ -3340,6 +3345,7 @@ async fn ipc_list_desktop_pairings(
                 "pairing_type": "desktop",
                 "peer_name": lp.peer_name,
                 "peer_role": lp.peer_role,
+                "is_online": is_online,
             }));
         }
     }
