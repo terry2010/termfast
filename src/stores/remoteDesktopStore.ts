@@ -57,7 +57,7 @@ export const useRemoteDesktopStore = create<RemoteDesktopStore>((set) => ({
         jwt: p.jwt,
         peerName: p.peer_name,
         peerRole: p.peer_role,
-        online: false,
+        online: !!p.is_online,
       }));
       set({ peers: pairings, loading: false });
     } catch (e: any) {

@@ -3227,7 +3227,7 @@ fn device_id_matches(backend_id: &str, this_id: &str) -> bool {
 /// DESKTOP_PAIR frame wasn't delivered because the mobile tunnel was down).
 #[tauri::command]
 async fn ipc_list_desktop_pairings(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     // 1. Load local pairings (have pairing_key_hex + jwt for tunnel connect)
     let local_all = pairing_store::load();
@@ -3274,9 +3274,23 @@ async fn ipc_list_desktop_pairings(
     };
 
     // 3. Merge: backend records are authoritative; local provides key+jwt
+    // Get RemoteClientManager to query connection status
+    let rcm = {
+        if let Some(app_state) = app.try_state::<AppState>() {
+            app_state.remote_client_manager.lock().await.clone()
+        } else {
+            None
+        }
+    };
     for bp in &backend_pairings {
         let pid = bp.get("pairing_id").and_then(|v| v.as_str()).unwrap_or("");
         let local = local_by_id.get(pid);
+        // Query connection status from RemoteClientManager
+        let is_online = if let Some(ref rcm) = rcm {
+            rcm.is_connected(pid).await
+        } else {
+            false
+        };
         // Determine peer name and role.
         // Prefer local peer_role (from DESKTOP_PAIR frame, authoritative);
         // fall back to device_id matching for pairings not saved locally.
@@ -3342,6 +3356,7 @@ async fn ipc_list_desktop_pairings(
             "pairing_type": "desktop",
             "peer_name": peer_name,
             "peer_role": peer_role,
+            "is_online": is_online,
         });
         merged.push(entry);
     }

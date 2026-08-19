@@ -58,6 +58,8 @@ pub struct RemoteClientManager {
     clients: Arc<Mutex<std::collections::HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// Send channels: pairing_id → mpsc::Sender for sending frames to the ws task
     senders: Arc<Mutex<std::collections::HashMap<String, tokio::sync::mpsc::Sender<OutboundFrame>>>>,
+    /// Connected state: pairing_id → bool (true if HELLO completed)
+    connected: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// An outbound frame to be encrypted and sent via WebSocket.
@@ -75,7 +77,13 @@ impl RemoteClientManager {
         Self {
             clients: Arc::new(Mutex::new(std::collections::HashMap::new())),
             senders: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            connected: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
+    }
+
+    /// Check if a remote client for the given pairing_id is connected (HELLO completed).
+    pub async fn is_connected(&self, pairing_id: &str) -> bool {
+        self.connected.lock().await.contains(pairing_id)
     }
 
     /// Start a remote client for a desktop-to-desktop pairing.
@@ -103,9 +111,10 @@ impl RemoteClientManager {
         let state_cb: StateCallback = Arc::new(state_callback);
         let pairing_id_clone = pairing_id.clone();
         let senders = self.senders.clone();
+        let connected_set = self.connected.clone();
 
         let handle = tokio::spawn(async move {
-            run_client_loop(config, frame_cb, state_cb, rx).await;
+            run_client_loop(config, frame_cb, state_cb, rx, connected_set).await;
             senders.lock().await.remove(&pairing_id_clone);
         });
 
@@ -119,6 +128,7 @@ impl RemoteClientManager {
             handle.abort();
         }
         self.senders.lock().await.remove(pairing_id);
+        self.connected.lock().await.remove(pairing_id);
     }
 
     /// Send a frame to a specific remote client (by pairing_id).
@@ -154,6 +164,7 @@ async fn run_client_loop(
     frame_cb: FrameCallback,
     state_cb: StateCallback,
     mut rx: tokio::sync::mpsc::Receiver<OutboundFrame>,
+    connected_set: Arc<Mutex<std::collections::HashSet<String>>>,
 ) {
     let mut backoff = std::time::Duration::from_secs(1);
     let max_backoff = std::time::Duration::from_secs(30);
@@ -165,12 +176,14 @@ async fn run_client_loop(
             config.relay_url
         );
 
-        match run_client_once(&config, &frame_cb, &state_cb, &mut rx).await {
+        match run_client_once(&config, &frame_cb, &state_cb, &mut rx, &connected_set).await {
             Ok(()) => {
                 tracing::info!(
                     "remote_client_loop: closed cleanly for pairing {}",
                     config.pairing_id
                 );
+                // Remove from connected set on clean close
+                connected_set.lock().await.remove(&config.pairing_id);
                 // Sleep before reconnecting to avoid tight loop if relay closes immediately
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 backoff = std::time::Duration::from_secs(1);
@@ -182,6 +195,7 @@ async fn run_client_loop(
                         config.pairing_id,
                         e
                     );
+                    connected_set.lock().await.remove(&config.pairing_id);
                     return;
                 }
                 tracing::warn!(
@@ -205,6 +219,7 @@ async fn run_client_once(
     frame_cb: &FrameCallback,
     state_cb: &StateCallback,
     rx: &mut tokio::sync::mpsc::Receiver<OutboundFrame>,
+    connected_set: &Arc<Mutex<std::collections::HashSet<String>>>,
 ) -> Result<(), String> {
     // 1. Connect WebSocket
     let host = crate::tunnel_client::extract_host(&config.relay_url);
@@ -310,6 +325,7 @@ async fn run_client_once(
     );
 
     tracing::info!("remote_client: HELLO complete for pairing {}", config.pairing_id);
+    connected_set.lock().await.insert(config.pairing_id.clone());
     state_cb(&config.pairing_id, true);
 
     // 5. Bridge loop: inbound (ws_read → decrypt → callback) + outbound (rx → encrypt → ws_write)
