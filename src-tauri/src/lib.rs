@@ -456,52 +456,13 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
     }
     for p in &stored {
         if p.pairing_type == "desktop" && p.peer_role == "client" {
-            if p.jwt.is_empty() {
-                tracing::info!(
-                    "skip restore desktop client pairing {}: empty JWT, will be handled by ipc_restore_tunnels (reissue)",
-                    p.pairing_id
-                );
-                continue;
-            }
-            tracing::info!("restoring desktop client pairing {}", p.pairing_id);
-            let pairing_key = match decode_hex_32(&p.pairing_key_hex) {
-                Ok(k) => k,
-                Err(e) => {
-                    tracing::warn!("skip restore {}: bad key: {}", p.pairing_id, e);
-                    continue;
-                }
-            };
-            let config = termfast_daemon::remote_client::RemoteClientConfig {
-                relay_url: p.relay_url.clone(),
-                pairing_jwt: p.jwt.clone(),
-                pairing_id: p.pairing_id.clone(),
-                pairing_key,
-            };
-            let handle_for_client = handle.clone();
-            let handle_for_state = handle.clone();
-            if let Err(e) = rcm.start_client(
-                config,
-                move |pid, frame_type, terminal_id, payload| {
-                    use tauri::Emitter;
-                    use base64::Engine;
-                    let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
-                    let _ = handle_for_client.emit("remote_client_frame", serde_json::json!({
-                        "pairing_id": pid,
-                        "frame_type": frame_type,
-                        "terminal_id": terminal_id,
-                        "data": data_b64,
-                    }));
-                },
-                move |pid, connected| {
-                    use tauri::Emitter;
-                    let _ = handle_for_state.emit("remote_client_state", serde_json::json!({
-                        "pairing_id": pid,
-                        "connected": connected,
-                    }));
-                },
-            ).await {
-                tracing::warn!("failed to restore desktop client pairing {}: {}", p.pairing_id, e);
-            }
+            // Desktop client pairings are restored by ipc_restore_tunnels,
+            // which handles JWT reissue and avoids duplicate start_client calls.
+            tracing::info!(
+                "skip restore desktop client pairing {}: handled by ipc_restore_tunnels",
+                p.pairing_id
+            );
+            continue;
         }
     }
 
