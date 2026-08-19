@@ -1628,17 +1628,10 @@ export function ServerDetail() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
-                      {!isLocal && isConnected && (
+                      {!isLocal && !isRemote && isConnected && (
                         <button
                           className="px-3.5 py-1.5 text-sm rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] font-medium transition-colors"
-                          onClick={isRemote ? () => {
-                            if (remotePairingId) {
-                              ipcInvoke("ipc_remote_client_disconnect", {
-                                pairing_id: remotePairingId,
-                              }).catch(() => {});
-                              setRemoteActiveTerminal(null);
-                            }
-                          } : handleDisconnect}
+                          onClick={handleDisconnect}
                         >
                           {t("server.disconnect")}
                         </button>
