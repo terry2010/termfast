@@ -98,6 +98,18 @@ export function ServerDetail() {
   // Disconnect confirmation: shown when user clicks disconnect with active terminals
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [pendingCloseTab, setPendingCloseTab] = useState<string | null>(null);
+  // Remote desktop system info (from INFO_RESPONSE frame)
+  const [remoteInfo, setRemoteInfo] = useState<{
+    shell_name: string;
+    os_name: string;
+    os_version: string;
+    os_arch: string;
+    hostname: string;
+    username: string;
+    real_name: string;
+    available_shells: string[];
+  } | null>(null);
+  const [selectedRemoteShell, setSelectedRemoteShell] = useState<string | null>(null);
   // Tmux session picker: shown when tmux_mode="ask" and sessions are available
   const [showTmuxPicker, setShowTmuxPicker] = useState(false);
   const [tmuxPickerCols, setTmuxPickerCols] = useState(80);
@@ -132,6 +144,8 @@ export function ServerDetail() {
     setDragOverTabId(null);
     setRemoteTerminals([]);
     setRemoteActiveTerminal(null);
+    setRemoteInfo(null);
+    setSelectedRemoteShell(null);
   }, [selectedId]);
 
   // Remote desktop: load terminal list when a remote peer is selected
@@ -154,9 +168,13 @@ export function ServerDetail() {
     }).catch((e: any) => {
       toast.error(`Failed to list terminals: ${e?.message || e}`);
     });
+    // Request system info
+    ipcInvoke("ipc_remote_client_get_info", {
+      pairing_id: remotePairingId,
+    }).catch(() => {});
   }, [isRemote, remotePairingId, remotePeer, remoteIsConnected]);
 
-  // Remote desktop: listen for LIST_RESPONSE frames
+  // Remote desktop: listen for LIST_RESPONSE, INFO_RESPONSE, OK frames
   useEffect(() => {
     if (!isRemote || !remotePairingId) return;
     const unlisten = listen<{
@@ -168,16 +186,54 @@ export function ServerDetail() {
       const payload = event.payload;
       if (payload.pairing_id !== remotePairingId) return;
       if (payload.frame_type === 0x02) {
-        // LIST_RESPONSE
+        // LIST_RESPONSE — payload is JSON array of terminals
         try {
           const parsed = JSON.parse(atob(payload.data));
-          const terms = (parsed.terminals || []).map((t: any) => ({
-            terminal_id: t.terminal_id,
-            name: t.name || `Terminal #${t.terminal_id}`,
+          const terms = (Array.isArray(parsed) ? parsed : parsed.terminals || []).map((t: any) => ({
+            terminal_id: t.id ?? t.terminal_id,
+            name: t.name || `Terminal #${t.id ?? t.terminal_id}`,
           }));
           setRemoteTerminals(terms);
         } catch {
           // ignore parse errors
+        }
+      } else if (payload.frame_type === 0x13) {
+        // INFO_RESPONSE — payload is JSON with system info
+        try {
+          const info = JSON.parse(atob(payload.data));
+          setRemoteInfo(info);
+        } catch {
+          // ignore parse errors
+        }
+      } else if (payload.frame_type === 0x0D) {
+        // OK frame — could be response to NEW_TERMINAL (with payload) or CLOSE_TERMINAL
+        if (payload.data) {
+          try {
+            const parsed = JSON.parse(atob(payload.data));
+            if (parsed.terminal_id !== undefined) {
+              // NEW_TERMINAL response — refresh terminal list
+              ipcInvoke("ipc_remote_client_list_terminals", {
+                pairing_id: remotePairingId,
+              }).catch(() => {});
+              // Auto-subscribe to the new terminal
+              const newTermId = parsed.terminal_id;
+              setRemoteActiveTerminal(newTermId);
+              ipcInvoke("ipc_remote_client_subscribe", {
+                pairing_id: remotePairingId,
+                terminal_id: newTermId,
+              }).catch((e: any) => {
+                toast.error(`Subscribe failed: ${e?.message || e}`);
+              });
+            }
+          } catch {
+            // ignore
+          }
+        } else {
+          // CLOSE_TERMINAL response — refresh terminal list
+          ipcInvoke("ipc_remote_client_list_terminals", {
+            pairing_id: remotePairingId,
+          }).catch(() => {});
+          setRemoteActiveTerminal(null);
         }
       }
     });
@@ -1416,7 +1472,20 @@ export function ServerDetail() {
                       rightClickButtonRef.current = false;
                       return;
                     }
-                    setPendingCloseTab(tab.key);
+                    if (isRemote && tab.key.startsWith("remote_term:")) {
+                      // Remote terminal close — send CLOSE_TERMINAL frame
+                      const termId = parseInt(tab.key.slice("remote_term:".length), 10);
+                      if (remotePairingId) {
+                        ipcInvoke("ipc_remote_client_close_terminal", {
+                          pairing_id: remotePairingId,
+                          terminal_id: termId,
+                        }).catch((err: any) => {
+                          toast.error(`Close failed: ${err?.message || err}`);
+                        });
+                      }
+                    } else {
+                      setPendingCloseTab(tab.key);
+                    }
                   }}
                   onContextMenu={(e) => {
                     e.stopPropagation();
@@ -1577,12 +1646,15 @@ export function ServerDetail() {
                       <button
                         className="px-4 py-1.5 text-sm rounded-lg bg-[#34C759] text-white hover:bg-[#2EB34F] disabled:opacity-50 font-medium transition-colors "
                         onClick={isLocal ? () => handleOpenLocalTerminal() : isRemote ? () => {
-                          // For remote, re-request terminal list
+                          // For remote, create a new terminal on the remote desktop
                           if (remotePairingId) {
-                            ipcInvoke("ipc_remote_client_list_terminals", {
+                            const defaultLabel = `${t("server.terminal")} ${remoteTerminals.length + 1}`;
+                            ipcInvoke("ipc_remote_client_new_terminal", {
                               pairing_id: remotePairingId,
+                              shell: selectedRemoteShell ?? undefined,
+                              name: defaultLabel,
                             }).catch((e: any) => {
-                              toast.error(`Failed to list terminals: ${e?.message || e}`);
+                              toast.error(`Failed to create terminal: ${e?.message || e}`);
                             });
                           }
                         } : handleOpenTerminal}
@@ -1591,7 +1663,7 @@ export function ServerDetail() {
                         {isLocal
                           ? t("server.open_local_terminal")
                           : isRemote
-                            ? t("remote_desktop.refresh_terminals", "刷新终端")
+                            ? t("server.open_local_terminal")
                             : connecting
                               ? t("server.status.connecting")
                               : termTabs.length === 0
@@ -1673,20 +1745,71 @@ export function ServerDetail() {
                       <>
                         <div className="flex items-center justify-between px-4 py-3">
                           <span className="text-sm text-gray-500">
-                            {t("remote_desktop.status", "连接状态")}
+                            {t("server.local_shell")}
                           </span>
-                          <span className={`text-sm font-medium ${remoteIsConnected ? "text-[#34C759]" : "text-gray-400"}`}>
-                            {remoteIsConnected
-                              ? t("remote_desktop.online", "在线")
-                              : t("remote_desktop.offline", "离线")}
+                          <div className="flex items-center gap-1.5">
+                            {remoteInfo?.available_shells ? (
+                              <>
+                                <button
+                                  onClick={() => setSelectedRemoteShell(null)}
+                                  className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${
+                                    selectedRemoteShell === null
+                                      ? "bg-[#007AFF] text-white"
+                                      : "bg-gray-100 dark:bg-[#2C2C2E] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#3A3A3C]"
+                                  }`}
+                                >
+                                  {remoteInfo.shell_name}
+                                  <span className="ml-1 opacity-60">
+                                    ({t("server.shell.default_label")})
+                                  </span>
+                                </button>
+                                {remoteInfo.available_shells
+                                  .filter((s) => s !== remoteInfo.shell_name)
+                                  .map((shell) => (
+                                    <button
+                                      key={shell}
+                                      onClick={() => setSelectedRemoteShell(shell)}
+                                      className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${
+                                        selectedRemoteShell === shell
+                                          ? "bg-[#007AFF] text-white"
+                                          : "bg-gray-100 dark:bg-[#2C2C2E] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#3A3A3C]"
+                                      }`}
+                                    >
+                                      {shell}
+                                    </button>
+                                  ))}
+                              </>
+                            ) : (
+                              <span className="text-sm text-gray-400">—</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-gray-500">
+                            {t("server.local_os")}
+                          </span>
+                          <span className="font-mono text-sm text-[#1D1D1F] dark:text-gray-100 text-right">
+                            {remoteInfo
+                              ? `${remoteInfo.os_name} ${remoteInfo.os_version} (${remoteInfo.os_arch})`
+                              : "—"}
                           </span>
                         </div>
                         <div className="flex items-center justify-between px-4 py-3">
                           <span className="text-sm text-gray-500">
-                            {t("remote_desktop.terminal_count", "终端数量")}
+                            {t("server.local_hostname")}
                           </span>
-                          <span className="text-sm text-gray-700 dark:text-gray-300">
-                            {remoteTerminals.length}
+                          <span className="font-mono text-sm text-[#1D1D1F] dark:text-gray-100">
+                            {remoteInfo?.hostname || "—"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-gray-500">
+                            {t("server.local_user")}
+                          </span>
+                          <span className="font-mono text-sm text-[#1D1D1F] dark:text-gray-100">
+                            {remoteInfo
+                              ? `${remoteInfo.real_name} (${remoteInfo.username})`
+                              : "—"}
                           </span>
                         </div>
                       </>

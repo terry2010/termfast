@@ -32,6 +32,10 @@ pub const INPUT_ANSWER: u8 = 0x0E;
 pub const QUESTION_RESOLVED: u8 = 0x0F;
 pub const FILE_REQUEST: u8 = 0x10;
 pub const DESKTOP_PAIR: u8 = 0x11;
+pub const INFO_REQUEST: u8 = 0x12;
+pub const INFO_RESPONSE: u8 = 0x13;
+pub const NEW_TERMINAL: u8 = 0x14;
+pub const CLOSE_TERMINAL: u8 = 0x15;
 
 /// In-memory frame representation.
 #[derive(Debug, Clone)]
@@ -119,6 +123,32 @@ impl Frame {
 
     pub fn ok(terminal_id: u32) -> Self {
         Self::new(OK, terminal_id, Vec::new())
+    }
+
+    /// OK frame with JSON payload (used by NEW_TERMINAL response).
+    pub fn ok_with_payload(terminal_id: u32, json: &str) -> Self {
+        Self::new(OK, terminal_id, json.as_bytes().to_vec())
+    }
+
+    pub fn info_request() -> Self {
+        Self::new(INFO_REQUEST, 0, Vec::new())
+    }
+
+    pub fn info_response(json: &str) -> Self {
+        Self::new(INFO_RESPONSE, 0, json.as_bytes().to_vec())
+    }
+
+    /// NEW_TERMINAL: payload is JSON { "shell": "zsh", "name": "Terminal 1" }
+    pub fn new_terminal(shell: Option<&str>, name: Option<&str>) -> Self {
+        let json = serde_json::json!({
+            "shell": shell,
+            "name": name,
+        });
+        Self::new(NEW_TERMINAL, 0, json.to_string().as_bytes().to_vec())
+    }
+
+    pub fn close_terminal(terminal_id: u32) -> Self {
+        Self::new(CLOSE_TERMINAL, terminal_id, Vec::new())
     }
 
     /// Construct a NOTIFY frame with JSON payload.

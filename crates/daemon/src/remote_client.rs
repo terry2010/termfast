@@ -70,6 +70,9 @@ pub enum OutboundFrame {
     Input(u32, Vec<u8>),
     Resize(u32, u16, u16),
     Goodbye,
+    InfoRequest,
+    NewTerminal { shell: Option<String>, name: Option<String> },
+    CloseTerminal(u32),
 }
 
 impl RemoteClientManager {
@@ -376,6 +379,11 @@ async fn run_client_once(
                             OutboundFrame::Input(tid, data) => Frame::input(tid, &data),
                             OutboundFrame::Resize(tid, cols, rows) => Frame::resize(tid, cols, rows),
                             OutboundFrame::Goodbye => Frame::goodbye(),
+                            OutboundFrame::InfoRequest => Frame::info_request(),
+                            OutboundFrame::NewTerminal { shell, name } => {
+                                Frame::new_terminal(shell.as_deref(), name.as_deref())
+                            }
+                            OutboundFrame::CloseTerminal(tid) => Frame::close_terminal(tid),
                         };
                         let encrypted = match send_cipher.encrypt(&proto_frame.serialize()) {
                             Ok(data) => data,

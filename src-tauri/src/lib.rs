@@ -375,6 +375,9 @@ pub fn run() {
             ipc_remote_client_send_input,
             ipc_remote_client_send_resize,
             ipc_remote_client_unsubscribe,
+            ipc_remote_client_get_info,
+            ipc_remote_client_new_terminal,
+            ipc_remote_client_close_terminal,
             ipc_list_desktop_pairings,
             ipc_initiate_desktop_pairing,
         ])
@@ -3157,6 +3160,45 @@ async fn ipc_remote_client_unsubscribe(
     let rcm_guard = state.remote_client_manager.lock().await;
     let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
     rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Unsubscribe(terminal_id)).await
+}
+
+/// Request system info from remote desktop (INFO_REQUEST).
+#[tauri::command]
+async fn ipc_remote_client_get_info(
+    app: tauri::AppHandle,
+    pairing_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::InfoRequest).await
+}
+
+/// Create a new terminal on the remote desktop (NEW_TERMINAL).
+#[tauri::command]
+async fn ipc_remote_client_new_terminal(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    shell: Option<String>,
+    name: Option<String>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::NewTerminal { shell, name }).await
+}
+
+/// Close a terminal on the remote desktop (CLOSE_TERMINAL).
+#[tauri::command]
+async fn ipc_remote_client_close_terminal(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    terminal_id: u32,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let rcm_guard = state.remote_client_manager.lock().await;
+    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::CloseTerminal(terminal_id)).await
 }
 
 /// Get this desktop's device_id (hostname-username-xxxx format).

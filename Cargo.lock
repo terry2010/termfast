@@ -7458,6 +7458,7 @@ dependencies = [
  "futures-util",
  "libc",
  "mach2",
+ "os_info",
  "rand 0.10.2",
  "regex",
  "ring",
@@ -7475,6 +7476,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "whoami",
  "zeroize",
 ]
 

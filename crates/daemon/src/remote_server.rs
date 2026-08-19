@@ -545,6 +545,18 @@ impl RemoteServer {
                 let resp = self.handle_desktop_pair_frame(frame).await;
                 (resp, false)
             }
+            remote_frame::INFO_REQUEST => {
+                let resp = self.handle_info_request().await;
+                (Some(resp), false)
+            }
+            remote_frame::NEW_TERMINAL => {
+                let resp = self.handle_new_terminal(frame, async_tx).await;
+                (resp, false)
+            }
+            remote_frame::CLOSE_TERMINAL => {
+                let resp = self.handle_close_terminal(frame).await;
+                (resp, false)
+            }
             remote_frame::GOODBYE => {
                 tracing::info!("GOODBYE received from pairing {}", pairing_id);
                 // Reply with GOODBYE, then close.
@@ -936,6 +948,102 @@ impl RemoteServer {
                     "message": e,
                 }).to_string()))
             }
+        }
+    }
+
+    /// INFO_REQUEST: return local system info as JSON.
+    async fn handle_info_request(&self) -> Frame {
+        let default_shell = termfast_core::local::shell::detect_default_shell();
+        let shell_name = std::path::Path::new(&default_shell)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&default_shell)
+            .to_string();
+        let os = os_info::get();
+        let os_version = os.version().to_string();
+        let os_arch = std::env::consts::ARCH.to_string();
+        let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
+        let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".to_string());
+        let real_name = whoami::realname().unwrap_or_else(|_| username.clone());
+        let os_name = match os.os_type() {
+            os_info::Type::Macos => "macOS".to_string(),
+            os_info::Type::Windows => "Windows".to_string(),
+            os_info::Type::Linux => "Linux".to_string(),
+            other => format!("{:?}", other),
+        };
+        let available_shells = termfast_core::local::shell::list_available_shells();
+        let json = serde_json::json!({
+            "default_shell": default_shell,
+            "shell_name": shell_name,
+            "os_name": os_name,
+            "os_version": os_version,
+            "os_arch": os_arch,
+            "hostname": hostname,
+            "username": username,
+            "real_name": real_name,
+            "available_shells": available_shells,
+        });
+        Frame::info_response(&json.to_string())
+    }
+
+    /// NEW_TERMINAL: create a local terminal on the remote desktop.
+    async fn handle_new_terminal(
+        &self,
+        frame: Frame,
+        _async_tx: &mpsc::Sender<Frame>,
+    ) -> Option<Frame> {
+        let payload = match std::str::from_utf8(&frame.payload) {
+            Ok(s) => s,
+            Err(_) => return Some(Frame::error("invalid_payload")),
+        };
+        let req: serde_json::Value = match serde_json::from_str(payload) {
+            Ok(v) => v,
+            Err(_) => return Some(Frame::error("invalid_json")),
+        };
+        let shell = req.get("shell").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let name = req.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        match self.terminal_manager.open_local(80, 24, shell, None).await {
+            Ok((session_id, _initial_output)) => {
+                if let Some(ref n) = name {
+                    self.terminal_manager.set_session_name(&session_id, n).await;
+                }
+                self.terminal_manager.notify_opened();
+                // Assign u32 handle and return it
+                let handle = {
+                    let mut id_map = self.id_map.lock().unwrap();
+                    id_map.get_or_assign(&session_id)
+                };
+                let json = serde_json::json!({
+                    "terminal_id": handle,
+                    "session_id": session_id,
+                });
+                Some(Frame::ok_with_payload(0, &json.to_string()))
+            }
+            Err(e) => {
+                tracing::error!("NEW_TERMINAL: failed to open local terminal: {}", e);
+                Some(Frame::error(&format!("open_failed: {}", e)))
+            }
+        }
+    }
+
+    /// CLOSE_TERMINAL: close a terminal on the remote desktop.
+    async fn handle_close_terminal(&self, frame: Frame) -> Option<Frame> {
+        let terminal_id = frame.terminal_id;
+        let session_id = match self.resolve_sid(terminal_id) {
+            Some(sid) => sid,
+            None => return Some(Frame::error_with_terminal(terminal_id, "terminal_not_found")),
+        };
+        match self.terminal_manager.close(&session_id).await {
+            Ok(()) => {
+                // Remove from id_map
+                {
+                    let mut id_map = self.id_map.lock().unwrap();
+                    id_map.remove(&session_id);
+                }
+                Some(Frame::ok(terminal_id))
+            }
+            Err(e) => Some(Frame::error_with_terminal(terminal_id, &format!("close_failed: {}", e))),
         }
     }
 }
