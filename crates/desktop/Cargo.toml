@@ -40,11 +40,11 @@ tauri-plugin-single-instance = "2"
 # Windows-only dependencies
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
-window-vibrancy = "0.7"
+window-vibrancy = "0.6"
 
 # macOS-only dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
-window-vibrancy = "0.7"
+window-vibrancy = "0.6"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -4831,8 +4831,10 @@ async fn handle_cloud_sync_upload(
     // Save password hash to DB so future uploads can detect password changes.
     save_sync_hash_db(state, &input_hash)?;
 
-    // Increment local config version in DB
-    let _ = state.runtime_state.storage().increment_local_version();
+    // NOTE: Do NOT increment_local_version() here. The version is already
+    // incremented by SqlCipherConfigStorage::save() on every config edit.
+    // Incrementing again after upload would cause the next download check
+    // to falsely report "local_newer" (version N+1 vs last recorded N).
 
     Ok(serde_json::json!({ "ok": true, "size": blob.len() }))
 }

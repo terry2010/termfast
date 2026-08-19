@@ -17,7 +17,7 @@ use termfast_core::config::{
 };
 
 /// Global SqlCipherStorage singleton for Android.
-static SQLCIPHER_STORAGE: OnceLock<Arc<SqlCipherStorage>> = OnceLock::new();
+pub(crate) static SQLCIPHER_STORAGE: OnceLock<Arc<SqlCipherStorage>> = OnceLock::new();
 
 /// Initialize the SqlCipherStorage singleton for the given data directory.
 /// Must be called once after `nativeSetDataDir`.
@@ -30,7 +30,8 @@ pub fn init_sqlcipher_storage(data_dir: &str) -> Result<(), String> {
             .map_err(|e| format!("failed to create DB: {}", e))?
     } else {
         match open_or_recover(&db_path, &DEFAULT_DEK) {
-            Ok(conn) => SqlCipherStorage::from_conn(conn, db_path),
+            Ok(conn) => SqlCipherStorage::from_conn(conn, db_path)
+                .map_err(|e| format!("failed to init schema: {}", e))?,
             Err(OpenResult::WrongKey) | Err(OpenResult::Corrupt)
                 if !db_path.with_extension("db.bak").exists() =>
             {
@@ -50,7 +51,9 @@ pub fn init_sqlcipher_storage_with_key(data_dir: &str, dek: &[u8; 32]) -> Result
     let db_path = PathBuf::from(data_dir).join("termfast.db");
     let conn = open_or_recover(&db_path, dek)
         .map_err(|e| format!("failed to open DB with key: {}", e))?;
-    let _ = SQLCIPHER_STORAGE.set(Arc::new(SqlCipherStorage::from_conn(conn, db_path)));
+    let storage = SqlCipherStorage::from_conn(conn, db_path)
+        .map_err(|e| format!("failed to init schema: {}", e))?;
+    let _ = SQLCIPHER_STORAGE.set(Arc::new(storage));
     Ok(())
 }
 

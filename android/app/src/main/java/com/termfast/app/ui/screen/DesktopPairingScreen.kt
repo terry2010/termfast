@@ -65,18 +65,24 @@ fun DesktopPairingScreen(navController: NavController) {
     val savedStateHandle = navController.currentBackStackEntry?.savedStateHandle
     LaunchedEffect(savedStateHandle) {
         savedStateHandle?.getStateFlow<String?>("qr_result", null)?.collect { content ->
-            if (content != null && scanTarget != null) {
+            if (content != null) {
                 savedStateHandle.remove<String>("qr_result")
+                if (scanTarget == null) {
+                    // No scan in progress — ignore stale result
+                    return@collect
+                }
                 try {
                     val json = JSONObject(content)
                     val type = json.optString("type", "")
-                    if (type != "desktop_pair") {
-                        Toast.makeText(context, "无效的桌面配对二维码", Toast.LENGTH_SHORT).show()
+                    // Accept both "desktop_pair" (dedicated) and "dual" (unified QR)
+                    if (type != "desktop_pair" && type != "dual") {
+                        Toast.makeText(context, "这不是桌面互联二维码，请让桌面端进入配对模式", Toast.LENGTH_LONG).show()
+                        scanTarget = null
                         return@collect
                     }
                     val info = DesktopQrInfo(
                         deviceId = json.getString("device_id"),
-                        deviceName = json.optString("device_name", json.getString("device_id")),
+                        deviceName = json.optString("device_name", json.optString("desktop_name", json.getString("device_id"))),
                         ecdhPublicKey = json.getString("ecdh_public_key"),
                         userId = json.optLong("user_id", 0),
                     )

@@ -93,12 +93,16 @@ impl SqlCipherStorage {
     }
 
     /// Open from an already-established connection (used by daemon layer
-    /// after open_or_recover succeeds).
-    pub fn from_conn(conn: Connection, db_path: PathBuf) -> Self {
-        Self {
+    /// after open_or_recover succeeds). Ensures schema exists (handles edge
+    /// case where DB file was created by open_with_key but schema wasn't
+    /// initialized — e.g., cached DEK remains after DB file deletion).
+    pub fn from_conn(conn: Connection, db_path: PathBuf) -> std::result::Result<Self, String> {
+        let storage = Self {
             conn: Mutex::new(conn),
             db_path,
-        }
+        };
+        storage.init_schema().map_err(|e| e.to_string())?;
+        Ok(storage)
     }
 
     /// Check if the DB file exists on disk.
@@ -110,7 +114,7 @@ impl SqlCipherStorage {
     pub fn is_using_default_dek(&self) -> bool {
         // We can't directly compare the DEK since we don't store it.
         // Instead, check a marker in schema_meta.
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT value FROM schema_meta WHERE key = 'using_default_dek'",
             [],
@@ -123,7 +127,7 @@ impl SqlCipherStorage {
 
     /// Initialize schema (create all tables).
     fn init_schema(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_meta (
                 key   TEXT PRIMARY KEY,
@@ -206,7 +210,7 @@ impl SqlCipherStorage {
 
     /// Backup the DB file (WAL-safe). Used before rekey.
     pub fn backup(&self) -> Result<PathBuf> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")
             .map_err(|e| Error::Other(e.to_string()))?;
         let backup_path = self.db_path.with_extension("db.bak");
@@ -225,12 +229,12 @@ impl SqlCipherStorage {
     /// Rekey the DB (change encryption key). Must be called with the
     /// existing connection (already open with old DEK).
     pub fn rekey(&self, new_dek: &[u8; 32]) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // 0. Backup first — abort if backup fails (design invariant)
         drop(conn);
         self.backup()?;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // 1. Exit WAL mode (rekey + WAL has known issues)
         conn.pragma_update(None, "journal_mode", "DELETE")
             .map_err(|e| Error::Other(e.to_string()))?;
@@ -245,10 +249,11 @@ impl SqlCipherStorage {
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| Error::Other(e.to_string()))?;
 
-        // Update marker
+        // Update marker — set to 'true' if rekeying to DEFAULT_DEK, 'false' otherwise
+        let is_default = *new_dek == DEFAULT_DEK;
         conn.execute(
-            "UPDATE schema_meta SET value = 'false' WHERE key = 'using_default_dek'",
-            [],
+            "UPDATE schema_meta SET value = ?1 WHERE key = 'using_default_dek'",
+            params![if is_default { "true" } else { "false" }],
         )
         .map_err(|e| Error::Other(e.to_string()))?;
 
@@ -269,8 +274,8 @@ impl SqlCipherStorage {
 
     /// Reset: delete DB file and recreate with default DEK.
     pub fn reset(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch("DELETE FROM servers; DELETE FROM trigger_templates; DELETE FROM local_triggers; DELETE FROM runtime_state; DELETE FROM credentials; DELETE FROM cloud_tokens; DELETE FROM sync_state; DELETE FROM pairings; DELETE FROM ecdh_keys; DELETE FROM device_keys; DELETE FROM kv; UPDATE general_config SET data = '{}'; UPDATE sync_meta SET value = '0' WHERE key = 'local_version'; UPDATE schema_meta SET value = 'true' WHERE key = 'using_default_dek';").map_err(|e| Error::Other(e.to_string()))?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute_batch("DELETE FROM servers; DELETE FROM trigger_templates; DELETE FROM local_triggers; DELETE FROM runtime_state; DELETE FROM credentials; DELETE FROM cloud_tokens; DELETE FROM sync_state; DELETE FROM pairings; DELETE FROM ecdh_keys; DELETE FROM device_keys; DELETE FROM kv; DELETE FROM sync_meta; INSERT INTO sync_meta (key, value) VALUES ('local_version', '0'); UPDATE general_config SET data = '{}'; UPDATE schema_meta SET value = 'true' WHERE key = 'using_default_dek';").map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
     }
 }
@@ -281,7 +286,7 @@ impl SqlCipherStorage {
 
 impl SqlCipherStorage {
     pub fn list_servers(&self) -> Result<Vec<(String, String, String, i64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT id, name, data, sort_order FROM servers ORDER BY sort_order, name")
             .map_err(|e| Error::Other(e.to_string()))?;
@@ -303,7 +308,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_server(&self, id: &str, name: &str, data: &str, sort_order: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO servers (id, name, data, sort_order, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, name, data, sort_order, chrono::Utc::now().to_rfc3339()],
@@ -313,7 +318,7 @@ impl SqlCipherStorage {
     }
 
     pub fn delete_server(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM servers WHERE id = ?1", params![id])
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
@@ -323,7 +328,7 @@ impl SqlCipherStorage {
 
     #[allow(clippy::type_complexity)]
     pub fn list_templates(&self) -> Result<Vec<(String, String, String, i64, i64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT id, name, data, is_builtin, sort_order FROM trigger_templates ORDER BY sort_order, name")
             .map_err(|e| Error::Other(e.to_string()))?;
@@ -353,7 +358,7 @@ impl SqlCipherStorage {
         is_builtin: bool,
         sort_order: i64,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO trigger_templates (id, name, data, is_builtin, sort_order) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, name, data, is_builtin as i64, sort_order],
@@ -363,7 +368,7 @@ impl SqlCipherStorage {
     }
 
     pub fn delete_template(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM trigger_templates WHERE id = ?1", params![id])
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
@@ -372,7 +377,7 @@ impl SqlCipherStorage {
     // --- Local triggers CRUD ---
 
     pub fn list_local_triggers(&self) -> Result<Vec<(String, String, i64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT id, data, sort_order FROM local_triggers ORDER BY sort_order")
             .map_err(|e| Error::Other(e.to_string()))?;
@@ -393,7 +398,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_local_trigger(&self, id: &str, data: &str, sort_order: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO local_triggers (id, data, sort_order) VALUES (?1, ?2, ?3)",
             params![id, data, sort_order],
@@ -403,7 +408,7 @@ impl SqlCipherStorage {
     }
 
     pub fn delete_local_trigger(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM local_triggers WHERE id = ?1", params![id])
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
@@ -412,7 +417,7 @@ impl SqlCipherStorage {
     // --- General config (single-row JSON blob) ---
 
     pub fn get_general_config(&self) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT data FROM general_config WHERE id = 1",
             [],
@@ -425,7 +430,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_general_config(&self, data: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO general_config (id, data) VALUES (1, ?1)",
             params![data],
@@ -437,7 +442,7 @@ impl SqlCipherStorage {
     // --- Runtime state ---
 
     pub fn get_runtime_state(&self, server_id: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT data FROM runtime_state WHERE server_id = ?1",
             params![server_id],
@@ -450,7 +455,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_runtime_state(&self, server_id: &str, data: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO runtime_state (server_id, data, updated_at) VALUES (?1, ?2, ?3)",
             params![server_id, data, chrono::Utc::now().to_rfc3339()],
@@ -460,16 +465,34 @@ impl SqlCipherStorage {
     }
 
     pub fn delete_runtime_state(&self, server_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM runtime_state WHERE server_id = ?1", params![server_id])
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
     }
 
+    /// List all runtime state entries (server_id → data JSON).
+    pub fn list_runtime_state(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare("SELECT server_id, data FROM runtime_state")
+            .map_err(|e| Error::Other(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| Error::Other(e.to_string()))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| Error::Other(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
     // --- Credentials ---
 
     pub fn get_credential(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT value FROM credentials WHERE key = ?1",
             params![key],
@@ -482,7 +505,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_credential(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO credentials (key, value) VALUES (?1, ?2)",
             params![key, value],
@@ -492,14 +515,14 @@ impl SqlCipherStorage {
     }
 
     pub fn delete_credential(&self, key: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM credentials WHERE key = ?1", params![key])
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
     }
 
     pub fn list_credentials(&self) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT key, value FROM credentials")
             .map_err(|e| Error::Other(e.to_string()))?;
@@ -514,7 +537,7 @@ impl SqlCipherStorage {
     }
 
     pub fn delete_credentials_for_server(&self, server_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "DELETE FROM credentials WHERE key LIKE ?1",
             params![format!("%::{}::%", server_id)],
@@ -526,7 +549,7 @@ impl SqlCipherStorage {
     // --- KV (device_id etc.) ---
 
     pub fn get_kv(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT value FROM kv WHERE key = ?1",
             params![key],
@@ -539,7 +562,7 @@ impl SqlCipherStorage {
     }
 
     pub fn set_kv(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
             params![key, value],
@@ -551,7 +574,7 @@ impl SqlCipherStorage {
     // --- Sync meta ---
 
     pub fn get_sync_meta(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT value FROM sync_meta WHERE key = ?1",
             params![key],
@@ -564,7 +587,7 @@ impl SqlCipherStorage {
     }
 
     pub fn set_sync_meta(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?1, ?2)",
             params![key, value],
@@ -574,7 +597,7 @@ impl SqlCipherStorage {
     }
 
     pub fn increment_local_version(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "UPDATE sync_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'local_version'",
             [],
@@ -586,7 +609,7 @@ impl SqlCipherStorage {
     // --- Cloud tokens ---
 
     pub fn get_cloud_token(&self, provider: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT data FROM cloud_tokens WHERE provider = ?1",
             params![provider],
@@ -599,7 +622,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_cloud_token(&self, provider: &str, data: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO cloud_tokens (provider, data, updated_at) VALUES (?1, ?2, ?3)",
             params![provider, data, chrono::Utc::now().to_rfc3339()],
@@ -609,7 +632,7 @@ impl SqlCipherStorage {
     }
 
     pub fn delete_cloud_token(&self, provider: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM cloud_tokens WHERE provider = ?1", params![provider])
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
@@ -618,7 +641,7 @@ impl SqlCipherStorage {
     // --- Sync state ---
 
     pub fn get_sync_state(&self, provider: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT data FROM sync_state WHERE provider = ?1",
             params![provider],
@@ -631,7 +654,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_sync_state(&self, provider: &str, data: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO sync_state (provider, data) VALUES (?1, ?2)",
             params![provider, data],
@@ -643,7 +666,7 @@ impl SqlCipherStorage {
     // --- Pairings (PC only) ---
 
     pub fn list_pairings(&self) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT pairing_id, data FROM pairings")
             .map_err(|e| Error::Other(e.to_string()))?;
@@ -658,7 +681,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_pairing(&self, pairing_id: &str, data: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO pairings (pairing_id, data, updated_at) VALUES (?1, ?2, ?3)",
             params![pairing_id, data, chrono::Utc::now().to_rfc3339()],
@@ -668,7 +691,7 @@ impl SqlCipherStorage {
     }
 
     pub fn delete_pairing(&self, pairing_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM pairings WHERE pairing_id = ?1", params![pairing_id])
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
@@ -678,7 +701,7 @@ impl SqlCipherStorage {
 
     #[allow(clippy::type_complexity)]
     pub fn get_ecdh_key(&self) -> Result<Option<(Vec<u8>, Vec<u8>, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT public_key, private_key, created_at FROM ecdh_keys WHERE id = 1",
             [],
@@ -691,7 +714,7 @@ impl SqlCipherStorage {
     }
 
     pub fn upsert_ecdh_key(&self, public_key: &[u8], private_key: &[u8]) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO ecdh_keys (id, public_key, private_key, created_at) VALUES (1, ?1, ?2, ?3)",
             params![public_key, private_key, chrono::Utc::now().to_rfc3339()],
@@ -704,7 +727,7 @@ impl SqlCipherStorage {
 
     #[allow(clippy::type_complexity)]
     pub fn get_device_key(&self) -> Result<Option<(Vec<u8>, Vec<u8>, String, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match conn.query_row(
             "SELECT public_key_der, private_key, security_level, created_at FROM device_keys WHERE id = 1",
             [],
@@ -727,7 +750,7 @@ impl SqlCipherStorage {
         private_key: &[u8],
         security_level: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO device_keys (id, public_key_der, private_key, security_level, created_at) VALUES (1, ?1, ?2, ?3, ?4)",
             params![public_key_der, private_key, security_level, chrono::Utc::now().to_rfc3339()],
@@ -907,8 +930,6 @@ fn save_config_to_storage(storage: &SqlCipherStorage, config: &Config) -> Result
 
     // Servers — full replace (delete all + re-insert)
     // This is simpler than diffing and handles deletions correctly.
-    let conn_rows = storage.list_servers()?;
-    let _ = conn_rows; // we delete all and re-insert
     for (i, server) in config.servers.iter().enumerate() {
         let data = serde_json::to_string(server)?;
         storage.upsert_server(&server.id, &server.name, &data, i as i64)?;

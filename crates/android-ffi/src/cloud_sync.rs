@@ -59,10 +59,21 @@ pub fn data_dir() -> PathBuf {
 
 // === SQLCipher DB-backed helpers (replace file-based storage) ===
 
+use crate::config::SQLCIPHER_STORAGE;
+
+/// Get the singleton SqlCipherStorage, or None if not yet initialized
+/// (NEED_UNLOCK case). All DB-backed helpers use this to avoid panicking
+/// when cloud sync is triggered before the user unlocks.
+fn try_storage() -> Option<&'static std::sync::Arc<termfast_core::config::SqlCipherStorage>> {
+    SQLCIPHER_STORAGE.get()
+}
+
 /// Load cloud tokens from DB (cloud_tokens table, provider "_all").
 /// Consistent with daemon handler.rs which uses the same table/provider.
 fn load_cloud_tokens() -> token_store::TokenStoreData {
-    let storage = crate::config::sqlcipher_storage();
+    let Some(storage) = try_storage() else {
+        return token_store::TokenStoreData::default();
+    };
     match storage.get_cloud_token("_all") {
         Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
         _ => token_store::TokenStoreData::default(),
@@ -79,7 +90,9 @@ fn save_cloud_tokens(data: &token_store::TokenStoreData) -> Result<(), String> {
 /// Load sync state from DB (sync_state table, per-provider).
 /// Consistent with daemon handler.rs which uses the same table structure.
 fn load_sync_state_db() -> sync_state::SyncState {
-    let storage = crate::config::sqlcipher_storage();
+    let Some(storage) = try_storage() else {
+        return sync_state::SyncState::default();
+    };
     let mut result = sync_state::SyncState::default();
     if let Ok(Some(json)) = storage.get_sync_state("baidu") {
         if let Ok(ps) = serde_json::from_str::<sync_state::ProviderState>(&json) {
@@ -108,7 +121,7 @@ fn save_sync_state_db(state: &sync_state::SyncState) -> Result<(), String> {
 
 /// Load sync hash from DB (hex string → 32-byte hash).
 fn load_sync_hash_db() -> Option<[u8; 32]> {
-    let storage = crate::config::sqlcipher_storage();
+    let storage = try_storage()?;
     let hex = storage.get_sync_meta("sync_hash").ok().flatten()?;
     if hex.len() != 64 {
         return None;
@@ -131,17 +144,19 @@ fn save_sync_hash_db(hash: &[u8; 32]) -> Result<(), String> {
 /// Clear sync hash in DB.
 #[allow(dead_code)]
 fn clear_sync_hash_db() {
-    let storage = crate::config::sqlcipher_storage();
-    let _ = storage.set_sync_meta("sync_hash", "");
+    if let Some(storage) = try_storage() {
+        let _ = storage.set_sync_meta("sync_hash", "");
+    }
 }
 
 /// Get local config version from DB sync_meta table.
 /// Falls back to config.json mtime for backward compatibility.
 fn local_config_version() -> Option<String> {
-    let storage = crate::config::sqlcipher_storage();
-    if let Ok(Some(v)) = storage.get_sync_meta("local_version") {
-        if !v.is_empty() {
-            return Some(v);
+    if let Some(storage) = try_storage() {
+        if let Ok(Some(v)) = storage.get_sync_meta("local_version") {
+            if !v.is_empty() {
+                return Some(v);
+            }
         }
     }
     // Fallback: use config.json mtime
@@ -158,8 +173,9 @@ fn local_config_version() -> Option<String> {
 /// Save local config version to DB.
 #[allow(dead_code)]
 fn save_local_config_version(version: &str) {
-    let storage = crate::config::sqlcipher_storage();
-    let _ = storage.set_sync_meta("local_version", version);
+    if let Some(storage) = try_storage() {
+        let _ = storage.set_sync_meta("local_version", version);
+    }
 }
 
 // Legacy path functions kept for backward compatibility (unused in SQLCipher mode)

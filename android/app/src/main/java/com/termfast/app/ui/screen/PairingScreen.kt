@@ -2,6 +2,7 @@ package com.termfast.app.ui.screen
 
 import android.os.Build
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -54,7 +55,10 @@ fun PairingScreen(navController: NavController) {
             token = saved
             scope.launch {
                 try {
-                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(saved, PairingApi.getDeviceName()) }
+                    // Don't filter by mobileDeviceId — the backend already filters
+                    // by user ID (from JWT). Filtering by getDeviceName() caused
+                    // devices to disappear when getprop returned inconsistent values.
+                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(saved) }
                 } catch (_: Exception) {}
             }
         }
@@ -64,8 +68,12 @@ fun PairingScreen(navController: NavController) {
     val savedStateHandle = navController.currentBackStackEntry?.savedStateHandle
     LaunchedEffect(savedStateHandle) {
         savedStateHandle?.getStateFlow<String?>("qr_result", null)?.collect { content ->
-            if (content != null && token != null) {
+            if (content != null) {
                 savedStateHandle.remove<String>("qr_result")
+                if (token == null) {
+                    Toast.makeText(context, "请先登录后再扫码配对", Toast.LENGTH_LONG).show()
+                    return@collect
+                }
                 // Parse QR content: {"pairing_id":"xxx","backend_url":"xxx"}
                 try {
                     val json = JSONObject(content)
@@ -73,8 +81,11 @@ fun PairingScreen(navController: NavController) {
                     val pairingKey = json.optString("pairing_key", "")
                     val relayUrl = json.optString("relay_url", "")
                     val desktopName = json.optString("desktop_name", "")
+                    val deviceId = json.optString("device_id", "")
+                    val ecdhPublicKey = json.optString("ecdh_public_key", "")
+                    val userId = json.optLong("user_id", 0)
                     // D5: Show trust level dialog before completing pairing
-                    pendingQrData = PairingApi.QrData(pairingId, pairingKey, relayUrl, desktopName)
+                    pendingQrData = PairingApi.QrData(pairingId, pairingKey, relayUrl, desktopName, deviceId, ecdhPublicKey, userId)
                     selectedTrustLevel = "full"
                     showTrustLevelDialog = true
                 } catch (e: Exception) {
@@ -152,7 +163,7 @@ fun PairingScreen(navController: NavController) {
                                     val tok = result.getString("access_token")
                                     token = tok
                                     PairingStore.saveToken(tok)
-                                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(tok, PairingApi.getDeviceName()) }
+                                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(tok) }
                                     Toast.makeText(context, "登录成功", Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "登录失败: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -236,10 +247,25 @@ fun PairingScreen(navController: NavController) {
                                 modifier = Modifier.padding(16.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                // Online/offline status indicator
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(
+                                            if (d.isOnline) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.outlineVariant,
+                                            shape = androidx.compose.foundation.shape.CircleShape
+                                        )
+                                )
+                                Spacer(Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(d.desktopName.ifEmpty { d.deviceId }, style = MaterialTheme.typography.bodyMedium)
-                                    Text(d.status, style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        if (d.isOnline) "在线" else "离线",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (d.isOnline) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                                 Text("撤销", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                             }

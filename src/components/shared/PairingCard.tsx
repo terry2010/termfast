@@ -31,6 +31,8 @@ export function PairingCard() {
   const [showDevicesModal, setShowDevicesModal] = useState(false);
   const [desktopName, setDesktopName] = useState<string>("");
   const [desktopDeviceId, setDesktopDeviceId] = useState<string>("");
+  const [ecdhPublicKey, setEcdhPublicKey] = useState<string>("");
+  const [userId, setUserId] = useState<number>(0);
   const [showAllDevices, setShowAllDevices] = useState(false);
 
   // On mount: get desktop_device_id + restore token, then fetch devices.
@@ -187,8 +189,19 @@ export function PairingCard() {
         desktop_name: dName,
       });
       const pairingKey = await ipcInvoke<string>("ipc_generate_pairing_key");
+      // Also fetch ECDH public key + user_id for dual-mode QR (desktop interconnect)
+      let ecdhPubKey = "";
+      let userId = 0;
+      try {
+        ecdhPubKey = await ipcInvoke<string>("ipc_get_ecdh_public_key");
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        userId = payload.user_id || 0;
+      } catch {}
       setPairingId(result.pairing_id);
       setPairingKey(pairingKey);
+      setEcdhPublicKey(ecdhPubKey);
+      setUserId(userId);
+      setDesktopDeviceId(desktopDeviceId);
       setDesktopName(dName);
       setPolling(true);
       setShowQrModal(true);
@@ -210,8 +223,18 @@ export function PairingCard() {
               desktop_name: dName,
             });
             const pairingKey = await ipcInvoke<string>("ipc_generate_pairing_key");
+            let ecdhPubKey = "";
+            let userId = 0;
+            try {
+              ecdhPubKey = await ipcInvoke<string>("ipc_get_ecdh_public_key");
+              const payload = JSON.parse(atob(newToken.split(".")[1]));
+              userId = payload.user_id || 0;
+            } catch {}
             setPairingId(result.pairing_id);
             setPairingKey(pairingKey);
+            setEcdhPublicKey(ecdhPubKey);
+            setUserId(userId);
+            setDesktopDeviceId(desktopDeviceId);
             setDesktopName(dName);
             setPolling(true);
             setShowQrModal(true);
@@ -307,11 +330,17 @@ export function PairingCard() {
 
   const qrContent = pairingId && pairingKey
     ? JSON.stringify({
+        // Mobile pairing fields
         pairing_id: pairingId,
         backend_url: "http://sh.zimufan.com:39527",
         pairing_key: pairingKey,
         relay_url: "ws://sh.zimufan.com:39527/tunnel",
         desktop_name: desktopName,
+        // Desktop interconnect fields (dual-mode QR)
+        type: "dual",
+        device_id: desktopDeviceId,
+        ecdh_public_key: ecdhPublicKey,
+        user_id: userId,
       })
     : "";
 

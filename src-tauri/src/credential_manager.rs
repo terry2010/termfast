@@ -1,7 +1,7 @@
-//! Credential manager — bridges `EncryptedFileCredentialStore` to Tauri IPC.
+//! Credential manager — bridges `SqlCipherCredentialStore` to Tauri IPC.
 //!
 //! Responsibilities:
-//! - Owns the `Arc<EncryptedFileCredentialStore>` shared with the daemon.
+//! - Owns the `Arc<SqlCipherCredentialStore>` shared with the daemon.
 //! - Caches the derived key in the OS keychain (via `keyring` crate) so the
 //!   user only enters the master password once per device.
 //! - Exposes IPC commands for unlock / setup / migration / password change /
@@ -9,8 +9,8 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::State;
-use termfast_credential::EncryptedFileCredentialStore;
+use termfast_credential::SqlCipherCredentialStore;
+use crate::daemon_embed::EmbeddedDaemon;
 
 /// Keychain entry name for the cached derived key.
 const KEYCHAIN_SERVICE: &str = "termfast";
@@ -63,12 +63,18 @@ pub fn verify_master_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Clear the cloud sync password hash file.
+/// Clear the cloud sync password hash.
 /// Called when the master password is set/changed/reset, so that stale
 /// sync password hashes don't cause false "password_mismatch" warnings
 /// on the next upload.
+/// In SQLCipher mode, clears the `sync_hash` key from the `sync_meta` table.
+/// Also removes the legacy `sync_hash.dat` file if it exists (best-effort).
 fn clear_sync_password_hash() {
-    // sync_hash.dat sits next to credentials.enc and config.json
+    // Clear from DB (SQLCipher mode)
+    if let Some(storage) = crate::storage_singleton::get_storage() {
+        let _ = storage.set_sync_meta("sync_hash", "");
+    }
+    // Also remove legacy file (best-effort, for backward compat)
     let path = credential_file_path()
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
@@ -76,9 +82,12 @@ fn clear_sync_password_hash() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// Tauri-managed state holding the encrypted credential store.
+/// Tauri-managed state holding the SQLCipher credential store.
+/// Deprecated: IPC commands now use storage_singleton::get_cred_store() instead.
+/// Kept for backward compatibility — will be removed in a future cleanup.
+#[allow(dead_code)]
 pub struct CredentialState {
-    pub store: Arc<EncryptedFileCredentialStore>,
+    pub store: Arc<SqlCipherCredentialStore>,
 }
 
 /// Credential status returned to the frontend.
@@ -97,6 +106,9 @@ pub enum CredentialStatus {
 
 /// Determine the credential file path from the config storage path.
 /// The credential file sits next to config.json as `credentials.enc`.
+/// Deprecated: SQLCipher mode uses the DB path instead, but this is still
+/// used by clear_sync_password_hash for legacy file cleanup.
+#[allow(dead_code)]
 pub fn credential_file_path() -> PathBuf {
     match termfast_core::config::FileConfigStorage::with_default_path() {
         Ok(s) => s.path().parent().unwrap_or_else(|| std::path::Path::new(".")).join("credentials.enc"),
@@ -232,10 +244,11 @@ fn base64_decode(s: &str) -> Option<zeroize::Zeroizing<Vec<u8>>> {
 // === SECTION 1 END ===
 
 #[tauri::command]
-pub async fn ipc_credential_status(
-    state: State<'_, CredentialState>,
-) -> Result<CredentialStatus, String> {
-    let store = &state.store;
+pub async fn ipc_credential_status() -> Result<CredentialStatus, String> {
+    let store = match crate::storage_singleton::get_cred_store() {
+        Some(s) => s,
+        None => return Ok(CredentialStatus::Locked), // NeedUnlock — daemon not started
+    };
     if store.is_pending() {
         Ok(CredentialStatus::Pending)
     } else if store.is_legacy_plaintext() {
@@ -249,10 +262,11 @@ pub async fn ipc_credential_status(
 
 #[tauri::command]
 pub async fn ipc_initialize_credentials(
-    state: State<'_, CredentialState>,
     master_password: String,
 ) -> Result<(), String> {
-    let store = state.store.clone();
+    let store = crate::storage_singleton::get_cred_store()
+        .ok_or_else(|| "credential store not initialized".to_string())?
+        .clone();
     let pw_for_cache = master_password.clone();
     // Argon2id is CPU-intensive — run on blocking pool to avoid stalling
     // the async executor and freezing the UI.
@@ -262,8 +276,8 @@ pub async fn ipc_initialize_credentials(
     .await
     .map_err(|e| e.to_string())??;
     // Cache the derived key in OS keychain.
-    if let Some(key) = state.store.derived_key() {
-        save_cached_key(&key);
+    if let Some(key) = crate::storage_singleton::get_cred_store().and_then(|s| s.derived_key()) {
+        save_cached_key(&termfast_credential::DerivedKey::from_bytes(&key));
     }
     // Cache the master password in memory for cloud sync reuse.
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
@@ -277,21 +291,52 @@ pub async fn ipc_initialize_credentials(
 
 #[tauri::command]
 pub async fn ipc_unlock_credentials(
-    state: State<'_, CredentialState>,
+    handle: tauri::AppHandle,
     master_password: String,
 ) -> Result<(), String> {
-    let store = state.store.clone();
     let pw_for_cache = master_password.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        store.unlock(&master_password).map_err(|e| e.to_string())
+
+    // Case 1: Store already exists (daemon running, store was locked) — just unlock
+    if let Some(store) = crate::storage_singleton::get_cred_store() {
+        let store = store.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            store.unlock_with_password(&master_password).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if let Some(key) = crate::storage_singleton::get_cred_store().and_then(|s| s.derived_key()) {
+            save_cached_key(&termfast_credential::DerivedKey::from_bytes(&key));
+        }
+        if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
+            *g = Some(zeroize::Zeroizing::new(pw_for_cache));
+        }
+        return Ok(());
+    }
+
+    // Case 2: Store doesn't exist (NeedUnlock — daemon not started yet)
+    // Derive DEK from password, open DB, start daemon.
+    let db_path = crate::daemon_embed::sqlcipher_db_path();
+    let salt = termfast_credential::derive_salt_from_path(&db_path);
+    let derived = tauri::async_runtime::spawn_blocking(move || {
+        termfast_credential::derive_key_pub(&master_password, &salt)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())??;
+    let dek: [u8; 32] = derived.as_bytes().try_into().map_err(|_| "invalid key length".to_string())?;
+
+    // Start daemon with the derived DEK
+    let daemon = EmbeddedDaemon::start_with_sqlcipher_and_dek(db_path, dek)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Setup daemon (forwarders, AppState, etc.)
+    crate::setup_daemon_after_start(&handle, daemon).await;
+
     // Cache the derived key for future auto-unlock.
-    if let Some(key) = state.store.derived_key() {
-        save_cached_key(&key);
+    if let Some(key) = crate::storage_singleton::get_cred_store().and_then(|s| s.derived_key()) {
+        save_cached_key(&termfast_credential::DerivedKey::from_bytes(&key));
     }
-    // Cache the master password in memory for cloud sync reuse.
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
         *g = Some(zeroize::Zeroizing::new(pw_for_cache));
     }
@@ -300,30 +345,49 @@ pub async fn ipc_unlock_credentials(
 
 #[tauri::command]
 pub async fn ipc_try_cached_unlock(
-    state: State<'_, CredentialState>,
+    handle: tauri::AppHandle,
 ) -> Result<bool, String> {
-    if state.store.is_unlocked() {
-        return Ok(true);
-    }
-    // Skip keychain access if credential file doesn't exist —
-    // user has never set a master password, so there's nothing to unlock.
-    if !credential_file_path().exists() {
+    // Case 1: Store exists (daemon running)
+    if let Some(store) = crate::storage_singleton::get_cred_store() {
+        if store.is_unlocked() {
+            return Ok(true);
+        }
+        // Skip keychain access if no master password is set (pending state)
+        if store.is_pending() {
+            return Ok(false);
+        }
+        // Store exists but locked — try cached DEK
+        if let Some(key) = load_cached_key() {
+            let store = store.clone();
+            let key_bytes: [u8; 32] = key.as_bytes().try_into().unwrap_or([0u8; 32]);
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                store.unlock(&key_bytes)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            match result {
+                Ok(()) => return Ok(true),
+                Err(e) => {
+                    tracing::warn!("cached key failed to unlock: {}", e);
+                    delete_cached_key();
+                }
+            }
+        }
         return Ok(false);
     }
+
+    // Case 2: Store doesn't exist (NeedUnlock — daemon not started)
+    // Try cached DEK to open the DB and start the daemon.
     if let Some(key) = load_cached_key() {
-        let store = state.store.clone();
-        // decrypt() reads the credential file — run on blocking pool.
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            store.unlock_with_key(key)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        match result {
-            Ok(()) => return Ok(true),
+        let dek: [u8; 32] = key.as_bytes().try_into().unwrap_or([0u8; 32]);
+        let db_path = crate::daemon_embed::sqlcipher_db_path();
+        match EmbeddedDaemon::start_with_sqlcipher_and_dek(db_path, dek).await {
+            Ok(daemon) => {
+                crate::setup_daemon_after_start(&handle, daemon).await;
+                return Ok(true);
+            }
             Err(e) => {
-                tracing::warn!("cached key failed to unlock: {}", e);
-                // Cached key is stale (e.g. password was changed on another
-                // device and file was synced). Delete it so user is prompted.
+                tracing::warn!("cached DEK failed to start daemon: {}", e);
                 delete_cached_key();
             }
         }
@@ -332,8 +396,10 @@ pub async fn ipc_try_cached_unlock(
 }
 
 #[tauri::command]
-pub async fn ipc_lock_credentials(state: State<'_, CredentialState>) -> Result<(), String> {
-    state.store.lock();
+pub async fn ipc_lock_credentials() -> Result<(), String> {
+    if let Some(store) = crate::storage_singleton::get_cred_store() {
+        store.lock();
+    }
     delete_cached_key();
     clear_cached_master_password();
     Ok(())
@@ -341,18 +407,19 @@ pub async fn ipc_lock_credentials(state: State<'_, CredentialState>) -> Result<(
 
 #[tauri::command]
 pub async fn ipc_migrate_credentials(
-    state: State<'_, CredentialState>,
     master_password: String,
 ) -> Result<(), String> {
-    let store = state.store.clone();
+    let store = crate::storage_singleton::get_cred_store()
+        .ok_or_else(|| "credential store not initialized".to_string())?
+        .clone();
     let pw_for_cache = master_password.clone();
     tauri::async_runtime::spawn_blocking(move || {
         store.migrate(&master_password).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())??;
-    if let Some(key) = state.store.derived_key() {
-        save_cached_key(&key);
+    if let Some(key) = crate::storage_singleton::get_cred_store().and_then(|s| s.derived_key()) {
+        save_cached_key(&termfast_credential::DerivedKey::from_bytes(&key));
     }
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
         *g = Some(zeroize::Zeroizing::new(pw_for_cache));
@@ -362,11 +429,12 @@ pub async fn ipc_migrate_credentials(
 
 #[tauri::command]
 pub async fn ipc_change_credential_password(
-    state: State<'_, CredentialState>,
     old_password: String,
     new_password: String,
 ) -> Result<(), String> {
-    let store = state.store.clone();
+    let store = crate::storage_singleton::get_cred_store()
+        .ok_or_else(|| "credential store not initialized".to_string())?
+        .clone();
     let pw_for_cache = new_password.clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
@@ -376,8 +444,8 @@ pub async fn ipc_change_credential_password(
     .await
     .map_err(|e| e.to_string())??;
     // Update the cached key in OS keychain.
-    if let Some(key) = state.store.derived_key() {
-        save_cached_key(&key);
+    if let Some(key) = crate::storage_singleton::get_cred_store().and_then(|s| s.derived_key()) {
+        save_cached_key(&termfast_credential::DerivedKey::from_bytes(&key));
     }
     // Update the cached master password for cloud sync reuse.
     if let Ok(mut g) = CACHED_MASTER_PASSWORD.lock() {
@@ -389,8 +457,10 @@ pub async fn ipc_change_credential_password(
 }
 
 #[tauri::command]
-pub async fn ipc_reset_credentials(state: State<'_, CredentialState>) -> Result<(), String> {
-    let store = state.store.clone();
+pub async fn ipc_reset_credentials() -> Result<(), String> {
+    let store = crate::storage_singleton::get_cred_store()
+        .ok_or_else(|| "credential store not initialized".to_string())?
+        .clone();
     tauri::async_runtime::spawn_blocking(move || {
         store.reset().map_err(|e| e.to_string())
     })
@@ -404,10 +474,11 @@ pub async fn ipc_reset_credentials(state: State<'_, CredentialState>) -> Result<
 
 #[tauri::command]
 pub async fn ipc_export_credentials(
-    state: State<'_, CredentialState>,
     dest_path: String,
 ) -> Result<(), String> {
-    let store = state.store.clone();
+    let store = crate::storage_singleton::get_cred_store()
+        .ok_or_else(|| "credential store not initialized".to_string())?
+        .clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
             .export_to(std::path::Path::new(&dest_path))
@@ -419,11 +490,12 @@ pub async fn ipc_export_credentials(
 
 #[tauri::command]
 pub async fn ipc_import_credentials(
-    state: State<'_, CredentialState>,
     src_path: String,
     master_password: String,
 ) -> Result<(), String> {
-    let store = state.store.clone();
+    let store = crate::storage_singleton::get_cred_store()
+        .ok_or_else(|| "credential store not initialized".to_string())?
+        .clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
             .import_from(std::path::Path::new(&src_path), &master_password)
@@ -433,8 +505,8 @@ pub async fn ipc_import_credentials(
     .map_err(|e| e.to_string())??;
     // Import succeeded and store is now unlocked with the new credentials.
     // Cache the new derived key for future auto-unlock.
-    if let Some(key) = state.store.derived_key() {
-        save_cached_key(&key);
+    if let Some(key) = crate::storage_singleton::get_cred_store().and_then(|s| s.derived_key()) {
+        save_cached_key(&termfast_credential::DerivedKey::from_bytes(&key));
     }
     Ok(())
 }

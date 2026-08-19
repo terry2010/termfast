@@ -138,8 +138,28 @@ impl RuntimeStateManager {
 
     /// Get a snapshot of the full runtime state
     pub async fn snapshot(&self) -> RuntimeState {
-        // Currently returns empty — no list_runtime_state method yet.
-        // Kept for API compatibility; can be implemented if needed.
-        RuntimeState::default()
+        let storage = self.storage.clone();
+        match tokio::task::spawn_blocking(move || -> Result<RuntimeState> {
+            let entries = storage.list_runtime_state()?;
+            let mut servers = HashMap::new();
+            for (server_id, data) in entries {
+                if let Ok(state) = serde_json::from_str::<ServerRuntimeState>(&data) {
+                    servers.insert(server_id, state);
+                }
+            }
+            Ok(RuntimeState { servers })
+        })
+        .await
+        {
+            Ok(Ok(state)) => state,
+            Ok(Err(e)) => {
+                tracing::warn!("snapshot: failed to list runtime state: {}", e);
+                RuntimeState::default()
+            }
+            Err(e) => {
+                tracing::warn!("snapshot: spawn_blocking failed: {}", e);
+                RuntimeState::default()
+            }
+        }
     }
 }

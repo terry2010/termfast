@@ -39,6 +39,17 @@ pub struct SqlCipherCredentialStore {
     master_password: Mutex<Option<String>>,
 }
 
+/// Derive a salt from a DB file path.
+/// Public so that callers can derive a DEK from a password without
+/// having a SqlCipherCredentialStore instance (e.g., when the DB is
+/// locked and needs to be opened).
+pub fn derive_salt_from_path(db_path: &std::path::Path) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(db_path.to_string_lossy().as_bytes());
+    hasher.finalize().to_vec()
+}
+
 impl SqlCipherCredentialStore {
     pub fn new(storage: Arc<SqlCipherStorage>) -> Self {
         Self {
@@ -144,10 +155,7 @@ impl SqlCipherCredentialStore {
     /// Derive a salt from the DB file path.
     /// Uses the DB file path as salt source — consistent across restarts.
     fn derive_salt(&self) -> Vec<u8> {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(self.storage.db_path.to_string_lossy().as_bytes());
-        hasher.finalize().to_vec()
+        derive_salt_from_path(&self.storage.db_path)
     }
 
     pub fn is_unlocked(&self) -> bool {
@@ -271,8 +279,10 @@ impl SqlCipherCredentialStore {
                 .map_err(|e| anyhow!("failed to write credential {}: {}", key, e))?;
         }
 
-        // Store master password for future export_to
-        *self.master_password.lock().unwrap() = Some(master_password.to_string());
+        // NOTE: Do NOT overwrite self.master_password with the import file's password.
+        // The import file may have been encrypted with a different password than the
+        // local DB's master password. Overwriting would cause future export_to calls
+        // to use the wrong password. The local master_password remains unchanged.
 
         Ok(())
     }

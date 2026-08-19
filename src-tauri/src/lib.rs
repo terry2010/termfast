@@ -14,7 +14,6 @@ mod pairing_store;
 mod storage_singleton;
 mod tunnel_manager;
 
-use credential_manager::{credential_file_path, CredentialState};
 use daemon_embed::EmbeddedDaemon;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -203,19 +202,6 @@ pub fn run() {
             // Setup system tray icon (FP-6.4, FP-6.5)
             setup_tray(app)?;
 
-            // Create the encrypted credential store early so both the daemon
-            // and IPC commands can share it. The store starts locked; the
-            // frontend will call ipc_try_cached_unlock / ipc_unlock_credentials
-            // before any credential access.
-            let cred_path = credential_file_path();
-            tracing::info!("credential file path: {}", cred_path.display());
-            let cred_store = Arc::new(
-                termfast_credential::EncryptedFileCredentialStore::open(cred_path),
-            );
-            app.manage(CredentialState {
-                store: cred_store.clone(),
-            });
-
             // Pre-manage AppState with daemon=None so IPC commands that
             // reference AppState don't fail with "state not managed" if the
             // frontend calls them before the daemon finishes starting.
@@ -229,171 +215,24 @@ pub fn run() {
             };
             app.manage(initial_state);
 
-            // Start embedded daemon in background, passing the shared credential store.
+            // Start embedded daemon with SQLCipher as unified storage.
+            // DEK resolution: default DEK → keychain cached DEK → NeedUnlock.
+            // On NeedUnlock, the frontend shows CredentialGate and the user
+            // enters their password; ipc_unlock_credentials then starts the daemon.
+            let db_path = daemon_embed::sqlcipher_db_path();
+            tracing::info!("SQLCipher DB path: {}", db_path.display());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                match EmbeddedDaemon::start_with_credential_store(cred_store).await {
+                match EmbeddedDaemon::start_with_sqlcipher(db_path).await {
                     Ok(daemon) => {
-                        // Set up event forwarder: daemon events → Tauri emit to frontend (FP-6.2)
-                        let handle_for_forwarder = handle.clone();
-                        daemon.server.state().set_event_forwarder(Box::new(
-                            move |event: &str, data: serde_json::Value| {
-                                use tauri::Emitter;
-                                if let Err(e) = handle_for_forwarder.emit(event, data) {
-                                    tracing::warn!("failed to emit event {}: {}", event, e);
-                                }
-                            },
-                        ));
-
-                        // Set up binary event forwarder: terminal:output raw bytes → Channel
-                        let handle_for_bin = handle.clone();
-                        daemon.server.state().set_binary_event_forwarder(Box::new(
-                            move |session_id: &str, data: &[u8], _is_stderr: bool| {
-                                use tauri::ipc::InvokeResponseBody;
-                                use tauri::Manager;
-                                if let Some(app_state) = handle_for_bin.try_state::<AppState>() {
-                                    if let Ok(channels) = app_state.terminal_channels.lock() {
-                                        if let Some(channel) = channels.get(session_id) {
-                                            let _ = channel.send(InvokeResponseBody::Raw(data.to_vec()));
-                                        }
-                                    }
-                                }
-                            },
-                        ));
-
-                        // Update the pre-managed AppState with the started daemon.
-                        use tauri::Manager;
-                        if let Some(app_state) = handle.try_state::<AppState>() {
-                            *app_state.daemon.lock().await = Some(Arc::new(daemon));
-                        }
-
-                        // Notify frontend that the daemon is ready so it can
-                        // reload server list / config if earlier IPC calls
-                        // failed with "daemon not ready".
-                        let _ = handle.emit("daemon:ready", ());
-
-
-                        // Initialize RemoteClientManager for desktop-to-desktop pairings
-                        let rcm = Arc::new(termfast_daemon::remote_client::RemoteClientManager::new());
-                        if let Some(app_state) = handle.try_state::<AppState>() {
-                            *app_state.remote_client_manager.lock().await = Some(rcm.clone());
-                        }
-
-                        // Set desktop_pair_callback on RemoteServer — called when a
-                        // DESKTOP_PAIR frame arrives from the phone via an existing tunnel.
-                        // The callback stores the pairing and starts a tunnel (server) or
-                        // RemoteClient (client) depending on the role.
-                        let handle_for_cb = handle.clone();
-                        let rcm_for_cb = rcm.clone();
-                        let tm_for_cb = {
-                            let app_state = handle.state::<AppState>();
-                            let tm = app_state.tunnel_manager.lock().await.clone();
-                            tm
-                        };
-                        if let Some(tm) = tm_for_cb {
-                            tm.remote_server().set_desktop_pair_callback(Box::new(
-                                move |msg: termfast_daemon::remote_server::DesktopPairMessage| {
-                                    let pairing_id = msg.pairing_id.clone();
-                                    let pairing_key_hex = msg.pairing_key_hex.clone();
-                                    let peer_ecdh_public_key = msg.peer_ecdh_public_key.clone();
-                                    let relay_url = msg.relay_url.clone();
-                                    let peer_name = msg.peer_name.clone();
-                                    let role = msg.role.clone();
-                                    let pairing_jwt = msg.pairing_jwt.clone();
-                                    let handle = handle_for_cb.clone();
-                                    let rcm = rcm_for_cb.clone();
-                                    Box::pin(async move {
-                                        // Compute pairing key: prefer ECDH, fall back to legacy hex
-                                        let (pairing_key, stored_key_hex) = if !peer_ecdh_public_key.is_empty() {
-                                            // ECDH: compute shared secret from peer's public key
-                                            let shared_hex = ecdh_key_store::compute_shared_secret_hex(&peer_ecdh_public_key)?;
-                                            let key = decode_hex_32(&shared_hex)
-                                                .map_err(|e| format!("decode ECDH shared secret: {}", e))?;
-                                            (key, shared_hex)
-                                        } else if !pairing_key_hex.is_empty() {
-                                            // Legacy: use pairing_key_hex from frame
-                                            let key = decode_hex_32(&pairing_key_hex)
-                                                .map_err(|e| format!("decode key: {}", e))?;
-                                            (key, pairing_key_hex.clone())
-                                        } else {
-                                            return Err("no pairing key: both pairing_key_hex and peer_ecdh_public_key are empty".to_string());
-                                        };
-
-                                        // Store pairing persistently
-                                        pairing_store::save(pairing_store::StoredPairing {
-                                            pairing_id: pairing_id.clone(),
-                                            pairing_key_hex: stored_key_hex.clone(),
-                                            relay_url: relay_url.clone(),
-                                            jwt: pairing_jwt.clone(),
-                                            pairing_type: "desktop".to_string(),
-                                            peer_name: peer_name.clone(),
-                                            peer_role: role.clone(),
-                                        });
-
-                                        if role == "server" {
-                                            // Desktop B: start a tunnel (register as server)
-                                            // B uses its own user JWT — get from existing tunnel manager
-                                            // The user JWT is stored in the existing mobile pairing's store
-                                            let user_jwt = get_user_jwt(&handle).await
-                                                .ok_or_else(|| "no user JWT available".to_string())?;
-                                            let tm = {
-                                                let app_state = handle.state::<AppState>();
-                                                let tm = app_state.tunnel_manager.lock().await.clone();
-                                                tm
-                                            };
-                                            if let Some(tm) = tm {
-                                                tm.start_tunnel(
-                                                    pairing_id.clone(),
-                                                    pairing_key,
-                                                    relay_url.clone(),
-                                                    user_jwt,
-                                                ).await?;
-                                            }
-                                        } else if role == "client" {
-                                            // Desktop A: start a RemoteClient (connect as client)
-                                            let app_handle = handle.clone();
-                                            let config = termfast_daemon::remote_client::RemoteClientConfig {
-                                                relay_url: relay_url.clone(),
-                                                pairing_jwt: pairing_jwt.clone(),
-                                                pairing_id: pairing_id.clone(),
-                                                pairing_key,
-                                            };
-                                            rcm.start_client(
-                                                config,
-                                                move |pid, frame_type, terminal_id, payload| {
-                                                    use tauri::Emitter;
-                                                    use base64::Engine;
-                                                    let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
-                                                    let _ = app_handle.emit("remote_client_frame", serde_json::json!({
-                                                        "pairing_id": pid,
-                                                        "frame_type": frame_type,
-                                                        "terminal_id": terminal_id,
-                                                        "data": data_b64,
-                                                    }));
-                                                },
-                                                move |pid, connected| {
-                                                    use tauri::Emitter;
-                                                    let _ = handle.emit("remote_client_state", serde_json::json!({
-                                                        "pairing_id": pid,
-                                                        "connected": connected,
-                                                    }));
-                                                },
-                                            ).await?;
-                                        } else {
-                                            return Err(format!("unknown role: {}", role));
-                                        }
-                                        Ok(())
-                                    })
-                                },
-                            ));
-                        }
-
-                        tracing::info!("Tauri app state initialized with event forwarding");
+                        setup_daemon_after_start(&handle, daemon).await;
+                    }
+                    Err(e) if e.downcast_ref::<daemon_embed::NeedUnlock>().is_some() => {
+                        tracing::info!("DB needs master password — frontend will show CredentialGate");
+                        let _ = handle.emit("daemon:need_unlock", ());
                     }
                     Err(e) => {
                         tracing::error!("failed to start embedded daemon: {}", e);
-                        // Notify frontend so it can show an error instead of
-                        // spinning the loading skeleton forever.
                         let _ = handle.emit("daemon:error", &e.to_string());
                     }
                 }
@@ -555,6 +394,158 @@ pub fn run() {
 }
 
 // === SECTION 1 END ===
+
+/// Post-daemon-start setup: event forwarders, AppState update, RemoteClientManager.
+/// Called after successful daemon start (both initial startup and after unlock).
+async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDaemon) {
+    // Race guard: if another caller already started the daemon, skip this.
+    // This prevents orphaned daemon servers when initial spawn and
+    // ipc_try_cached_unlock race to start the daemon with the same cached DEK.
+    if !crate::storage_singleton::try_mark_daemon_started() {
+        return;
+    }
+    // Set up event forwarder: daemon events → Tauri emit to frontend (FP-6.2)
+    let handle_for_forwarder = handle.clone();
+    daemon.server.state().set_event_forwarder(Box::new(
+        move |event: &str, data: serde_json::Value| {
+            use tauri::Emitter;
+            if let Err(e) = handle_for_forwarder.emit(event, data) {
+                tracing::warn!("failed to emit event {}: {}", event, e);
+            }
+        },
+    ));
+
+    // Set up binary event forwarder: terminal:output raw bytes → Channel
+    let handle_for_bin = handle.clone();
+    daemon.server.state().set_binary_event_forwarder(Box::new(
+        move |session_id: &str, data: &[u8], _is_stderr: bool| {
+            use tauri::ipc::InvokeResponseBody;
+            use tauri::Manager;
+            if let Some(app_state) = handle_for_bin.try_state::<AppState>() {
+                if let Ok(channels) = app_state.terminal_channels.lock() {
+                    if let Some(channel) = channels.get(session_id) {
+                        let _ = channel.send(InvokeResponseBody::Raw(data.to_vec()));
+                    }
+                }
+            }
+        },
+    ));
+
+    // Update the pre-managed AppState with the started daemon.
+    use tauri::Manager;
+    if let Some(app_state) = handle.try_state::<AppState>() {
+        *app_state.daemon.lock().await = Some(Arc::new(daemon));
+    }
+
+    // Notify frontend that the daemon is ready
+    let _ = handle.emit("daemon:ready", ());
+
+    // Initialize RemoteClientManager for desktop-to-desktop pairings
+    let rcm = Arc::new(termfast_daemon::remote_client::RemoteClientManager::new());
+    if let Some(app_state) = handle.try_state::<AppState>() {
+        *app_state.remote_client_manager.lock().await = Some(rcm.clone());
+    }
+
+    // Set desktop_pair_callback on RemoteServer
+    let handle_for_cb = handle.clone();
+    let rcm_for_cb = rcm.clone();
+    let tm_for_cb = {
+        let app_state = handle.state::<AppState>();
+        let tm = app_state.tunnel_manager.lock().await.clone();
+        tm
+    };
+    if let Some(tm) = tm_for_cb {
+        tm.remote_server().set_desktop_pair_callback(Box::new(
+            move |msg: termfast_daemon::remote_server::DesktopPairMessage| {
+                let pairing_id = msg.pairing_id.clone();
+                let pairing_key_hex = msg.pairing_key_hex.clone();
+                let peer_ecdh_public_key = msg.peer_ecdh_public_key.clone();
+                let relay_url = msg.relay_url.clone();
+                let peer_name = msg.peer_name.clone();
+                let role = msg.role.clone();
+                let pairing_jwt = msg.pairing_jwt.clone();
+                let handle = handle_for_cb.clone();
+                let rcm = rcm_for_cb.clone();
+                Box::pin(async move {
+                    let (pairing_key, stored_key_hex) = if !peer_ecdh_public_key.is_empty() {
+                        let shared_hex = ecdh_key_store::compute_shared_secret_hex(&peer_ecdh_public_key)?;
+                        let key = decode_hex_32(&shared_hex)
+                            .map_err(|e| format!("decode ECDH shared secret: {}", e))?;
+                        (key, shared_hex)
+                    } else if !pairing_key_hex.is_empty() {
+                        let key = decode_hex_32(&pairing_key_hex)
+                            .map_err(|e| format!("decode key: {}", e))?;
+                        (key, pairing_key_hex.clone())
+                    } else {
+                        return Err("no pairing key: both pairing_key_hex and peer_ecdh_public_key are empty".to_string());
+                    };
+
+                    pairing_store::save(pairing_store::StoredPairing {
+                        pairing_id: pairing_id.clone(),
+                        pairing_key_hex: stored_key_hex.clone(),
+                        relay_url: relay_url.clone(),
+                        jwt: pairing_jwt.clone(),
+                        pairing_type: "desktop".to_string(),
+                        peer_name: peer_name.clone(),
+                        peer_role: role.clone(),
+                    });
+
+                    if role == "server" {
+                        let user_jwt = get_user_jwt(&handle).await
+                            .ok_or_else(|| "no user JWT available".to_string())?;
+                        let tm = {
+                            let app_state = handle.state::<AppState>();
+                            let tm = app_state.tunnel_manager.lock().await.clone();
+                            tm
+                        };
+                        if let Some(tm) = tm {
+                            tm.start_tunnel(
+                                pairing_id.clone(),
+                                pairing_key,
+                                relay_url.clone(),
+                                user_jwt,
+                            ).await?;
+                        }
+                    } else if role == "client" {
+                        let app_handle = handle.clone();
+                        let config = termfast_daemon::remote_client::RemoteClientConfig {
+                            relay_url: relay_url.clone(),
+                            pairing_jwt: pairing_jwt.clone(),
+                            pairing_id: pairing_id.clone(),
+                            pairing_key,
+                        };
+                        rcm.start_client(
+                            config,
+                            move |pid, frame_type, terminal_id, payload| {
+                                use tauri::Emitter;
+                                use base64::Engine;
+                                let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                                let _ = app_handle.emit("remote_client_frame", serde_json::json!({
+                                    "pairing_id": pid,
+                                    "frame_type": frame_type,
+                                    "terminal_id": terminal_id,
+                                    "data": data_b64,
+                                }));
+                            },
+                            move |pid, connected| {
+                                use tauri::Emitter;
+                                let _ = handle.emit("remote_client_state", serde_json::json!({
+                                    "pairing_id": pid,
+                                    "connected": connected,
+                                }));
+                            },
+                        ).await?;
+                    } else {
+                        return Err(format!("unknown role: {}", role));
+                    }
+                    Ok(())
+                })
+            },
+        ));
+    }
+
+    tracing::info!("Tauri app state initialized with event forwarding");
+}
 
 /// Helper: forward a request to the daemon handler and return the result.
 /// All IPC commands go through this to ensure events are broadcast (FP-6.2).
@@ -1811,7 +1802,6 @@ async fn ipc_cloud_sync_load_token(
 #[tauri::command]
 async fn ipc_cloud_sync_upload(
     state: tauri::State<'_, AppState>,
-    cred_state: tauri::State<'_, CredentialState>,
     provider: String,
     master_password: Option<String>,
     sync_path: Option<String>,
@@ -1819,7 +1809,9 @@ async fn ipc_cloud_sync_upload(
 ) -> Result<serde_json::Value, String> {
     // Block upload if credential store is in pending mode (no master password
     // set). Uploading without a local master password doesn't make sense.
-    if cred_state.store.is_pending() {
+    let cred_store = crate::storage_singleton::get_cred_store()
+        .ok_or_else(|| "credential store not initialized".to_string())?;
+    if cred_store.is_pending() {
         return Ok(serde_json::json!({
             "ok": false,
             "reason": "not_initialized",
@@ -1833,9 +1825,8 @@ async fn ipc_cloud_sync_upload(
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
     // Verify the password can unlock the local credential store.
-    let cred_path = credential_manager::credential_file_path();
-    if cred_path.exists() {
-        if let Err(e) = cred_state.store.unlock(master_password.as_str()) {
+    if !cred_store.is_pending() {
+        if let Err(e) = cred_store.unlock_with_password(master_password.as_str()) {
             tracing::warn!("upload pre-check: unlock failed: {:?}", e);
             return Ok(serde_json::json!({
                 "ok": false,
@@ -1865,7 +1856,6 @@ async fn ipc_cloud_sync_upload(
 #[tauri::command]
 async fn ipc_cloud_sync_download(
     state: tauri::State<'_, AppState>,
-    cred_state: tauri::State<'_, CredentialState>,
     provider: String,
     master_password: Option<String>,
     sync_path: Option<String>,
@@ -1877,21 +1867,16 @@ async fn ipc_cloud_sync_download(
         .or_else(crate::credential_manager::cached_master_password)
         .ok_or_else(|| "master password not available — unlock credential store first".to_string())?;
     // Verify the password can unlock the local credential store.
-    // If the encrypted file exists, the password must match it.
-    // If the file doesn't exist (no master password set), require the
-    // user to set a master password first — downloading without a local
-    // master password means the synced credentials can't be protected.
-    let cred_path = credential_manager::credential_file_path();
-    let cred_file_exists = cred_path.exists();
-    tracing::info!("download pre-check: cred_file={}, path={}", cred_file_exists, cred_path.display());
-    if !cred_file_exists {
+    let cred_store = crate::storage_singleton::get_cred_store()
+        .ok_or_else(|| "credential store not initialized".to_string())?;
+    if cred_store.is_pending() {
         return Ok(serde_json::json!({
             "ok": false,
             "reason": "not_initialized",
             "message": "请先设置主密码后再从云端下载",
         }));
     }
-    match cred_state.store.unlock(master_password.as_str()) {
+    match cred_store.unlock_with_password(master_password.as_str()) {
         Ok(_) => tracing::info!("download pre-check: unlock OK"),
         Err(e) => {
             tracing::warn!("download pre-check: unlock failed: {:?}", e);

@@ -197,7 +197,11 @@ fn get_or_create_key_from_storage(
     // Generate new key pair
     let signing_key = SigningKey::random(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
-    let public_key_der = verifying_key.to_sec1_bytes().to_vec();
+    let public_key_der = verifying_key
+        .to_public_key_der()
+        .map_err(|e| format!("encode public key: {}", e))?
+        .as_bytes()
+        .to_vec();
     let priv_bytes = signing_key.to_bytes().to_vec();
     let level = SecurityLevel::Low;
 

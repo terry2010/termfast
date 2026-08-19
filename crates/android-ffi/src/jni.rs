@@ -1091,21 +1091,27 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialUnlock
             }
             // Initialize credential store and reload config from DB
             crate::credential::init_credential_store();
-            if let Ok(cm) = crate::config::config_manager_from_sqlcipher() {
-                let rt = runtime();
-                let config = cm.get_blocking();
-                let templates = config.trigger_templates.clone();
-                let mut servers = std::collections::HashMap::new();
-                for server in config.servers.iter() {
-                    let instance = Arc::new(ServerInstance::new(server.clone()));
-                    let _ = rt.block_on(instance.set_trigger_templates(templates.clone()));
-                    let _ = rt.block_on(instance.set_triggers(server.triggers.clone()));
-                    let _ = rt.block_on(instance.set_socket_protector(Arc::new(crate::network::AndroidSocketProtector)));
-                    servers.insert(server.id.clone(), instance);
+            match crate::config::config_manager_from_sqlcipher() {
+                Ok(cm) => {
+                    let rt = runtime();
+                    let config = cm.get_blocking();
+                    let templates = config.trigger_templates.clone();
+                    let mut servers = std::collections::HashMap::new();
+                    for server in config.servers.iter() {
+                        let instance = Arc::new(ServerInstance::new(server.clone()));
+                        let _ = rt.block_on(instance.set_trigger_templates(templates.clone()));
+                        let _ = rt.block_on(instance.set_triggers(server.triggers.clone()));
+                        let _ = rt.block_on(instance.set_socket_protector(Arc::new(crate::network::AndroidSocketProtector)));
+                        servers.insert(server.id.clone(), instance);
+                    }
+                    let mut st = state().lock().unwrap();
+                    st.servers = servers;
+                    st.config_manager = Some(cm);
                 }
-                let mut st = state().lock().unwrap();
-                st.servers = servers;
-                st.config_manager = Some(cm);
+                Err(e) => {
+                    tracing::error!("config load failed after unlock: {}", e);
+                    return false as jboolean;
+                }
             }
         }
     }

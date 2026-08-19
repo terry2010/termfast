@@ -108,6 +108,8 @@ object PairingApi {
                 pairingType = d.optString("pairing_type", "mobile"),
                 mobileName = d.optString("mobile_name", ""),
                 status = d.optString("status", "active"),
+                isOnline = d.optBoolean("is_online", false),
+                peerIsOnline = d.optBoolean("peer_is_online", false),
             ))
         }
         return list
@@ -208,6 +210,8 @@ object PairingApi {
                 pairingType = d.optString("pairing_type", "mobile"),
                 mobileName = d.optString("mobile_name", ""),
                 status = d.optString("status", "active"),
+                isOnline = d.optBoolean("is_online", false),
+                peerIsOnline = d.optBoolean("peer_is_online", false),
             ))
         }
         return list
@@ -223,14 +227,20 @@ object PairingApi {
         val pairingType: String = "mobile",
         val mobileName: String = "",
         val status: String,
+        val isOnline: Boolean = false,
+        val peerIsOnline: Boolean = false,
     )
 
-    /** Parsed QR code data for pairing. */
+    /** Parsed QR code data for pairing (dual-mode: mobile + desktop interconnect). */
     data class QrData(
         val pairingId: String,
         val pairingKey: String,
         val relayUrl: String,
         val desktopName: String,
+        // Dual-mode QR fields (for desktop interconnect)
+        val deviceId: String = "",
+        val ecdhPublicKey: String = "",
+        val userId: Long = 0,
     )
 
     // === M2: Join Network (desktop interconnection) ===

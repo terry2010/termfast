@@ -40,6 +40,8 @@ impl std::error::Error for NeedUnlock {}
 pub struct EmbeddedDaemon {
     pub server: DaemonServer,
     _network_monitor_task: Option<tokio::task::JoinHandle<()>>,
+    /// Credential store from SQLCipher path (None for legacy file-based path).
+    pub cred_store: Option<Arc<SqlCipherCredentialStore>>,
 }
 
 impl EmbeddedDaemon {
@@ -153,23 +155,29 @@ impl EmbeddedDaemon {
         if let Some(dek) = explicit_dek {
             let conn = open_or_recover(&db_path, &dek)
                 .map_err(|e| anyhow::anyhow!("failed to open DB with provided DEK: {}", e))?;
-            let storage = Arc::new(SqlCipherStorage::from_conn(conn, db_path));
-            return Self::build_and_start_with_storage(storage).await;
+            let storage = Arc::new(
+                SqlCipherStorage::from_conn(conn, db_path)
+                    .map_err(|e| anyhow::anyhow!("failed to init schema: {}", e))?,
+            );
+            return Self::build_and_start_with_storage(storage, Some(dek)).await;
         }
 
         // 1. DB file doesn't exist → create with DEFAULT_DEK
         if !db_path.exists() {
             tracing::info!("DB file doesn't exist, creating with default DEK: {}", db_path.display());
             let storage = SqlCipherStorage::create_new(&db_path, &DEFAULT_DEK)?;
-            return Self::build_and_start_with_storage(Arc::new(storage)).await;
+            return Self::build_and_start_with_storage(Arc::new(storage), None).await;
         }
 
         // 2. Try DEFAULT_DEK (no master password set)
         match open_or_recover(&db_path, &DEFAULT_DEK) {
             Ok(conn) => {
                 tracing::info!("DB opened with default DEK (no master password)");
-                let storage = Arc::new(SqlCipherStorage::from_conn(conn, db_path));
-                return Self::build_and_start_with_storage(storage).await;
+                let storage = Arc::new(
+                    SqlCipherStorage::from_conn(conn, db_path)
+                        .map_err(|e| anyhow::anyhow!("failed to init schema: {}", e))?,
+                );
+                return Self::build_and_start_with_storage(storage, None).await;
             }
             Err(OpenResult::WrongKey) | Err(OpenResult::Corrupt)
                 if !db_path.with_extension("db.bak").exists() =>
@@ -188,8 +196,11 @@ impl EmbeddedDaemon {
             match open_or_recover(&db_path, &dek_bytes) {
                 Ok(conn) => {
                     tracing::info!("DB opened with keychain cached DEK");
-                    let storage = Arc::new(SqlCipherStorage::from_conn(conn, db_path));
-                    return Self::build_and_start_with_storage(storage).await;
+                    let storage = Arc::new(
+                        SqlCipherStorage::from_conn(conn, db_path)
+                            .map_err(|e| anyhow::anyhow!("failed to init schema: {}", e))?,
+                    );
+                    return Self::build_and_start_with_storage(storage, Some(dek_bytes)).await;
                 }
                 Err(OpenResult::WrongKey) => {
                     tracing::warn!("keychain cached DEK is stale, clearing");
@@ -207,6 +218,7 @@ impl EmbeddedDaemon {
     /// Build daemon state from a unified SqlCipherStorage and start the daemon.
     async fn build_and_start_with_storage(
         storage: Arc<SqlCipherStorage>,
+        explicit_dek: Option<[u8; 32]>,
     ) -> anyhow::Result<Self> {
         // Set global storage singleton for PC-specific stores
         crate::storage_singleton::set_storage(storage.clone());
@@ -220,7 +232,13 @@ impl EmbeddedDaemon {
         let mgr = ConfigManager::with_storage(config, config_storage);
 
         // Construct SqlCipherCredentialStore (starts unlocked since DB is already open)
-        let cred_store: Arc<dyn CredentialStore> = Arc::new(SqlCipherCredentialStore::new(storage.clone()));
+        let sql_cred_store = match explicit_dek {
+            Some(dek) => Arc::new(SqlCipherCredentialStore::new_with_dek(storage.clone(), dek)),
+            None => Arc::new(SqlCipherCredentialStore::new(storage.clone())),
+        };
+        // Set global credential store singleton for IPC commands
+        crate::storage_singleton::set_cred_store(sql_cred_store.clone());
+        let cred_store: Arc<dyn CredentialStore> = sql_cred_store.clone();
 
         // Construct proxy adapter
         let proxy_adapter: Arc<dyn SystemProxyAdapter> = Arc::new(DesktopProxyAdapter);
@@ -289,6 +307,7 @@ impl EmbeddedDaemon {
         Ok(Self {
             server,
             _network_monitor_task: Some(monitor_task),
+            cred_store: Some(sql_cred_store),
         })
     }
 
@@ -384,6 +403,7 @@ impl EmbeddedDaemon {
         Ok(Self {
             server,
             _network_monitor_task: Some(monitor_task),
+            cred_store: None,
         })
     }
 
@@ -478,6 +498,7 @@ impl EmbeddedDaemon {
         Ok(Self {
             server,
             _network_monitor_task: Some(monitor_task),
+            cred_store: None,
         })
     }
 
@@ -604,7 +625,6 @@ pub fn save_dek_to_keychain(_dek: &[u8; 32]) -> anyhow::Result<()> {
 }
 
 /// Determine the DB path (next to config.json / credentials.enc).
-#[allow(dead_code)]
 pub fn sqlcipher_db_path() -> std::path::PathBuf {
     match termfast_core::config::FileConfigStorage::with_default_path() {
         Ok(s) => s
