@@ -722,7 +722,12 @@ export function ServerList({
                 )}
                 {remotePeers.map((peer) => {
                   const peerSelected = selectedId === `remote:${peer.pairingId}`;
-                  const isConnected = remoteActiveConnection === peer.pairingId && peer.online;
+                  // Use peer.online directly (from is_online field in ipc_list_desktop_pairings).
+                  // For server-role pairings, online status comes from TunnelManager.is_tunnel_active;
+                  // for client-role, from RemoteClientManager.is_connected or remote_client_state events.
+                  // Do NOT require remoteActiveConnection match — that only tracks client-role
+                  // active connections and would make server-role peers always appear offline.
+                  const isConnected = peer.online;
                   return (
                     <div
                       key={peer.pairingId}
