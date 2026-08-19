@@ -120,6 +120,8 @@ export function ServerDetail() {
   // very recently (within 500ms). We also set a flag on mousedown for button=2.
   const rightClickTimeRef = useRef(0);
   const rightClickButtonRef = useRef(false);
+  // Ref to track remoteActiveTerminal without re-registering event listener
+  const remoteActiveTerminalRef = useRef<number | null>(null);
   // Drag-to-reorder state for terminal tabs (overview tab is not draggable)
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
@@ -146,6 +148,7 @@ export function ServerDetail() {
     setDragOverTabId(null);
     setRemoteTerminals([]);
     setRemoteActiveTerminal(null);
+    remoteActiveTerminalRef.current = null;
     setRemoteInfo(null);
     setSelectedRemoteShell(null);
   }, [selectedId]);
@@ -198,7 +201,40 @@ export function ServerDetail() {
             terminal_id: t.id ?? t.terminal_id,
             name: t.name || `Terminal #${t.id ?? t.terminal_id}`,
           }));
-          setRemoteTerminals(terms);
+          // Auto-select new terminals that weren't in the list before
+          setRemoteTerminals((prev) => {
+            const prevIds = new Set(prev.map((t) => t.terminal_id));
+            const newTerms = terms.filter((t: any) => !prevIds.has(t.terminal_id));
+            // Auto-switch to the first new terminal (like "My Computer" auto-selects new tabs)
+            if (newTerms.length > 0 && remoteActiveTerminalRef.current === null) {
+              const firstNew = newTerms[0];
+              remoteActiveTerminalRef.current = firstNew.terminal_id;
+              setRemoteActiveTerminal(firstNew.terminal_id);
+              ipcInvoke("ipc_remote_client_subscribe", {
+                pairing_id: remotePairingId!,
+                terminal_id: firstNew.terminal_id,
+              }).catch(() => {});
+            }
+            return terms;
+          });
+          // If the currently active terminal is no longer in the list, switch to overview
+          if (remoteActiveTerminalRef.current !== null && !terms.some((t: any) => t.terminal_id === remoteActiveTerminalRef.current)) {
+            remoteActiveTerminalRef.current = null;
+            setRemoteActiveTerminal(null);
+          }
+        } catch {
+          // ignore parse errors
+        }
+      } else if (payload.frame_type === 0x0C) {
+        // NOTIFY — could be LIST_CHANGED or other notification
+        try {
+          const info = JSON.parse(atob(payload.data));
+          if (info.type === "list_changed") {
+            // Terminal list changed on the remote desktop — re-request list
+            ipcInvoke("ipc_remote_client_list_terminals", {
+              pairing_id: remotePairingId,
+            }).catch(() => {});
+          }
         } catch {
           // ignore parse errors
         }
@@ -224,6 +260,7 @@ export function ServerDetail() {
                 return [...prev, { terminal_id: newTermId, name: `Terminal ${prev.length + 1}` }];
               });
               // Auto-subscribe and switch to the new terminal
+              remoteActiveTerminalRef.current = newTermId;
               setRemoteActiveTerminal(newTermId);
               ipcInvoke("ipc_remote_client_subscribe", {
                 pairing_id: remotePairingId,
@@ -244,6 +281,7 @@ export function ServerDetail() {
           ipcInvoke("ipc_remote_client_list_terminals", {
             pairing_id: remotePairingId,
           }).catch(() => {});
+          remoteActiveTerminalRef.current = null;
           setRemoteActiveTerminal(null);
         }
       }
@@ -1407,9 +1445,11 @@ export function ServerDetail() {
                   return;
                 }
                 if (isRemote && tab.key === "overview") {
+                  remoteActiveTerminalRef.current = null;
                   setRemoteActiveTerminal(null);
                 } else if (isRemote && tab.key.startsWith("remote_term:")) {
                   const termId = parseInt(tab.key.slice("remote_term:".length), 10);
+                  remoteActiveTerminalRef.current = termId;
                   setRemoteActiveTerminal(termId);
                   if (remotePairingId) {
                     ipcInvoke("ipc_remote_client_subscribe", {
