@@ -242,7 +242,27 @@ pub fn get_public_key_base64() -> Result<String, String> {
 
 /// Compute shared secret with a peer's public key (base64-encoded).
 /// Returns 32-byte shared secret as hex string (for use as pairing_key).
+///
+/// Prefers SQLCipher DB if the global storage singleton is initialized,
+/// falling back to file-based storage for backward compatibility.
+/// This must use the same key source as `get_or_create_key()` to ensure
+/// the private key matches the public key shared with peers.
 pub fn compute_shared_secret_hex(peer_public_key_b64: &str) -> Result<String, String> {
+    // Try SQLCipher first — must use the same key as get_or_create_key()
+    if let Some(storage) = crate::storage_singleton::get_storage() {
+        let key = get_or_create_key_from_storage(storage)?;
+        let peer_bytes = STANDARD
+            .decode(peer_public_key_b64)
+            .map_err(|e| format!("decode peer public key: {}", e))?;
+        if peer_bytes.len() != 32 {
+            return Err(format!("peer public key must be 32 bytes, got {}", peer_bytes.len()));
+        }
+        let mut peer_arr = [0u8; 32];
+        peer_arr.copy_from_slice(&peer_bytes);
+        let shared = key.diffie_hellman(&peer_arr);
+        return Ok(hex::encode(shared));
+    }
+    // Fallback to file-based storage
     compute_shared_secret_hex_at(&ecdh_key_path(), peer_public_key_b64)
 }
 

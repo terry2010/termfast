@@ -88,6 +88,10 @@ pub fn get_or_create_suffix() -> String {
 }
 
 /// Get or create device_id suffix from SqlCipherStorage.
+///
+/// **Self-healing migration**: if DB has no suffix but device_id.json exists
+/// with a valid suffix (e.g. DB was recreated after data loss), the file-based
+/// suffix is migrated into the DB so future reads come from DB.
 fn get_or_create_suffix_from_storage(
     storage: &std::sync::Arc<termfast_core::config::SqlCipherStorage>,
 ) -> String {
@@ -95,6 +99,23 @@ fn get_or_create_suffix_from_storage(
     if let Ok(Some(suffix)) = storage.get_kv("device_id_suffix") {
         if is_valid_suffix(&suffix) {
             return suffix;
+        }
+    }
+
+    // DB has no valid suffix — check if device_id.json has one to migrate
+    let file_path = device_id_path();
+    if let Ok(content) = fs::read_to_string(&file_path) {
+        if let Ok(f) = serde_json::from_str::<DeviceIdFile>(&content) {
+            if is_valid_suffix(&f.suffix) {
+                tracing::info!(
+                    "device_id_store: DB empty but device_id.json has suffix '{}' — migrating to DB",
+                    f.suffix
+                );
+                if let Err(e) = storage.set_kv("device_id_suffix", &f.suffix) {
+                    tracing::warn!("failed to persist migrated device_id suffix to DB: {}", e);
+                }
+                return f.suffix;
+            }
         }
     }
 

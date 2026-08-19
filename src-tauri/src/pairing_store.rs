@@ -79,12 +79,39 @@ fn pairings_path() -> PathBuf {
 
 /// Load all persisted pairings. Returns empty vec if file missing or invalid.
 /// Prefers SQLCipher DB if the global storage singleton is initialized.
+///
+/// **Self-healing migration**: if SQLCipher DB returns 0 pairings but
+/// pairings.json exists with data (e.g. DB was recreated after data loss),
+/// the file-based pairings are migrated into the DB so future loads read
+/// from DB. This handles the scenario where the DB file was deleted or
+/// recreated empty while pairings.json still had valid data.
 pub fn load() -> Vec<StoredPairing> {
     // Try SQLCipher first
     if let Some(storage) = crate::storage_singleton::get_storage() {
-        return load_from_storage(storage);
+        let from_db = load_from_storage(storage);
+        if !from_db.is_empty() {
+            return from_db;
+        }
+        // DB is empty — check if pairings.json has data to migrate
+        let from_file = load_from_file();
+        if !from_file.is_empty() {
+            tracing::info!(
+                "pairing_store: DB empty but pairings.json has {} entry(s) — migrating to DB",
+                from_file.len()
+            );
+            for p in &from_file {
+                save_to_storage(storage, p);
+            }
+            tracing::info!("pairing_store: migration complete, {} pairings imported to DB", from_file.len());
+        }
+        return from_file;
     }
     // Fallback to file-based storage
+    load_from_file()
+}
+
+/// Load pairings from the JSON file (pairings.json).
+fn load_from_file() -> Vec<StoredPairing> {
     let path = pairings_path();
     match fs::read_to_string(&path) {
         Ok(content) => {

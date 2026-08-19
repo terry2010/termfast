@@ -2654,9 +2654,16 @@ async fn ipc_tunnel_stop_all(app: tauri::AppHandle) -> Result<(), String> {
 /// Restore all persisted tunnels on app startup.
 ///
 /// Called by the frontend after loading the saved JWT. Loads all pairings
-/// from pairings.json and starts a tunnel for each. Pairings whose backend
-/// record has been revoked will fail at relay register time and be cleaned
-/// up by the tunnel client's reconnect logic.
+/// from the pairing store and starts a tunnel for each. Pairings whose
+/// backend record has been revoked will fail at relay register time and be
+/// cleaned up by the tunnel client's reconnect logic.
+///
+/// After restoring local pairings, also queries the backend for desktop
+/// pairings that are not in the local store (e.g. the DESKTOP_PAIR frame
+/// was never delivered because this desktop was offline when the phone
+/// sent it). For those, it computes the pairing key via ECDH recovery
+/// (using the peer's ECDH public key from the backend) and starts a
+/// tunnel (for server role) or saves it for display (for client role).
 ///
 /// Returns the number of tunnels attempted.
 #[tauri::command]
@@ -2671,21 +2678,28 @@ async fn ipc_restore_tunnels(
         tracing::info!("  ipc_restore: id={} type={} role={} peer={} key_len={}",
             p.pairing_id, p.pairing_type, p.peer_role, p.peer_name, p.pairing_key_hex.len());
     }
+    // Collect local pairing IDs for backend import dedup
+    let local_ids: std::collections::HashSet<String> = stored.iter()
+        .map(|p| p.pairing_id.clone())
+        .collect();
     for p in stored {
         let pairing_id = p.pairing_id.clone();
-        // Skip desktop pairings — they are managed by RemoteClientManager,
-        // not the tunnel manager. Desktop pairings where this desktop is the
-        // server (role=server) do use the tunnel manager, but with the user JWT.
+        // Skip desktop client pairings — they are managed by RemoteClientManager,
+        // not the tunnel manager. Desktop server pairings use the tunnel manager.
         if p.pairing_type == "desktop" && p.peer_role == "client" {
             tracing::info!("ipc_restore_tunnels: skipping desktop client pairing {}", pairing_id);
             continue;
         }
-        // Reuse ipc_tunnel_start logic by calling start_tunnel directly.
-        // We must initialize the tunnel manager the same way ipc_tunnel_start does.
         let pairing_key_hex = p.pairing_key_hex.clone();
         let relay_url = p.relay_url.clone();
-        // For desktop server pairings, use the stored jwt; for mobile, use the passed jwt
-        let jwt_clone = if p.pairing_type == "desktop" {
+        // For desktop server pairings, use the user JWT (same as mobile pairings)
+        // — the relay authenticates the desktop server with the user JWT, not
+        // the pairing JWT. For mobile pairings, use the passed jwt.
+        // For desktop client pairings, use the stored pairing JWT (but those
+        // are skipped above).
+        let jwt_clone = if p.pairing_type == "desktop" && p.peer_role == "server" {
+            jwt.clone()
+        } else if p.pairing_type == "desktop" {
             p.jwt.clone()
         } else {
             jwt.clone()
@@ -2704,7 +2718,134 @@ async fn ipc_restore_tunnels(
             pairing_store::remove(&pairing_id);
         }
     }
-    Ok(count)
+
+    // Import desktop pairings from backend that are not in the local store.
+    // This handles the case where the DESKTOP_PAIR frame was never delivered
+    // (this desktop was offline when the phone sent it). The pairing key is
+    // recovered via ECDH (using the peer's ECDH public key from the backend).
+    let imported = import_desktop_pairings_from_backend(&app, &jwt, &local_ids).await;
+    let total = count + imported;
+    Ok(total)
+}
+
+/// Import desktop pairings from the backend that are not in the local store.
+///
+/// For each backend desktop pairing not in `local_ids`:
+/// - Determine role (server/client) based on device_id matching
+/// - Compute pairing_key via ECDH recovery (peer's ECDH public key from backend)
+/// - Save to pairing_store (so future restores find it)
+/// - For server role: start tunnel with user JWT
+/// - For client role: skip tunnel start (needs pairing JWT which is not
+///   available without the DESKTOP_PAIR frame; RemoteClientManager handles
+///   client pairings via setup_daemon_after_start when the frame is received)
+///
+/// Returns the number of desktop server pairings imported and tunnel-started.
+async fn import_desktop_pairings_from_backend(
+    app: &tauri::AppHandle,
+    jwt: &str,
+    local_ids: &std::collections::HashSet<String>,
+) -> usize {
+    let device_id = get_this_device_id();
+    let resp = match pairing::list_devices(jwt, &device_id).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::warn!("import_desktop_pairings: backend query failed: {}", e);
+            return 0;
+        }
+    };
+    let devs = match resp.get("devices").and_then(|v| v.as_array()) {
+        Some(d) => d,
+        None => return 0,
+    };
+
+    let mut imported = 0;
+    for d in devs {
+        let pairing_type = d.get("pairing_type").and_then(|v| v.as_str()).unwrap_or("");
+        let status = d.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if pairing_type != "desktop" || status != "completed" {
+            continue;
+        }
+        let pid = d.get("pairing_id").and_then(|v| v.as_str()).unwrap_or("");
+        if local_ids.contains(pid) {
+            continue; // Already in local store, skip
+        }
+
+        let desktop_device_id = d.get("desktop_device_id").and_then(|v| v.as_str()).unwrap_or("");
+        let desktop_name = d.get("desktop_name").and_then(|v| v.as_str()).unwrap_or("");
+        let mobile_name = d.get("mobile_name").and_then(|v| v.as_str()).unwrap_or("");
+        let desktop_a_ecdh = d.get("desktop_a_ecdh_key").and_then(|v| v.as_str()).unwrap_or("");
+        let desktop_b_ecdh = d.get("desktop_b_ecdh_key").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Determine role: if this device is the desktop (server/B), peer is client (A)
+        let is_server = device_id_matches(desktop_device_id, &device_id);
+        let (peer_name, peer_role, peer_ecdh) = if is_server {
+            (mobile_name, "server", desktop_a_ecdh) // peer is client (A)
+        } else {
+            (desktop_name, "client", desktop_b_ecdh) // peer is server (B)
+        };
+
+        // Compute pairing key via ECDH recovery
+        if peer_ecdh.is_empty() {
+            tracing::warn!("import_desktop_pairings: no peer ECDH key for pairing {}, skipping", pid);
+            continue;
+        }
+        let pairing_key_hex = match ecdh_key_store::compute_shared_secret_hex(peer_ecdh) {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!("import_desktop_pairings: ECDH recovery failed for pairing {}: {}", pid, e);
+                continue;
+            }
+        };
+
+        let relay_url = "ws://sh.zimufan.com:39527/tunnel".to_string();
+
+        // Save to pairing_store so future restores find it
+        pairing_store::save(pairing_store::StoredPairing {
+            pairing_id: pid.to_string(),
+            pairing_key_hex: pairing_key_hex.clone(),
+            relay_url: relay_url.clone(),
+            jwt: String::new(), // No pairing JWT available (frame not received)
+            pairing_type: "desktop".to_string(),
+            peer_name: peer_name.to_string(),
+            peer_role: peer_role.to_string(),
+        });
+        tracing::info!(
+            "import_desktop_pairings: imported pairing {} role={} peer={} from backend (ECDH recovery)",
+            pid, peer_role, peer_name
+        );
+
+        // For server role: start tunnel with user JWT.
+        // Note: ipc_tunnel_start saves the pairing as "mobile" type, so we
+        // re-save as "desktop" afterwards to preserve the correct type/role.
+        if peer_role == "server" {
+            let app_clone = app.clone();
+            if let Err(e) = ipc_tunnel_start(
+                app_clone,
+                pid.to_string(),
+                pairing_key_hex.clone(),
+                relay_url.clone(),
+                jwt.to_string(),
+            ).await {
+                tracing::warn!("import_desktop_pairings: failed to start tunnel for {}: {}", pid, e);
+            } else {
+                // Re-save with correct desktop type (ipc_tunnel_start overwrote as mobile)
+                pairing_store::save(pairing_store::StoredPairing {
+                    pairing_id: pid.to_string(),
+                    pairing_key_hex,
+                    relay_url,
+                    jwt: String::new(),
+                    pairing_type: "desktop".to_string(),
+                    peer_name: peer_name.to_string(),
+                    peer_role: peer_role.to_string(),
+                });
+                imported += 1;
+            }
+        }
+        // For client role: skip — RemoteClientManager needs the pairing JWT
+        // which is only available from the DESKTOP_PAIR frame. The pairing
+        // is saved to store for display; the user can re-pair to get the JWT.
+    }
+    imported
 }
 
 /// Decode a 64-char hex string into a 32-byte array.
