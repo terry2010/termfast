@@ -449,6 +449,11 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
     // Restore desktop client pairings (this desktop is the "client" / Desktop A).
     // Desktop server pairings are restored by ipc_restore_tunnels via TunnelManager.
     let stored = pairing_store::load();
+    tracing::info!("setup_daemon_after_start: {} stored pairing(s)", stored.len());
+    for p in &stored {
+        tracing::info!("  stored pairing: id={} type={} role={} peer={} key_len={}",
+            p.pairing_id, p.pairing_type, p.peer_role, p.peer_name, p.pairing_key_hex.len());
+    }
     for p in &stored {
         if p.pairing_type == "desktop" && p.peer_role == "client" {
             tracing::info!("restoring desktop client pairing {}", p.pairing_id);
@@ -2662,6 +2667,10 @@ async fn ipc_restore_tunnels(
     let stored = pairing_store::load();
     let count = stored.len();
     tracing::info!("ipc_restore_tunnels: {} persisted pairing(s)", count);
+    for p in &stored {
+        tracing::info!("  ipc_restore: id={} type={} role={} peer={} key_len={}",
+            p.pairing_id, p.pairing_type, p.peer_role, p.peer_name, p.pairing_key_hex.len());
+    }
     for p in stored {
         let pairing_id = p.pairing_id.clone();
         // Skip desktop pairings — they are managed by RemoteClientManager,

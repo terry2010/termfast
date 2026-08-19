@@ -134,6 +134,16 @@ export default function App() {
     listen("daemon:ready", () => {
       loadConfig();
       loadServerList();
+      // Restore tunnels after daemon is ready (handles slow Windows startup
+      // where ipc_restore_tunnels fires before daemon is initialized)
+      const savedToken = localStorage.getItem("pairing_token");
+      if (savedToken) {
+        ipcInvoke<any>("ipc_restore_tunnels", { jwt: savedToken })
+          .then((r) => {
+            if (r > 0) console.log(`[App] daemon:ready restored ${r} remote tunnel(s)`);
+          })
+          .catch((e) => console.warn("[App] daemon:ready restore tunnels failed:", e));
+      }
     }).then((fn) => { daemonReadyUnlisten = fn; });
 
     // Restore remote tunnels on startup (survives app restart)
