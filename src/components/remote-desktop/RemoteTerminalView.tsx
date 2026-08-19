@@ -26,7 +26,7 @@ interface RemoteClientFrameEvent {
 
 // Frame type constants (must match remote_frame.rs)
 const OUTPUT = 0x05;
-const HISTORY = 0x08;
+const HISTORY = 0x0A;
 
 function decodeBase64(b64: string): Uint8Array {
   const binary = atob(b64);
@@ -69,6 +69,12 @@ export function RemoteTerminalView({
 
     termRef.current = term;
     fitRef.current = fit;
+
+    // Subscribe to the terminal on mount (ensures output is sent to us)
+    ipcInvoke("ipc_remote_client_subscribe", {
+      pairing_id: pairingId,
+      terminal_id: terminalId,
+    }).catch(() => {});
 
     // Send resize to remote
     const sendResize = (cols: number, rows: number) => {

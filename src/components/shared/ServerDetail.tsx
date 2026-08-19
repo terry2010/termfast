@@ -211,12 +211,14 @@ export function ServerDetail() {
           try {
             const parsed = JSON.parse(atob(payload.data));
             if (parsed.terminal_id !== undefined) {
-              // NEW_TERMINAL response — refresh terminal list
-              ipcInvoke("ipc_remote_client_list_terminals", {
-                pairing_id: remotePairingId,
-              }).catch(() => {});
-              // Auto-subscribe to the new terminal
+              // NEW_TERMINAL response
               const newTermId = parsed.terminal_id;
+              // Add to remoteTerminals immediately so the tab appears
+              setRemoteTerminals((prev) => {
+                if (prev.some((t) => t.terminal_id === newTermId)) return prev;
+                return [...prev, { terminal_id: newTermId, name: `Terminal ${prev.length + 1}` }];
+              });
+              // Auto-subscribe and switch to the new terminal
               setRemoteActiveTerminal(newTermId);
               ipcInvoke("ipc_remote_client_subscribe", {
                 pairing_id: remotePairingId,
@@ -224,6 +226,10 @@ export function ServerDetail() {
               }).catch((e: any) => {
                 toast.error(`Subscribe failed: ${e?.message || e}`);
               });
+              // Refresh terminal list to get accurate names
+              ipcInvoke("ipc_remote_client_list_terminals", {
+                pairing_id: remotePairingId,
+              }).catch(() => {});
             }
           } catch {
             // ignore
@@ -1395,7 +1401,9 @@ export function ServerDetail() {
                   rightClickButtonRef.current = false;
                   return;
                 }
-                if (isRemote && tab.key.startsWith("remote_term:")) {
+                if (isRemote && tab.key === "overview") {
+                  setRemoteActiveTerminal(null);
+                } else if (isRemote && tab.key.startsWith("remote_term:")) {
                   const termId = parseInt(tab.key.slice("remote_term:".length), 10);
                   setRemoteActiveTerminal(termId);
                   if (remotePairingId) {
@@ -2378,10 +2386,11 @@ export function ServerDetail() {
           </div>
         ))}
 
-        {/* Remote desktop terminal view */}
-        {isRemote && remotePairingId && remoteActiveTerminal !== null && (
+        {/* Remote desktop terminal view — only when a remote terminal tab is active */}
+        {isRemote && remotePairingId && remoteActiveTerminal !== null && isTerminalActive && (
           <div className="flex-1 min-h-0 h-full">
             <RemoteTerminalView
+              key={`${remotePairingId}:${remoteActiveTerminal}`}
               pairingId={remotePairingId}
               terminalId={remoteActiveTerminal}
               terminalName={remoteTerminals.find((t) => t.terminal_id === remoteActiveTerminal)?.name || `Terminal #${remoteActiveTerminal}`}
