@@ -2949,14 +2949,22 @@ async fn ipc_list_desktop_pairings(
     for bp in &backend_pairings {
         let pid = bp.get("pairing_id").and_then(|v| v.as_str()).unwrap_or("");
         let local = local_by_id.get(pid);
-        // Determine peer name: for server (B), peer is client (A) = mobile_name;
-        // for client (A), peer is server (B) = desktop_name.
+        // Determine peer name and role.
+        // Prefer local peer_role (from DESKTOP_PAIR frame, authoritative);
+        // fall back to device_id matching for pairings not saved locally.
         let desktop_name = bp.get("desktop_name").and_then(|v| v.as_str()).unwrap_or("");
         let mobile_name = bp.get("mobile_name").and_then(|v| v.as_str()).unwrap_or("");
         let desktop_device_id = bp.get("desktop_device_id").and_then(|v| v.as_str()).unwrap_or("");
-        // If this device is the server (B), peer is client (A)
         let this_device_id = get_this_device_id();
-        let (peer_name, peer_role) = if device_id_matches(desktop_device_id, &this_device_id) {
+        let (peer_name, peer_role) = if let Some(lp) = local {
+            // Local store has authoritative role from DESKTOP_PAIR frame
+            if lp.peer_role == "server" {
+                (mobile_name, "server")
+            } else {
+                (desktop_name, "client")
+            }
+        } else if device_id_matches(desktop_device_id, &this_device_id) {
+            // No local record — infer from device_id matching
             (mobile_name, "server")
         } else {
             (desktop_name, "client")
