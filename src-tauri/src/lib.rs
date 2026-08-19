@@ -298,6 +298,7 @@ pub fn run() {
             ipc_send_notification,
             // Terminal — interactive SSH shell sessions
             ipc_terminal_open,
+            ipc_terminal_attach,
             ipc_terminal_input,
             ipc_terminal_close,
             ipc_terminal_resize,
@@ -571,26 +572,6 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
                     }));
                     Ok(())
                 })
-            },
-        ));
-    }
-
-    // Set frame_callback on RemoteServer — forwards received frames to the frontend.
-    // This is used when the server desktop initiates requests (LIST, INFO, etc.)
-    // and receives responses from the client desktop.
-    if let Some(ref tm) = tm_for_cb {
-        let handle_for_frame = handle.clone();
-        tm.remote_server().set_frame_callback(Arc::new(
-            move |pid: &str, frame_type: u8, terminal_id: u32, payload: &[u8]| {
-                use tauri::Emitter;
-                use base64::Engine;
-                let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
-                let _ = handle_for_frame.emit("remote_client_frame", serde_json::json!({
-                    "pairing_id": pid,
-                    "frame_type": frame_type,
-                    "terminal_id": terminal_id,
-                    "data": data_b64,
-                }));
             },
         ));
     }
@@ -1571,6 +1552,19 @@ async fn ipc_terminal_open(
         state.terminal_channels.lock().unwrap().insert(session_id.to_string(), on_output);
     }
     Ok(result)
+}
+
+/// Attach a binary output Channel to an already-open terminal session.
+/// Used when a terminal was opened by a remote desktop (via RemoteServer)
+/// and the local frontend needs to receive its output.
+#[tauri::command]
+async fn ipc_terminal_attach(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    on_output: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<(), String> {
+    state.terminal_channels.lock().unwrap().insert(session_id, on_output);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2591,6 +2585,22 @@ async fn ipc_tunnel_start(
                         upload_file_to_cloud(file_path, file_upload_config, config_mgr).await
                     })
                 }));
+                // Register frame callback for forwarding received frames to the frontend
+                // (used when server desktop initiates requests and receives responses)
+                let handle_for_frame = app.clone();
+                tm.remote_server().set_frame_callback(Arc::new(
+                    move |pid: &str, frame_type: u8, terminal_id: u32, payload: &[u8]| {
+                        use tauri::Emitter;
+                        use base64::Engine;
+                        let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                        let _ = handle_for_frame.emit("remote_client_frame", serde_json::json!({
+                            "pairing_id": pid,
+                            "frame_type": frame_type,
+                            "terminal_id": terminal_id,
+                            "data": data_b64,
+                        }));
+                    },
+                ));
                 *tm_guard = Some(tm.clone());
                 tracing::info!("DesktopTunnelManager initialized");
                 tm

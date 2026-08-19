@@ -18,7 +18,7 @@ import { TriggerList } from "@/components/shared/TriggerList";
 import { TabTriggerManager } from "@/components/shared/TabTriggerManager";
 import { PortForwardPanel, PortForwardPanelHandle } from "@/components/shared/PortForwardPanel";
 import { TerminalView } from "@/components/shared/TerminalView";
-import { openTerminalWithChannel } from "@/lib/terminal";
+import { openTerminalWithChannel, attachTerminalChannel } from "@/lib/terminal";
 import { Channel } from "@tauri-apps/api/core";
 import { dispatchTerminalOutput } from "@/components/shared/TerminalView";
 import { TmuxSessionPicker } from "@/components/shared/TmuxSessionPicker";
@@ -389,6 +389,10 @@ export function ServerDetail() {
         initialOutput: "",
         disconnected: false,
         agentStatus: null,
+      });
+      // Attach a binary output Channel so terminal output is received
+      attachTerminalChannel(sid).catch((e) => {
+        console.error("Failed to attach terminal channel:", e);
       });
       // Only auto-select if "My Computer" is currently active
       if (selectedId === "local") {

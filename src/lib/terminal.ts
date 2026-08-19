@@ -57,3 +57,19 @@ export async function openTerminalWithChannel(
   sessionId = result.session_id;
   return result;
 }
+
+/**
+ * Attach a binary output Channel to an already-open terminal session.
+ * Used when a terminal was opened by a remote desktop (via RemoteServer)
+ * and the local frontend needs to receive its output.
+ */
+export async function attachTerminalChannel(sessionId: string): Promise<void> {
+  const onOutput = new Channel<ArrayBuffer>();
+  onOutput.onmessage = (data: ArrayBuffer) => {
+    dispatchTerminalOutput(sessionId, new Uint8Array(data), false);
+  };
+  await ipcInvoke("ipc_terminal_attach", {
+    session_id: sessionId,
+    on_output: onOutput,
+  });
+}

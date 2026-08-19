@@ -133,8 +133,13 @@ export function RemoteTerminalView({
       if (!term) return;
 
       const bytes = decodeBase64(payload.data);
-      if (payload.frame_type === OUTPUT || payload.frame_type === HISTORY) {
+      if (payload.frame_type === OUTPUT) {
         term.write(bytes);
+      } else if (payload.frame_type === HISTORY) {
+        // HISTORY payload = [seq:4][is_last:1][data] — skip the 5-byte header
+        if (bytes.length > 5) {
+          term.write(bytes.subarray(5));
+        }
       }
     }).then((unlistenFn) => {
       unlisten = unlistenFn;
