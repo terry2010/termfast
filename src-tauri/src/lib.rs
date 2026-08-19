@@ -456,6 +456,13 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
     }
     for p in &stored {
         if p.pairing_type == "desktop" && p.peer_role == "client" {
+            if p.jwt.is_empty() {
+                tracing::info!(
+                    "skip restore desktop client pairing {}: empty JWT, will be handled by ipc_restore_tunnels (reissue)",
+                    p.pairing_id
+                );
+                continue;
+            }
             tracing::info!("restoring desktop client pairing {}", p.pairing_id);
             let pairing_key = match decode_hex_32(&p.pairing_key_hex) {
                 Ok(k) => k,
@@ -2684,10 +2691,111 @@ async fn ipc_restore_tunnels(
         .collect();
     for p in stored {
         let pairing_id = p.pairing_id.clone();
-        // Skip desktop client pairings — they are managed by RemoteClientManager,
-        // not the tunnel manager. Desktop server pairings use the tunnel manager.
+        // Desktop client pairings with empty JWT: reissue JWT and start remote client.
+        // Desktop client pairings with valid JWT: start remote client directly.
         if p.pairing_type == "desktop" && p.peer_role == "client" {
-            tracing::info!("ipc_restore_tunnels: skipping desktop client pairing {}", pairing_id);
+            if p.jwt.is_empty() {
+                tracing::info!("ipc_restore_tunnels: desktop client {} has empty JWT, reissuing", pairing_id);
+                match pairing::reissue_pairing_jwt(&jwt, &pairing_id).await {
+                    Ok(pairing_jwt) => {
+                        pairing_store::save(pairing_store::StoredPairing {
+                            pairing_id: pairing_id.clone(),
+                            pairing_key_hex: p.pairing_key_hex.clone(),
+                            relay_url: p.relay_url.clone(),
+                            jwt: pairing_jwt.clone(),
+                            pairing_type: "desktop".to_string(),
+                            peer_name: p.peer_name.clone(),
+                            peer_role: "client".to_string(),
+                        });
+                        // Start remote client
+                        if let Some(app_state) = app.try_state::<AppState>() {
+                            if let Some(rcm) = app_state.remote_client_manager.lock().await.clone() {
+                                let pairing_key = match decode_hex_32(&p.pairing_key_hex) {
+                                    Ok(k) => k,
+                                    Err(e) => {
+                                        tracing::warn!("ipc_restore: bad key for {}: {}", pairing_id, e);
+                                        continue;
+                                    }
+                                };
+                                let config = termfast_daemon::remote_client::RemoteClientConfig {
+                                    relay_url: p.relay_url.clone(),
+                                    pairing_jwt,
+                                    pairing_id: pairing_id.clone(),
+                                    pairing_key,
+                                };
+                                let h1 = app.clone();
+                                let h2 = app.clone();
+                                if let Err(e) = rcm.start_client(
+                                    config,
+                                    move |pid, ft, tid, payload| {
+                                        use tauri::Emitter;
+                                        use base64::Engine;
+                                        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                                        let _ = h1.emit("remote_client_frame", serde_json::json!({
+                                            "pairing_id": pid, "frame_type": ft, "terminal_id": tid, "data": b64,
+                                        }));
+                                    },
+                                    move |pid, connected| {
+                                        use tauri::Emitter;
+                                        let _ = h2.emit("remote_client_state", serde_json::json!({
+                                            "pairing_id": pid, "connected": connected,
+                                        }));
+                                    },
+                                ).await {
+                                    tracing::warn!("ipc_restore: failed to start remote client for {}: {}", pairing_id, e);
+                                } else {
+                                    tracing::info!("ipc_restore: started remote client for {} (reissued JWT)", pairing_id);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("ipc_restore: reissue JWT failed for {}: {}", pairing_id, e);
+                    }
+                }
+            } else {
+                tracing::info!("ipc_restore_tunnels: desktop client {} has JWT, starting remote client", pairing_id);
+                if let Some(app_state) = app.try_state::<AppState>() {
+                    if let Some(rcm) = app_state.remote_client_manager.lock().await.clone() {
+                        let pairing_key = match decode_hex_32(&p.pairing_key_hex) {
+                            Ok(k) => k,
+                            Err(e) => {
+                                tracing::warn!("ipc_restore: bad key for {}: {}", pairing_id, e);
+                                continue;
+                            }
+                        };
+                        let config = termfast_daemon::remote_client::RemoteClientConfig {
+                            relay_url: p.relay_url.clone(),
+                            pairing_jwt: p.jwt.clone(),
+                            pairing_id: pairing_id.clone(),
+                            pairing_key,
+                        };
+                        let h1 = app.clone();
+                        let h2 = app.clone();
+                        if let Err(e) = rcm.start_client(
+                            config,
+                            move |pid, ft, tid, payload| {
+                                use tauri::Emitter;
+                                use base64::Engine;
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                                let _ = h1.emit("remote_client_frame", serde_json::json!({
+                                    "pairing_id": pid, "frame_type": ft, "terminal_id": tid, "data": b64,
+                                }));
+                            },
+                            move |pid, connected| {
+                                use tauri::Emitter;
+                                let _ = h2.emit("remote_client_state", serde_json::json!({
+                                    "pairing_id": pid, "connected": connected,
+                                }));
+                            },
+                        ).await {
+                            tracing::warn!("ipc_restore: failed to start remote client for {}: {}", pairing_id, e);
+                        } else {
+                            tracing::info!("ipc_restore: started remote client for {} (existing JWT)", pairing_id);
+                        }
+                    }
+                }
+            }
             continue;
         }
         let pairing_key_hex = p.pairing_key_hex.clone();
