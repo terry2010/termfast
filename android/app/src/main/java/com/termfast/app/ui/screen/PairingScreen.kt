@@ -59,7 +59,14 @@ fun PairingScreen(navController: NavController) {
                     // by user ID (from JWT). Filtering by getDeviceName() caused
                     // devices to disappear when getprop returned inconsistent values.
                     devices = withContext(Dispatchers.IO) { PairingApi.listDevices(saved) }
-                } catch (_: Exception) {}
+                    android.util.Log.d("PairingScreen", "Loaded ${devices.size} devices")
+                    devices.forEach { d ->
+                        android.util.Log.d("PairingScreen", "Device: ${d.desktopName}, isOnline=${d.isOnline}, type=${d.pairingType}")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("PairingScreen", "Failed to load devices", e)
+                    Toast.makeText(context, "加载设备列表失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

@@ -85,6 +85,8 @@ fun ServerListScreen(navController: NavController) {
     var selectedPairing by remember { mutableStateOf<com.termfast.app.data.RemoteTunnelConfig?>(null) }
     var showLoginPrompt by remember { mutableStateOf(false) }
     var remoteVersion by remember { mutableStateOf(0) }
+    // isOnline map: pairingId -> isOnline (from backend /devices)
+    var onlineStatus by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     val isLoggedIn = remember(remoteVersion) { PairingStore.getToken() != null }
     val remotePairings = remember(remoteVersion) {
         if (isLoggedIn) PairingStore.getAllPairings() else emptyList()
@@ -197,6 +199,11 @@ fun ServerListScreen(navController: NavController) {
                             .filter { it.status == "completed" }
                             .map { it.pairingId }
                             .toSet()
+                        // Update online status from backend
+                        val statusMap = backendDevices
+                            .filter { it.status == "completed" && it.pairingType == "mobile" }
+                            .associate { it.pairingId to it.isOnline }
+                        onlineStatus = statusMap
                         // Remove local pairings that are revoked or missing on backend
                         localPairings.forEach { local ->
                             if (local.pairingId !in backendPairingIds) {
@@ -379,6 +386,7 @@ fun ServerListScreen(navController: NavController) {
                         RemoteDeviceCard(
                             desktopName = pairing.desktopName.ifEmpty { pairing.pairingId.take(8) },
                             desktopDeviceId = pairing.desktopDeviceId,
+                            isOnline = onlineStatus[pairing.pairingId] ?: false,
                             onClick = {
                                 selectedPairing = pairing
                                 showRemotePicker = true
@@ -677,6 +685,7 @@ fun ServerListScreen(navController: NavController) {
 private fun RemoteDeviceCard(
     desktopName: String,
     desktopDeviceId: String,
+    isOnline: Boolean,
     onClick: () -> Unit,
 ) {
     ElevatedCard(
@@ -716,11 +725,23 @@ private fun RemoteDeviceCard(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Text(
-                    desktopDeviceId.ifEmpty { "远程桌面端" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .background(
+                                if (isOnline) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outlineVariant,
+                                shape = androidx.compose.foundation.shape.CircleShape
+                            )
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (isOnline) "在线" else "离线",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    )
+                }
             }
             Icon(
                 Icons.Filled.Terminal,
