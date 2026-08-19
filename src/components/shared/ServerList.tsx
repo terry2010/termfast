@@ -728,21 +728,6 @@ export function ServerList({
                       }`}
                       onClick={async () => {
                         selectServer(`remote:${peer.pairingId}`);
-                        // If not connected, connect now
-                        if (!isConnected && peer.pairingKeyHex) {
-                          try {
-                            await ipcInvoke("ipc_remote_client_connect", {
-                              pairing_id: peer.pairingId,
-                              pairing_key_hex: peer.pairingKeyHex,
-                              pairing_jwt: peer.jwt,
-                              relay_url: peer.relayUrl,
-                            });
-                          } catch (e: any) {
-                            toast.error(`Connection failed: ${e?.message || e}`);
-                          }
-                        }
-                        // Open remote desktop modal to show terminals
-                        onOpenRemoteDesktop?.();
                       }}
                       role="listitem"
                       tabIndex={0}
@@ -787,8 +772,14 @@ export function ServerList({
                 {t("server.add")}
               </button>
             ) : (
-              sorted.map((server) => (
-              <ServerListItem
+              <>
+                {showFullContent && (
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                    {t("server.ssh_servers", "服务器节点")}
+                  </div>
+                )}
+                {sorted.map((server) => (
+                  <ServerListItem
                 key={server.id}
                 server={server}
                 selected={server.id === selectedId}
@@ -847,8 +838,9 @@ export function ServerList({
                   setDraggedId(null);
                   setDragOverId(null);
                 }}
-              />
-              ))
+                />
+                ))}
+              </>
             )}
             </>
           )}

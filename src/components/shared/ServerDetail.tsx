@@ -24,6 +24,8 @@ import { dispatchTerminalOutput } from "@/components/shared/TerminalView";
 import { TmuxSessionPicker } from "@/components/shared/TmuxSessionPicker";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PairingCard } from "@/components/shared/PairingCard";
+import { useRemoteDesktopStore } from "@/stores/remoteDesktopStore";
+import { RemoteTerminalView } from "@/components/remote-desktop/RemoteTerminalView";
 import {
   showContextMenu,
   type ContextMenuEntry,
@@ -65,8 +67,13 @@ export function ServerDetail() {
     (s) => s.active_terminal_tab_by_server,
   );
   const termTabs = terminalTabsByServer[selectedId || ""] || [];
-  const activeTab: Tab =
-    (activeTerminalTabByServer[selectedId || ""] as Tab) || "overview";
+  const isRemoteSelected = selectedId?.startsWith("remote:") ?? false;
+  // Remote desktop terminal list (from LIST_RESPONSE frames)
+  const [remoteTerminals, setRemoteTerminals] = useState<{ terminal_id: number; name: string }[]>([]);
+  const [remoteActiveTerminal, setRemoteActiveTerminal] = useState<number | null>(null);
+  const activeTab: Tab = isRemoteSelected
+    ? (remoteActiveTerminal !== null ? `remote_term:${remoteActiveTerminal}` as Tab : "overview")
+    : (activeTerminalTabByServer[selectedId || ""] as Tab) || "overview";
   // System proxy state is derived from the global config — this server is the
   // system proxy if config.general.system_proxy_server_id === selectedId.
   const config = useConfigStore((s) => s.config);
@@ -105,6 +112,15 @@ export function ServerDetail() {
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
 
+  const isLocal = selectedId === "__local__";
+  const isRemote = selectedId?.startsWith("remote:") ?? false;
+  const remotePairingId = isRemote ? selectedId!.slice("remote:".length) : null;
+  const remotePeers = useRemoteDesktopStore((s) => s.peers);
+  const remotePeer = remotePairingId ? remotePeers.find((p) => p.pairingId === remotePairingId) : null;
+  const remoteActiveConnection = useRemoteDesktopStore((s) => s.activeConnection);
+  const remoteIsConnected = remotePairingId ? (remoteActiveConnection === remotePairingId && remotePeer?.online) : false;
+  const server = servers.find((s) => s.id === selectedId);
+
   // Reset transient UI state when switching to a different server
   // (the component is reused across servers, so local state persists otherwise)
   useEffect(() => {
@@ -114,10 +130,61 @@ export function ServerDetail() {
     setRenamingTabId(null);
     setDraggedTabId(null);
     setDragOverTabId(null);
+    setRemoteTerminals([]);
+    setRemoteActiveTerminal(null);
   }, [selectedId]);
 
-  const isLocal = selectedId === "__local__";
-  const server = servers.find((s) => s.id === selectedId);
+  // Remote desktop: load terminal list when a remote peer is selected
+  useEffect(() => {
+    if (!isRemote || !remotePairingId || !remotePeer) return;
+    // Connect if not connected
+    if (!remoteIsConnected && remotePeer.pairingKeyHex) {
+      ipcInvoke("ipc_remote_client_connect", {
+        pairing_id: remotePairingId,
+        pairing_key_hex: remotePeer.pairingKeyHex,
+        pairing_jwt: remotePeer.jwt,
+        relay_url: remotePeer.relayUrl,
+      }).catch((e: any) => {
+        toast.error(`Connection failed: ${e?.message || e}`);
+      });
+    }
+    // Request terminal list
+    ipcInvoke("ipc_remote_client_list_terminals", {
+      pairing_id: remotePairingId,
+    }).catch((e: any) => {
+      toast.error(`Failed to list terminals: ${e?.message || e}`);
+    });
+  }, [isRemote, remotePairingId, remotePeer, remoteIsConnected]);
+
+  // Remote desktop: listen for LIST_RESPONSE frames
+  useEffect(() => {
+    if (!isRemote || !remotePairingId) return;
+    const unlisten = listen<{
+      pairing_id: string;
+      frame_type: number;
+      terminal_id: number;
+      data: string;
+    }>("remote_client_frame", (event) => {
+      const payload = event.payload;
+      if (payload.pairing_id !== remotePairingId) return;
+      if (payload.frame_type === 0x02) {
+        // LIST_RESPONSE
+        try {
+          const parsed = JSON.parse(atob(payload.data));
+          const terms = (parsed.terminals || []).map((t: any) => ({
+            terminal_id: t.terminal_id,
+            name: t.name || `Terminal #${t.terminal_id}`,
+          }));
+          setRemoteTerminals(terms);
+        } catch {
+          // ignore parse errors
+        }
+      }
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [isRemote, remotePairingId]);
   // Virtual server for local terminal (no SSH config, reuses overview UI)
   const displayServer: ServerState = isLocal
     ? ({
@@ -143,8 +210,32 @@ export function ServerDetail() {
         auth_banner: null,
         rz_available: false,
       } as ServerState)
+    : isRemote && remotePeer
+    ? ({
+        id: selectedId!,
+        name: remotePeer.peerName || remotePeer.pairingId,
+        ssh: null as any,
+        proxy: { enabled: false, socks5_port: 0, http_port: 0, mixed_port: 0, max_channels: 0, channel_idle_timeout: 0 },
+        reconnect: { auto_reconnect: false, heartbeat_interval: 0, max_attempts: 0, reconnect_timeout_secs: 0, initial_backoff_secs: 0, max_backoff_secs: 0 },
+        ip_check: { enabled: false, interval_secs: 0 },
+        last_known_ip: null,
+        triggers: [],
+        suppress_firewall_badge: false,
+        current_status: remoteIsConnected ? "connected" : "disconnected",
+        current_ip: null,
+        client_ip: null,
+        connected_since: null,
+        reconnect_count: 0,
+        max_attempts: 0,
+        proxy_running: false,
+        active_channels: 0,
+        bytes_in: 0,
+        bytes_out: 0,
+        auth_banner: null,
+        rz_available: false,
+      } as ServerState)
     : server!;
-  const isConnected = isLocal || server?.current_status === "connected";
+  const isConnected = isLocal || (isRemote ? remoteIsConnected : server?.current_status === "connected");
   // "connecting" is derived from the server's current status in the store,
   // so it survives switching to another server and back.
   const connecting =
@@ -616,7 +707,7 @@ export function ServerDetail() {
     ],
   );
 
-  if (!server && !isLocal) {
+  if (!server && !isLocal && !(isRemote && remotePeer)) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500">
         {t("server.add")}
@@ -1154,15 +1245,25 @@ export function ServerDetail() {
     testProxyAbort.current?.abort();
   };
 
-  const tabs: { key: Tab; label: string; disconnected: boolean; agentStatus: AgentStatus | null }[] = [
-    { key: "overview", label: t("server.overview"), disconnected: false, agentStatus: null },
-    ...termTabs.map((tt) => ({
-      key: tt.id as Tab,
-      label: tt.label,
-      disconnected: tt.disconnected,
-      agentStatus: tt.agentStatus ?? null,
-    })),
-  ];
+  const tabs: { key: Tab; label: string; disconnected: boolean; agentStatus: AgentStatus | null }[] = isRemote
+    ? [
+        { key: "overview", label: t("server.overview"), disconnected: false, agentStatus: null },
+        ...remoteTerminals.map((rt) => ({
+          key: `remote_term:${rt.terminal_id}` as Tab,
+          label: rt.name,
+          disconnected: !remoteIsConnected,
+          agentStatus: null,
+        })),
+      ]
+    : [
+        { key: "overview", label: t("server.overview"), disconnected: false, agentStatus: null },
+        ...termTabs.map((tt) => ({
+          key: tt.id as Tab,
+          label: tt.label,
+          disconnected: tt.disconnected,
+          agentStatus: tt.agentStatus ?? null,
+        })),
+      ];
 
   const statusColor = isConnected
     ? "text-[#34C759]"
@@ -1238,7 +1339,20 @@ export function ServerDetail() {
                   rightClickButtonRef.current = false;
                   return;
                 }
-                setActiveTerminalTab(displayServer.id, tab.key);
+                if (isRemote && tab.key.startsWith("remote_term:")) {
+                  const termId = parseInt(tab.key.slice("remote_term:".length), 10);
+                  setRemoteActiveTerminal(termId);
+                  if (remotePairingId) {
+                    ipcInvoke("ipc_remote_client_subscribe", {
+                      pairing_id: remotePairingId,
+                      terminal_id: termId,
+                    }).catch((e: any) => {
+                      toast.error(`Subscribe failed: ${e?.message || e}`);
+                    });
+                  }
+                } else {
+                  setActiveTerminalTab(displayServer.id, tab.key);
+                }
               }}
               onMouseDown={(e) => {
                 // Detect right-click on mousedown (before click fires).
@@ -1448,23 +1562,41 @@ export function ServerDetail() {
                       {!isLocal && isConnected && (
                         <button
                           className="px-3.5 py-1.5 text-sm rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] font-medium transition-colors"
-                          onClick={handleDisconnect}
+                          onClick={isRemote ? () => {
+                            if (remotePairingId) {
+                              ipcInvoke("ipc_remote_client_disconnect", {
+                                pairing_id: remotePairingId,
+                              }).catch(() => {});
+                              setRemoteActiveTerminal(null);
+                            }
+                          } : handleDisconnect}
                         >
                           {t("server.disconnect")}
                         </button>
                       )}
                       <button
                         className="px-4 py-1.5 text-sm rounded-lg bg-[#34C759] text-white hover:bg-[#2EB34F] disabled:opacity-50 font-medium transition-colors "
-                        onClick={isLocal ? () => handleOpenLocalTerminal() : handleOpenTerminal}
-                        disabled={isLocal ? false : connecting}
+                        onClick={isLocal ? () => handleOpenLocalTerminal() : isRemote ? () => {
+                          // For remote, re-request terminal list
+                          if (remotePairingId) {
+                            ipcInvoke("ipc_remote_client_list_terminals", {
+                              pairing_id: remotePairingId,
+                            }).catch((e: any) => {
+                              toast.error(`Failed to list terminals: ${e?.message || e}`);
+                            });
+                          }
+                        } : handleOpenTerminal}
+                        disabled={isLocal ? false : isRemote ? !remoteIsConnected : connecting}
                       >
                         {isLocal
                           ? t("server.open_local_terminal")
-                          : connecting
-                            ? t("server.status.connecting")
-                            : termTabs.length === 0
-                              ? t("server.connect_terminal")
-                              : t("server.login_server")}
+                          : isRemote
+                            ? t("remote_desktop.refresh_terminals", "刷新终端")
+                            : connecting
+                              ? t("server.status.connecting")
+                              : termTabs.length === 0
+                                ? t("server.connect_terminal")
+                                : t("server.login_server")}
                       </button>
                     </div>
                   </div>
@@ -1534,6 +1666,27 @@ export function ServerDetail() {
                             {localInfo
                               ? `${localInfo.real_name} (${localInfo.username})`
                               : "—"}
+                          </span>
+                        </div>
+                      </>
+                    ) : isRemote ? (
+                      <>
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-gray-500">
+                            {t("remote_desktop.status", "连接状态")}
+                          </span>
+                          <span className={`text-sm font-medium ${remoteIsConnected ? "text-[#34C759]" : "text-gray-400"}`}>
+                            {remoteIsConnected
+                              ? t("remote_desktop.online", "在线")
+                              : t("remote_desktop.offline", "离线")}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-gray-500">
+                            {t("remote_desktop.terminal_count", "终端数量")}
+                          </span>
+                          <span className="text-sm text-gray-700 dark:text-gray-300">
+                            {remoteTerminals.length}
                           </span>
                         </div>
                       </>
@@ -1711,8 +1864,8 @@ export function ServerDetail() {
                 {/* Device pairing card — shown for local terminal (right side of grid) */}
                 {isLocal && <PairingCard />}
 
-                {/* Proxy card — macOS Settings style grouped list (hidden for local terminal) */}
-                {!isLocal && (
+                {/* Proxy card — macOS Settings style grouped list (hidden for local terminal and remote) */}
+                {!isLocal && !isRemote && (
                 <div className="bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-[16px] overflow-hidden border border-gray-200/80 dark:border-white/[0.06] flex flex-col">
                   {/* Header */}
                   <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100 dark:border-white/[0.06]">
@@ -1921,7 +2074,8 @@ export function ServerDetail() {
                 )}
               </div>
 
-              {/* Triggers panel — full width */}
+              {/* Triggers panel — full width (hidden for remote) */}
+              {!isRemote && (
               <div className="bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-[16px] border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
                 <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -1944,9 +2098,10 @@ export function ServerDetail() {
                   <TriggerList serverId={displayServer.id} />
                 </div>
               </div>
+              )}
 
               {/* Port forwarding panel — full width (PF-6) */}
-              {!isLocal && (
+              {!isLocal && !isRemote && (
               <div className="bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-[16px] border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
                 <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -2106,6 +2261,17 @@ export function ServerDetail() {
             )}
           </div>
         ))}
+
+        {/* Remote desktop terminal view */}
+        {isRemote && remotePairingId && remoteActiveTerminal !== null && (
+          <div className="flex-1 min-h-0 h-full">
+            <RemoteTerminalView
+              pairingId={remotePairingId}
+              terminalId={remoteActiveTerminal}
+              terminalName={remoteTerminals.find((t) => t.terminal_id === remoteActiveTerminal)?.name || `Terminal #${remoteActiveTerminal}`}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
