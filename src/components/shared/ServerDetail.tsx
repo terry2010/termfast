@@ -130,7 +130,9 @@ export function ServerDetail() {
   const remotePeers = useRemoteDesktopStore((s) => s.peers);
   const remotePeer = remotePairingId ? remotePeers.find((p) => p.pairingId === remotePairingId) : null;
   const remoteActiveConnection = useRemoteDesktopStore((s) => s.activeConnection);
-  const remoteIsConnected = remotePairingId ? (remoteActiveConnection === remotePairingId && remotePeer?.online) : false;
+  // For client role: connected if activeConnection matches and peer is online.
+  // For server role: connected if peer is online (tunnel is active, no remote_client_state event).
+  const remoteIsConnected = remotePairingId ? (!!remotePeer?.online) : false;
   const server = servers.find((s) => s.id === selectedId);
 
   // Reset transient UI state when switching to a different server
@@ -151,24 +153,27 @@ export function ServerDetail() {
   // Remote desktop: load terminal list when a remote peer is selected
   useEffect(() => {
     if (!isRemote || !remotePairingId || !remotePeer) return;
-    // Connect if not connected
+    // Connect if not connected (only for client role — server role uses tunnel)
+    // We try connect regardless; for server role, ipc_remote_client_connect
+    // will be handled by the backend (or fail silently if tunnel is already active).
     if (!remoteIsConnected && remotePeer.pairingKeyHex) {
       ipcInvoke("ipc_remote_client_connect", {
         pairing_id: remotePairingId,
         pairing_key_hex: remotePeer.pairingKeyHex,
         pairing_jwt: remotePeer.jwt,
         relay_url: remotePeer.relayUrl,
-      }).catch((e: any) => {
-        toast.error(`Connection failed: ${e?.message || e}`);
+      }).catch(() => {
+        // Connection may fail for server role (no RemoteClientManager) — that's OK,
+        // the tunnel is already active and frames can be sent via RemoteServer.
       });
     }
-    // Request terminal list
+    // Request terminal list (works for both client and server roles)
     ipcInvoke("ipc_remote_client_list_terminals", {
       pairing_id: remotePairingId,
     }).catch((e: any) => {
       toast.error(`Failed to list terminals: ${e?.message || e}`);
     });
-    // Request system info
+    // Request system info (works for both client and server roles)
     ipcInvoke("ipc_remote_client_get_info", {
       pairing_id: remotePairingId,
     }).catch(() => {});

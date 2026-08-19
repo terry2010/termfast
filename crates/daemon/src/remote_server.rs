@@ -133,6 +133,10 @@ pub type DesktopPairCallback = Box<
         + Sync,
 >;
 
+/// Callback for forwarding received frames to the frontend.
+/// Same signature as RemoteClientManager's FrameCallback.
+pub type ServerFrameCallback = Arc<dyn Fn(&str, u8, u32, &[u8]) + Send + Sync>;
+
 /// Broadcast a LIST_CHANGED NOTIFY frame to all active tunnels.
 /// Uses try_send (non-blocking) since this is called from sync callbacks.
 /// Mobile clients receiving this frame should re-send LIST_REQUEST.
@@ -181,6 +185,10 @@ pub struct RemoteServer {
     /// Active tunnel connections: pairing_id → async_tx (for pushing frames to mobile).
     /// Used to broadcast LIST_CHANGED notifications when terminals are created/closed.
     active_tunnels: Arc<StdMutex<HashMap<String, mpsc::Sender<Frame>>>>,
+    /// Callback for forwarding received frames to the frontend (set by desktop app).
+    /// Used when server desktop initiates requests (LIST, INFO, etc.) and receives
+    /// responses from the client desktop — these need to be forwarded to the frontend.
+    frame_callback: Arc<std::sync::Mutex<Option<ServerFrameCallback>>>,
 }
 
 impl RemoteServer {
@@ -220,6 +228,7 @@ impl RemoteServer {
             file_upload_callback: Arc::new(std::sync::Mutex::new(None)),
             desktop_pair_callback: Arc::new(std::sync::Mutex::new(None)),
             active_tunnels,
+            frame_callback: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -238,6 +247,13 @@ impl RemoteServer {
         *self.desktop_pair_callback.lock().unwrap() = Some(callback);
     }
 
+    /// Set the frame callback (called when a frame is received from the peer
+    /// that needs to be forwarded to the frontend, e.g. LIST_RESPONSE, INFO_RESPONSE,
+    /// OUTPUT, HISTORY, OK).
+    pub fn set_frame_callback(&self, callback: ServerFrameCallback) {
+        *self.frame_callback.lock().unwrap() = Some(callback);
+    }
+
     /// Add a pairing (called when pairing completes).
     pub fn add_pairing(&self, pairing_id: String, key: [u8; 32]) {
         self.auth_keys.write().unwrap().insert(pairing_id, key);
@@ -253,6 +269,31 @@ impl RemoteServer {
     /// Get pairing key for a pairing_id (returns None if not paired/revoked).
     pub fn get_pairing_key(&self, pairing_id: &str) -> Option<[u8; 32]> {
         self.auth_keys.read().unwrap().get(pairing_id).copied()
+    }
+
+    /// Send a frame to the peer (client) for a given pairing_id.
+    /// Used by the server-side desktop to proactively send frames
+    /// (INFO_REQUEST, NEW_TERMINAL, CLOSE_TERMINAL, etc.) to the client
+    /// desktop over the existing tunnel connection.
+    ///
+    /// The frame is queued via the active_tunnels async_tx channel,
+    /// which the tunnel loop picks up and encrypts + sends.
+    pub async fn send_frame_to_peer(&self, pairing_id: &str, frame: Frame) -> Result<(), String> {
+        let tx = {
+            let tunnels = self.active_tunnels.lock().unwrap();
+            tunnels.get(pairing_id).cloned()
+        };
+        match tx {
+            Some(tx) => {
+                tx.send(frame).await.map_err(|e| format!("async send: {}", e))
+            }
+            None => Err(format!("no active tunnel for pairing_id={}", pairing_id)),
+        }
+    }
+
+    /// Check if a tunnel is active (peer is connected) for a given pairing_id.
+    pub fn is_tunnel_active(&self, pairing_id: &str) -> bool {
+        self.active_tunnels.lock().unwrap().contains_key(pairing_id)
     }
 
     /// Resolve u32 terminal_id → session_id (for frame processing).
@@ -572,6 +613,20 @@ impl RemoteServer {
                 // HELLO after initial exchange — protocol violation
                 tracing::warn!("HELLO received after initial exchange — protocol violation");
                 (Some(Frame::error("hello_already_done")), false)
+            }
+            // Response frames from the peer desktop (when this desktop is the
+            // initiator). Forward them to the frontend via frame_callback.
+            remote_frame::LIST_RESPONSE
+            | remote_frame::INFO_RESPONSE
+            | remote_frame::OUTPUT
+            | remote_frame::HISTORY
+            | remote_frame::OK
+            | remote_frame::ERROR
+            | remote_frame::NOTIFY => {
+                if let Some(ref cb) = *self.frame_callback.lock().unwrap() {
+                    cb(pairing_id, frame.frame_type, frame.terminal_id, &frame.payload);
+                }
+                (None, false)
             }
             _ => {
                 tracing::warn!("unknown frame type 0x{:02X}", frame.frame_type);

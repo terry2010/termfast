@@ -360,6 +360,25 @@ async fn run_client_once(
                                 break;
                             }
                         };
+                        // Handle server-initiated frames (INFO_REQUEST, NEW_TERMINAL, CLOSE_TERMINAL)
+                        // These are frames where the server desktop asks the client desktop for info
+                        // or to create/close terminals. The client handles them locally and replies.
+                        let reply_frame = handle_server_initiated_frame(&frame);
+                        if let Some(reply) = reply_frame {
+                            // Send the reply back to the server
+                            let encrypted_reply = match send_cipher.encrypt(&reply.serialize()) {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    tracing::warn!("remote_client: encrypt reply error: {}", e);
+                                    break;
+                                }
+                            };
+                            if let Err(e) = ws_write.send(WsMessage::Binary(encrypted_reply)).await {
+                                tracing::warn!("remote_client: send reply error: {}", e);
+                                break;
+                            }
+                        }
+                        // Forward frame to frontend (for OUTPUT, HISTORY, LIST_RESPONSE, etc.)
                         frame_cb(&config.pairing_id, frame.frame_type, frame.terminal_id, &frame.payload);
                     }
                     Some(Ok(WsMessage::Close(_))) => break,
@@ -410,6 +429,52 @@ async fn run_client_once(
 
     state_cb(&config.pairing_id, false);
     Ok(())
+}
+
+/// Handle server-initiated frames (INFO_REQUEST, NEW_TERMINAL, CLOSE_TERMINAL).
+/// When the server desktop wants to view the client desktop's info or create/close
+/// terminals on the client, it sends these frames to the client. The client handles
+/// them locally and returns a reply frame to send back.
+///
+/// Returns None for frames that don't need a local reply (OUTPUT, HISTORY, etc.).
+fn handle_server_initiated_frame(frame: &Frame) -> Option<Frame> {
+    match frame.frame_type {
+        remote_frame::INFO_REQUEST => {
+            tracing::info!("remote_client: INFO_REQUEST received, replying with local system info");
+            let default_shell = termfast_core::local::shell::detect_default_shell();
+            let shell_name = std::path::Path::new(&default_shell)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&default_shell)
+                .to_string();
+            let os = os_info::get();
+            let os_version = os.version().to_string();
+            let os_arch = std::env::consts::ARCH.to_string();
+            let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
+            let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".to_string());
+            let real_name = whoami::realname().unwrap_or_else(|_| username.clone());
+            let os_name = match os.os_type() {
+                os_info::Type::Macos => "macOS".to_string(),
+                os_info::Type::Windows => "Windows".to_string(),
+                os_info::Type::Linux => "Linux".to_string(),
+                other => format!("{:?}", other),
+            };
+            let available_shells = termfast_core::local::shell::list_available_shells();
+            let json = serde_json::json!({
+                "default_shell": default_shell,
+                "shell_name": shell_name,
+                "os_name": os_name,
+                "os_version": os_version,
+                "os_arch": os_arch,
+                "hostname": hostname,
+                "username": username,
+                "real_name": real_name,
+                "available_shells": available_shells,
+            });
+            Some(Frame::info_response(&json.to_string()))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

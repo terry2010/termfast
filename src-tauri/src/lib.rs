@@ -477,7 +477,7 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
         let tm = app_state.tunnel_manager.lock().await.clone();
         tm
     };
-    if let Some(tm) = tm_for_cb {
+    if let Some(ref tm) = tm_for_cb {
         tm.remote_server().set_desktop_pair_callback(Box::new(
             move |msg: termfast_daemon::remote_server::DesktopPairMessage| {
                 let pairing_id = msg.pairing_id.clone();
@@ -571,6 +571,26 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
                     }));
                     Ok(())
                 })
+            },
+        ));
+    }
+
+    // Set frame_callback on RemoteServer — forwards received frames to the frontend.
+    // This is used when the server desktop initiates requests (LIST, INFO, etc.)
+    // and receives responses from the client desktop.
+    if let Some(ref tm) = tm_for_cb {
+        let handle_for_frame = handle.clone();
+        tm.remote_server().set_frame_callback(Arc::new(
+            move |pid: &str, frame_type: u8, terminal_id: u32, payload: &[u8]| {
+                use tauri::Emitter;
+                use base64::Engine;
+                let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                let _ = handle_for_frame.emit("remote_client_frame", serde_json::json!({
+                    "pairing_id": pid,
+                    "frame_type": frame_type,
+                    "terminal_id": terminal_id,
+                    "data": data_b64,
+                }));
             },
         ));
     }
@@ -3099,9 +3119,20 @@ async fn ipc_remote_client_list_terminals(
     pairing_id: String,
 ) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
-    let rcm_guard = state.remote_client_manager.lock().await;
-    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::List).await?;
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::list_request()).await?;
+        } else {
+            return Err("tunnel manager not initialized".to_string());
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::List).await?;
+    }
     // Terminal list is returned asynchronously via remote_client_frame event (LIST_RESPONSE frame).
     // Return empty list here; frontend updates via event listener.
     Ok(serde_json::json!({ "terminals": [] }))
@@ -3115,9 +3146,20 @@ async fn ipc_remote_client_subscribe(
     terminal_id: u32,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let rcm_guard = state.remote_client_manager.lock().await;
-    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Subscribe(terminal_id)).await
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::subscribe(terminal_id)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Subscribe(terminal_id)).await
+    }
 }
 
 /// Send input to a remote terminal.
@@ -3129,9 +3171,20 @@ async fn ipc_remote_client_send_input(
     data: Vec<u8>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let rcm_guard = state.remote_client_manager.lock().await;
-    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Input(terminal_id, data)).await
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::input(terminal_id, &data)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Input(terminal_id, data)).await
+    }
 }
 
 /// Send resize to a remote terminal.
@@ -3144,9 +3197,20 @@ async fn ipc_remote_client_send_resize(
     rows: u16,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let rcm_guard = state.remote_client_manager.lock().await;
-    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Resize(terminal_id, cols, rows)).await
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::resize(terminal_id, cols, rows)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Resize(terminal_id, cols, rows)).await
+    }
 }
 
 /// Unsubscribe from a terminal on the remote desktop.
@@ -3157,21 +3221,56 @@ async fn ipc_remote_client_unsubscribe(
     terminal_id: u32,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let rcm_guard = state.remote_client_manager.lock().await;
-    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Unsubscribe(terminal_id)).await
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::unsubscribe(terminal_id)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::Unsubscribe(terminal_id)).await
+    }
+}
+
+/// Helper: determine peer_role for a pairing_id from pairing_store.
+fn get_peer_role(pairing_id: &str) -> String {
+    pairing_store::load()
+        .iter()
+        .find(|p| p.pairing_id == pairing_id)
+        .map(|p| p.peer_role.clone())
+        .unwrap_or_default()
 }
 
 /// Request system info from remote desktop (INFO_REQUEST).
+/// Works for both client role (via RemoteClientManager) and server role
+/// (via RemoteServer.send_frame_to_peer).
 #[tauri::command]
 async fn ipc_remote_client_get_info(
     app: tauri::AppHandle,
     pairing_id: String,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let rcm_guard = state.remote_client_manager.lock().await;
-    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::InfoRequest).await
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        // Server role: send via RemoteServer's active tunnel
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::info_request()).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        // Client role: send via RemoteClientManager
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::InfoRequest).await
+    }
 }
 
 /// Create a new terminal on the remote desktop (NEW_TERMINAL).
@@ -3183,9 +3282,20 @@ async fn ipc_remote_client_new_terminal(
     name: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let rcm_guard = state.remote_client_manager.lock().await;
-    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::NewTerminal { shell, name }).await
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::new_terminal(shell.as_deref(), name.as_deref())).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::NewTerminal { shell, name }).await
+    }
 }
 
 /// Close a terminal on the remote desktop (CLOSE_TERMINAL).
@@ -3196,9 +3306,20 @@ async fn ipc_remote_client_close_terminal(
     terminal_id: u32,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let rcm_guard = state.remote_client_manager.lock().await;
-    let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::CloseTerminal(terminal_id)).await
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::close_terminal(terminal_id)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::CloseTerminal(terminal_id)).await
+    }
 }
 
 /// Get this desktop's device_id (hostname-username-xxxx format).
