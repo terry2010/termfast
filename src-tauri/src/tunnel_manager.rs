@@ -95,6 +95,14 @@ impl DesktopTunnelManager {
         &self.remote_server
     }
 
+    /// Check if a tunnel task is active for the given pairing_id.
+    /// Returns true if the tunnel task exists (connected or reconnecting to relay).
+    /// Used by ipc_list_desktop_pairings to report online status for server-role
+    /// desktop pairings (this desktop is the server, peer is the client).
+    pub async fn is_tunnel_active(&self, pairing_id: &str) -> bool {
+        self.tunnels.lock().await.contains_key(pairing_id)
+    }
+
     /// Stop all tunnels (on app shutdown).
     pub async fn stop_all(&self) {
         let mut tunnels = self.tunnels.lock().await;
