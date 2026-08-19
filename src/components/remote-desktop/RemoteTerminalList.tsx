@@ -1,11 +1,14 @@
 // RemoteTerminalList — shows terminals on a remote desktop (FP-7)
 // After connecting to a remote desktop, lists terminals and allows subscribing.
 
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useRemoteDesktopStore } from "@/stores/remoteDesktopStore";
-import { ipcInvoke } from "@/hooks/useIpc";
+import { ipcInvoke, useTauriEvent } from "@/hooks/useIpc";
 import { toast } from "sonner";
+
+// Frame type constants (match remote_frame.rs)
+const LIST_RESPONSE = 0x02;
 
 interface RemoteTerminalListProps {
   pairingId: string;
@@ -28,15 +31,42 @@ export function RemoteTerminalList({
     (s) => s.setActiveConnection
   );
 
+  // Listen for LIST_RESPONSE frames from the remote desktop
+  const pairingIdRef = useRef(pairingId);
+  pairingIdRef.current = pairingId;
+  useTauriEvent<{
+    pairing_id: string;
+    frame_type: number;
+    terminal_id: number;
+    data: string;
+  }>("remote_client_frame", (event) => {
+    if (event.pairing_id !== pairingIdRef.current) return;
+    if (event.frame_type === LIST_RESPONSE) {
+      try {
+        const parsed = JSON.parse(atob(event.data));
+        const terms = (parsed.terminals || []).map((t: any) => ({
+          terminal_id: t.terminal_id,
+          name: t.name || `Terminal #${t.terminal_id}`,
+        }));
+        setTerminals(terms);
+        setLoading(false);
+      } catch {
+        // ignore parse errors
+      }
+    }
+  });
+
   useEffect(() => {
     setActiveConnection(pairingId);
     setLoading(true);
+    setTerminals([]);
     ipcInvoke<{ terminals: TerminalInfo[] }>("ipc_remote_client_list_terminals", {
       pairing_id: pairingId,
     })
-      .then((data) => {
-        setTerminals(data.terminals || []);
-        setLoading(false);
+      .then(() => {
+        // Terminal list arrives via remote_client_frame event (LIST_RESPONSE)
+        // Set a timeout to stop loading if no response
+        setTimeout(() => setLoading(false), 5000);
       })
       .catch((e) => {
         toast.error(`Failed to list terminals: ${e?.message || e}`);

@@ -3087,11 +3087,14 @@ async fn ipc_remote_client_disconnect(
 async fn ipc_remote_client_list_terminals(
     app: tauri::AppHandle,
     pairing_id: String,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
     let rcm_guard = state.remote_client_manager.lock().await;
     let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::List).await
+    rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::List).await?;
+    // Terminal list is returned asynchronously via remote_client_frame event (LIST_RESPONSE frame).
+    // Return empty list here; frontend updates via event listener.
+    Ok(serde_json::json!({ "terminals": [] }))
 }
 
 /// Subscribe to a terminal on the remote desktop.
