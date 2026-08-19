@@ -465,6 +465,7 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
                 let role = msg.role.clone();
                 let pairing_jwt = msg.pairing_jwt.clone();
                 let handle = handle_for_cb.clone();
+                let handle_for_emit = handle_for_cb.clone();
                 let rcm = rcm_for_cb.clone();
                 Box::pin(async move {
                     let (pairing_key, stored_key_hex) = if !peer_ecdh_public_key.is_empty() {
@@ -538,6 +539,13 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
                     } else {
                         return Err(format!("unknown role: {}", role));
                     }
+                    // Notify frontend that a new desktop pairing was added
+                    use tauri::Emitter;
+                    let _ = handle_for_emit.emit("desktop_pair_added", serde_json::json!({
+                        "pairing_id": pairing_id,
+                        "peer_name": peer_name,
+                        "role": role,
+                    }));
                     Ok(())
                 })
             },

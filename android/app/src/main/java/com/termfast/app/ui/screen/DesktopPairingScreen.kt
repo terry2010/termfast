@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -21,6 +22,8 @@ import com.termfast.app.data.PairingApi
 import com.termfast.app.data.PairingStore
 import com.termfast.app.data.RemoteTunnelConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -42,9 +45,14 @@ fun DesktopPairingScreen(navController: NavController) {
     var token by remember { mutableStateOf<String?>(null) }
     var desktopPairings by remember { mutableStateOf<List<PairingApi.DeviceInfo>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
-    var scannedA by remember { mutableStateOf<DesktopQrInfo?>(null) }
-    var scannedB by remember { mutableStateOf<DesktopQrInfo?>(null) }
-    var scanTarget by remember { mutableStateOf<String?>(null) } // "A" or "B"
+    // Store QR results as JSON strings (rememberSaveable survives navigation)
+    var scannedAJson by rememberSaveable { mutableStateOf<String?>(null) }
+    var scannedBJson by rememberSaveable { mutableStateOf<String?>(null) }
+    var scanTarget by rememberSaveable { mutableStateOf<String?>(null) } // "A" or "B"
+
+    // Parse JSON back to DesktopQrInfo for display
+    val scannedA = scannedAJson?.let { parseDesktopQr(it) }
+    val scannedB = scannedBJson?.let { parseDesktopQr(it) }
 
     // Load token and existing desktop pairings
     LaunchedEffect(Unit) {
@@ -67,13 +75,16 @@ fun DesktopPairingScreen(navController: NavController) {
         savedStateHandle?.getStateFlow<String?>("qr_result", null)?.collect { content ->
             if (content != null) {
                 savedStateHandle.remove<String>("qr_result")
+                android.util.Log.d("DesktopPairing", "QR result received, scanTarget=$scanTarget, content=${content.take(80)}")
                 if (scanTarget == null) {
                     // No scan in progress — ignore stale result
+                    android.util.Log.w("DesktopPairing", "scanTarget is null, ignoring QR result")
                     return@collect
                 }
                 try {
                     val json = JSONObject(content)
                     val type = json.optString("type", "")
+                    android.util.Log.d("DesktopPairing", "QR type=$type")
                     // Accept both "desktop_pair" (dedicated) and "dual" (unified QR)
                     if (type != "desktop_pair" && type != "dual") {
                         Toast.makeText(context, "这不是桌面互联二维码，请让桌面端进入配对模式", Toast.LENGTH_LONG).show()
@@ -86,9 +97,10 @@ fun DesktopPairingScreen(navController: NavController) {
                         ecdhPublicKey = json.getString("ecdh_public_key"),
                         userId = json.optLong("user_id", 0),
                     )
+                    val infoJson = JSONObject(content).toString()
                     when (scanTarget) {
-                        "A" -> scannedA = info
-                        "B" -> scannedB = info
+                        "A" -> scannedAJson = infoJson
+                        "B" -> scannedBJson = infoJson
                     }
                     scanTarget = null
                 } catch (e: Exception) {
@@ -145,7 +157,7 @@ fun DesktopPairingScreen(navController: NavController) {
                         Text("ID: ${info.deviceId}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("ECDH: ${info.ecdhPublicKey.take(16)}...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
-                        TextButton(onClick = { scannedA = null }) { Text("清除") }
+                        TextButton(onClick = { scannedAJson = null }) { Text("清除") }
                     } ?: run {
                         Button(
                             onClick = {
@@ -172,7 +184,7 @@ fun DesktopPairingScreen(navController: NavController) {
                         Text("ID: ${info.deviceId}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("ECDH: ${info.ecdhPublicKey.take(16)}...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
-                        TextButton(onClick = { scannedB = null }) { Text("清除") }
+                        TextButton(onClick = { scannedBJson = null }) { Text("清除") }
                     } ?: run {
                         Button(
                             onClick = {
@@ -210,8 +222,8 @@ fun DesktopPairingScreen(navController: NavController) {
                             desktopB = b,
                             onLoading = { loading = it },
                             onSuccess = {
-                                scannedA = null
-                                scannedB = null
+                                scannedAJson = null
+                                scannedBJson = null
                                 scope.launch {
                                     try {
                                         desktopPairings = withContext(Dispatchers.IO) {
@@ -278,6 +290,24 @@ fun DesktopPairingScreen(navController: NavController) {
 // === SECTION 2: Desktop pairing coordination logic ===
 
 /**
+ * Parse a saved QR JSON string back into DesktopQrInfo.
+ * Used to restore scanned device info after navigation (rememberSaveable).
+ */
+private fun parseDesktopQr(jsonStr: String): DesktopQrInfo? {
+    return try {
+        val json = JSONObject(jsonStr)
+        DesktopQrInfo(
+            deviceId = json.getString("device_id"),
+            deviceName = json.optString("device_name", json.optString("desktop_name", json.getString("device_id"))),
+            ecdhPublicKey = json.getString("ecdh_public_key"),
+            userId = json.optLong("user_id", 0),
+        )
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/**
  * Perform desktop-to-desktop pairing via ECDH key agreement.
  *
  * Flow:
@@ -299,6 +329,8 @@ private suspend fun performDesktopPairing(
     onSuccess: () -> Unit,
 ) {
     onLoading(true)
+    var sentA = false
+    var sentB = false
     try {
         // 1. Create pairing via backend (with ECDH public keys, no pairing_key_hex needed)
         val result = withContext(Dispatchers.IO) {
@@ -338,18 +370,25 @@ private suspend fun performDesktopPairing(
             return
         }
 
-        // 4. Send DESKTOP_PAIR to Desktop B (server) with A's ECDH public key
-        val sentB = sendDesktopPairFrame(
-            pairingB, pairingId, "",
-            desktopA.ecdhPublicKey,  // peer_ecdh_public_key: A's key for B
-            "", pairingJwt, desktopA.deviceName, "server",
-        )
-        // 5. Send DESKTOP_PAIR to Desktop A (client) with B's ECDH public key
-        val sentA = sendDesktopPairFrame(
-            pairingA, pairingId, "",
-            desktopB.ecdhPublicKey,  // peer_ecdh_public_key: B's key for A
-            pairingJwt, "", desktopB.deviceName, "client",
-        )
+        // 4. Send DESKTOP_PAIR to both desktops in parallel
+        coroutineScope {
+            val sentBDeferred = async {
+                sendDesktopPairFrame(
+                    pairingB, pairingId, "",
+                    desktopA.ecdhPublicKey,  // peer_ecdh_public_key: A's key for B
+                    "", pairingJwt, desktopA.deviceName, "server",
+                )
+            }
+            val sentADeferred = async {
+                sendDesktopPairFrame(
+                    pairingA, pairingId, "",
+                    desktopB.ecdhPublicKey,  // peer_ecdh_public_key: B's key for A
+                    pairingJwt, "", desktopB.deviceName, "client",
+                )
+            }
+            sentB = sentBDeferred.await()
+            sentA = sentADeferred.await()
+        }
 
         if (sentA && sentB) {
             Toast.makeText(context, "互联指令已发送", Toast.LENGTH_SHORT).show()

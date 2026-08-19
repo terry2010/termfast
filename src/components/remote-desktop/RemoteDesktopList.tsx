@@ -38,6 +38,14 @@ export function RemoteDesktopList() {
   );
   useTauriEvent<RemoteClientStateEvent>("remote_client_state", handleStateEvent);
 
+  // Listen for new desktop pairing added (from DESKTOP_PAIR frame)
+  useTauriEvent<{ pairing_id: string; peer_name: string; role: string }>(
+    "desktop_pair_added",
+    useCallback(() => {
+      loadPeers();
+    }, [loadPeers])
+  );
+
   const handleConnect = useCallback(
     async (pairingId: string) => {
       const peer = peers.find((p) => p.pairingId === pairingId);
