@@ -744,6 +744,9 @@ impl TerminalManager {
         } else {
             tracing::warn!("[TerminalManager] local_event_tx is None — Opened event for session {} dropped (subscribe_local_events not called?)", session_id);
         }
+        // Forward terminal:opened to the GUI so the frontend can auto-create a tab
+        // (needed when a terminal is opened by RemoteServer on behalf of a remote desktop)
+        forward_terminal_opened(&self.forwarder, &session_id);
 
         // initial_output is empty — local PTY output (prompt, MOTD) is streamed
         // asynchronously via the binary forwarder, unlike SSH's synchronous read.
@@ -1458,6 +1461,23 @@ fn forward_terminal_closed(
         if let Some(ref f) = *fwd {
             f(
                 "terminal:closed",
+                serde_json::json!({ "sessionId": session_id }),
+            );
+        }
+    }
+}
+
+/// Forward terminal:opened event to the GUI.
+/// Used when a terminal is opened by a remote desktop (via RemoteServer),
+/// so the local frontend can auto-create a tab for it.
+fn forward_terminal_opened(
+    forwarder: &Arc<std::sync::Mutex<Option<EventForwarder>>>,
+    session_id: &str,
+) {
+    if let Ok(fwd) = forwarder.lock() {
+        if let Some(ref f) = *fwd {
+            f(
+                "terminal:opened",
                 serde_json::json!({ "sessionId": session_id }),
             );
         }

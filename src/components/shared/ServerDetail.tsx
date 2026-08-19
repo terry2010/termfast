@@ -366,6 +366,42 @@ export function ServerDetail() {
     };
   }, []);
 
+  // Listen for terminal:opened events — auto-create a tab for "My Computer"
+  // when a terminal is opened by a remote desktop (via RemoteServer).
+  // Skip if the tab already exists (opened by handleOpenLocalTerminal).
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    listen<{ sessionId: string }>("terminal:opened", (event) => {
+      const sid = event.payload.sessionId;
+      const serverId = "__local__";
+      const store = useServerStore.getState();
+      const tabs = store.terminal_tabs_by_server[serverId] || [];
+      const tabId: Tab = `term:${sid}`;
+      // Skip if tab already exists (opened by handleOpenLocalTerminal)
+      if (tabs.some((t) => t.id === tabId)) return;
+      // Auto-create tab for this terminal
+      const defaultLabel = `${t("server.terminal")} ${tabs.length + 1}`;
+      addTerminalTab(serverId, {
+        id: tabId,
+        sessionId: sid,
+        label: defaultLabel,
+        defaultLabel,
+        initialOutput: "",
+        disconnected: false,
+        agentStatus: null,
+      });
+      // Only auto-select if "My Computer" is currently active
+      if (selectedId === "local") {
+        setActiveTerminalTab(serverId, tabId);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [selectedId, t, addTerminalTab, setActiveTerminalTab]);
+
   // Open a new terminal session and add a tab for it.
   // Flow: click → connecting → SSH connect + terminal open → tab created → connected
   // Requests are queued and processed serially to avoid SSH channel conflicts.

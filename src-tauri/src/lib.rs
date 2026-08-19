@@ -2842,7 +2842,7 @@ async fn ipc_restore_tunnels(
 async fn import_desktop_pairings_from_backend(
     app: &tauri::AppHandle,
     jwt: &str,
-    local_ids: &std::collections::HashSet<String>,
+    _local_ids: &std::collections::HashSet<String>,
 ) -> usize {
     let device_id = get_this_device_id();
     let resp = match pairing::list_devices(jwt, &device_id).await {
@@ -2865,8 +2865,19 @@ async fn import_desktop_pairings_from_backend(
             continue;
         }
         let pid = d.get("pairing_id").and_then(|v| v.as_str()).unwrap_or("");
-        if local_ids.contains(pid) {
-            continue; // Already in local store, skip
+        // Check if local store already has this pairing with correct desktop type + role.
+        // If it's stored as "mobile" (from phone pairing flow) but backend says "desktop",
+        // we need to update it with the correct type and role.
+        let local_pairing = pairing_store::load().iter().find(|p| p.pairing_id == pid).cloned();
+        if let Some(ref lp) = local_pairing {
+            if lp.pairing_type == "desktop" && !lp.peer_role.is_empty() {
+                continue; // Already correctly stored as desktop with role
+            }
+            // Fall through: local pairing exists but has wrong type/role — will be updated below
+            tracing::info!(
+                "import_desktop_pairings: updating local pairing {} from type={} role={} to desktop",
+                pid, lp.pairing_type, lp.peer_role
+            );
         }
 
         let desktop_device_id = d.get("desktop_device_id").and_then(|v| v.as_str()).unwrap_or("");
