@@ -218,7 +218,6 @@ async fn run_client_once(
         .header("Sec-WebSocket-Version", "13")
         .header("Sec-WebSocket-Key", generate_key())
         .header("Authorization", &auth_header)
-        .header("Sec-WebSocket-Protocol", "binary")
         .body(())
         .map_err(|e| format!("build request: {}", e))?;
 
