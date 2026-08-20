@@ -30,16 +30,19 @@ const BAIDU_APP_NAME: &str = "云盘备份";
 /// Security: rejects paths containing `..` to prevent path traversal outside
 /// the app sandbox.
 fn baidu_path(path: &str) -> String {
-    if path.starts_with("/apps/") {
-        return path.to_string();
-    }
-    // Security: reject path traversal attempts
+    // Security: reject/sanitize path traversal attempts for ALL paths
+    // (including /apps/ prefix, which previously bypassed the check).
     if path.contains("..") {
-        tracing::warn!("baidu_path: rejecting path with .. traversal: {:?}", path);
-        // Sanitize by removing .. components — fall through with cleaned path
+        tracing::warn!("baidu_path: sanitizing path with .. traversal: {:?}", path);
         let cleaned: String = path.split('/').filter(|c| *c != "..").collect::<Vec<_>>().join("/");
+        if cleaned.starts_with("/apps/") {
+            return cleaned;
+        }
         let p = if cleaned.starts_with('/') { cleaned } else { format!("/{}", cleaned) };
         return format!("/apps/{}{}", BAIDU_APP_NAME, p);
+    }
+    if path.starts_with("/apps/") {
+        return path.to_string();
     }
     // Ensure path starts with /
     let p = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };

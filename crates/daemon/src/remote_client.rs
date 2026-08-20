@@ -525,11 +525,8 @@ async fn handle_server_initiated_frame(
                 .unwrap_or(&default_shell)
                 .to_string();
             let os = os_info::get();
-            let os_version = os.version().to_string();
             let os_arch = std::env::consts::ARCH.to_string();
-            let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
             let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".to_string());
-            let real_name = whoami::realname().unwrap_or_else(|_| username.clone());
             let os_name = match os.os_type() {
                 os_info::Type::Macos => "macOS".to_string(),
                 os_info::Type::Windows => "Windows".to_string(),
@@ -537,15 +534,15 @@ async fn handle_server_initiated_frame(
                 other => format!("{:?}", other),
             };
             let available_shells = termfast_core::local::shell::list_available_shells();
+            // Security: omit username, real_name, and full default_shell path
+            // (consistent with remote_server.rs handle_info_request).
             let json = serde_json::json!({
-                "default_shell": default_shell,
+                "default_shell": shell_name,
                 "shell_name": shell_name,
                 "os_name": os_name,
-                "os_version": os_version,
+                "os_version": os.version().to_string(),
                 "os_arch": os_arch,
                 "hostname": hostname,
-                "username": username,
-                "real_name": real_name,
                 "available_shells": available_shells,
             });
             Some(Frame::info_response(&json.to_string()))
@@ -554,7 +551,7 @@ async fn handle_server_initiated_frame(
             tracing::info!("remote_client: LIST_REQUEST received from pairing {}", pairing_id);
             let infos = terminal_manager.list_session_infos().await;
             let list: Vec<serde_json::Value> = {
-                let mut map = id_map.lock().unwrap();
+                let mut map = id_map.lock().unwrap_or_else(|e| e.into_inner());
                 infos.iter().map(|info| {
                     let handle = map.get_or_assign(&info.session_id);
                     serde_json::json!({
@@ -583,6 +580,11 @@ async fn handle_server_initiated_frame(
                 Err(_) => return Some(Frame::error("invalid_json")),
             };
             let shell = req.get("shell").and_then(|v| v.as_str()).map(|s| s.to_string());
+            // Security: validate shell against whitelist to prevent arbitrary
+            // command execution from remote paired devices (same as remote_server.rs).
+            let shell = shell.and_then(|s| {
+                termfast_core::local::shell::validate_shell(&s)
+            });
             let name = req.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
 
             match terminal_manager.open_local(80, 24, shell, None).await {
@@ -596,7 +598,7 @@ async fn handle_server_initiated_frame(
                     // when the local frontend opens a terminal via IPC).
                     terminal_manager.forward_opened(&session_id, None);
                     let handle = {
-                        let mut map = id_map.lock().unwrap();
+                        let mut map = id_map.lock().unwrap_or_else(|e| e.into_inner());
                         map.get_or_assign(&session_id)
                     };
                     let json = serde_json::json!({
@@ -614,13 +616,13 @@ async fn handle_server_initiated_frame(
         remote_frame::CLOSE_TERMINAL => {
             let terminal_id = frame.terminal_id;
             let session_id = {
-                let map = id_map.lock().unwrap();
+                let map = id_map.lock().unwrap_or_else(|e| e.into_inner());
                 map.lookup_sid(terminal_id).cloned()
             };
             if let Some(sid) = session_id {
                 match terminal_manager.close_remote(&sid).await {
                     Ok(()) => {
-                        id_map.lock().unwrap().remove(&sid);
+                        id_map.lock().unwrap_or_else(|e| e.into_inner()).remove(&sid);
                         Some(Frame::ok(terminal_id))
                     }
                     Err(e) => {
@@ -635,7 +637,7 @@ async fn handle_server_initiated_frame(
         remote_frame::SUBSCRIBE => {
             let terminal_id = frame.terminal_id;
             let session_id = {
-                let map = id_map.lock().unwrap();
+                let map = id_map.lock().unwrap_or_else(|e| e.into_inner());
                 map.lookup_sid(terminal_id).cloned()
             };
             let session_id = match session_id {
@@ -671,7 +673,7 @@ async fn handle_server_initiated_frame(
         remote_frame::UNSUBSCRIBE => {
             let terminal_id = frame.terminal_id;
             let session_id = {
-                let map = id_map.lock().unwrap();
+                let map = id_map.lock().unwrap_or_else(|e| e.into_inner());
                 map.lookup_sid(terminal_id).cloned()
             };
             if let Some(sid) = session_id {
@@ -682,7 +684,7 @@ async fn handle_server_initiated_frame(
         remote_frame::INPUT => {
             let terminal_id = frame.terminal_id;
             let session_id = {
-                let map = id_map.lock().unwrap();
+                let map = id_map.lock().unwrap_or_else(|e| e.into_inner());
                 map.lookup_sid(terminal_id).cloned()
             };
             if let Some(sid) = session_id {
@@ -695,7 +697,7 @@ async fn handle_server_initiated_frame(
         remote_frame::RESIZE => {
             let terminal_id = frame.terminal_id;
             let session_id = {
-                let map = id_map.lock().unwrap();
+                let map = id_map.lock().unwrap_or_else(|e| e.into_inner());
                 map.lookup_sid(terminal_id).cloned()
             };
             if let Some(sid) = session_id {

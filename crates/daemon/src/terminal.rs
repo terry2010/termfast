@@ -131,12 +131,12 @@ impl TerminalManager {
 
     /// Set a callback invoked when a terminal closes (for RemoteServer IdMap cleanup).
     pub fn set_on_closed_callback(&self, callback: OnClosedCallback) {
-        *self.on_closed_callback.lock().unwrap() = Some(callback);
+        *self.on_closed_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Set a callback invoked when a terminal is opened (for broadcasting LIST_CHANGED).
     pub fn set_on_opened_callback(&self, callback: OnOpenedCallback) {
-        *self.on_opened_callback.lock().unwrap() = Some(callback);
+        *self.on_opened_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Invoke the on_opened callback (if set).
@@ -1178,7 +1178,7 @@ impl TerminalManager {
         let pairing_id = subscriber.pairing_id.clone();
 
         // Lock remote_subscribers for atomic operation
-        let mut subs = session.remote_subscribers.lock().unwrap();
+        let mut subs = session.remote_subscribers.lock().unwrap_or_else(|e| e.into_inner());
 
         // 1. Idempotent: remove old subscriber with same pairing_id
         subs.retain(|s| s.pairing_id != pairing_id);
@@ -1221,7 +1221,7 @@ impl TerminalManager {
     pub async fn unsubscribe_remote(&self, session_id: &str, pairing_id: &str) {
         let sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(session_id) {
-            let mut subs = session.remote_subscribers.lock().unwrap();
+            let mut subs = session.remote_subscribers.lock().unwrap_or_else(|e| e.into_inner());
             subs.retain(|s| s.pairing_id != pairing_id);
         }
     }
@@ -1236,7 +1236,7 @@ impl TerminalManager {
     pub async fn broadcast_to_subscribers(&self, session_id: &str, frame: crate::remote_frame::Frame) {
         let sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(session_id) {
-            let subs = session.remote_subscribers.lock().unwrap();
+            let subs = session.remote_subscribers.lock().unwrap_or_else(|e| e.into_inner());
             for sub in subs.iter() {
                 let _ = sub.sender.try_send(frame.clone());
             }
@@ -1248,7 +1248,7 @@ impl TerminalManager {
     pub async fn remove_remote_subscribers(&self, pairing_id: &str) {
         let sessions = self.sessions.lock().await;
         for session in sessions.values() {
-            let mut subs = session.remote_subscribers.lock().unwrap();
+            let mut subs = session.remote_subscribers.lock().unwrap_or_else(|e| e.into_inner());
             subs.retain(|s| s.pairing_id != pairing_id);
         }
     }
@@ -1256,14 +1256,14 @@ impl TerminalManager {
     /// Get current PTY size for a session.
     pub async fn get_pty_size(&self, session_id: &str) -> Option<(u16, u16)> {
         let sessions = self.sessions.lock().await;
-        sessions.get(session_id).map(|s| *s.pty_size.lock().unwrap())
+        sessions.get(session_id).map(|s| *s.pty_size.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Update PTY size (called on resize).
     pub async fn update_pty_size(&self, session_id: &str, cols: u16, rows: u16) {
         let sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(session_id) {
-            *session.pty_size.lock().unwrap() = (cols, rows);
+            *session.pty_size.lock().unwrap_or_else(|e| e.into_inner()) = (cols, rows);
         }
     }
 
@@ -1663,7 +1663,7 @@ mod tests {
                 panic!("timeout waiting for echo output");
             }
             {
-                let buf = output_buffer.lock().unwrap();
+                let buf = output_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 if buf.windows("test_daemon_local".len())
                     .any(|w| w == b"test_daemon_local")
                 {
@@ -1794,12 +1794,12 @@ mod tests {
         let remote_subs = Arc::new(StdMutex::new(Vec::new()));
 
         let (sub, mut rx) = make_subscriber("pair1", 42, 256);
-        remote_subs.lock().unwrap().push(sub);
+        remote_subs.lock().unwrap_or_else(|e| e.into_inner()).push(sub);
 
         forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"hello world", false);
 
         // GUI should receive the data
-        assert_eq!(&*gui_output.lock().unwrap(), b"hello world");
+        assert_eq!(&*gui_output.lock().unwrap_or_else(|e| e.into_inner()), b"hello world");
 
         // Ring buffer should have the data
         assert_eq!(history.read().unwrap().total_bytes(), 11);
@@ -1829,12 +1829,12 @@ mod tests {
         let remote_subs = Arc::new(StdMutex::new(Vec::new()));
 
         let (sub, mut rx) = make_subscriber("pair1", 1, 256);
-        remote_subs.lock().unwrap().push(sub);
+        remote_subs.lock().unwrap_or_else(|e| e.into_inner()).push(sub);
 
         forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"error msg", true);
 
         // GUI should receive stderr data
-        assert_eq!(&*gui_output.lock().unwrap(), b"[ERR]error msg");
+        assert_eq!(&*gui_output.lock().unwrap_or_else(|e| e.into_inner()), b"[ERR]error msg");
 
         // Ring buffer should be empty (stderr not stored)
         assert_eq!(history.read().unwrap().total_bytes(), 0);
@@ -1854,7 +1854,7 @@ mod tests {
 
         // Channel capacity = 1, so second send will fail → mark lagging
         let (sub, mut rx) = make_subscriber("pair1", 5, 1);
-        remote_subs.lock().unwrap().push(sub);
+        remote_subs.lock().unwrap_or_else(|e| e.into_inner()).push(sub);
 
         // First call: sends one OUTPUT frame (fills channel, capacity now 0)
         forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"first", false);
@@ -1865,7 +1865,7 @@ mod tests {
         // Ring buffer should have both "first" and "second"
         assert_eq!(history.read().unwrap().total_bytes(), 11);
         // Subscriber should be marked lagging
-        assert!(remote_subs.lock().unwrap()[0].lagging, "subscriber should be marked lagging");
+        assert!(remote_subs.lock().unwrap_or_else(|e| e.into_inner())[0].lagging, "subscriber should be marked lagging");
 
         // Now drain the channel so capacity > 0 (simulates subscriber consuming)
         let frame1 = rx.recv().await.unwrap();
@@ -1893,7 +1893,7 @@ mod tests {
         }
         assert!(got_history, "should receive HISTORY frame during lagging recovery");
         // After recovery, lagging should be false
-        assert!(!remote_subs.lock().unwrap()[0].lagging, "subscriber should not be lagging after recovery");
+        assert!(!remote_subs.lock().unwrap_or_else(|e| e.into_inner())[0].lagging, "subscriber should not be lagging after recovery");
     }
 
     /// Test forward_and_broadcast: large data (> MAX_OUTPUT_DATA) is chunked into multiple OUTPUT frames
@@ -1905,7 +1905,7 @@ mod tests {
         let remote_subs = Arc::new(StdMutex::new(Vec::new()));
 
         let (sub, mut rx) = make_subscriber("pair1", 7, 256);
-        remote_subs.lock().unwrap().push(sub);
+        remote_subs.lock().unwrap_or_else(|e| e.into_inner()).push(sub);
 
         // Create data larger than MAX_OUTPUT_DATA (65536)
         let large_data = vec![0xABu8; crate::remote_frame::MAX_OUTPUT_DATA + 1000];
@@ -1954,7 +1954,7 @@ mod tests {
         forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"no subs", false);
 
         // GUI should receive data
-        assert_eq!(&*gui_output.lock().unwrap(), b"no subs");
+        assert_eq!(&*gui_output.lock().unwrap_or_else(|e| e.into_inner()), b"no subs");
         // Ring buffer should have data
         assert_eq!(history.read().unwrap().total_bytes(), 7);
     }
@@ -1969,8 +1969,8 @@ mod tests {
 
         let (sub1, mut rx1) = make_subscriber("pair1", 1, 256);
         let (sub2, mut rx2) = make_subscriber("pair2", 2, 256);
-        remote_subs.lock().unwrap().push(sub1);
-        remote_subs.lock().unwrap().push(sub2);
+        remote_subs.lock().unwrap_or_else(|e| e.into_inner()).push(sub1);
+        remote_subs.lock().unwrap_or_else(|e| e.into_inner()).push(sub2);
 
         forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"broadcast", false);
 
@@ -2000,7 +2000,7 @@ mod tests {
         let remote_subs = Arc::new(StdMutex::new(Vec::new()));
 
         let (sub, rx) = make_subscriber("pair1", 9, 256);
-        remote_subs.lock().unwrap().push(sub);
+        remote_subs.lock().unwrap_or_else(|e| e.into_inner()).push(sub);
         // Drop receiver → sender will get Closed error on try_send
         drop(rx);
 
@@ -2008,7 +2008,7 @@ mod tests {
         forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"closed chan", false);
 
         // GUI and ring buffer should still have data
-        assert_eq!(&*gui_output.lock().unwrap(), b"closed chan");
+        assert_eq!(&*gui_output.lock().unwrap_or_else(|e| e.into_inner()), b"closed chan");
         assert_eq!(history.read().unwrap().total_bytes(), 11); // "closed chan" = 11 bytes
     }
 
@@ -2021,14 +2021,14 @@ mod tests {
         let remote_subs = Arc::new(StdMutex::new(Vec::new()));
 
         let (sub, mut rx) = make_subscriber("pair1", 3, 1);
-        remote_subs.lock().unwrap().push(sub);
+        remote_subs.lock().unwrap_or_else(|e| e.into_inner()).push(sub);
 
         // Fill ring buffer with known data, force lagging, then recover
         forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"AAA", false);
         // Don't drain — channel full
         forward_and_broadcast(&forwarder, &history, &remote_subs, "sid1", b"BBB", false);
         // Now lagging, ring buffer has "AAA"+"BBB" = 6 bytes
-        assert!(remote_subs.lock().unwrap()[0].lagging);
+        assert!(remote_subs.lock().unwrap_or_else(|e| e.into_inner())[0].lagging);
 
         // Drain channel
         let _ = rx.recv().await.unwrap();
@@ -2073,6 +2073,6 @@ mod tests {
         assert!(got_is_last, "should receive HISTORY with is_last=1");
         // Ring buffer had "AAA"+"BBB"+"CCC" = 9 bytes
         assert_eq!(history_data, b"AAABBBCCC", "HISTORY snapshot should contain all ring buffer data");
-        assert!(!remote_subs.lock().unwrap()[0].lagging, "should not be lagging after recovery");
+        assert!(!remote_subs.lock().unwrap_or_else(|e| e.into_inner())[0].lagging, "should not be lagging after recovery");
     }
 }

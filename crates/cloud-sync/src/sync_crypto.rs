@@ -65,21 +65,22 @@ pub fn password_hash(password: &str) -> [u8; 32] {
     // HMAC-SHA256 with a fixed application key prevents rainbow table attacks
     // even if the hash file is leaked. The key is not a secret (it's in the
     // binary), but it forces attackers to build custom rainbow tables.
+    // Standard HMAC uses 64-byte block size for SHA-256.
     let key = b"TermFast::password_hash::v1";
-    let mut hmac = <sha2::Sha256 as Digest>::new();
     // Manual HMAC implementation (avoid adding hmac crate dependency)
     let mut inner = sha2::Sha256::new();
-    let mut ipad = [0x36u8; 32];
-    let mut opad = [0x5cu8; 32];
-    for i in 0..key.len().min(32) {
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for i in 0..key.len().min(64) {
         ipad[i] ^= key[i];
         opad[i] ^= key[i];
     }
     inner.update(ipad);
     inner.update(normalized.as_bytes());
     let inner_result = inner.finalize();
+    let mut hmac = sha2::Sha256::new();
     hmac.update(opad);
-    hmac.update(&inner_result);
+    hmac.update(inner_result);
     let result = hmac.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&result);

@@ -2463,8 +2463,10 @@ async fn upload_file_to_cloud(
         // Allow files under home dir or temp dir
         let is_allowed = canonical.starts_with(&home) || canonical.starts_with(&temp);
         // Reject sensitive paths even within home dir
-        let ssh_dir = home.join(".ssh");
-        let is_sensitive = canonical.starts_with(&ssh_dir);
+        let sensitive_subdirs = [".ssh", ".aws", ".kube", ".gnupg", ".docker", ".config", ".netrc"];
+        let is_sensitive = sensitive_subdirs.iter().any(|sub| {
+            canonical.starts_with(home.join(sub))
+        }) || canonical == home.join(".netrc");
         if !is_allowed {
             return Err(format!(
                 "access denied: path {:?} is outside allowed directories",
@@ -2473,7 +2475,7 @@ async fn upload_file_to_cloud(
         }
         if is_sensitive {
             return Err(format!(
-                "access denied: path {:?} is in a sensitive directory (.ssh)",
+                "access denied: path {:?} is in a sensitive directory",
                 canonical
             ));
         }
