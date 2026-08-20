@@ -110,13 +110,26 @@ impl NetworkMonitor {
     }
 }
 
-/// Check network connectivity by attempting a TCP connection to 1.1.1.1:53
+/// Check network connectivity by attempting TCP connections to multiple DNS servers.
+/// Returns true if ANY target is reachable, to avoid false negatives on networks
+/// that block specific IPs (e.g. 1.1.1.1 in some enterprise/region networks).
 async fn check_connectivity() -> bool {
     use tokio::net::TcpStream;
     use tokio::time::Duration;
-    tokio::time::timeout(Duration::from_secs(3), TcpStream::connect("1.1.1.1:53"))
-        .await
-        .is_ok_and(|r| r.is_ok())
+    const TARGETS: &[&str] = &[
+        "1.1.1.1:53",
+        "8.8.8.8:53",
+        "223.5.5.5:53",
+    ];
+    for target in TARGETS {
+        let ok = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(*target))
+            .await
+            .is_ok_and(|r| r.is_ok());
+        if ok {
+            return true;
+        }
+    }
+    false
 }
 
 impl Default for NetworkMonitor {

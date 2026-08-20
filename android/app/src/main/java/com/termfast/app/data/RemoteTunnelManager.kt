@@ -256,6 +256,8 @@ class RemoteTunnelManager(
         }
         _protocolReady.value = false
         _transportState.value = TunnelState.Disconnected
+        // Zeroize the pairing key to prevent residual secret in memory
+        java.util.Arrays.fill(pairingKey, 0)
     }
 
     /**

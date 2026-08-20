@@ -19,7 +19,7 @@ import kotlinx.serialization.builtins.ListSerializer
 object RustRepository {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    private val _events = MutableSharedFlow<RustEvent>(extraBufferCapacity = 64)
+    private val _events = MutableSharedFlow<RustEvent>(extraBufferCapacity = 256)
     val events: SharedFlow<RustEvent> = _events.asSharedFlow()
 
     /** In-memory log buffer, retained across screen navigations. */
@@ -30,7 +30,9 @@ object RustRepository {
         override fun onEvent(eventJson: String) {
             try {
                 val parsed = json.decodeFromString<RustEvent>(eventJson)
-                _events.tryEmit(parsed)
+                if (!_events.tryEmit(parsed)) {
+                    Log.w("RustRepository", "Event buffer full, dropped: ${parsed::class.simpleName}")
+                }
                 if (parsed is RustEvent.LogEntry) {
                     val current = _logBuffer.value
                     _logBuffer.value = (listOf(parsed) + current).take(500)

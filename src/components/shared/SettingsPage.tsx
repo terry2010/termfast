@@ -2086,7 +2086,14 @@ function QRCodeDisplay({ content }: { content: string }) {
         });
       })
       .catch(() => {
-        setSvg(`<text x="10" y="100" font-size="10">${content}</text>`);
+        // Security: escape HTML to prevent SVG XSS via crafted content
+        const escaped = content
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+        setSvg(`<text x="10" y="100" font-size="10">${escaped}</text>`);
       });
   }, [content]);
   return <div dangerouslySetInnerHTML={{ __html: svg || "<div>Generating...</div>" }} />;

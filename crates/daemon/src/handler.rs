@@ -4396,6 +4396,8 @@ fn token_file_path(_state: &DaemonState) -> std::path::PathBuf {
 }
 
 /// Load cloud tokens, preferring SQLCipher DB over legacy file.
+/// If a legacy plaintext file exists, loads it, migrates to DB, then deletes
+/// the plaintext file to avoid leaving sensitive tokens on disk.
 fn load_cloud_tokens(state: &DaemonState) -> termfast_cloud_sync::token_store::TokenStoreData {
     let storage = state.runtime_state.storage();
     if let Ok(Some(json)) = storage.get_cloud_token("_all") {
@@ -4403,16 +4405,24 @@ fn load_cloud_tokens(state: &DaemonState) -> termfast_cloud_sync::token_store::T
             return data;
         }
     }
-    // Fallback to file
+    // Fallback to legacy plaintext file, then migrate to DB and delete file.
     let path = token_file_path(state);
     if termfast_cloud_sync::token_store::token_file_exists(&path) {
-        termfast_cloud_sync::token_store::load_tokens(&path).unwrap_or_default()
-    } else {
-        termfast_cloud_sync::token_store::TokenStoreData::default()
+        let data = termfast_cloud_sync::token_store::load_tokens(&path).unwrap_or_default();
+        // Migrate to DB so we don't need the plaintext file anymore.
+        if let Ok(json) = serde_json::to_string(&data) {
+            let _ = storage.upsert_cloud_token("_all", &json);
+        }
+        // Delete the plaintext file — tokens are now in the encrypted DB.
+        let _ = std::fs::remove_file(&path);
+        tracing::info!("migrated legacy plaintext token file to encrypted DB, deleted {:?}", path);
+        return data;
     }
+    termfast_cloud_sync::token_store::TokenStoreData::default()
 }
 
-/// Save cloud tokens to SQLCipher DB (and legacy file as backup).
+/// Save cloud tokens to SQLCipher DB only.
+/// Previously also wrote a plaintext backup file — removed for security.
 fn save_cloud_tokens(
     state: &DaemonState,
     data: &termfast_cloud_sync::token_store::TokenStoreData,
@@ -4423,9 +4433,6 @@ fn save_cloud_tokens(
     storage
         .upsert_cloud_token("_all", &json)
         .map_err(|e| IpcError::new(ErrorCode::Internal, format!("save token to DB: {}", e)))?;
-    // Also save to file for backward compatibility
-    let path = token_file_path(state);
-    let _ = termfast_cloud_sync::token_store::save_tokens(&path, data);
     Ok(())
 }
 
@@ -4956,9 +4963,31 @@ async fn handle_cloud_sync_download(
     }
 
     // Apply the downloaded config
-    let export_data: termfast_core::migration::FullExportData =
+    let mut export_data: termfast_core::migration::FullExportData =
         serde_json::from_value(payload.config.clone())
             .map_err(|e| IpcError::new(ErrorCode::Internal, format!("parse config: {}", e)))?;
+    // Security: strip triggers from cloud-sync downloads to prevent
+    // arbitrary command execution via malicious cloud files.
+    // Triggers can execute local shell commands; allowing them to be
+    // overwritten from the cloud would let an attacker who compromises
+    // the cloud storage run arbitrary commands on the victim's machine.
+    if !export_data.config.local_triggers.is_empty() {
+        tracing::warn!(
+            "cloud sync: stripping {} local_triggers from download (security: no remote trigger sync)",
+            export_data.config.local_triggers.len()
+        );
+        export_data.config.local_triggers.clear();
+    }
+    for s in &mut export_data.config.servers {
+        if !s.triggers.is_empty() {
+            tracing::warn!(
+                "cloud sync: stripping {} triggers from server {} (security: no remote trigger sync)",
+                s.triggers.len(),
+                s.id
+            );
+            s.triggers.clear();
+        }
+    }
     apply_full_export(state, &export_data).await?;
 
     // Save file_upload_config for FILE_REQUEST (local terminal file transfer)
@@ -5667,8 +5696,9 @@ async fn handle_cloud_sync_wait_callback(
 
     tracing::info!("cloud_sync: exchanging code for token, provider={}", pending.provider);
 
-    // Verify state for Baidu (CSRF protection)
-    if pending.provider == "baidu" && !pending.state.is_empty() && result.state != pending.state {
+    // Verify state for all providers (CSRF protection)
+    // state is generated for every OAuth flow; if it's non-empty, it must match.
+    if !pending.state.is_empty() && result.state != pending.state {
         return Err(IpcError::new(ErrorCode::Internal, "OAuth state mismatch (CSRF?)"));
     }
 

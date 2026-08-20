@@ -405,7 +405,7 @@ export function ServerDetail() {
   // Skip if the tab already exists (opened by handleOpenLocalTerminal).
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
-    listen<{ sessionId: string }>("terminal:opened", (event) => {
+    listen<{ sessionId: string; name?: string }>("terminal:opened", (event) => {
       const sid = event.payload.sessionId;
       const serverId = "__local__";
       const store = useServerStore.getState();
@@ -414,13 +414,20 @@ export function ServerDetail() {
       // Skip if tab already exists (opened by handleOpenLocalTerminal)
       if (tabs.some((t) => t.id === tabId)) return;
       // Auto-create tab for this terminal
-      // Generate a unique "终端 N" label: start with count+1, increment until no duplicate
-      const existingLabels = new Set(tabs.map((tab) => tab.label));
-      let n = tabs.length + 1;
-      let defaultLabel = `${t("server.terminal")} ${n}`;
-      while (existingLabels.has(defaultLabel)) {
-        n++;
+      // Use the name from daemon if provided (passed via terminal:opened event);
+      // otherwise generate a unique "终端 N" label as fallback.
+      const daemonName = event.payload.name;
+      let defaultLabel: string;
+      if (daemonName) {
+        defaultLabel = daemonName;
+      } else {
+        const existingLabels = new Set(tabs.map((tab) => tab.label));
+        let n = tabs.length + 1;
         defaultLabel = `${t("server.terminal")} ${n}`;
+        while (existingLabels.has(defaultLabel)) {
+          n++;
+          defaultLabel = `${t("server.terminal")} ${n}`;
+        }
       }
       addTerminalTab(serverId, {
         id: tabId,
@@ -431,8 +438,6 @@ export function ServerDetail() {
         disconnected: false,
         agentStatus: null,
       });
-      // Sync the frontend-generated name to daemon so mobile LIST_RESPONSE shows the same name
-      ipcInvoke<void>("set_session_name", { session_id: sid, name: defaultLabel }).catch(() => {});
       // Attach a binary output Channel so terminal output is received
       attachTerminalChannel(sid).catch((e) => {
         console.error("Failed to attach terminal channel:", e);

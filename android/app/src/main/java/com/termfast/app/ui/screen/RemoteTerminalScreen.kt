@@ -205,25 +205,25 @@ fun RemoteTerminalScreen(
     }
 
     // Timeout: if still connecting after 30 seconds with no session, show error.
-    // This handles cases where the tunnel is stuck in WaitingForPeer (desktop
-    // offline) or HELLO exchange silently fails after a network reconnection.
-    LaunchedEffect(tunnelManager, connecting, sessionId, errorMsg) {
-        if (connecting && sessionId == null && errorMsg == null) {
+    // Uses a stable key (tunnelManager + sessionId) so the 30s timer is NOT reset
+    // when `connecting` flips during network state changes.
+    LaunchedEffect(tunnelManager, sessionId) {
+        if (sessionId == null) {
             kotlinx.coroutines.delay(30_000)
-            // Still connecting after 30s — show timeout error
-            if (connecting && sessionId == null && errorMsg == null) {
+            // Still no session after 30s — show timeout error (if not already set)
+            if (sessionId == null && errorMsg == null) {
                 errorMsg = "连接超时，请重试"
                 connecting = false
             }
         }
     }
 
-    // On screen exit: send UNSUBSCRIBE and stop the tunnel to prevent
-    // background reconnection loops that kick the desktop's peer.
+    // On screen exit: send UNSUBSCRIBE to stop receiving OUTPUT for this terminal.
+    // Do NOT stop the tunnel here — TerminalsScreen manages tunnel lifecycle via
+    // stopTunnelsNotIn(). Stopping here would race with TerminalsScreen's start().
     DisposableEffect(tunnelManager) {
         onDispose {
             tunnelManager.sendUnsubscribe(terminalId)
-            tunnelManager.stop()
         }
     }
 

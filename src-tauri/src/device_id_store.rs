@@ -54,24 +54,9 @@ fn device_id_path() -> PathBuf {
 
 /// Generate a 4-digit random hexadecimal suffix (e.g. "a3f7").
 fn generate_suffix() -> String {
-    // Use system random via std::time + simple hash for portability.
-    // For security purposes, this only needs to be unique, not cryptographically random.
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    // Mix with process ID for extra entropy
-    let pid = std::process::id() as u128;
-    let mixed = (nanos ^ (pid << 32)).wrapping_mul(0x517cc1b727220a95);
-    let hex = format!("{:x}", mixed);
-    // Take last 4 chars
-    let len = hex.len();
-    if len >= 4 {
-        hex[len - 4..].to_string()
-    } else {
-        format!("{:0>4}", hex)
-    }
+    // Use cryptographically secure RNG to avoid collisions on fast/concurrent calls.
+    let val: u16 = rand::random();
+    format!("{:04x}", val)
 }
 
 /// Get the persisted device_id suffix, generating and persisting it on first call.
@@ -203,10 +188,8 @@ mod tests {
     #[test]
     fn test_generate_suffix_is_random() {
         let s1 = generate_suffix();
-        // Sleep a tiny bit to ensure different timestamp
-        std::thread::sleep(std::time::Duration::from_millis(1));
         let s2 = generate_suffix();
-        // Extremely unlikely to be the same
+        // With OsRng, collision probability is 1/65536 — extremely unlikely
         assert_ne!(s1, s2, "suffixes should differ: {} vs {}", s1, s2);
     }
 

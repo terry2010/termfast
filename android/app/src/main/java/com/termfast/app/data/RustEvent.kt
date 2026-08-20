@@ -129,6 +129,7 @@ sealed class RustEvent {
     @SerialName("RemoteTerminalOk")
     data class RemoteTerminalOk(
         val pairing_id: String,
+        /** Frame header terminal_id — always 0 for OK frames. The real terminal_id is in [payload] JSON. */
         val terminal_id: Int,
         val payload: String,
     ) : RustEvent()

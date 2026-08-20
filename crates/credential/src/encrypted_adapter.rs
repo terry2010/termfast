@@ -55,30 +55,22 @@ pub struct EncryptedFileCredentialStore {
 impl EncryptedFileCredentialStore {
     /// Open an encrypted credential store at the given path.
     /// If the file doesn't exist, starts in **pending** mode.
-    /// In pending mode, credentials are persisted to a plaintext JSON file
-    /// (`credentials.json` next to the encrypted file) so they survive app
-    /// restarts without requiring a master password.
+    /// In pending mode, credentials are held in memory only and are NOT
+    /// persisted to disk. They will be lost if the app exits before
+    /// `initialize()` is called with a master password.
     /// If the encrypted file exists, starts in locked state — call `unlock()`.
     pub fn open(path: PathBuf) -> Self {
         let plaintext_path = path.with_extension("json");
         let store = EncryptedCredentialStore::open(path);
         let pending = store.is_absent();
-        // In pending mode, load from plaintext fallback file if it exists.
+        // Pending mode: memory-only, no disk persistence.
         let initial_map = if pending {
-            if plaintext_path.exists() {
-                std::fs::read_to_string(&plaintext_path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default()
-            } else {
-                HashMap::new()
-            }
+            HashMap::new()
         } else {
             // Encrypted file exists — start locked (map loaded on unlock).
-            // Clean up any residual plaintext fallback file from a crash
-            // during initialize() (encrypted file was written but plaintext
-            // file wasn't deleted yet). The plaintext file contains sensitive
-            // credentials and should not linger on disk.
+            // Clean up any residual plaintext fallback file from a previous
+            // version that wrote plaintext in pending mode. The plaintext
+            // file contains sensitive credentials and should not linger.
             if plaintext_path.exists() {
                 tracing::warn!(
                     "found residual plaintext fallback file {:?}, removing (encrypted file exists)",
@@ -308,13 +300,9 @@ impl EncryptedFileCredentialStore {
             .as_ref()
             .ok_or_else(|| anyhow!("credential store is locked"))?;
         if inner.pending {
-            // Pending mode: persist to plaintext JSON file so credentials
-            // survive app restarts without a master password.
-            let plaintext_path = self.store.path().with_extension("json");
-            let json = serde_json::to_vec_pretty(map)?;
-            drop(inner);
-            // Crash-safe atomic write with fsync, 0600 permissions
-            termfast_core::fs::write_atomic(&plaintext_path, &json, true)?;
+            // Pending mode: memory-only, do NOT persist to disk.
+            // Credentials will be flushed to the encrypted file when
+            // initialize() is called with a master password.
             return Ok(());
         }
         let key = inner
@@ -602,9 +590,10 @@ mod tests {
         store.save("k1", "v1").unwrap();
         assert_eq!(store.load("k1").unwrap(), "v1");
 
-        // Encrypted file should NOT exist yet, but plaintext fallback should.
+        // Security: neither encrypted file nor plaintext fallback should exist.
+        // Pending mode is memory-only — no disk persistence.
         assert!(!path.exists());
-        assert!(plaintext_path.exists());
+        assert!(!plaintext_path.exists());
 
         // Initialize with password → pending credentials flushed to encrypted file.
         store.initialize("pw").unwrap();
@@ -612,7 +601,7 @@ mod tests {
         assert!(store.is_initialized());
         assert!(path.exists());
 
-        // Plaintext fallback should be deleted after initialize.
+        // No plaintext fallback should ever exist.
         assert!(!plaintext_path.exists());
 
         // Credentials survived the transition.
@@ -643,11 +632,12 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_mode_persists_to_plaintext_across_reopen() {
+    fn test_pending_mode_memory_only_across_reopen() {
         let dir = tempdir().unwrap();
         let path = store_path(dir.path());
 
         // Phase 1: pending mode (no master password), save credentials.
+        // Credentials are held in memory only — NOT persisted to disk.
         {
             let store = EncryptedFileCredentialStore::open(path.clone());
             assert!(store.is_pending());
@@ -655,12 +645,12 @@ mod tests {
             store.save("k2", "v2").unwrap();
         }
 
-        // Phase 2: reopen — should still be pending, credentials loaded from
-        // plaintext fallback file.
+        // Phase 2: reopen — still pending, but credentials are LOST because
+        // pending mode is memory-only (no plaintext fallback file).
         let store2 = EncryptedFileCredentialStore::open(path);
         assert!(store2.is_pending());
         assert!(store2.is_unlocked()); // pending counts as unlocked
-        assert_eq!(store2.load("k1").unwrap(), "v1");
-        assert_eq!(store2.load("k2").unwrap(), "v2");
+        assert!(store2.load("k1").is_err()); // credential not found
+        assert!(store2.load("k2").is_err()); // credential not found
     }
 }

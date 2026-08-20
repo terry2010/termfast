@@ -272,7 +272,20 @@ interface TerminalViewProps {
 
 // Module-level snapshot cache: key = serverId, value = serialized terminal
 // Preserved across unmount/remount (e.g. reconnect) so history isn't lost.
+// Bounded to MAX_SNAPSHOTS entries (LRU eviction) to prevent unbounded memory growth.
+const MAX_SNAPSHOTS = 8;
 const snapshotCache = new Map<string, string>();
+
+function setSnapshot(key: string, value: string): void {
+  if (snapshotCache.size >= MAX_SNAPSHOTS && !snapshotCache.has(key)) {
+    // Evict oldest entry (Map preserves insertion order)
+    const oldestKey = snapshotCache.keys().next().value;
+    if (oldestKey !== undefined) snapshotCache.delete(oldestKey);
+  }
+  // Re-insert to move to end (most recently used)
+  snapshotCache.delete(key);
+  snapshotCache.set(key, value);
+}
 
 // Module-level WebGL context counter — browsers limit ~16 concurrent contexts.
 // We only create a WebGL context if we're under the limit; otherwise DOM render.
@@ -1851,7 +1864,7 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
         try {
           const snapshot = serializeRef.current.serialize();
           if (snapshot && snapshot.length > 0) {
-            snapshotCache.set(serverId, snapshot);
+            setSnapshot(serverId, snapshot);
           }
         } catch { /* serialize failure is non-fatal */ }
       }

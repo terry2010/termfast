@@ -365,17 +365,19 @@ class SshVpnService : VpnService() {
         }
     }
 
+    @Synchronized
     private fun closeTunFd() {
-        // Use ParcelFileDescriptor.adoptFd to properly close the raw fd
-        if (tunFdRaw >= 0) {
+        // Atomically claim the raw fd to prevent double-close from concurrent callers
+        val fdToClose = tunFdRaw
+        tunFdRaw = -1
+        if (fdToClose >= 0) {
             try {
-                val pfd = ParcelFileDescriptor.adoptFd(tunFdRaw)
+                val pfd = ParcelFileDescriptor.adoptFd(fdToClose)
                 pfd.close()
                 Log.i(TAG, "TUN fd closed successfully")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to close tun fd via PFD", e)
             }
-            tunFdRaw = -1
         }
         tunFd?.close()
         tunFd = null

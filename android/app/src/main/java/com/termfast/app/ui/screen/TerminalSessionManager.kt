@@ -6,7 +6,7 @@ import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.connectbot.terminal.TerminalEmulator
@@ -24,7 +24,12 @@ object TerminalSessionManager {
     private val sessions = mutableMapOf<String, SessionState>()
     private var collectorStarted = false
     // Tunnel managers registered by pairingId — used for UNSUBSCRIBE on disconnect
-    val tunnelManagers = mutableMapOf<String, com.termfast.app.data.RemoteTunnelManager>()
+    private val tunnelManagers = mutableMapOf<String, com.termfast.app.data.RemoteTunnelManager>()
+    // Managed coroutine scope for global event collection and reconnection tasks.
+    // Replaces GlobalScope usage to prevent unbounded coroutine leaks.
+    private val managerScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default
+    )
 
     // Regex to strip ANSI escape codes:
     // - CSI: \x1b[?...letter (colors, cursor movement, private modes like ?2004h)
@@ -177,6 +182,20 @@ object TerminalSessionManager {
     @Synchronized
     fun getTunnelManager(pairingId: String): com.termfast.app.data.RemoteTunnelManager? =
         tunnelManagers[pairingId]
+
+    /**
+     * Stop and remove tunnel managers whose pairingId is NOT in [activePids].
+     * Called by TerminalsScreen when remote sessions are closed, to free
+     * WebSocket connections and FFI resources for pairings with no sessions.
+     */
+    @Synchronized
+    fun stopTunnelsNotIn(activePids: Set<String>) {
+        val toStop = tunnelManagers.keys.filter { it !in activePids }
+        for (pid in toStop) {
+            val tm = tunnelManagers.remove(pid)
+            tm?.stop()
+        }
+    }
 
     /**
      * Test-only: create a remote session with a pre-built emulator (for testing
@@ -360,6 +379,7 @@ object TerminalSessionManager {
         return sessions.values.any { it.serverId == serverId }
     }
 
+    @Synchronized
     fun disconnectSession(sessionId: String) {
         val session = sessions[sessionId]
         if (session != null && session.remotePairingId != null) {
@@ -379,6 +399,7 @@ object TerminalSessionManager {
      * For SSH: writes to the PTY via RustRepository.
      * For remote: sends INPUT frame via RemoteTunnelManager.
      */
+    @Synchronized
     fun writeToSession(sessionId: String, data: String) {
         val session = sessions[sessionId] ?: return
         if (session.remotePairingId != null) {
@@ -394,7 +415,7 @@ object TerminalSessionManager {
     fun reconnectSession(serverId: String, sessionId: String, onResult: (Boolean) -> Unit) {
         RustRepository.closeTerminal(sessionId)
         setConnectedBySession(sessionId, false)
-        GlobalScope.launch(Dispatchers.IO) {
+        managerScope.launch(Dispatchers.IO) {
             val status = RustRepository.getServerStatus(serverId)
             if (status.status != "connected") {
                 val ok = RustRepository.connectServer(serverId)
@@ -416,7 +437,7 @@ object TerminalSessionManager {
     fun startGlobalCollector() {
         if (collectorStarted) return
         collectorStarted = true
-        GlobalScope.launch {
+        managerScope.launch {
             RustRepository.events.collect { event ->
                 handleEvent(event)
             }
@@ -494,6 +515,7 @@ object TerminalSessionManager {
     /**
      * Handle RemoteTerminalOutput: decode base64 data and write to emulator.
      */
+    @Synchronized
     private fun handleRemoteOutput(event: RustEvent.RemoteTerminalOutput) {
         val session = sessions.values.firstOrNull {
             it.remotePairingId == event.pairing_id &&
@@ -508,6 +530,7 @@ object TerminalSessionManager {
     /**
      * Handle RemoteTerminalHistory: on seq=0, clear screen; write data to emulator.
      */
+    @Synchronized
     private fun handleRemoteHistory(event: RustEvent.RemoteTerminalHistory) {
         val session = sessions.values.firstOrNull {
             it.remotePairingId == event.pairing_id &&
@@ -527,6 +550,7 @@ object TerminalSessionManager {
     /**
      * Handle RemoteTerminalResize: resize emulator to desktop PTY dimensions.
      */
+    @Synchronized
     private fun handleRemoteResize(event: RustEvent.RemoteTerminalResize) {
         android.util.Log.d("termfast", "handleRemoteResize: ${event.cols}x${event.rows} pairing=${event.pairing_id}")
         val session = sessions.values.firstOrNull {
@@ -542,6 +566,7 @@ object TerminalSessionManager {
      * Handle RemoteTerminalError: mark all remote sessions for this pairing
      * as disconnected.
      */
+    @Synchronized
     private fun handleRemoteError(event: RustEvent.RemoteTerminalError) {
         sessions.values.filter {
             it.remotePairingId == event.pairing_id

@@ -153,8 +153,8 @@ impl TerminalManager {
     /// Called when a terminal is opened by a remote desktop (via NEW_TERMINAL),
     /// so the local frontend can auto-create a tab for it.
     /// NOT called for locally-initiated terminal opens (those create tabs via IPC return).
-    pub fn forward_opened(&self, session_id: &str) {
-        forward_terminal_opened(&self.forwarder, session_id);
+    pub fn forward_opened(&self, session_id: &str, name: Option<&str>) {
+        forward_terminal_opened(&self.forwarder, session_id, name);
     }
 
     /// Invoke the on_closed callback (if set) for a session_id.
@@ -1518,16 +1518,20 @@ fn forward_terminal_remove_tab(
 /// Forward terminal:opened event to the GUI.
 /// Used when a terminal is opened by a remote desktop (via RemoteServer),
 /// so the local frontend can auto-create a tab for it.
+/// Includes the session name so the frontend uses the daemon-assigned name
+/// instead of generating its own (which could differ).
 fn forward_terminal_opened(
     forwarder: &Arc<std::sync::Mutex<Option<EventForwarder>>>,
     session_id: &str,
+    name: Option<&str>,
 ) {
     if let Ok(fwd) = forwarder.lock() {
         if let Some(ref f) = *fwd {
-            f(
-                "terminal:opened",
-                serde_json::json!({ "sessionId": session_id }),
-            );
+            let payload = match name {
+                Some(n) => serde_json::json!({ "sessionId": session_id, "name": n }),
+                None => serde_json::json!({ "sessionId": session_id }),
+            };
+            f("terminal:opened", payload);
         }
     }
 }
@@ -1535,28 +1539,29 @@ fn forward_terminal_opened(
 /// Strip ANSI escape sequences from a string (for preview in terminal list).
 /// Removes CSI sequences (ESC [ ... letter), OSC sequences (ESC ] ... BEL/ST),
 /// and simple ESC sequences (ESC + single char).
+/// Operates on chars (not bytes) to preserve multi-byte UTF-8 characters.
 fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
+    let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
+    while i < chars.len() {
+        if chars[i] == '\u{1b}' {
             // ESC sequence
             i += 1;
-            if i >= bytes.len() { break; }
-            if bytes[i] == b'[' {
+            if i >= chars.len() { break; }
+            if chars[i] == '[' {
                 // CSI: ESC [ ... 0x40-0x7E
                 i += 1;
-                while i < bytes.len() && !(bytes[i] >= 0x40 && bytes[i] <= 0x7e) {
+                while i < chars.len() && !((chars[i] as u32) >= 0x40 && (chars[i] as u32) <= 0x7e) {
                     i += 1;
                 }
-                if i < bytes.len() { i += 1; } // skip final byte
-            } else if bytes[i] == b']' {
+                if i < chars.len() { i += 1; } // skip final byte
+            } else if chars[i] == ']' {
                 // OSC: ESC ] ... BEL (0x07) or ST (ESC \)
                 i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == 0x07 { i += 1; break; }
-                    if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i+1] == b'\\' { i += 2; break; }
+                while i < chars.len() {
+                    if chars[i] == '\u{07}' { i += 1; break; }
+                    if chars[i] == '\u{1b}' && i + 1 < chars.len() && chars[i+1] == '\\' { i += 2; break; }
                     i += 1;
                 }
             } else {
@@ -1564,7 +1569,7 @@ fn strip_ansi(s: &str) -> String {
                 i += 1;
             }
         } else {
-            result.push(bytes[i] as char);
+            result.push(chars[i]);
             i += 1;
         }
     }

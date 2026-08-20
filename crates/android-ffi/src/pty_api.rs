@@ -176,11 +176,27 @@ pub fn write_session(session_id: &str, data: &[u8]) -> Result<(), String> {
 }
 
 /// Close a PTY session.
+/// Sends Close command, then waits briefly for the reader task to gracefully
+/// close the SSH channel before aborting. This prevents leaking server-side
+/// SSH channels when sessions are rapidly opened/closed.
 pub fn close_session(session_id: &str) {
     let session = sessions().lock().unwrap().remove(session_id);
     if let Some(session) = session {
         let _ = session.command_tx.send(PtyCommand::Close);
-        session.reader_task.abort();
+        // Give the reader task time to process Close and shut down the channel.
+        // Use abort_handle so we can abort after timeout without moving the JoinHandle.
+        let mut reader_task = session.reader_task;
+        let abort_handle = reader_task.abort_handle();
+        let handle = tokio::runtime::Handle::current();
+        let completed = handle.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                &mut reader_task,
+            ).await.is_ok()
+        });
+        if !completed {
+            abort_handle.abort();
+        }
         log_to_kotlin("info", &format!("PTY session closed: {}", session_id));
     }
 }

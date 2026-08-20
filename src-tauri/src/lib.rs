@@ -67,9 +67,21 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("termfast_app=debug".parse().unwrap())
-                .add_directive("termfast_daemon=debug".parse().unwrap())
-                .add_directive("termfast_core=debug".parse().unwrap())
+                // Security: use info level in release builds to avoid
+                // leaking sensitive operation details in logs.
+                // Debug builds retain debug level for development.
+                .add_directive({
+                    let lvl = if cfg!(debug_assertions) { "debug" } else { "info" };
+                    format!("termfast_app={}", lvl).parse().unwrap()
+                })
+                .add_directive({
+                    let lvl = if cfg!(debug_assertions) { "debug" } else { "info" };
+                    format!("termfast_daemon={}", lvl).parse().unwrap()
+                })
+                .add_directive({
+                    let lvl = if cfg!(debug_assertions) { "debug" } else { "info" };
+                    format!("termfast_core={}", lvl).parse().unwrap()
+                })
                 .add_directive("keychain=debug".parse().unwrap()),
         )
         .with_writer(file)

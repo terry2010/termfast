@@ -70,10 +70,11 @@ impl DesktopTunnelManager {
         let tunnels = self.tunnels.clone();
 
         let handle = tokio::spawn(async move {
-            let client = TunnelClient::new(config, remote_server);
+            let client = TunnelClient::new(config, remote_server.clone());
             tracing::info!("Starting tunnel client for pairing {}", pairing_id_clone);
             client.run().await;
-            // Remove from map when tunnel exits
+            // Clean up: remove pairing key and tunnel handle when tunnel exits
+            remote_server.remove_pairing(&pairing_id_clone);
             tunnels.lock().await.remove(&pairing_id_clone);
             tracing::info!("Tunnel client exited for pairing {}", pairing_id_clone);
         });

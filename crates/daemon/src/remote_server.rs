@@ -189,6 +189,10 @@ pub struct RemoteServer {
     /// Used when server desktop initiates requests (LIST, INFO, etc.) and receives
     /// responses from the client desktop — these need to be forwarded to the frontend.
     frame_callback: Arc<std::sync::Mutex<Option<ServerFrameCallback>>>,
+    /// Lock to serialize NEW_TERMINAL requests, preventing TOCTOU race in
+    /// terminal name deduplication (read existing names → open → set name).
+    /// Uses tokio Mutex because the critical section spans async calls.
+    new_terminal_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl RemoteServer {
@@ -229,6 +233,7 @@ impl RemoteServer {
             desktop_pair_callback: Arc::new(std::sync::Mutex::new(None)),
             active_tunnels,
             frame_callback: Arc::new(std::sync::Mutex::new(None)),
+            new_terminal_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -257,6 +262,12 @@ impl RemoteServer {
     /// Add a pairing (called when pairing completes).
     pub fn add_pairing(&self, pairing_id: String, key: [u8; 32]) {
         self.auth_keys.write().unwrap().insert(pairing_id, key);
+    }
+
+    /// Remove a pairing key (called when tunnel client exits).
+    /// Lightweight — does NOT remove remote subscribers (unlike revoke_pairing).
+    pub fn remove_pairing(&self, pairing_id: &str) {
+        self.auth_keys.write().unwrap().remove(pairing_id);
     }
 
     /// Revoke a pairing (called when user removes a device).
@@ -648,7 +659,9 @@ impl RemoteServer {
             | remote_frame::OK
             | remote_frame::ERROR
             | remote_frame::NOTIFY => {
-                if let Some(ref cb) = *self.frame_callback.lock().unwrap() {
+                // Clone callback out of mutex before invoking to avoid holding lock during callback
+                let cb_clone = self.frame_callback.lock().unwrap().clone();
+                if let Some(cb) = cb_clone {
                     cb(pairing_id, frame.frame_type, frame.terminal_id, &frame.payload);
                 }
                 (None, false)
@@ -1089,6 +1102,9 @@ impl RemoteServer {
         let shell = req.get("shell").and_then(|v| v.as_str()).map(|s| s.to_string());
         let name = req.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
 
+        // Serialize NEW_TERMINAL handling to prevent TOCTOU race in name deduplication.
+        let _lock = self.new_terminal_lock.lock().await;
+
         // Generate a unique "终端 N" name: start with count+1, keep incrementing
         // until no duplicate name exists among local sessions.
         let existing_names: std::collections::HashSet<String> = self.terminal_manager
@@ -1118,7 +1134,8 @@ impl RemoteServer {
                 self.terminal_manager.set_session_name(&session_id, &effective_name).await;
                 self.terminal_manager.notify_opened();
                 // Forward terminal:opened to the local GUI so it creates a tab.
-                self.terminal_manager.forward_opened(&session_id);
+                // Pass the name so the frontend uses the daemon-assigned name.
+                self.terminal_manager.forward_opened(&session_id, Some(&effective_name));
                 // Assign u32 handle and return it
                 let handle = {
                     let mut id_map = self.id_map.lock().unwrap();

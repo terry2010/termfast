@@ -158,6 +158,7 @@ mod tests {
             ErrorCode::DecryptionFailed,
             ErrorCode::TriggerCommandFailed,
             ErrorCode::Internal,
+            ErrorCode::InvalidParams,
         ];
         for code in codes {
             let json = serde_json::to_string(&code).unwrap();

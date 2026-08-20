@@ -176,16 +176,6 @@ export function RemoteTerminalView({
     };
   }, [pairingId, terminalId]);
 
-  // Unsubscribe on unmount
-  useEffect(() => {
-    return () => {
-      ipcInvoke("ipc_remote_client_unsubscribe", {
-        pairing_id: pairingId,
-        terminal_id: terminalId,
-      }).catch(() => {});
-    };
-  }, [pairingId, terminalId]);
-
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">

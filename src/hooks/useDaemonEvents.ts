@@ -339,7 +339,20 @@ export function useDaemonEvents() {
         try {
           const data = await ipcInvoke<{ servers: any[] }>("ipc_list_servers");
           if (data?.servers && mounted) {
-            useServerStore.setState({ servers: data.servers });
+            // Merge: only update daemon-provided fields, preserve local-only state
+            // (agentStatus, auth_banner, rz_available, etc.) that daemon doesn't echo back
+            const localServers = useServerStore.getState().servers;
+            const localById = new Map(localServers.map((s) => [s.id, s]));
+            const merged = data.servers.map((daemon: any) => {
+              const local = localById.get(daemon.id);
+              if (!local) return daemon;
+              return {
+                ...daemon,
+                auth_banner: local.auth_banner,
+                rz_available: local.rz_available,
+              };
+            });
+            useServerStore.setState({ servers: merged });
           }
         } catch { /* ignore */ }
       }
@@ -350,5 +363,5 @@ export function useDaemonEvents() {
       clearInterval(pollInterval);
       unlistenFns.forEach((fn) => fn());
     };
-  }, [updateServerStatus, addEntry, updateTriggerExecution, setProxyStatus]);
+  }, [updateServerStatus, addEntry, updateTriggerExecution, setProxyStatus, setAuthBanner]);
 }

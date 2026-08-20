@@ -254,9 +254,12 @@ impl PlatformAdapter for MacOSAdapter {
     }
 
     async fn get_system_proxy(&self) -> Result<Option<SystemProxyConfig>> {
-        // Query macOS system SOCKS5 proxy settings via networksetup
+        // Query macOS system SOCKS5 proxy settings via networksetup.
+        // Use get_network_service() to dynamically determine the active service
+        // (may be Ethernet/USB instead of Wi-Fi), consistent with set/clear.
+        let service = get_network_service()?;
         let output = tokio::process::Command::new("networksetup")
-            .args(["-getsocksfirewallproxy", "Wi-Fi"])
+            .args(["-getsocksfirewallproxy", &service])
             .output()
             .await
             .map_err(|e| anyhow::anyhow!("failed to run networksetup: {}", e))?;

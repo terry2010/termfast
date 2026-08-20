@@ -273,6 +273,18 @@ impl TunnelClient {
     /// Returns Err with "HTTP 401" in the message if the JWT is rejected,
     /// so run() can detect it and stop retrying.
     async fn connect_ws(&self) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
+        // Security: enforce wss:// scheme for non-localhost relay URLs to
+        // prevent plaintext WebSocket which would expose JWT and tunnel
+        // traffic to MITM. Localhost (127.0.0.1 / localhost) is exempted
+        // for testing and local relay scenarios.
+        let is_localhost = self.config.relay_url.contains("127.0.0.1")
+            || self.config.relay_url.contains("://localhost");
+        if !self.config.relay_url.starts_with("wss://") && !is_localhost {
+            return Err(format!(
+                "refusing to connect to non-TLS relay URL (expected wss://): {}",
+                self.config.relay_url
+            ));
+        }
         let request = Request::builder()
             .uri(&self.config.relay_url)
             .header("Authorization", format!("Bearer {}", self.config.jwt))

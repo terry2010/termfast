@@ -46,6 +46,31 @@ private suspend fun waitForProtocolReady(tm: RemoteTunnelManager, timeoutMs: Lon
     return tm.protocolReady.value
 }
 
+/**
+ * Await a RemoteTerminalOk event for [pid] within [timeoutMs].
+ * Returns (terminal_id, name) from the OK payload, or null on timeout.
+ * The caller is responsible for sending NEW_TERMINAL before calling this.
+ */
+private suspend fun awaitNewTerminalOk(
+    pid: String,
+    timeoutMs: Long = 10000,
+): Pair<Int, String>? {
+    val okResponse = CompletableDeferred<Pair<Int, String>>()
+    val eventJob = kotlinx.coroutines.GlobalScope.launch {
+        RustRepository.events.collect { event ->
+            if (event is RustEvent.RemoteTerminalOk && event.pairing_id == pid) {
+                val json = try { org.json.JSONObject(event.payload) } catch (_: Exception) { null }
+                val realTid = json?.optInt("terminal_id", event.terminal_id) ?: event.terminal_id
+                val termName = json?.optString("name", "") ?: ""
+                okResponse.complete(realTid to termName)
+            }
+        }
+    }
+    val result = withTimeoutOrNull(timeoutMs) { okResponse.await() }
+    eventJob.cancel()
+    return result
+}
+
 @Composable
 fun TerminalsScreen(
     navController: NavController,
@@ -68,8 +93,10 @@ fun TerminalsScreen(
     // so the desktop can notify us when a terminal is closed.
     // On NOTIFY(list_changed), re-fetch LIST and remove sessions whose terminalId
     // is no longer present on the desktop.
+    // When all remote sessions for a pairing are gone, stop its tunnel to free resources.
     LaunchedEffect(sessions.size) {
         val remotePids = sessions.mapNotNull { it.remotePairingId }.toSet()
+        // Start tunnels for pairings that still have remote sessions
         for (pid in remotePids) {
             val pairing = PairingStore.getAllPairings().find { it.pairingId == pid } ?: continue
             val key = pairing.pairingKey.chunked(2)
@@ -84,19 +111,21 @@ fun TerminalsScreen(
                 tm.start()
             }
         }
+        // Stop tunnels for pairings that no longer have any remote sessions
+        TerminalSessionManager.stopTunnelsNotIn(remotePids)
     }
     LaunchedEffect(Unit) {
         RustRepository.events.collect { event ->
             when (event) {
                 is RustEvent.RemoteTunnelReady -> {
-                    val tm = TerminalSessionManager.tunnelManagers[event.pairing_id]
+                    val tm = TerminalSessionManager.getTunnelManager(event.pairing_id)
                     tm?.onProtocolReady()
                     // Request list to sync: remove sessions whose terminals no longer exist on desktop
                     tm?.sendListRequest()
                 }
                 is RustEvent.RemoteTerminalNotify -> {
                     val pid = event.pairing_id
-                    val tm = TerminalSessionManager.tunnelManagers[pid]
+                    val tm = TerminalSessionManager.getTunnelManager(pid)
                     if (tm != null && tm.protocolReady.value) {
                         tm.sendListRequest()
                     }
@@ -288,27 +317,15 @@ fun TerminalsScreen(
                                         android.util.Log.i("TerminalsScreen", "sendNewTerminal result=$sent")
                                         if (sent) {
                                             scope.launch {
-                                                val okResponse = CompletableDeferred<Pair<Int, String>>()
-                                                val eventJob = scope.launch {
-                                                    RustRepository.events.collect { event ->
-                                                        if (event is RustEvent.RemoteTerminalOk && event.pairing_id == pid) {
-                                                            android.util.Log.i("TerminalsScreen", "received RemoteTerminalOk: terminal_id=${event.terminal_id}, payload=${event.payload}")
-                                                            val json = try { org.json.JSONObject(event.payload) } catch (_: Exception) { null }
-                                                            val realTid = json?.optInt("terminal_id", event.terminal_id) ?: event.terminal_id
-                                                            val termName = json?.optString("name", "") ?: ""
-                                                            okResponse.complete(realTid to termName)
-                                                        }
-                                                    }
-                                                }
-                                                val result = withTimeoutOrNull(10000) { okResponse.await() }
-                                                eventJob.cancel()
+                                                val result = awaitNewTerminalOk(pid)
                                                 if (result != null) {
                                                     val (newTerminalId, termName) = result
-                                                    android.util.Log.i("TerminalsScreen", "navigating to new terminal: id=$newTerminalId, name=$termName")
                                                     val encodedName = java.net.URLEncoder.encode(termName.ifBlank { "Terminal" }, "UTF-8")
                                                     navController.navigate("remote_terminal/$pid/$newTerminalId/$encodedName")
                                                 } else {
-                                                    Toast.makeText(context, "新建超时，请在远程终端列表中查看", Toast.LENGTH_SHORT).show()
+                                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                        Toast.makeText(context, "新建超时，请在远程终端列表中查看", Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             }
                                         }
@@ -324,56 +341,39 @@ fun TerminalsScreen(
                                                     pid, key, pairing.relayUrl, pairing.pairingJwt,
                                                     pairing.pairingRefreshToken,
                                                 )
-                                                // Listen for RemoteTunnelReady + RemoteTerminalOk events
-                                                val okResponse = CompletableDeferred<Pair<Int, String>>()
-                                                val eventJob = scope.launch {
+                                                // Listen for RemoteTunnelReady to mark protocol ready
+                                                val readyJob = scope.launch {
                                                     RustRepository.events.collect { event ->
-                                                        when (event) {
-                                                            is RustEvent.RemoteTunnelReady -> {
-                                                                if (event.pairing_id == pid) {
-                                                                    android.util.Log.i("TerminalsScreen", "received RemoteTunnelReady event")
-                                                                    newTm.onProtocolReady()
-                                                                }
-                                                            }
-                                                            is RustEvent.RemoteTerminalOk -> {
-                                                                if (event.pairing_id == pid) {
-                                                                    android.util.Log.i("TerminalsScreen", "received RemoteTerminalOk: terminal_id=${event.terminal_id}, payload=${event.payload}")
-                                                                    val json = try { org.json.JSONObject(event.payload) } catch (_: Exception) { null }
-                                                                    val realTid = json?.optInt("terminal_id", event.terminal_id) ?: event.terminal_id
-                                                                    val termName = json?.optString("name", "") ?: ""
-                                                                    okResponse.complete(realTid to termName)
-                                                                }
-                                                            }
-                                                            else -> {}
+                                                        if (event is RustEvent.RemoteTunnelReady && event.pairing_id == pid) {
+                                                            newTm.onProtocolReady()
                                                         }
                                                     }
                                                 }
                                                 newTm.start()
-                                                // Wait for protocol ready, then send NEW_TERMINAL
                                                 val ready = waitForProtocolReady(newTm, timeoutMs = 10000)
-                                                android.util.Log.i("TerminalsScreen", "waitForProtocolReady result=$ready")
+                                                readyJob.cancel()
                                                 if (ready) {
                                                     val sent = newTm.sendNewTerminal()
-                                                    android.util.Log.i("TerminalsScreen", "sendNewTerminal result=$sent")
                                                     if (sent) {
-                                                        // Wait for OK response with terminal_id and name
-                                                        val result = withTimeoutOrNull(10000) { okResponse.await() }
-                                                        eventJob.cancel()
+                                                        val result = awaitNewTerminalOk(pid)
                                                         if (result != null) {
                                                             val (newTerminalId, termName) = result
-                                                            android.util.Log.i("TerminalsScreen", "navigating to new terminal: id=$newTerminalId, name=$termName")
                                                             val encodedName = java.net.URLEncoder.encode(termName.ifBlank { "Terminal" }, "UTF-8")
                                                             navController.navigate("remote_terminal/$pid/$newTerminalId/$encodedName")
                                                         } else {
-                                                            Toast.makeText(context, "新建超时，请在远程终端列表中查看", Toast.LENGTH_SHORT).show()
+                                                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                                Toast.makeText(context, "新建超时，请在远程终端列表中查看", Toast.LENGTH_SHORT).show()
+                                                            }
                                                         }
                                                     } else {
-                                                        eventJob.cancel()
-                                                        Toast.makeText(context, "发送失败，请重试", Toast.LENGTH_SHORT).show()
+                                                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                            Toast.makeText(context, "发送失败，请重试", Toast.LENGTH_SHORT).show()
+                                                        }
                                                     }
                                                 } else {
-                                                    eventJob.cancel()
-                                                    Toast.makeText(context, "无法连接到电脑，请确认电脑端在线", Toast.LENGTH_SHORT).show()
+                                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                        Toast.makeText(context, "无法连接到电脑，请确认电脑端在线", Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             }
                                         } else {

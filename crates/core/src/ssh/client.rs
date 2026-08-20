@@ -96,7 +96,14 @@ impl client::Handler for SshHandler {
         server_public_key: &russh::keys::PublicKey,
     ) -> impl std::future::Future<Output = std::result::Result<bool, Self::Error>> + Send {
         let fp = fingerprint(server_public_key);
-        let skip = self.skip_hostkey_verify;
+        // Security: skip_hostkey_verify is only honored in debug builds.
+        // In release builds, host key verification is always enforced to
+        // prevent MITM attacks.
+        let skip = if cfg!(debug_assertions) {
+            self.skip_hostkey_verify
+        } else {
+            false
+        };
         let known = self.known_host_key.clone();
         let recorded = self.host_key_recorded.clone();
         let mismatch_cb = self.hostkey_mismatch_callback.clone();

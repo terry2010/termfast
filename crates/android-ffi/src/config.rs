@@ -32,11 +32,9 @@ pub fn init_sqlcipher_storage(data_dir: &str) -> Result<(), String> {
         match open_or_recover(&db_path, &DEFAULT_DEK) {
             Ok(conn) => SqlCipherStorage::from_conn(conn, db_path)
                 .map_err(|e| format!("failed to init schema: {}", e))?,
-            Err(OpenResult::WrongKey) | Err(OpenResult::Corrupt)
-                if !db_path.with_extension("db.bak").exists() =>
-            {
-                // User has set a master password — Kotlin layer should
-                // call unlock_with_key() first, then init again.
+            Err(OpenResult::WrongKey) | Err(OpenResult::Corrupt) => {
+                // DB exists but key doesn't match — user has set a master password.
+                // Kotlin layer should call unlock_with_key() first, then init again.
                 return Err("NEED_UNLOCK".to_string());
             }
             Err(e) => return Err(format!("failed to open DB: {}", e)),

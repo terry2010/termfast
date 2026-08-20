@@ -44,12 +44,32 @@ pub fn check_upload_conflict(
 ///
 /// Design doc 6.2.1: if cloud updated_at < local last_updated_at, the cloud file
 /// is older than what we last synced — likely a rollback attack.
+///
+/// Timestamps are parsed as RFC3339 DateTime for correct chronological comparison
+/// (handles timezone offsets and fractional seconds that string comparison would
+/// misorder).
 pub fn check_rollback(
     payload: &sync_crypto::SyncPayload,
     last_updated_at: Option<&str>,
 ) -> Option<serde_json::Value> {
     let last = last_updated_at?;
-    if payload.updated_at.as_str() < last {
+    // Parse both timestamps as RFC3339 for correct chronological comparison.
+    // Fall back to string comparison if either fails to parse (e.g. non-standard
+    // format from older versions), preserving backward compatibility.
+    let is_older = match (
+        chrono::DateTime::parse_from_rfc3339(&payload.updated_at),
+        chrono::DateTime::parse_from_rfc3339(last),
+    ) {
+        (Ok(cloud_dt), Ok(local_dt)) => cloud_dt < local_dt,
+        _ => {
+            tracing::warn!(
+                "check_rollback: failed to parse timestamps as RFC3339, falling back to string compare: cloud={}, local={}",
+                payload.updated_at, last
+            );
+            payload.updated_at.as_str() < last
+        }
+    };
+    if is_older {
         Some(serde_json::json!({
             "ok": false,
             "reason": "rollback_detected",
