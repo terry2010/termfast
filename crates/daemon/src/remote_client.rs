@@ -610,7 +610,7 @@ async fn handle_server_initiated_frame(
                 map.lookup_sid(terminal_id).cloned()
             };
             if let Some(sid) = session_id {
-                match terminal_manager.close(&sid).await {
+                match terminal_manager.close_remote(&sid).await {
                     Ok(()) => {
                         id_map.lock().unwrap().remove(&sid);
                         Some(Frame::ok(terminal_id))

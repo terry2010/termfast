@@ -1100,7 +1100,7 @@ impl RemoteServer {
             Some(sid) => sid,
             None => return Some(Frame::error_with_terminal(terminal_id, "terminal_not_found")),
         };
-        match self.terminal_manager.close(&session_id).await {
+        match self.terminal_manager.close_remote(&session_id).await {
             Ok(()) => {
                 // Remove from id_map
                 {

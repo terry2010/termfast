@@ -990,6 +990,18 @@ impl TerminalManager {
         }
     }
 
+    /// Close a terminal session initiated by a remote desktop (CLOSE_TERMINAL frame).
+    /// Same as close(), but also sends a `terminal:remove_tab` event so the
+    /// local frontend removes the tab entirely (instead of just marking it
+    /// disconnected, which is the behavior for natural terminal exit).
+    pub async fn close_remote(&self, session_id: &str) -> Result<(), String> {
+        let result = self.close(session_id).await;
+        if result.is_ok() {
+            forward_terminal_remove_tab(&self.forwarder, session_id);
+        }
+        result
+    }
+
     /// Close all terminal sessions for a given server (called on disconnect)
     pub async fn close_all_for_server(&self, server_id: &str) {
         let mut sessions = self.sessions.lock().await;
@@ -1466,6 +1478,24 @@ fn forward_terminal_closed(
         if let Some(ref f) = *fwd {
             f(
                 "terminal:closed",
+                serde_json::json!({ "sessionId": session_id }),
+            );
+        }
+    }
+}
+
+/// Forward terminal:remove_tab event to the GUI.
+/// Used when a terminal is closed by a remote desktop (CLOSE_TERMINAL frame),
+/// so the local frontend removes the tab entirely instead of just marking it
+/// as disconnected (which is the behavior for natural terminal exit).
+fn forward_terminal_remove_tab(
+    forwarder: &Arc<std::sync::Mutex<Option<EventForwarder>>>,
+    session_id: &str,
+) {
+    if let Ok(fwd) = forwarder.lock() {
+        if let Some(ref f) = *fwd {
+            f(
+                "terminal:remove_tab",
                 serde_json::json!({ "sessionId": session_id }),
             );
         }

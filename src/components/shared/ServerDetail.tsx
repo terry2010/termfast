@@ -377,6 +377,29 @@ export function ServerDetail() {
     };
   }, []);
 
+  // Listen for terminal:remove_tab events to remove tabs entirely.
+  // This is sent when a terminal is closed by a remote desktop (CLOSE_TERMINAL),
+  // so the local frontend removes the tab instead of just marking it disconnected.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    listen<{ sessionId: string }>("terminal:remove_tab", (event) => {
+      const sid = event.payload.sessionId;
+      const tabId = `term:${sid}` as Tab;
+      const store = useServerStore.getState();
+      for (const serverId of Object.keys(store.terminal_tabs_by_server)) {
+        const tabs = store.terminal_tabs_by_server[serverId] || [];
+        if (tabs.some((t) => t.id === tabId)) {
+          store.removeTerminalTab(serverId, tabId);
+        }
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // Listen for terminal:opened events — auto-create a tab for "My Computer"
   // when a terminal is opened by a remote desktop (via RemoteServer).
   // Skip if the tab already exists (opened by handleOpenLocalTerminal).
