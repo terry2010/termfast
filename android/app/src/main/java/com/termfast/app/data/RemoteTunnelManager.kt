@@ -39,6 +39,9 @@ interface RemoteTunnelFfi {
     /** Create + encrypt DESKTOP_PAIR frame. Returns ciphertext or null on error. */
     fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray?
 
+    /** Create + encrypt NEW_TERMINAL frame. Returns ciphertext or null on error. */
+    fun sendNewTerminal(pairingId: String, shell: String, name: String): ByteArray?
+
     /** Close tunnel: send GOODBYE + remove session. Returns GOODBYE ciphertext or null. */
     fun close(pairingId: String): ByteArray?
 }
@@ -71,6 +74,9 @@ object DefaultRemoteTunnelFfi : RemoteTunnelFfi {
 
     override fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray? =
         RustRepository.remoteTunnelSendDesktopPair(pairingId, payloadJson)
+
+    override fun sendNewTerminal(pairingId: String, shell: String, name: String): ByteArray? =
+        RustRepository.remoteTunnelSendNewTerminal(pairingId, shell, name)
 
     override fun close(pairingId: String): ByteArray? =
         RustRepository.remoteTunnelClose(pairingId)
@@ -306,6 +312,17 @@ class RemoteTunnelManager(
     fun sendDesktopPair(payloadJson: String): Boolean {
         if (!_protocolReady.value) return false
         val ct = ffi.sendDesktopPair(pairingId, payloadJson) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
+     * Send a NEW_TERMINAL frame to ask the desktop to open a new local terminal.
+     * Only valid after protocolReady == true.
+     * shell/name are optional (empty = desktop default).
+     */
+    fun sendNewTerminal(shell: String = "", name: String = ""): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendNewTerminal(pairingId, shell, name) ?: return false
         return sendRaw(ct)
     }
 

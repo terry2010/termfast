@@ -2514,4 +2514,27 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSend
     }
 }
 
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendNewTerminal(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    shell: JString,
+    name: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let shell_str = jstring_to_string(&mut env, &shell);
+    let name_str = jstring_to_string(&mut env, &name);
+    let shell_opt = if shell_str.is_empty() { None } else { Some(shell_str.as_str()) };
+    let name_opt = if name_str.is_empty() { None } else { Some(name_str.as_str()) };
+    match crate::remote_terminal::send_new_terminal(&pid, shell_opt, name_opt) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendNewTerminal: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
 // === Pairing END ===

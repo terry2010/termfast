@@ -593,20 +593,38 @@ impl RemoteServer {
                 let resp = self.handle_desktop_pair_frame(frame).await;
                 (resp, false)
             }
+            #[cfg(not(target_os = "android"))]
             remote_frame::INFO_REQUEST => {
                 tracing::info!("INFO_REQUEST received from pairing {}", pairing_id);
                 let resp = self.handle_info_request().await;
                 (Some(resp), false)
             }
+            #[cfg(not(target_os = "android"))]
             remote_frame::NEW_TERMINAL => {
                 tracing::info!("NEW_TERMINAL received from pairing {}", pairing_id);
                 let resp = self.handle_new_terminal(frame, async_tx).await;
                 (resp, false)
             }
+            #[cfg(not(target_os = "android"))]
             remote_frame::CLOSE_TERMINAL => {
                 tracing::info!("CLOSE_TERMINAL received from pairing {}, terminal_id={}", pairing_id, frame.terminal_id);
                 let resp = self.handle_close_terminal(frame).await;
                 (resp, false)
+            }
+            #[cfg(target_os = "android")]
+            remote_frame::INFO_REQUEST => {
+                tracing::warn!("INFO_REQUEST not supported on Android");
+                (Some(Frame::error("not_supported")), false)
+            }
+            #[cfg(target_os = "android")]
+            remote_frame::NEW_TERMINAL => {
+                tracing::warn!("NEW_TERMINAL not supported on Android");
+                (Some(Frame::error("not_supported")), false)
+            }
+            #[cfg(target_os = "android")]
+            remote_frame::CLOSE_TERMINAL => {
+                tracing::warn!("CLOSE_TERMINAL not supported on Android");
+                (Some(Frame::error("not_supported")), false)
             }
             remote_frame::GOODBYE => {
                 tracing::info!("GOODBYE received from pairing {}", pairing_id);
@@ -1017,6 +1035,7 @@ impl RemoteServer {
     }
 
     /// INFO_REQUEST: return local system info as JSON.
+    #[cfg(not(target_os = "android"))]
     async fn handle_info_request(&self) -> Frame {
         let default_shell = termfast_core::local::shell::detect_default_shell();
         let shell_name = std::path::Path::new(&default_shell)
@@ -1053,6 +1072,7 @@ impl RemoteServer {
     }
 
     /// NEW_TERMINAL: create a local terminal on the remote desktop.
+    #[cfg(not(target_os = "android"))]
     async fn handle_new_terminal(
         &self,
         frame: Frame,
@@ -1096,6 +1116,7 @@ impl RemoteServer {
     }
 
     /// CLOSE_TERMINAL: close a terminal on the remote desktop.
+    #[cfg(not(target_os = "android"))]
     async fn handle_close_terminal(&self, frame: Frame) -> Option<Frame> {
         let terminal_id = frame.terminal_id;
         let session_id = match self.resolve_sid(terminal_id) {

@@ -24,7 +24,22 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.termfast.app.data.PairingStore
 import com.termfast.app.data.RustRepository
+import com.termfast.app.data.RemoteTunnelManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+/**
+ * Wait for a RemoteTunnelManager's protocol to become ready (HELLO exchange done).
+ * Polls every 200ms up to [timeoutMs]. Returns true if ready, false on timeout.
+ */
+private suspend fun waitForProtocolReady(tm: RemoteTunnelManager, timeoutMs: Long = 10000): Boolean {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+        if (tm.protocolReady.value) return true
+        delay(200)
+    }
+    return tm.protocolReady.value
+}
 
 @Composable
 fun TerminalsScreen(
@@ -81,25 +96,7 @@ fun TerminalsScreen(
         sessions = TerminalSessionManager.getAllSessions()
     }
 
-    Scaffold(
-        floatingActionButton = {
-            if (sessions.isEmpty()) return@Scaffold
-            // New terminal — create a new session for the current server
-            FloatingActionButton(onClick = {
-                val serverId = focusServerId ?: sessions.firstOrNull()?.serverId
-                if (serverId != null) {
-                    val newSessionId = com.termfast.app.ui.screen.TerminalSessionManager.getOrCreateSession(serverId)
-                    navController.navigate("terminal/$serverId/$newSessionId")
-                } else {
-                    navController.navigate("servers") {
-                        popUpTo("servers") { inclusive = false }
-                    }
-                }
-            }) {
-                Icon(Icons.Filled.Add, contentDescription = "新建终端")
-            }
-        },
-    ) { inner ->
+    Scaffold { inner ->
         if (sessions.isEmpty()) {
             // Empty state
             Column(
@@ -205,6 +202,50 @@ fun TerminalsScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.outline,
                         )
+                        // + button: create new terminal on this server
+                        IconButton(
+                            onClick = {
+                                if (serverId.startsWith("remote:")) {
+                                    // Remote terminal: send NEW_TERMINAL frame via tunnel
+                                    val pid = serverId.removePrefix("remote:")
+                                    val tm = TerminalSessionManager.getTunnelManager(pid)
+                                    if (tm != null && tm.protocolReady.value) {
+                                        tm.sendNewTerminal()
+                                    } else {
+                                        // Tunnel not ready — need to start it first
+                                        val pairing = PairingStore.getPairing(pid)
+                                        if (pairing != null) {
+                                            scope.launch {
+                                                val key = pairing.pairingKey.chunked(2)
+                                                    .map { it.toInt(16).toByte() }.toByteArray()
+                                                val newTm = TerminalSessionManager.getOrCreateTunnelManager(
+                                                    pid, key, pairing.relayUrl, pairing.pairingJwt,
+                                                    pairing.pairingRefreshToken,
+                                                )
+                                                newTm.start()
+                                                // Wait for protocol ready, then send NEW_TERMINAL
+                                                val ready = waitForProtocolReady(newTm, timeoutMs = 10000)
+                                                if (ready) {
+                                                    newTm.sendNewTerminal()
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Local SSH: create new session and navigate
+                                    val newSessionId = TerminalSessionManager.getOrCreateSession(serverId)
+                                    navController.navigate("terminal/$serverId/$newSessionId")
+                                }
+                            },
+                            modifier = Modifier.size(28.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = "新建终端",
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
                 }
                 // Terminal cards for this server

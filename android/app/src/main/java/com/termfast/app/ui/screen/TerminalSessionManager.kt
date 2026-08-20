@@ -173,6 +173,11 @@ object TerminalSessionManager {
         tunnelManagers.remove(pairingId)
     }
 
+    /** Get an existing tunnel manager for a pairing, or null. */
+    @Synchronized
+    fun getTunnelManager(pairingId: String): com.termfast.app.data.RemoteTunnelManager? =
+        tunnelManagers[pairingId]
+
     /**
      * Test-only: create a remote session with a pre-built emulator (for testing
      * event routing without a real RemoteTunnelManager).

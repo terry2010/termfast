@@ -387,6 +387,7 @@ async fn run_client_once(
                         // Handle server-initiated frames (INFO_REQUEST, NEW_TERMINAL, CLOSE_TERMINAL,
                         // SUBSCRIBE, UNSUBSCRIBE, INPUT, RESIZE) — the server desktop asks the
                         // client desktop to perform operations on local terminals.
+                        #[cfg(not(target_os = "android"))]
                         let reply = handle_server_initiated_frame(
                             &frame,
                             &config.pairing_id,
@@ -394,6 +395,8 @@ async fn run_client_once(
                             id_map,
                             &async_tx,
                         ).await;
+                        #[cfg(target_os = "android")]
+                        let reply: Option<Frame> = None;
                         if let Some(reply) = reply {
                             let encrypted_reply = match send_cipher.encrypt(&reply.serialize()) {
                                 Ok(data) => data,
@@ -504,6 +507,7 @@ fn is_server_initiated_frame(frame_type: u8) -> bool {
 /// them locally and returns a reply frame to send back.
 ///
 /// Returns None for frames that don't need a local reply (OUTPUT, HISTORY, etc.).
+#[cfg(not(target_os = "android"))]
 async fn handle_server_initiated_frame(
     frame: &Frame,
     pairing_id: &str,

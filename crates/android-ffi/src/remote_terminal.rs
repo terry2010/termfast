@@ -314,6 +314,20 @@ pub fn send_resize(
     encrypt_outgoing(pairing_id, Frame::resize(terminal_id, cols, rows))
 }
 
+/// Create and encrypt a NEW_TERMINAL frame.
+/// Used by the phone to ask the desktop to open a new local terminal.
+/// `shell` and `name` are optional (None = desktop default).
+pub fn send_new_terminal(
+    pairing_id: &str,
+    shell: Option<&str>,
+    name: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(
+        pairing_id,
+        Frame::new_terminal(shell, name),
+    )
+}
+
 /// Create and encrypt a DESKTOP_PAIR frame.
 /// Used by the phone to instruct a desktop to start a desktop-to-desktop pairing.
 /// `payload_json` is the JSON-encoded DesktopPairMessage.
