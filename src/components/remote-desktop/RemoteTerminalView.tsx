@@ -46,6 +46,11 @@ export function RemoteTerminalView({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const config = useConfigStore((s) => s.config);
+  // Track whether we've already received HISTORY for this terminal.
+  // StrictMode's mount-unmount-mount causes Subscribe to be sent twice,
+  // and each Subscribe triggers a HISTORY replay from the server.
+  // Without this guard, the terminal output appears duplicated.
+  const historyReceivedRef = useRef(false);
 
   // Initialize xterm.js
   useEffect(() => {
@@ -130,8 +135,10 @@ export function RemoteTerminalView({
   // Listen for remote_client_frame events
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
 
     listen<RemoteClientFrameEvent>("remote_client_frame", (event) => {
+      if (cancelled) return;
       const payload = event.payload;
       if (payload.pairing_id !== pairingId || payload.terminal_id !== terminalId) {
         return;
@@ -144,15 +151,25 @@ export function RemoteTerminalView({
         term.write(bytes);
       } else if (payload.frame_type === HISTORY) {
         // HISTORY payload = [seq:4][is_last:1][data] — skip the 5-byte header
-        if (bytes.length > 5) {
+        // Guard against duplicate HISTORY: StrictMode's mount-unmount-mount
+        // causes Subscribe to be sent twice, each triggering a HISTORY replay.
+        // Only write the first HISTORY sequence, skip subsequent ones.
+        if (!historyReceivedRef.current && bytes.length > 5) {
           term.write(bytes.subarray(5));
         }
+        // Mark HISTORY as received on the first HISTORY frame (even if empty)
+        historyReceivedRef.current = true;
       }
     }).then((unlistenFn) => {
-      unlisten = unlistenFn;
+      if (cancelled) {
+        unlistenFn();
+      } else {
+        unlisten = unlistenFn;
+      }
     });
 
     return () => {
+      cancelled = true;
       if (unlisten) unlisten();
     };
   }, [pairingId, terminalId]);
