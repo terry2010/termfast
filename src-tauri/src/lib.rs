@@ -445,7 +445,14 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
     let _ = handle.emit("daemon:ready", ());
 
     // Initialize RemoteClientManager for desktop-to-desktop pairings
-    let rcm = Arc::new(termfast_daemon::remote_client::RemoteClientManager::new());
+    // Pass TerminalManager so the client can handle server-initiated frames
+    // (NEW_TERMINAL, SUBSCRIBE, INPUT, etc.) on local terminals.
+    let tm_for_rcm = {
+        let app_state = handle.state::<AppState>();
+        let daemon_guard = app_state.daemon.lock().await;
+        daemon_guard.as_ref().expect("daemon should be ready").server.state().terminal_manager.clone()
+    };
+    let rcm = Arc::new(termfast_daemon::remote_client::RemoteClientManager::new(tm_for_rcm));
     if let Some(app_state) = handle.try_state::<AppState>() {
         *app_state.remote_client_manager.lock().await = Some(rcm.clone());
     }

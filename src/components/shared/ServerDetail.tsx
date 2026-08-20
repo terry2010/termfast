@@ -71,6 +71,9 @@ export function ServerDetail() {
   // Remote desktop terminal list (from LIST_RESPONSE frames)
   const [remoteTerminals, setRemoteTerminals] = useState<{ terminal_id: number; name: string }[]>([]);
   const [remoteActiveTerminal, setRemoteActiveTerminal] = useState<number | null>(null);
+  // Grace period ref: after OK frame sets activeTerminal, don't let LIST_RESPONSE reset it
+  // for 3 seconds (the terminal might not appear in the list immediately)
+  const okGraceUntilRef = useRef<number>(0);
   const activeTab: Tab = isRemoteSelected
     ? (remoteActiveTerminal !== null ? `remote_term:${remoteActiveTerminal}` as Tab : "overview")
     : (activeTerminalTabByServer[selectedId || ""] as Tab) || "overview";
@@ -218,12 +221,13 @@ export function ServerDetail() {
             return terms;
           });
           // If the currently active terminal is no longer in the list, switch to overview.
-          // Only do this if the list is non-empty (avoid resetting on stale empty list
-          // received before the new terminal appears in the list).
+          // Only do this if the list is non-empty AND we're not in the OK grace period
+          // (the OK frame may have set activeTerminal before the terminal appears in the list).
           if (
             terms.length > 0 &&
             remoteActiveTerminalRef.current !== null &&
-            !terms.some((t: any) => t.terminal_id === remoteActiveTerminalRef.current)
+            !terms.some((t: any) => t.terminal_id === remoteActiveTerminalRef.current) &&
+            Date.now() > okGraceUntilRef.current
           ) {
             remoteActiveTerminalRef.current = null;
             setRemoteActiveTerminal(null);
@@ -268,6 +272,8 @@ export function ServerDetail() {
               // Auto-subscribe and switch to the new terminal
               remoteActiveTerminalRef.current = newTermId;
               setRemoteActiveTerminal(newTermId);
+              // Set grace period: don't let LIST_RESPONSE reset activeTerminal for 3s
+              okGraceUntilRef.current = Date.now() + 3000;
               ipcInvoke("ipc_remote_client_subscribe", {
                 pairing_id: remotePairingId,
                 terminal_id: newTermId,

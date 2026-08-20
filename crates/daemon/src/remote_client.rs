@@ -17,9 +17,11 @@ use crate::frame_crypto::{
     generate_random_32, FrameCipher, DIR_DESKTOP_TO_MOBILE, DIR_MOBILE_TO_DESKTOP,
 };
 use crate::remote_frame::{self, Frame};
+use crate::remote_server::IdMap;
+use crate::terminal::RemoteSubscriber;
 use crate::tunnel_client::parse_control_message;
 use futures_util::{SinkExt, StreamExt};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::http::Request;
@@ -60,6 +62,10 @@ pub struct RemoteClientManager {
     senders: Arc<Mutex<std::collections::HashMap<String, tokio::sync::mpsc::Sender<OutboundFrame>>>>,
     /// Connected state: pairing_id → bool (true if HELLO completed)
     connected: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Terminal manager (for handling server-initiated NEW_TERMINAL/CLOSE_TERMINAL)
+    terminal_manager: Arc<crate::terminal::TerminalManager>,
+    /// ID map for terminal_id ↔ session_id mapping (for server-initiated terminals)
+    id_map: Arc<StdMutex<IdMap>>,
 }
 
 /// An outbound frame to be encrypted and sent via WebSocket.
@@ -77,11 +83,13 @@ pub enum OutboundFrame {
 }
 
 impl RemoteClientManager {
-    pub fn new() -> Self {
+    pub fn new(terminal_manager: Arc<crate::terminal::TerminalManager>) -> Self {
         Self {
             clients: Arc::new(Mutex::new(std::collections::HashMap::new())),
             senders: Arc::new(Mutex::new(std::collections::HashMap::new())),
             connected: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            terminal_manager,
+            id_map: Arc::new(StdMutex::new(IdMap::new())),
         }
     }
 
@@ -116,9 +124,11 @@ impl RemoteClientManager {
         let pairing_id_clone = pairing_id.clone();
         let senders = self.senders.clone();
         let connected_set = self.connected.clone();
+        let tm = self.terminal_manager.clone();
+        let id_map = self.id_map.clone();
 
         let handle = tokio::spawn(async move {
-            run_client_loop(config, frame_cb, state_cb, rx, connected_set).await;
+            run_client_loop(config, frame_cb, state_cb, rx, connected_set, tm, id_map).await;
             senders.lock().await.remove(&pairing_id_clone);
         });
 
@@ -158,7 +168,11 @@ impl RemoteClientManager {
 
 impl Default for RemoteClientManager {
     fn default() -> Self {
-        Self::new()
+        let tm = Arc::new(crate::terminal::TerminalManager::new(
+            Arc::new(StdMutex::new(None)),
+            Arc::new(StdMutex::new(None)),
+        ));
+        Self::new(tm)
     }
 }
 
@@ -170,6 +184,8 @@ async fn run_client_loop(
     state_cb: StateCallback,
     mut rx: tokio::sync::mpsc::Receiver<OutboundFrame>,
     connected_set: Arc<Mutex<std::collections::HashSet<String>>>,
+    terminal_manager: Arc<crate::terminal::TerminalManager>,
+    id_map: Arc<StdMutex<IdMap>>,
 ) {
     let mut backoff = std::time::Duration::from_secs(1);
     let max_backoff = std::time::Duration::from_secs(30);
@@ -181,7 +197,7 @@ async fn run_client_loop(
             config.relay_url
         );
 
-        match run_client_once(&config, &frame_cb, &state_cb, &mut rx, &connected_set).await {
+        match run_client_once(&config, &frame_cb, &state_cb, &mut rx, &connected_set, &terminal_manager, &id_map).await {
             Ok(()) => {
                 tracing::info!(
                     "remote_client_loop: closed cleanly for pairing {}",
@@ -225,6 +241,8 @@ async fn run_client_once(
     state_cb: &StateCallback,
     rx: &mut tokio::sync::mpsc::Receiver<OutboundFrame>,
     connected_set: &Arc<Mutex<std::collections::HashSet<String>>>,
+    terminal_manager: &Arc<crate::terminal::TerminalManager>,
+    id_map: &Arc<StdMutex<IdMap>>,
 ) -> Result<(), String> {
     // 1. Connect WebSocket
     let host = crate::tunnel_client::extract_host(&config.relay_url);
@@ -335,7 +353,11 @@ async fn run_client_once(
     connected_set.lock().await.insert(config.pairing_id.clone());
     state_cb(&config.pairing_id, true);
 
+    // Channel for async frames from subscriber tasks (OUTPUT/HISTORY from local terminals)
+    let (async_tx, mut async_rx) = tokio::sync::mpsc::channel::<Frame>(256);
+
     // 5. Bridge loop: inbound (ws_read → decrypt → callback) + outbound (rx → encrypt → ws_write)
+    //    + async (subscriber output → encrypt → ws_write)
     loop {
         tokio::select! {
             msg = ws_read.next() => {
@@ -362,12 +384,17 @@ async fn run_client_once(
                                 break;
                             }
                         };
-                        // Handle server-initiated frames (INFO_REQUEST, NEW_TERMINAL, CLOSE_TERMINAL)
-                        // These are frames where the server desktop asks the client desktop for info
-                        // or to create/close terminals. The client handles them locally and replies.
-                        let reply_frame = handle_server_initiated_frame(&frame);
-                        if let Some(reply) = reply_frame {
-                            // Send the reply back to the server
+                        // Handle server-initiated frames (INFO_REQUEST, NEW_TERMINAL, CLOSE_TERMINAL,
+                        // SUBSCRIBE, UNSUBSCRIBE, INPUT, RESIZE) — the server desktop asks the
+                        // client desktop to perform operations on local terminals.
+                        let reply = handle_server_initiated_frame(
+                            &frame,
+                            &config.pairing_id,
+                            terminal_manager,
+                            id_map,
+                            &async_tx,
+                        ).await;
+                        if let Some(reply) = reply {
                             let encrypted_reply = match send_cipher.encrypt(&reply.serialize()) {
                                 Ok(data) => data,
                                 Err(e) => {
@@ -381,7 +408,10 @@ async fn run_client_once(
                             }
                         }
                         // Forward frame to frontend (for OUTPUT, HISTORY, LIST_RESPONSE, etc.)
-                        frame_cb(&config.pairing_id, frame.frame_type, frame.terminal_id, &frame.payload);
+                        // Skip server-initiated frames that we handled locally (no output to forward)
+                        if !is_server_initiated_frame(frame.frame_type) {
+                            frame_cb(&config.pairing_id, frame.frame_type, frame.terminal_id, &frame.payload);
+                        }
                     }
                     Some(Ok(WsMessage::Close(_))) => break,
                     Some(Ok(_)) => {}
@@ -426,20 +456,60 @@ async fn run_client_once(
                     }
                 }
             }
+            async_frame = async_rx.recv() => {
+                if let Some(frame) = async_frame {
+                    let encrypted = match send_cipher.encrypt(&frame.serialize()) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            tracing::warn!("remote_client: encrypt async error: {}", e);
+                            break;
+                        }
+                    };
+                    if let Err(e) = ws_write.send(WsMessage::Binary(encrypted)).await {
+                        tracing::warn!("remote_client: send async error: {}", e);
+                        break;
+                    }
+                }
+            }
         }
     }
+
+    // Clean up: remove remote subscribers for this pairing
+    terminal_manager.remove_remote_subscribers(&config.pairing_id).await;
 
     state_cb(&config.pairing_id, false);
     Ok(())
 }
 
-/// Handle server-initiated frames (INFO_REQUEST, NEW_TERMINAL, CLOSE_TERMINAL).
+/// Check if a frame type is a server-initiated frame (handled locally by the client).
+fn is_server_initiated_frame(frame_type: u8) -> bool {
+    matches!(
+        frame_type,
+        remote_frame::INFO_REQUEST
+            | remote_frame::NEW_TERMINAL
+            | remote_frame::CLOSE_TERMINAL
+            | remote_frame::SUBSCRIBE
+            | remote_frame::UNSUBSCRIBE
+            | remote_frame::INPUT
+            | remote_frame::RESIZE
+    )
+}
+
+/// Handle server-initiated frames (INFO_REQUEST, NEW_TERMINAL, CLOSE_TERMINAL,
+/// SUBSCRIBE, UNSUBSCRIBE, INPUT, RESIZE).
+///
 /// When the server desktop wants to view the client desktop's info or create/close
 /// terminals on the client, it sends these frames to the client. The client handles
 /// them locally and returns a reply frame to send back.
 ///
 /// Returns None for frames that don't need a local reply (OUTPUT, HISTORY, etc.).
-fn handle_server_initiated_frame(frame: &Frame) -> Option<Frame> {
+async fn handle_server_initiated_frame(
+    frame: &Frame,
+    pairing_id: &str,
+    terminal_manager: &Arc<crate::terminal::TerminalManager>,
+    id_map: &Arc<StdMutex<IdMap>>,
+    async_tx: &tokio::sync::mpsc::Sender<Frame>,
+) -> Option<Frame> {
     match frame.frame_type {
         remote_frame::INFO_REQUEST => {
             tracing::info!("remote_client: INFO_REQUEST received, replying with local system info");
@@ -475,6 +545,139 @@ fn handle_server_initiated_frame(frame: &Frame) -> Option<Frame> {
             });
             Some(Frame::info_response(&json.to_string()))
         }
+        remote_frame::NEW_TERMINAL => {
+            tracing::info!("remote_client: NEW_TERMINAL received from pairing {}", pairing_id);
+            let payload = match std::str::from_utf8(&frame.payload) {
+                Ok(s) => s,
+                Err(_) => return Some(Frame::error("invalid_payload")),
+            };
+            let req: serde_json::Value = match serde_json::from_str(payload) {
+                Ok(v) => v,
+                Err(_) => return Some(Frame::error("invalid_json")),
+            };
+            let shell = req.get("shell").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let name = req.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+            match terminal_manager.open_local(80, 24, shell, None).await {
+                Ok((session_id, _initial_output)) => {
+                    if let Some(ref n) = name {
+                        terminal_manager.set_session_name(&session_id, n).await;
+                    }
+                    terminal_manager.notify_opened();
+                    let handle = {
+                        let mut map = id_map.lock().unwrap();
+                        map.get_or_assign(&session_id)
+                    };
+                    let json = serde_json::json!({
+                        "terminal_id": handle,
+                        "session_id": session_id,
+                    });
+                    Some(Frame::ok_with_payload(0, &json.to_string()))
+                }
+                Err(e) => {
+                    tracing::error!("remote_client: NEW_TERMINAL failed to open local terminal: {}", e);
+                    Some(Frame::error(&format!("open_failed: {}", e)))
+                }
+            }
+        }
+        remote_frame::CLOSE_TERMINAL => {
+            let terminal_id = frame.terminal_id;
+            let session_id = {
+                let map = id_map.lock().unwrap();
+                map.lookup_sid(terminal_id).cloned()
+            };
+            if let Some(sid) = session_id {
+                match terminal_manager.close(&sid).await {
+                    Ok(()) => {
+                        id_map.lock().unwrap().remove(&sid);
+                        Some(Frame::ok(terminal_id))
+                    }
+                    Err(e) => {
+                        tracing::warn!("remote_client: CLOSE_TERMINAL error: {}", e);
+                        Some(Frame::error_with_terminal(terminal_id, "close_failed"))
+                    }
+                }
+            } else {
+                Some(Frame::error_with_terminal(terminal_id, "terminal_not_found"))
+            }
+        }
+        remote_frame::SUBSCRIBE => {
+            let terminal_id = frame.terminal_id;
+            let session_id = {
+                let map = id_map.lock().unwrap();
+                map.lookup_sid(terminal_id).cloned()
+            };
+            let session_id = match session_id {
+                Some(sid) => sid,
+                None => return Some(Frame::error("invalid_terminal_id")),
+            };
+
+            let (sub_tx, mut sub_rx) = tokio::sync::mpsc::channel::<Frame>(256);
+            let subscriber = RemoteSubscriber {
+                pairing_id: pairing_id.to_string(),
+                terminal_id,
+                sender: sub_tx,
+                lagging: false,
+            };
+
+            if let Err(e) = terminal_manager.subscribe_remote(&session_id, subscriber).await {
+                tracing::warn!("remote_client: subscribe_remote error: {}", e);
+                return Some(Frame::error("terminal_not_found"));
+            }
+
+            // Spawn background task: forward frames from subscriber to async_tx
+            let async_tx_clone = async_tx.clone();
+            tokio::spawn(async move {
+                while let Some(frame) = sub_rx.recv().await {
+                    if async_tx_clone.send(frame).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            Some(Frame::ok(terminal_id))
+        }
+        remote_frame::UNSUBSCRIBE => {
+            let terminal_id = frame.terminal_id;
+            let session_id = {
+                let map = id_map.lock().unwrap();
+                map.lookup_sid(terminal_id).cloned()
+            };
+            if let Some(sid) = session_id {
+                terminal_manager.unsubscribe_remote(&sid, pairing_id).await;
+            }
+            Some(Frame::ok(terminal_id))
+        }
+        remote_frame::INPUT => {
+            let terminal_id = frame.terminal_id;
+            let session_id = {
+                let map = id_map.lock().unwrap();
+                map.lookup_sid(terminal_id).cloned()
+            };
+            if let Some(sid) = session_id {
+                if let Err(e) = terminal_manager.input(&sid, &frame.payload).await {
+                    tracing::warn!("remote_client: INPUT write error: {}", e);
+                }
+            }
+            None // No reply for INPUT
+        }
+        remote_frame::RESIZE => {
+            let terminal_id = frame.terminal_id;
+            let session_id = {
+                let map = id_map.lock().unwrap();
+                map.lookup_sid(terminal_id).cloned()
+            };
+            if let Some(sid) = session_id {
+                if frame.payload.len() >= 4 {
+                    let cols = u16::from_be_bytes([frame.payload[0], frame.payload[1]]) as u32;
+                    let rows = u16::from_be_bytes([frame.payload[2], frame.payload[3]]) as u32;
+                    if let Err(e) = terminal_manager.resize(&sid, cols, rows).await {
+                        tracing::warn!("remote_client: RESIZE error: {}", e);
+                    }
+                }
+            }
+            None // No reply for RESIZE
+        }
         _ => None,
     }
 }
@@ -486,7 +689,7 @@ mod tests {
     /// Test RemoteClientManager creation and basic state
     #[tokio::test]
     async fn test_remote_client_manager_new() {
-        let mgr = RemoteClientManager::new();
+        let mgr = RemoteClientManager::default();
         // Should start with no clients
         assert!(mgr.clients.lock().await.is_empty());
         assert!(mgr.senders.lock().await.is_empty());
@@ -502,7 +705,7 @@ mod tests {
     /// Test RemoteClientManager stop_client on non-existent pairing (no-op)
     #[tokio::test]
     async fn test_remote_client_manager_stop_nonexistent() {
-        let mgr = RemoteClientManager::new();
+        let mgr = RemoteClientManager::default();
         // Should not panic
         mgr.stop_client("nonexistent").await;
     }
@@ -510,7 +713,7 @@ mod tests {
     /// Test RemoteClientManager stop_all on empty manager
     #[tokio::test]
     async fn test_remote_client_manager_stop_all_empty() {
-        let mgr = RemoteClientManager::new();
+        let mgr = RemoteClientManager::default();
         mgr.stop_all().await;
         assert!(mgr.clients.lock().await.is_empty());
     }
@@ -518,7 +721,7 @@ mod tests {
     /// Test RemoteClientManager send_frame to non-existent client returns error
     #[tokio::test]
     async fn test_remote_client_manager_send_nonexistent() {
-        let mgr = RemoteClientManager::new();
+        let mgr = RemoteClientManager::default();
         let result = mgr.send_frame("nonexistent", OutboundFrame::List).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("no remote client"));
@@ -653,7 +856,7 @@ mod tests {
     /// Uses a non-existent relay URL so connection fails, but manager state is still testable
     #[tokio::test]
     async fn test_remote_client_manager_start_stop() {
-        let mgr = RemoteClientManager::new();
+        let mgr = RemoteClientManager::default();
         let config = RemoteClientConfig {
             relay_url: "ws://127.0.0.1:1/tunnel".to_string(), // Port 1 — will fail to connect
             pairing_jwt: "jwt".to_string(),
@@ -680,7 +883,7 @@ mod tests {
     /// Test RemoteClientManager stop_all clears everything
     #[tokio::test]
     async fn test_remote_client_manager_stop_all() {
-        let mgr = RemoteClientManager::new();
+        let mgr = RemoteClientManager::default();
         let config = RemoteClientConfig {
             relay_url: "ws://127.0.0.1:1/tunnel".to_string(),
             pairing_jwt: "jwt".to_string(),

@@ -35,14 +35,14 @@ pub struct TunnelSession {
 /// u32 handle ↔ String session ID bidirectional mapping.
 /// Per design doc: persistent across LIST_REQUEST calls, assigned on first LIST,
 /// removed on terminal close. std Mutex (short lock, no await).
-struct IdMap {
+pub struct IdMap {
     handle_to_sid: HashMap<u32, String>,
     sid_to_handle: HashMap<String, u32>,
     next_id: u32,
 }
 
 impl IdMap {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             handle_to_sid: HashMap::new(),
             sid_to_handle: HashMap::new(),
@@ -51,7 +51,7 @@ impl IdMap {
     }
 
     /// Assign or return existing u32 handle for a session_id.
-    fn get_or_assign(&mut self, sid: &str) -> u32 {
+    pub fn get_or_assign(&mut self, sid: &str) -> u32 {
         if let Some(&h) = self.sid_to_handle.get(sid) {
             return h;
         }
@@ -63,12 +63,12 @@ impl IdMap {
     }
 
     /// u32 handle → session_id.
-    fn lookup_sid(&self, handle: u32) -> Option<&String> {
+    pub fn lookup_sid(&self, handle: u32) -> Option<&String> {
         self.handle_to_sid.get(&handle)
     }
 
     /// Remove mapping when terminal closes.
-    fn remove(&mut self, sid: &str) {
+    pub fn remove(&mut self, sid: &str) {
         if let Some(h) = self.sid_to_handle.remove(sid) {
             self.handle_to_sid.remove(&h);
         }
