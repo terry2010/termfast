@@ -209,14 +209,12 @@ export function ServerDetail() {
             const prevIds = new Set(prev.map((t) => t.terminal_id));
             const newTerms = terms.filter((t: any) => !prevIds.has(t.terminal_id));
             // Auto-switch to the first new terminal (like "My Computer" auto-selects new tabs)
+            // Note: do NOT subscribe here — RemoteTerminalView subscribes on mount.
+            // Subscribing here would cause a double subscription → duplicated output.
             if (newTerms.length > 0 && remoteActiveTerminalRef.current === null) {
               const firstNew = newTerms[0];
               remoteActiveTerminalRef.current = firstNew.terminal_id;
               setRemoteActiveTerminal(firstNew.terminal_id);
-              ipcInvoke("ipc_remote_client_subscribe", {
-                pairing_id: remotePairingId!,
-                terminal_id: firstNew.terminal_id,
-              }).catch(() => {});
             }
             return terms;
           });
@@ -269,17 +267,13 @@ export function ServerDetail() {
                 if (prev.some((t) => t.terminal_id === newTermId)) return prev;
                 return [...prev, { terminal_id: newTermId, name: `Terminal ${prev.length + 1}` }];
               });
-              // Auto-subscribe and switch to the new terminal
+              // Auto-switch to the new terminal.
+              // Note: do NOT subscribe here — RemoteTerminalView subscribes on mount.
+              // Subscribing here would cause a double subscription → duplicated output.
               remoteActiveTerminalRef.current = newTermId;
               setRemoteActiveTerminal(newTermId);
               // Set grace period: don't let LIST_RESPONSE reset activeTerminal for 3s
               okGraceUntilRef.current = Date.now() + 3000;
-              ipcInvoke("ipc_remote_client_subscribe", {
-                pairing_id: remotePairingId,
-                terminal_id: newTermId,
-              }).catch((e: any) => {
-                toast.error(`Subscribe failed: ${e?.message || e}`);
-              });
               // Refresh terminal list after a short delay to get accurate names.
               // The delay ensures the new terminal has registered on the remote side
               // before we request the list, avoiding a stale list that doesn't include
