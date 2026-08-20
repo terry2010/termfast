@@ -195,23 +195,33 @@ fun ServerListScreen(navController: NavController) {
                         val backendDevices = withContext(Dispatchers.IO) {
                             PairingApi.listDevices(token)
                         }
-                        val backendPairingIds = backendDevices
-                            .filter { it.status == "completed" }
-                            .map { it.pairingId }
-                            .toSet()
-                        // Update online status from backend
-                        val statusMap = backendDevices
-                            .filter { it.status == "completed" && it.pairingType == "mobile" }
-                            .associate { it.pairingId to it.isOnline }
-                        onlineStatus = statusMap
-                        // Remove local pairings that are revoked or missing on backend
-                        localPairings.forEach { local ->
-                            if (local.pairingId !in backendPairingIds) {
-                                PairingStore.removePairing(local.pairingId)
+                        // Guard: only prune local pairings if backend returned
+                        // at least one completed device. If the backend returns
+                        // an empty list (e.g. transient network issue, token
+                        // about to expire, or DB replication lag), we must NOT
+                        // delete all local pairings — that would cause data loss.
+                        val completedDevices = backendDevices.filter { it.status == "completed" }
+                        if (completedDevices.isNotEmpty()) {
+                            val backendPairingIds = completedDevices
+                                .map { it.pairingId }
+                                .toSet()
+                            // Update online status from backend
+                            val statusMap = completedDevices
+                                .filter { it.pairingType == "mobile" }
+                                .associate { it.pairingId to it.isOnline }
+                            onlineStatus = statusMap
+                            // Remove local pairings that are revoked or missing on backend
+                            localPairings.forEach { local ->
+                                if (local.pairingId !in backendPairingIds) {
+                                    PairingStore.removePairing(local.pairingId)
+                                }
                             }
+                            // Trigger recomposition of remotePairings
+                            remoteVersion++
+                        } else {
+                            // Backend returned empty list — keep local pairings as-is
+                            android.util.Log.w("ServerList", "backend returned 0 completed devices, skipping prune to avoid data loss")
                         }
-                        // Trigger recomposition of remotePairings
-                        remoteVersion++
                     }
                     // Load desktop pairings to check interconnection status
                     desktopPairings = withContext(Dispatchers.IO) {
