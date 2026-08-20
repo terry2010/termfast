@@ -217,8 +217,14 @@ export function ServerDetail() {
             }
             return terms;
           });
-          // If the currently active terminal is no longer in the list, switch to overview
-          if (remoteActiveTerminalRef.current !== null && !terms.some((t: any) => t.terminal_id === remoteActiveTerminalRef.current)) {
+          // If the currently active terminal is no longer in the list, switch to overview.
+          // Only do this if the list is non-empty (avoid resetting on stale empty list
+          // received before the new terminal appears in the list).
+          if (
+            terms.length > 0 &&
+            remoteActiveTerminalRef.current !== null &&
+            !terms.some((t: any) => t.terminal_id === remoteActiveTerminalRef.current)
+          ) {
             remoteActiveTerminalRef.current = null;
             setRemoteActiveTerminal(null);
           }
@@ -268,10 +274,15 @@ export function ServerDetail() {
               }).catch((e: any) => {
                 toast.error(`Subscribe failed: ${e?.message || e}`);
               });
-              // Refresh terminal list to get accurate names
-              ipcInvoke("ipc_remote_client_list_terminals", {
-                pairing_id: remotePairingId,
-              }).catch(() => {});
+              // Refresh terminal list after a short delay to get accurate names.
+              // The delay ensures the new terminal has registered on the remote side
+              // before we request the list, avoiding a stale list that doesn't include
+              // the new terminal (which would trigger an unwanted reset of activeTerminal).
+              setTimeout(() => {
+                ipcInvoke("ipc_remote_client_list_terminals", {
+                  pairing_id: remotePairingId,
+                }).catch(() => {});
+              }, 500);
             }
           } catch {
             // ignore
