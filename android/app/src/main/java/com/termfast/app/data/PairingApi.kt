@@ -20,6 +20,16 @@ object PairingApi {
 
     private val jsonMedia = "application/json".toMediaType()
 
+    /** Thrown when the backend returns 401 (token expired or invalid). */
+    class TokenExpiredException(message: String = "token expired") : Exception(message)
+
+    /** Check HTTP response for 401 and throw TokenExpiredException if so. */
+    private fun checkAuth(resp: okhttp3.Response) {
+        if (resp.code == 401) {
+            throw TokenExpiredException()
+        }
+    }
+
     /**
      * Get this device's name (used as mobile_device_id and mobile_name).
      * e.g. "samsung SM-S9210" or "Google-Pixel-9".
@@ -93,6 +103,7 @@ object PairingApi {
             .header("Authorization", "Bearer $token")
             .url(url)
             .build()).execute()
+        checkAuth(resp)
         val json = JSONObject(resp.body!!.string())
         val arr = json.optJSONArray("devices") ?: return emptyList()
         val list = mutableListOf<DeviceInfo>()
@@ -195,6 +206,7 @@ object PairingApi {
             .header("Authorization", "Bearer $token")
             .url(url)
             .build()).execute()
+        checkAuth(resp)
         val json = JSONObject(resp.body!!.string())
         val arr = json.optJSONArray("devices") ?: return emptyList()
         val list = mutableListOf<DeviceInfo>()

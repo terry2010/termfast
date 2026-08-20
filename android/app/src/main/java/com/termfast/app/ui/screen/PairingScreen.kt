@@ -63,6 +63,11 @@ fun PairingScreen(navController: NavController) {
                     devices.forEach { d ->
                         android.util.Log.d("PairingScreen", "Device: ${d.desktopName}, isOnline=${d.isOnline}, type=${d.pairingType}")
                     }
+                } catch (e: PairingApi.TokenExpiredException) {
+                    android.util.Log.w("PairingScreen", "token expired, clearing local token")
+                    PairingStore.clearToken()
+                    token = null
+                    Toast.makeText(context, "登录已过期，请重新登录", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     android.util.Log.e("PairingScreen", "Failed to load devices", e)
                     Toast.makeText(context, "加载设备列表失败: ${e.message}", Toast.LENGTH_LONG).show()

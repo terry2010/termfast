@@ -227,6 +227,14 @@ fun ServerListScreen(navController: NavController) {
                     desktopPairings = withContext(Dispatchers.IO) {
                         PairingApi.listDevicesByType(token, "desktop")
                     }
+                } catch (e: PairingApi.TokenExpiredException) {
+                    // Token expired — clear it so the UI shows "not logged in"
+                    // and the user is prompted to re-login. Local pairings are
+                    // preserved (not deleted) so they reappear after re-login.
+                    android.util.Log.w("ServerList", "token expired, clearing local token")
+                    PairingStore.clearToken()
+                    remoteVersion++
+                    Toast.makeText(context, "登录已过期，请重新登录", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     // Backend unreachable — keep local pairings as-is
                     android.util.Log.w("ServerList", "sync pairings failed: ${e.message}")

@@ -64,6 +64,10 @@ fun DesktopPairingScreen(navController: NavController) {
                     desktopPairings = withContext(Dispatchers.IO) {
                         PairingApi.listDevicesByType(tok, "desktop")
                     }
+                } catch (e: PairingApi.TokenExpiredException) {
+                    PairingStore.clearToken()
+                    token = null
+                    Toast.makeText(context, "登录已过期，请重新登录", Toast.LENGTH_LONG).show()
                 } catch (_: Exception) {}
             }
         }
@@ -229,6 +233,10 @@ fun DesktopPairingScreen(navController: NavController) {
                                         desktopPairings = withContext(Dispatchers.IO) {
                                             PairingApi.listDevicesByType(token!!, "desktop")
                                         }
+                                    } catch (e: PairingApi.TokenExpiredException) {
+                                        PairingStore.clearToken()
+                                        token = null
+                                        Toast.makeText(context, "登录已过期，请重新登录", Toast.LENGTH_LONG).show()
                                     } catch (_: Exception) {}
                                 }
                             },
