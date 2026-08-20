@@ -56,6 +56,7 @@ import com.termfast.app.data.ServerStatus
 import com.termfast.app.data.SettingsRepository
 import com.termfast.app.service.SshVpnService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
@@ -272,7 +273,8 @@ fun ServerListScreen(navController: NavController) {
                                 val jwt = result.optString("pairing_jwt")
                                 val pairingRefreshToken = result.optString("refresh_token", "")
                                 val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
-                                val desktopDeviceId = updatedDevices.find { it.pairingId == pairingId }?.desktopDeviceId ?: ""
+                                val matchedDev = updatedDevices.find { it.pairingId == pairingId }
+                                val desktopDeviceId = matchedDev?.desktopDeviceId ?: ""
                                 if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
                                     PairingStore.savePairing(
                                         com.termfast.app.data.RemoteTunnelConfig(
@@ -293,6 +295,21 @@ fun ServerListScreen(navController: NavController) {
                                     .associate { it.pairingId to it.isOnline }
                                 onlineStatus = statusMap
                                 remoteVersion++
+                                // The desktop may not have connected to the tunnel yet
+                                // at the moment pairing completes. Re-fetch online status
+                                // after a short delay to catch the desktop coming online.
+                                scope.launch {
+                                    delay(3000)
+                                    try {
+                                        val refreshed = withContext(Dispatchers.IO) { PairingApi.listDevices() }
+                                        val refreshedMap = refreshed
+                                            .filter { it.pairingType == "mobile" }
+                                            .associate { it.pairingId to it.isOnline }
+                                        onlineStatus = refreshedMap
+                                    } catch (_: Exception) {
+                                        // Ignore — best-effort refresh
+                                    }
+                                }
                             } else {
                                 Toast.makeText(context, "配对失败: ${result.optString("error", "未知错误")}", Toast.LENGTH_SHORT).show()
                             }
