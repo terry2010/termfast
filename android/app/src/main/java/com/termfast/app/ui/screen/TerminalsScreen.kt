@@ -91,6 +91,8 @@ fun TerminalsScreen(
                 is RustEvent.RemoteTunnelReady -> {
                     val tm = TerminalSessionManager.tunnelManagers[event.pairing_id]
                     tm?.onProtocolReady()
+                    // Request list to sync: remove sessions whose terminals no longer exist on desktop
+                    tm?.sendListRequest()
                 }
                 is RustEvent.RemoteTerminalNotify -> {
                     val pid = event.pairing_id
