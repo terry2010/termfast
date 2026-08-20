@@ -1735,6 +1735,33 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     };
     registerTerminalOutput(sessionId, handleBinaryOutput);
 
+    // If initialOutput is empty (e.g. terminal was opened by a remote desktop
+    // while user was on a different page), fetch history from the backend to
+    // recover the output that was streamed before this TerminalView mounted.
+    if (!initialOutput && sessionId) {
+      ipcInvoke("ipc_terminal_get_history", { session_id: sessionId })
+        .then((history: unknown) => {
+          if (history instanceof ArrayBuffer) {
+            const bytes = new Uint8Array(history);
+            if (bytes.length > 0) {
+              term.write(bytes);
+            }
+          } else if (history instanceof Uint8Array) {
+            if (history.length > 0) {
+              term.write(history);
+            }
+          } else if (Array.isArray(history)) {
+            const bytes = new Uint8Array(history as number[]);
+            if (bytes.length > 0) {
+              term.write(bytes);
+            }
+          }
+        })
+        .catch(() => {
+          // History fetch failed (session may not exist) — silently ignore
+        });
+    }
+
     // Initialize terminal I/O log (writes to AppLocalData/termfast-logs/)
     // Only when developer terminal logging is enabled in config
     const config = useConfigStore.getState().config;

@@ -299,6 +299,7 @@ pub fn run() {
             // Terminal — interactive SSH shell sessions
             ipc_terminal_open,
             ipc_terminal_attach,
+            ipc_terminal_get_history,
             ipc_terminal_input,
             ipc_terminal_close,
             ipc_terminal_resize,
@@ -1572,6 +1573,31 @@ async fn ipc_terminal_attach(
 ) -> Result<(), String> {
     state.terminal_channels.lock().unwrap().insert(session_id, on_output);
     Ok(())
+}
+
+/// Get terminal history (for recovering output when TerminalView mounts late,
+/// e.g. when a terminal was opened by a remote desktop while the user was
+/// on a different page).
+#[tauri::command]
+async fn ipc_terminal_get_history(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<u8>, String> {
+    let daemon_guard = state.daemon.lock().await;
+    let daemon = daemon_guard.as_ref().ok_or("daemon not started")?;
+    let tm = daemon.server.state().terminal_manager.clone();
+    drop(daemon_guard);
+    let history = tm.get_history(&session_id).await;
+    match history {
+        Some(chunks) => {
+            let mut buf = Vec::with_capacity(chunks.iter().map(|c| c.len()).sum());
+            for chunk in chunks {
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(buf)
+        }
+        None => Ok(Vec::new()),
+    }
 }
 
 #[tauri::command]

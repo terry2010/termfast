@@ -486,6 +486,7 @@ fn is_server_initiated_frame(frame_type: u8) -> bool {
     matches!(
         frame_type,
         remote_frame::INFO_REQUEST
+            | remote_frame::LIST_REQUEST
             | remote_frame::NEW_TERMINAL
             | remote_frame::CLOSE_TERMINAL
             | remote_frame::SUBSCRIBE
@@ -544,6 +545,28 @@ async fn handle_server_initiated_frame(
                 "available_shells": available_shells,
             });
             Some(Frame::info_response(&json.to_string()))
+        }
+        remote_frame::LIST_REQUEST => {
+            tracing::info!("remote_client: LIST_REQUEST received from pairing {}", pairing_id);
+            let infos = terminal_manager.list_session_infos().await;
+            let list: Vec<serde_json::Value> = {
+                let mut map = id_map.lock().unwrap();
+                infos.iter().map(|info| {
+                    let handle = map.get_or_assign(&info.session_id);
+                    serde_json::json!({
+                        "id": handle,
+                        "name": info.name,
+                        "status": info.status,
+                        "preview": info.preview,
+                        "server_id": info.server_id,
+                        "server_name": if info.server_id == "__local__" { "桌面端".to_string() } else { info.server_name.clone() },
+                        "terminal_type": info.terminal_type,
+                        "tmux_session_name": info.tmux_session_name,
+                    })
+                }).collect()
+            };
+            let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
+            Some(Frame::list_response(0, &json))
         }
         remote_frame::NEW_TERMINAL => {
             tracing::info!("remote_client: NEW_TERMINAL received from pairing {}", pairing_id);

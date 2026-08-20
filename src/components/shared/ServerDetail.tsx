@@ -294,12 +294,11 @@ export function ServerDetail() {
             // ignore
           }
         } else {
-          // CLOSE_TERMINAL response — refresh terminal list
-          ipcInvoke("ipc_remote_client_list_terminals", {
-            pairing_id: remotePairingId,
-          }).catch(() => {});
-          remoteActiveTerminalRef.current = null;
-          setRemoteActiveTerminal(null);
+          // OK frame without payload — could be SUBSCRIBE, UNSUBSCRIBE, or CLOSE_TERMINAL response.
+          // Do NOT reset activeTerminal here: SUBSCRIBE's OK response also has no payload,
+          // and resetting it would cause a mount/unmount loop (subscribe → OK → reset → unsubscribe → ...).
+          // CLOSE_TERMINAL is handled via NOTIFY(list_changed) which refreshes the list,
+          // and the "terminal not in list" check will clean up activeTerminal naturally.
         }
       }
     });
