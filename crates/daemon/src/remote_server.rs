@@ -447,11 +447,18 @@ impl RemoteServer {
         inbound_rx: &mut mpsc::Receiver<Vec<u8>>,
         outbound_tx: &mpsc::Sender<Vec<u8>>,
     ) -> Option<(FrameCipher, FrameCipher)> {
-        // Wait for mobile's HELLO (encrypted with K)
-        let encrypted = match inbound_rx.recv().await {
-            Some(data) => data,
-            None => {
+        // Wait for mobile's HELLO (encrypted with K) — 30s timeout
+        let encrypted = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            inbound_rx.recv(),
+        ).await {
+            Ok(Some(data)) => data,
+            Ok(None) => {
                 tracing::warn!("no HELLO received — channel closed");
+                return None;
+            }
+            Err(_) => {
+                tracing::warn!("no HELLO received — timeout (30s)");
                 return None;
             }
         };

@@ -257,11 +257,12 @@ async fn run_client_once(
         .await
         .map_err(|e| format!("send connect: {}", e))?;
 
-    // 3. Wait for peer_connected
+    // 3. Wait for peer_connected (with 60s timeout — peer may not be online yet)
     let mut peer_connected = false;
+    let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     while !peer_connected {
-        match ws_read.next().await {
-            Some(Ok(WsMessage::Text(text))) => {
+        match tokio::time::timeout_at(wait_deadline, ws_read.next()).await {
+            Ok(Some(Ok(WsMessage::Text(text)))) => {
                 match parse_control_message(&text) {
                     crate::tunnel_client::ControlMessage::PeerConnected => {
                         peer_connected = true;
@@ -272,10 +273,11 @@ async fn run_client_once(
                     _ => {}
                 }
             }
-            Some(Ok(WsMessage::Binary(_))) => {}
-            Some(Ok(_)) => {}
-            Some(Err(e)) => return Err(format!("ws wait: {}", e)),
-            None => return Err("ws closed during wait".to_string()),
+            Ok(Some(Ok(WsMessage::Binary(_)))) => {}
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(e))) => return Err(format!("ws wait: {}", e)),
+            Ok(None) => return Err("ws closed during wait".to_string()),
+            Err(_) => return Err("peer_connected timeout (60s)".to_string()),
         }
     }
 
