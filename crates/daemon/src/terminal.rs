@@ -969,6 +969,11 @@ impl TerminalManager {
                             session_id: session_id.to_string(),
                         });
                     }
+                    // Also forward terminal:closed to the GUI so the frontend
+                    // can mark the tab as disconnected. Normally this is done
+                    // by the main task's exit branch, but close() aborts the
+                    // main task, so we must forward here explicitly.
+                    forward_terminal_closed(&self.forwarder, session_id);
                 }
                 // 不在此处 remove：tokio task.abort() 是异步的，main task 可能
                 // 在 abort flag 检查之前已进入退出分支并获取锁。如果 close() 先

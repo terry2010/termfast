@@ -46,11 +46,11 @@ export function RemoteTerminalView({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const config = useConfigStore((s) => s.config);
-  // Track whether we've already received HISTORY for this terminal.
+  // Track HISTORY replay state to deduplicate HISTORY frames.
   // StrictMode's mount-unmount-mount causes Subscribe to be sent twice,
-  // and each Subscribe triggers a HISTORY replay from the server.
-  // Without this guard, the terminal output appears duplicated.
-  const historyReceivedRef = useRef(false);
+  // and each Subscribe triggers a full HISTORY replay from the server.
+  // We only accept the first replay (historyDone=false → accept, then set true).
+  const historyDoneRef = useRef(false);
 
   // Initialize xterm.js
   useEffect(() => {
@@ -151,14 +151,16 @@ export function RemoteTerminalView({
         term.write(bytes);
       } else if (payload.frame_type === HISTORY) {
         // HISTORY payload = [seq:4][is_last:1][data] — skip the 5-byte header
-        // Guard against duplicate HISTORY: StrictMode's mount-unmount-mount
-        // causes Subscribe to be sent twice, each triggering a HISTORY replay.
-        // Only write the first HISTORY sequence, skip subsequent ones.
-        if (!historyReceivedRef.current && bytes.length > 5) {
+        // Deduplicate: only accept the first HISTORY replay cycle.
+        // StrictMode's mount-unmount-mount causes two Subscribe→HISTORY cycles;
+        // once the first cycle completes (is_last=1), skip all subsequent HISTORY.
+        if (!historyDoneRef.current && bytes.length >= 5) {
+          const isLast = bytes[4] === 1;
           term.write(bytes.subarray(5));
+          if (isLast) {
+            historyDoneRef.current = true;
+          }
         }
-        // Mark HISTORY as received on the first HISTORY frame (even if empty)
-        historyReceivedRef.current = true;
       }
     }).then((unlistenFn) => {
       if (cancelled) {

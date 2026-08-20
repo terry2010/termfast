@@ -1586,6 +1586,12 @@ export function ServerDetail() {
                           toast.error(`Close failed: ${err?.message || err}`);
                         });
                       }
+                      // Remove from remoteTerminals and reset activeTerminal
+                      setRemoteTerminals((prev) => prev.filter((t) => t.terminal_id !== termId));
+                      if (remoteActiveTerminalRef.current === termId) {
+                        remoteActiveTerminalRef.current = null;
+                        setRemoteActiveTerminal(null);
+                      }
                     } else {
                       setPendingCloseTab(tab.key);
                     }
