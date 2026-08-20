@@ -2643,15 +2643,25 @@ async fn ipc_tunnel_start(
 
     tm.start_tunnel(pairing_id.clone(), pairing_key, relay_url.clone(), jwt.clone()).await?;
 
-    // Persist pairing so tunnel can be restored after restart
+    // Persist pairing so tunnel can be restored after restart.
+    // Preserve existing pairing_type/peer_role/peer_name if already saved
+    // (ipc_restore_tunnels calls this for desktop server pairings, and we
+    // must not overwrite the correct type/role with "mobile"/"").
+    let existing = pairing_store::load().iter()
+        .find(|p| p.pairing_id == pairing_id)
+        .cloned();
+    let (pairing_type, peer_name, peer_role) = match existing {
+        Some(e) if !e.pairing_type.is_empty() => (e.pairing_type, e.peer_name, e.peer_role),
+        _ => ("mobile".to_string(), String::new(), String::new()),
+    };
     pairing_store::save(pairing_store::StoredPairing {
         pairing_id,
         pairing_key_hex,
         relay_url,
         jwt,
-        pairing_type: "mobile".to_string(),
-        peer_name: String::new(),
-        peer_role: String::new(),
+        pairing_type,
+        peer_name,
+        peer_role,
     });
     Ok(())
 }
