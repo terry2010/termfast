@@ -287,6 +287,11 @@ fun ServerListScreen(navController: NavController) {
                                     )
                                 }
                                 Toast.makeText(context, "配对成功: $desktopName", Toast.LENGTH_SHORT).show()
+                                // Update online status from the listDevices result
+                                val statusMap = updatedDevices
+                                    .filter { it.pairingType == "mobile" }
+                                    .associate { it.pairingId to it.isOnline }
+                                onlineStatus = statusMap
                                 remoteVersion++
                             } else {
                                 Toast.makeText(context, "配对失败: ${result.optString("error", "未知错误")}", Toast.LENGTH_SHORT).show()
