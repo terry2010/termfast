@@ -26,6 +26,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PairingCard } from "@/components/shared/PairingCard";
 import { useRemoteDesktopStore } from "@/stores/remoteDesktopStore";
 import { RemoteTerminalView } from "@/components/remote-desktop/RemoteTerminalView";
+import { decodeBase64Json } from "@/lib/utils";
 import {
   showContextMenu,
   type ContextMenuEntry,
@@ -199,7 +200,7 @@ export function ServerDetail() {
       if (payload.frame_type === 0x02) {
         // LIST_RESPONSE — payload is JSON array of terminals
         try {
-          const parsed = JSON.parse(atob(payload.data));
+          const parsed = decodeBase64Json<any>(payload.data);
           const terms = (Array.isArray(parsed) ? parsed : parsed.terminals || []).map((t: any) => ({
             terminal_id: t.id ?? t.terminal_id,
             name: t.name || `Terminal #${t.id ?? t.terminal_id}`,
@@ -236,7 +237,7 @@ export function ServerDetail() {
       } else if (payload.frame_type === 0x0C) {
         // NOTIFY — could be LIST_CHANGED or other notification
         try {
-          const info = JSON.parse(atob(payload.data));
+          const info = decodeBase64Json<any>(payload.data);
           if (info.type === "list_changed") {
             // Terminal list changed on the remote desktop — re-request list
             ipcInvoke("ipc_remote_client_list_terminals", {
@@ -249,7 +250,7 @@ export function ServerDetail() {
       } else if (payload.frame_type === 0x13) {
         // INFO_RESPONSE — payload is JSON with system info
         try {
-          const info = JSON.parse(atob(payload.data));
+          const info = decodeBase64Json<any>(payload.data);
           setRemoteInfo(info);
         } catch {
           // ignore parse errors
@@ -258,7 +259,7 @@ export function ServerDetail() {
         // OK frame — could be response to NEW_TERMINAL (with payload) or CLOSE_TERMINAL
         if (payload.data) {
           try {
-            const parsed = JSON.parse(atob(payload.data));
+            const parsed = decodeBase64Json<any>(payload.data);
             if (parsed.terminal_id !== undefined) {
               // NEW_TERMINAL response
               const newTermId = parsed.terminal_id;

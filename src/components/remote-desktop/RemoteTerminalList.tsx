@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useRemoteDesktopStore } from "@/stores/remoteDesktopStore";
 import { ipcInvoke, useTauriEvent } from "@/hooks/useIpc";
 import { toast } from "sonner";
+import { decodeBase64Json } from "@/lib/utils";
 
 // Frame type constants (match remote_frame.rs)
 const LIST_RESPONSE = 0x02;
@@ -43,7 +44,7 @@ export function RemoteTerminalList({
     if (event.pairing_id !== pairingIdRef.current) return;
     if (event.frame_type === LIST_RESPONSE) {
       try {
-        const parsed = JSON.parse(atob(event.data));
+        const parsed = decodeBase64Json<any>(event.data);
         const terms = (parsed.terminals || []).map((t: any) => ({
           terminal_id: t.terminal_id,
           name: t.name || `Terminal #${t.terminal_id}`,
