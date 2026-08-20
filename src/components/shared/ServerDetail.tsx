@@ -414,7 +414,14 @@ export function ServerDetail() {
       // Skip if tab already exists (opened by handleOpenLocalTerminal)
       if (tabs.some((t) => t.id === tabId)) return;
       // Auto-create tab for this terminal
-      const defaultLabel = `${t("server.terminal")} ${tabs.length + 1}`;
+      // Generate a unique "终端 N" label: start with count+1, increment until no duplicate
+      const existingLabels = new Set(tabs.map((tab) => tab.label));
+      let n = tabs.length + 1;
+      let defaultLabel = `${t("server.terminal")} ${n}`;
+      while (existingLabels.has(defaultLabel)) {
+        n++;
+        defaultLabel = `${t("server.terminal")} ${n}`;
+      }
       addTerminalTab(serverId, {
         id: tabId,
         sessionId: sid,
@@ -424,6 +431,8 @@ export function ServerDetail() {
         disconnected: false,
         agentStatus: null,
       });
+      // Sync the frontend-generated name to daemon so mobile LIST_RESPONSE shows the same name
+      ipcInvoke<void>("set_session_name", { session_id: sid, name: defaultLabel }).catch(() => {});
       // Attach a binary output Channel so terminal output is received
       attachTerminalChannel(sid).catch((e) => {
         console.error("Failed to attach terminal channel:", e);
@@ -736,7 +745,14 @@ export function ServerDetail() {
     try {
       const currentTabs =
         useServerStore.getState().terminal_tabs_by_server[serverId] || [];
-      const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      // Generate a unique "终端 N" label: start with count+1, increment until no duplicate
+      const existingLabels = new Set(currentTabs.map((tab) => tab.label));
+      let n = currentTabs.length + 1;
+      let defaultLabel = `${t("server.terminal")} ${n}`;
+      while (existingLabels.has(defaultLabel)) {
+        n++;
+        defaultLabel = `${t("server.terminal")} ${n}`;
+      }
       const result = await openTerminalWithChannel(serverId, 80, 24, {
         backend: "local",
         shell: effectiveShell,

@@ -22,11 +22,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import android.widget.Toast
 import com.termfast.app.data.PairingStore
+import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.RemoteTunnelManager
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Wait for a RemoteTunnelManager's protocol to become ready (HELLO exchange done).
@@ -47,6 +52,7 @@ fun TerminalsScreen(
     focusSessionId: String? = null,
     focusServerId: String? = null,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val repo = remember { RustRepository }
     val scope = rememberCoroutineScope()
     var sessions by remember { mutableStateOf(TerminalSessionManager.getAllSessions()) }
@@ -56,6 +62,69 @@ fun TerminalsScreen(
     // Pre-load pairing desktop names for remote terminal display
     val pairingNames by remember {
         mutableStateOf(PairingStore.getAllPairings().associate { it.pairingId to it.desktopName })
+    }
+
+    // Keep tunnels alive for pairings that have remote sessions in the list,
+    // so the desktop can notify us when a terminal is closed.
+    // On NOTIFY(list_changed), re-fetch LIST and remove sessions whose terminalId
+    // is no longer present on the desktop.
+    LaunchedEffect(sessions.size) {
+        val remotePids = sessions.mapNotNull { it.remotePairingId }.toSet()
+        for (pid in remotePids) {
+            val pairing = PairingStore.getAllPairings().find { it.pairingId == pid } ?: continue
+            val key = pairing.pairingKey.chunked(2)
+                .map { it.toInt(16).toByte() }.toByteArray()
+            val tm = TerminalSessionManager.getOrCreateTunnelManager(
+                pid, key, pairing.relayUrl, pairing.pairingJwt,
+                pairing.pairingRefreshToken,
+            )
+            val state = tm.transportState.value
+            if (state is com.termfast.app.data.TunnelState.Disconnected ||
+                state is com.termfast.app.data.TunnelState.Error) {
+                tm.start()
+            }
+        }
+    }
+    LaunchedEffect(Unit) {
+        RustRepository.events.collect { event ->
+            when (event) {
+                is RustEvent.RemoteTunnelReady -> {
+                    val tm = TerminalSessionManager.tunnelManagers[event.pairing_id]
+                    tm?.onProtocolReady()
+                }
+                is RustEvent.RemoteTerminalNotify -> {
+                    val pid = event.pairing_id
+                    val tm = TerminalSessionManager.tunnelManagers[pid]
+                    if (tm != null && tm.protocolReady.value) {
+                        tm.sendListRequest()
+                    }
+                }
+                is RustEvent.RemoteTerminalList -> {
+                    val pid = event.pairing_id
+                    try {
+                        val arr = org.json.JSONArray(event.terminals)
+                        val aliveIds = (0 until arr.length()).mapNotNull { i ->
+                            arr.getJSONObject(i).optInt("id", -1).takeIf { it >= 0 }
+                        }.toSet()
+                        val toRemove = TerminalSessionManager.getAllSessions().filter { s ->
+                            s.remotePairingId == pid && s.remoteTerminalId != null &&
+                                s.remoteTerminalId !in aliveIds
+                        }
+                        if (toRemove.isNotEmpty()) {
+                            val names = toRemove.mapNotNull { it.name }.ifEmpty { listOf("远程终端") }.joinToString(", ")
+                            toRemove.forEach { s ->
+                                TerminalSessionManager.closeSessionBySessionId(s.sessionId)
+                            }
+                            sessions = TerminalSessionManager.getAllSessions()
+                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                Toast.makeText(context, "远程终端已关闭: $names", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+                else -> {}
+            }
+        }
     }
 
     // Group sessions by serverId, with the focused server first (if any)
@@ -205,13 +274,44 @@ fun TerminalsScreen(
                         // + button: create new terminal on this server
                         IconButton(
                             onClick = {
+                                android.util.Log.i("TerminalsScreen", "+ button clicked: serverId=$serverId")
                                 if (serverId.startsWith("remote:")) {
                                     // Remote terminal: send NEW_TERMINAL frame via tunnel
                                     val pid = serverId.removePrefix("remote:")
+                                    android.util.Log.i("TerminalsScreen", "remote terminal: pid=$pid")
                                     val tm = TerminalSessionManager.getTunnelManager(pid)
                                     if (tm != null && tm.protocolReady.value) {
-                                        tm.sendNewTerminal()
+                                        android.util.Log.i("TerminalsScreen", "tunnel ready, sending NEW_TERMINAL")
+                                        val sent = tm.sendNewTerminal()
+                                        android.util.Log.i("TerminalsScreen", "sendNewTerminal result=$sent")
+                                        if (sent) {
+                                            scope.launch {
+                                                val okResponse = CompletableDeferred<Pair<Int, String>>()
+                                                val eventJob = scope.launch {
+                                                    RustRepository.events.collect { event ->
+                                                        if (event is RustEvent.RemoteTerminalOk && event.pairing_id == pid) {
+                                                            android.util.Log.i("TerminalsScreen", "received RemoteTerminalOk: terminal_id=${event.terminal_id}, payload=${event.payload}")
+                                                            val json = try { org.json.JSONObject(event.payload) } catch (_: Exception) { null }
+                                                            val realTid = json?.optInt("terminal_id", event.terminal_id) ?: event.terminal_id
+                                                            val termName = json?.optString("name", "") ?: ""
+                                                            okResponse.complete(realTid to termName)
+                                                        }
+                                                    }
+                                                }
+                                                val result = withTimeoutOrNull(10000) { okResponse.await() }
+                                                eventJob.cancel()
+                                                if (result != null) {
+                                                    val (newTerminalId, termName) = result
+                                                    android.util.Log.i("TerminalsScreen", "navigating to new terminal: id=$newTerminalId, name=$termName")
+                                                    val encodedName = java.net.URLEncoder.encode(termName.ifBlank { "Terminal" }, "UTF-8")
+                                                    navController.navigate("remote_terminal/$pid/$newTerminalId/$encodedName")
+                                                } else {
+                                                    Toast.makeText(context, "新建超时，请在远程终端列表中查看", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }
                                     } else {
+                                        android.util.Log.i("TerminalsScreen", "tunnel not ready (tm=${tm != null}, ready=${tm?.protocolReady?.value}), starting tunnel...")
                                         // Tunnel not ready — need to start it first
                                         val pairing = PairingStore.getPairing(pid)
                                         if (pairing != null) {
@@ -222,13 +322,61 @@ fun TerminalsScreen(
                                                     pid, key, pairing.relayUrl, pairing.pairingJwt,
                                                     pairing.pairingRefreshToken,
                                                 )
+                                                // Listen for RemoteTunnelReady + RemoteTerminalOk events
+                                                val okResponse = CompletableDeferred<Pair<Int, String>>()
+                                                val eventJob = scope.launch {
+                                                    RustRepository.events.collect { event ->
+                                                        when (event) {
+                                                            is RustEvent.RemoteTunnelReady -> {
+                                                                if (event.pairing_id == pid) {
+                                                                    android.util.Log.i("TerminalsScreen", "received RemoteTunnelReady event")
+                                                                    newTm.onProtocolReady()
+                                                                }
+                                                            }
+                                                            is RustEvent.RemoteTerminalOk -> {
+                                                                if (event.pairing_id == pid) {
+                                                                    android.util.Log.i("TerminalsScreen", "received RemoteTerminalOk: terminal_id=${event.terminal_id}, payload=${event.payload}")
+                                                                    val json = try { org.json.JSONObject(event.payload) } catch (_: Exception) { null }
+                                                                    val realTid = json?.optInt("terminal_id", event.terminal_id) ?: event.terminal_id
+                                                                    val termName = json?.optString("name", "") ?: ""
+                                                                    okResponse.complete(realTid to termName)
+                                                                }
+                                                            }
+                                                            else -> {}
+                                                        }
+                                                    }
+                                                }
                                                 newTm.start()
                                                 // Wait for protocol ready, then send NEW_TERMINAL
                                                 val ready = waitForProtocolReady(newTm, timeoutMs = 10000)
+                                                android.util.Log.i("TerminalsScreen", "waitForProtocolReady result=$ready")
                                                 if (ready) {
-                                                    newTm.sendNewTerminal()
+                                                    val sent = newTm.sendNewTerminal()
+                                                    android.util.Log.i("TerminalsScreen", "sendNewTerminal result=$sent")
+                                                    if (sent) {
+                                                        // Wait for OK response with terminal_id and name
+                                                        val result = withTimeoutOrNull(10000) { okResponse.await() }
+                                                        eventJob.cancel()
+                                                        if (result != null) {
+                                                            val (newTerminalId, termName) = result
+                                                            android.util.Log.i("TerminalsScreen", "navigating to new terminal: id=$newTerminalId, name=$termName")
+                                                            val encodedName = java.net.URLEncoder.encode(termName.ifBlank { "Terminal" }, "UTF-8")
+                                                            navController.navigate("remote_terminal/$pid/$newTerminalId/$encodedName")
+                                                        } else {
+                                                            Toast.makeText(context, "新建超时，请在远程终端列表中查看", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    } else {
+                                                        eventJob.cancel()
+                                                        Toast.makeText(context, "发送失败，请重试", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                } else {
+                                                    eventJob.cancel()
+                                                    Toast.makeText(context, "无法连接到电脑，请确认电脑端在线", Toast.LENGTH_SHORT).show()
                                                 }
                                             }
+                                        } else {
+                                            android.util.Log.w("TerminalsScreen", "no pairing found for pid=$pid")
+                                            Toast.makeText(context, "未找到配对信息", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 } else {
@@ -260,7 +408,16 @@ fun TerminalsScreen(
                         },
                         isFocused = session.sessionId == focusSessionId,
                         onClick = {
-                            navController.navigate("terminal/${session.serverId}/${session.sessionId}")
+                            if (session.serverId.startsWith("remote:") && session.remotePairingId != null && session.remoteTerminalId != null) {
+                                // Remote terminal: navigate to remote terminal screen
+                                val pid = session.remotePairingId!!
+                                val tid = session.remoteTerminalId!!
+                                val encodedName = java.net.URLEncoder.encode(session.name.ifBlank { "Terminal" }, "UTF-8")
+                                navController.navigate("remote_terminal/$pid/$tid/$encodedName")
+                            } else {
+                                // Local SSH: navigate to normal terminal screen
+                                navController.navigate("terminal/${session.serverId}/${session.sessionId}")
+                            }
                         },
                         onClose = {
                             scope.launch {

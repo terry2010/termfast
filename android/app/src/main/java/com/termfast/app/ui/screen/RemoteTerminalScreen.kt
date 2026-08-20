@@ -163,6 +163,28 @@ fun RemoteTerminalScreen(
                         errorMsg = event.error
                     }
                 }
+                is RustEvent.RemoteTerminalNotify -> {
+                    if (event.pairing_id == pairingId) {
+                        // Terminal list changed on desktop — re-fetch list to check
+                        // if our terminalId still exists. If not, the desktop closed it.
+                        tunnelManager.sendListRequest()
+                    }
+                }
+                is RustEvent.RemoteTerminalList -> {
+                    if (event.pairing_id == pairingId && sessionId != null) {
+                        // Check if our terminalId is still in the list
+                        try {
+                            val arr = org.json.JSONArray(event.terminals)
+                            val found = (0 until arr.length()).any { i ->
+                                arr.getJSONObject(i).optInt("id", -1) == terminalId
+                            }
+                            if (!found) {
+                                android.util.Log.i("RemoteTerminalScreen", "terminal $terminalId no longer in list — closed by desktop")
+                                errorMsg = "终端已在桌面端关闭"
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
                 else -> {}
             }
         }

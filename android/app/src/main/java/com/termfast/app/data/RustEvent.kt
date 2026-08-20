@@ -124,4 +124,12 @@ sealed class RustEvent {
         val pairing_id: String,
         val message: String,
     ) : RustEvent()
+
+    @Serializable
+    @SerialName("RemoteTerminalOk")
+    data class RemoteTerminalOk(
+        val pairing_id: String,
+        val terminal_id: Int,
+        val payload: String,
+    ) : RustEvent()
 }

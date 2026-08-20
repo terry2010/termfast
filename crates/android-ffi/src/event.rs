@@ -102,6 +102,13 @@ pub enum RustEvent {
         pairing_id: String,
         message: String,
     },
+    /// OK frame with payload (e.g. NEW_TERMINAL response with terminal_id).
+    #[serde(rename = "RemoteTerminalOk")]
+    RemoteTerminalOk {
+        pairing_id: String,
+        terminal_id: u32,
+        payload: String,
+    },
 }
 
 impl RustEvent {

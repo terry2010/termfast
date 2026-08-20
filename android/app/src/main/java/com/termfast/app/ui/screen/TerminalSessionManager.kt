@@ -24,7 +24,7 @@ object TerminalSessionManager {
     private val sessions = mutableMapOf<String, SessionState>()
     private var collectorStarted = false
     // Tunnel managers registered by pairingId — used for UNSUBSCRIBE on disconnect
-    private val tunnelManagers = mutableMapOf<String, com.termfast.app.data.RemoteTunnelManager>()
+    val tunnelManagers = mutableMapOf<String, com.termfast.app.data.RemoteTunnelManager>()
 
     // Regex to strip ANSI escape codes:
     // - CSI: \x1b[?...letter (colors, cursor movement, private modes like ?2004h)

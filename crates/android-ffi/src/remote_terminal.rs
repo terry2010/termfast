@@ -251,7 +251,16 @@ fn dispatch_frame_event(pairing_id: &str, frame_type: u8, terminal_id: u32, payl
                 crate::jni::dispatch_event_to_kotlin(&event.to_json());
             }
             OK => {
-                // Confirmation frame, no event needed
+                // OK frame with payload (e.g. NEW_TERMINAL response with terminal_id)
+                if !payload.is_empty() {
+                    let json = String::from_utf8_lossy(payload).to_string();
+                    let event = crate::event::RustEvent::RemoteTerminalOk {
+                        pairing_id: pairing_id.to_string(),
+                        terminal_id,
+                        payload: json,
+                    };
+                    crate::jni::dispatch_event_to_kotlin(&event.to_json());
+                }
             }
             _ => {
                 tracing::warn!(

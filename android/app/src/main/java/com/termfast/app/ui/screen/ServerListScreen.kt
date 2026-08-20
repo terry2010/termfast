@@ -210,6 +210,7 @@ fun ServerListScreen(navController: NavController) {
                             val statusMap = completedDevices
                                 .filter { it.pairingType == "mobile" }
                                 .associate { it.pairingId to it.isOnline }
+                            android.util.Log.i("ServerList", "sync: onlineStatus=$statusMap")
                             onlineStatus = statusMap
                             // Remove local pairings that are revoked or missing on backend
                             localPairings.forEach { local ->
@@ -243,6 +244,24 @@ fun ServerListScreen(navController: NavController) {
             }
         }
         refresh()
+    }
+
+    // Periodically refresh online status (every 15s) so the UI reflects
+    // desktops coming online/offline without requiring a full app restart.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15000)
+            val token = PairingStore.getToken() ?: continue
+            try {
+                val devices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
+                val statusMap = devices
+                    .filter { it.pairingType == "mobile" && it.status == "completed" }
+                    .associate { it.pairingId to it.isOnline }
+                onlineStatus = statusMap
+            } catch (_: Exception) {
+                // Best-effort refresh — ignore errors
+            }
+        }
     }
 
     // Listen for QR scan result — auto-complete pairing when scanned from ServerList

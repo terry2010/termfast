@@ -331,6 +331,7 @@ class RemoteTunnelManager(
      * Marks protocol as ready and triggers LIST_REQUEST.
      */
     fun onProtocolReady() {
+        android.util.Log.i("RemoteTunnel", "onProtocolReady: pairingId=$pairingId")
         _protocolReady.value = true
     }
 

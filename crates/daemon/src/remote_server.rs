@@ -1089,11 +1089,33 @@ impl RemoteServer {
         let shell = req.get("shell").and_then(|v| v.as_str()).map(|s| s.to_string());
         let name = req.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
 
+        // Generate a unique "终端 N" name: start with count+1, keep incrementing
+        // until no duplicate name exists among local sessions.
+        let existing_names: std::collections::HashSet<String> = self.terminal_manager
+            .list_session_infos().await
+            .iter()
+            .filter(|i| i.server_id == "__local__")
+            .map(|i| i.name.clone())
+            .collect();
+        let base_count = existing_names.len();
+
         match self.terminal_manager.open_local(80, 24, shell, None).await {
             Ok((session_id, _initial_output)) => {
-                if let Some(ref n) = name {
-                    self.terminal_manager.set_session_name(&session_id, n).await;
-                }
+                // Use provided name, or generate a unique "终端 N"
+                let effective_name = match name {
+                    Some(n) => n,
+                    None => {
+                        let mut n = base_count + 1;
+                        loop {
+                            let candidate = format!("终端 {}", n);
+                            if !existing_names.contains(&candidate) {
+                                break candidate;
+                            }
+                            n += 1;
+                        }
+                    }
+                };
+                self.terminal_manager.set_session_name(&session_id, &effective_name).await;
                 self.terminal_manager.notify_opened();
                 // Forward terminal:opened to the local GUI so it creates a tab.
                 self.terminal_manager.forward_opened(&session_id);
@@ -1105,6 +1127,7 @@ impl RemoteServer {
                 let json = serde_json::json!({
                     "terminal_id": handle,
                     "session_id": session_id,
+                    "name": effective_name,
                 });
                 Some(Frame::ok_with_payload(0, &json.to_string()))
             }
