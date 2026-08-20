@@ -62,7 +62,7 @@ fun DesktopPairingScreen(navController: NavController) {
             scope.launch {
                 try {
                     desktopPairings = withContext(Dispatchers.IO) {
-                        PairingApi.listDevicesByType(tok, "desktop")
+                        PairingApi.listDevicesByType("desktop")
                     }
                 } catch (e: PairingApi.TokenExpiredException) {
                     PairingStore.clearToken()
@@ -231,7 +231,7 @@ fun DesktopPairingScreen(navController: NavController) {
                                 scope.launch {
                                     try {
                                         desktopPairings = withContext(Dispatchers.IO) {
-                                            PairingApi.listDevicesByType(token!!, "desktop")
+                                            PairingApi.listDevicesByType("desktop")
                                         }
                                     } catch (e: PairingApi.TokenExpiredException) {
                                         PairingStore.clearToken()

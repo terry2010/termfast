@@ -20,14 +20,42 @@ object PairingApi {
 
     private val jsonMedia = "application/json".toMediaType()
 
-    /** Thrown when the backend returns 401 (token expired or invalid). */
+    /** Thrown when both access token and refresh token are expired/invalid. */
     class TokenExpiredException(message: String = "token expired") : Exception(message)
 
-    /** Check HTTP response for 401 and throw TokenExpiredException if so. */
-    private fun checkAuth(resp: okhttp3.Response) {
+    /**
+     * Execute a token-authenticated request with automatic refresh-on-401.
+     *
+     * [block] receives an access token and should build + execute the HTTP
+     * request, returning the OkHttp Response. If the response is 401, this
+     * function tries to refresh the access token via the stored refresh token.
+     * If refresh succeeds, [block] is called again with the new token.
+     * If refresh also fails, TokenExpiredException is thrown.
+     */
+    private inline fun withAuth(block: (token: String) -> okhttp3.Response): okhttp3.Response {
+        var token = PairingStore.getToken()
+            ?: throw TokenExpiredException("no access token")
+        var resp = block(token)
         if (resp.code == 401) {
-            throw TokenExpiredException()
+            resp.close()
+            // Try to refresh the access token
+            val refreshToken = PairingStore.getRefreshToken()
+            if (refreshToken != null) {
+                val newToken = refreshAccessToken(refreshToken)
+                if (newToken != null) {
+                    PairingStore.saveToken(newToken)
+                    token = newToken
+                    resp = block(token)
+                }
+            }
+            if (resp.code == 401) {
+                resp.close()
+                // Refresh failed too — clear tokens, user must re-login
+                PairingStore.clearToken()
+                throw TokenExpiredException()
+            }
         }
+        return resp
     }
 
     /**
@@ -73,6 +101,23 @@ object PairingApi {
         return json
     }
 
+    /**
+     * Refresh the access token using a refresh token.
+     * Returns the new access_token, or null if the refresh token is also expired.
+     * Caller should store the new access_token via PairingStore.saveToken().
+     */
+    fun refreshAccessToken(refreshToken: String): String? {
+        val body = JSONObject().put("refresh_token", refreshToken).toString()
+        val resp = client.newCall(Request.Builder()
+            .post(body.toRequestBody(jsonMedia))
+            .url("$BACKEND_URL/auth/refresh")
+            .build()).execute()
+        if (!resp.isSuccessful) return null
+        val json = JSONObject(resp.body!!.string())
+        val token = json.optString("access_token", "")
+        return if (token.isNotEmpty()) token else null
+    }
+
     fun initiatePairing(token: String, deviceId: String): JSONObject {
         val body = JSONObject().put("desktop_device_id", deviceId).toString()
         val resp = client.newCall(Request.Builder()
@@ -92,18 +137,19 @@ object PairingApi {
         return JSONObject(resp.body!!.string())
     }
 
-    fun listDevices(token: String, mobileDeviceId: String = ""): List<DeviceInfo> {
+    fun listDevices(mobileDeviceId: String = ""): List<DeviceInfo> {
         val url = if (mobileDeviceId.isNotEmpty()) {
             "$BACKEND_URL/devices?mobile_device_id=${URLEncoder.encode(mobileDeviceId, "UTF-8")}"
         } else {
             "$BACKEND_URL/devices"
         }
-        val resp = client.newCall(Request.Builder()
-            .get()
-            .header("Authorization", "Bearer $token")
-            .url(url)
-            .build()).execute()
-        checkAuth(resp)
+        val resp = withAuth { token ->
+            client.newCall(Request.Builder()
+                .get()
+                .header("Authorization", "Bearer $token")
+                .url(url)
+                .build()).execute()
+        }
         val json = JSONObject(resp.body!!.string())
         val arr = json.optJSONArray("devices") ?: return emptyList()
         val list = mutableListOf<DeviceInfo>()
@@ -199,14 +245,15 @@ object PairingApi {
      * List devices filtered by pairing_type.
      * Pass pairingType="desktop" to get desktop-to-desktop pairings.
      */
-    fun listDevicesByType(token: String, pairingType: String): List<DeviceInfo> {
+    fun listDevicesByType(pairingType: String): List<DeviceInfo> {
         val url = "$BACKEND_URL/devices?pairing_type=${URLEncoder.encode(pairingType, "UTF-8")}"
-        val resp = client.newCall(Request.Builder()
-            .get()
-            .header("Authorization", "Bearer $token")
-            .url(url)
-            .build()).execute()
-        checkAuth(resp)
+        val resp = withAuth { token ->
+            client.newCall(Request.Builder()
+                .get()
+                .header("Authorization", "Bearer $token")
+                .url(url)
+                .build()).execute()
+        }
         val json = JSONObject(resp.body!!.string())
         val arr = json.optJSONArray("devices") ?: return emptyList()
         val list = mutableListOf<DeviceInfo>()

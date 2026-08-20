@@ -193,7 +193,7 @@ fun ServerListScreen(navController: NavController) {
                     val localPairings = PairingStore.getAllPairings()
                     if (localPairings.isNotEmpty()) {
                         val backendDevices = withContext(Dispatchers.IO) {
-                            PairingApi.listDevices(token)
+                            PairingApi.listDevices()
                         }
                         // Guard: only prune local pairings if backend returned
                         // at least one completed device. If the backend returns
@@ -225,7 +225,7 @@ fun ServerListScreen(navController: NavController) {
                     }
                     // Load desktop pairings to check interconnection status
                     desktopPairings = withContext(Dispatchers.IO) {
-                        PairingApi.listDevicesByType(token, "desktop")
+                        PairingApi.listDevicesByType("desktop")
                     }
                 } catch (e: PairingApi.TokenExpiredException) {
                     // Token expired — clear it so the UI shows "not logged in"
@@ -270,7 +270,7 @@ fun ServerListScreen(navController: NavController) {
                             val status = result.optString("status")
                             if (status == "completed") {
                                 val jwt = result.optString("pairing_jwt")
-                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices(token) }
+                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                                 val desktopDeviceId = updatedDevices.find { it.pairingId == pairingId }?.desktopDeviceId ?: ""
                                 if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
                                     PairingStore.savePairing(

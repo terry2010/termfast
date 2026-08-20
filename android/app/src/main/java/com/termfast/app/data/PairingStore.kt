@@ -19,6 +19,7 @@ data class RemoteTunnelConfig(
 object PairingStore {
     private const val PREFS_NAME = "pairing"
     private const val KEY_TOKEN = "token"
+    private const val KEY_REFRESH_TOKEN = "refresh_token"
     private const val KEY_PAIRINGS = "pairings_json"
 
     private var ctx: Context? = null
@@ -41,8 +42,14 @@ object PairingStore {
 
     fun getToken(): String? = prefs().getString(KEY_TOKEN, null)
 
+    fun saveRefreshToken(token: String) {
+        prefs().edit().putString(KEY_REFRESH_TOKEN, token).apply()
+    }
+
+    fun getRefreshToken(): String? = prefs().getString(KEY_REFRESH_TOKEN, null)
+
     fun clearToken() {
-        prefs().edit().remove(KEY_TOKEN).apply()
+        prefs().edit().remove(KEY_TOKEN).remove(KEY_REFRESH_TOKEN).apply()
     }
 
     // --- Multi-pairing storage ---

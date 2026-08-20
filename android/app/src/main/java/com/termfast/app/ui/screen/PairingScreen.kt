@@ -58,7 +58,7 @@ fun PairingScreen(navController: NavController) {
                     // Don't filter by mobileDeviceId — the backend already filters
                     // by user ID (from JWT). Filtering by getDeviceName() caused
                     // devices to disappear when getprop returned inconsistent values.
-                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(saved) }
+                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                     android.util.Log.d("PairingScreen", "Loaded ${devices.size} devices")
                     devices.forEach { d ->
                         android.util.Log.d("PairingScreen", "Device: ${d.desktopName}, isOnline=${d.isOnline}, type=${d.pairingType}")
@@ -173,9 +173,13 @@ fun PairingScreen(navController: NavController) {
                                 try {
                                     val result = withContext(Dispatchers.IO) { PairingApi.login(email, password) }
                                     val tok = result.getString("access_token")
+                                    val refreshToken = result.optString("refresh_token", "")
                                     token = tok
                                     PairingStore.saveToken(tok)
-                                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices(tok) }
+                                    if (refreshToken.isNotEmpty()) {
+                                        PairingStore.saveRefreshToken(refreshToken)
+                                    }
+                                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                                     Toast.makeText(context, "登录成功", Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "登录失败: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -371,7 +375,7 @@ fun PairingScreen(navController: NavController) {
                             val status = result.optString("status")
                             if (status == "completed") {
                                 val jwt = result.optString("pairing_jwt")
-                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices(token!!) }
+                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                                 val desktopDeviceId = updatedDevices.find { it.pairingId == qr.pairingId }?.desktopDeviceId ?: ""
                                 if (jwt.isNotEmpty() && qr.pairingKey.isNotEmpty() && qr.relayUrl.isNotEmpty()) {
                                     PairingStore.savePairing(

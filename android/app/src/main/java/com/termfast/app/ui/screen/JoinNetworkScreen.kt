@@ -45,7 +45,7 @@ fun JoinNetworkScreen(navController: NavController, token: String) {
         loading = true
         try {
             devices = withContext(Dispatchers.IO) {
-                PairingApi.listDevicesByType(token, "mobile")
+                PairingApi.listDevicesByType("mobile")
             }
         } catch (_: Exception) {
             // Ignore
