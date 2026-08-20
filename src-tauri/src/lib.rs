@@ -2920,11 +2920,14 @@ async fn import_desktop_pairings_from_backend(
         let relay_url = "ws://sh.zimufan.com:39527/tunnel".to_string();
 
         // Save to pairing_store so future restores find it
+        // For server role: store the user JWT so tunnel can reconnect after restart.
+        // For client role: JWT will be reissued and overwritten below.
+        let stored_jwt = if peer_role == "server" { jwt.to_string() } else { String::new() };
         pairing_store::save(pairing_store::StoredPairing {
             pairing_id: pid.to_string(),
             pairing_key_hex: pairing_key_hex.clone(),
             relay_url: relay_url.clone(),
-            jwt: String::new(), // No pairing JWT available (frame not received)
+            jwt: stored_jwt,
             pairing_type: "desktop".to_string(),
             peer_name: peer_name.to_string(),
             peer_role: peer_role.to_string(),
@@ -2948,12 +2951,12 @@ async fn import_desktop_pairings_from_backend(
             ).await {
                 tracing::warn!("import_desktop_pairings: failed to start tunnel for {}: {}", pid, e);
             } else {
-                // Re-save with correct desktop type (ipc_tunnel_start overwrote as mobile)
+                // Re-save with correct desktop type + JWT (ipc_tunnel_start overwrote as mobile)
                 pairing_store::save(pairing_store::StoredPairing {
                     pairing_id: pid.to_string(),
                     pairing_key_hex: pairing_key_hex.clone(),
                     relay_url: relay_url.clone(),
-                    jwt: String::new(),
+                    jwt: jwt.to_string(),
                     pairing_type: "desktop".to_string(),
                     peer_name: peer_name.to_string(),
                     peer_role: peer_role.to_string(),

@@ -127,6 +127,36 @@ export default function App() {
     loadConfig();
     loadServerList();
 
+    // Restore remote tunnels on startup (survives app restart)
+    // Try to refresh token first if it might be expired
+    const restoreTunnels = async () => {
+      if (didRestoreTunnels.current) return;
+      let token = localStorage.getItem("pairing_token");
+      if (!token) return;
+      didRestoreTunnels.current = true;
+      // Try to refresh token first (in case it's expired)
+      const refreshToken = localStorage.getItem("pairing_refresh_token");
+      if (refreshToken) {
+        try {
+          const result = await ipcInvoke<any>("ipc_pairing_refresh", {
+            refresh_token: refreshToken,
+          });
+          if (result.access_token) {
+            token = result.access_token as string;
+            localStorage.setItem("pairing_token", token);
+            console.log("[App] token refreshed before restore_tunnels");
+          }
+        } catch (e) {
+          console.warn("[App] token refresh failed, trying with existing token:", String(e));
+        }
+      }
+      ipcInvoke<any>("ipc_restore_tunnels", { jwt: token })
+        .then((r) => {
+          if (r > 0) console.log(`[App] restored ${r} remote tunnel(s)`);
+        })
+        .catch((e) => console.warn("[App] restore tunnels failed:", e));
+    };
+
     // If the daemon wasn't ready when the above IPC calls fired, retry
     // once it finishes starting.  This handles slow Windows startup where
     // the embedded daemon takes a few seconds to initialise.
@@ -136,26 +166,10 @@ export default function App() {
       loadServerList();
       // Restore tunnels after daemon is ready (handles slow Windows startup
       // where ipc_restore_tunnels fires before daemon is initialized)
-      const savedToken = localStorage.getItem("pairing_token");
-      if (savedToken) {
-        ipcInvoke<any>("ipc_restore_tunnels", { jwt: savedToken })
-          .then((r) => {
-            if (r > 0) console.log(`[App] daemon:ready restored ${r} remote tunnel(s)`);
-          })
-          .catch((e) => console.warn("[App] daemon:ready restore tunnels failed:", e));
-      }
+      restoreTunnels();
     }).then((fn) => { daemonReadyUnlisten = fn; });
 
-    // Restore remote tunnels on startup (survives app restart)
-    const savedToken = localStorage.getItem("pairing_token");
-    if (savedToken && !didRestoreTunnels.current) {
-      didRestoreTunnels.current = true;
-      ipcInvoke<any>("ipc_restore_tunnels", { jwt: savedToken })
-        .then((r) => {
-          if (r > 0) console.log(`[App] restored ${r} remote tunnel(s)`);
-        })
-        .catch((e) => console.warn("[App] restore tunnels failed:", e));
-    }
+    restoreTunnels();
 
     // Pre-load trigger templates so the selector in TriggerEditor has data
     // before the TemplateLibrary modal is ever opened.
