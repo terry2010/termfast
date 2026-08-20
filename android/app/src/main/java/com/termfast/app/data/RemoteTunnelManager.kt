@@ -102,6 +102,7 @@ class RemoteTunnelManager(
     private val pairingJwt: String,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     private val ffi: RemoteTunnelFfi = DefaultRemoteTunnelFfi,
+    private val pairingRefreshToken: String = "",
 ) {
     private val tunnelManager = TunnelManager(scope)
 
@@ -190,7 +191,19 @@ class RemoteTunnelManager(
             pairingJwt = pairingJwt,
             pairingId = pairingId,
         )
-        val conn = tunnelManager.getOrCreate(config, callbacks)
+        // JWT refresher: called by TunnelConnection on 401 to auto-refresh
+        // the pairing JWT via /auth/refresh-pairing. On success, the new JWT
+        // is persisted to PairingStore so future connections use it directly.
+        val refresher: (suspend () -> String?)? = if (pairingRefreshToken.isNotEmpty()) {
+            {
+                val newJwt = PairingApi.refreshPairingJwt(pairingRefreshToken)
+                if (newJwt != null) {
+                    PairingStore.updatePairingJwt(pairingId, newJwt)
+                }
+                newJwt
+            }
+        } else null
+        val conn = tunnelManager.getOrCreate(config, callbacks, refresher)
         val currentState = conn.state
         if (currentState is TunnelState.Connected) {
             // Transport connected — reuse it.

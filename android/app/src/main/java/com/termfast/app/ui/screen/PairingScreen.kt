@@ -375,6 +375,7 @@ fun PairingScreen(navController: NavController) {
                             val status = result.optString("status")
                             if (status == "completed") {
                                 val jwt = result.optString("pairing_jwt")
+                                val pairingRefreshToken = result.optString("refresh_token", "")
                                 val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                                 val desktopDeviceId = updatedDevices.find { it.pairingId == qr.pairingId }?.desktopDeviceId ?: ""
                                 if (jwt.isNotEmpty() && qr.pairingKey.isNotEmpty() && qr.relayUrl.isNotEmpty()) {
@@ -386,6 +387,7 @@ fun PairingScreen(navController: NavController) {
                                             pairingJwt = jwt,
                                             desktopName = qr.desktopName,
                                             desktopDeviceId = desktopDeviceId,
+                                            pairingRefreshToken = pairingRefreshToken,
                                         )
                                     )
                                 }

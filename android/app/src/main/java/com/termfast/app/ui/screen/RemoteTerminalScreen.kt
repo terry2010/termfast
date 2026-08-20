@@ -49,6 +49,7 @@ fun RemoteTerminalScreen(
     val pairingKeyHex = pairing?.pairingKey
     val relayUrl = pairing?.relayUrl
     val pairingJwt = pairing?.pairingJwt
+    val pairingRefreshToken = pairing?.pairingRefreshToken ?: ""
 
     if (pairingKeyHex == null || relayUrl == null || pairingJwt == null) {
         Scaffold(
@@ -79,7 +80,7 @@ fun RemoteTerminalScreen(
 
     // Create tunnel manager (shared via TerminalSessionManager)
     val tunnelManager = remember(pairingId) {
-        TerminalSessionManager.getOrCreateTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt)
+        TerminalSessionManager.getOrCreateTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt, pairingRefreshToken)
     }
 
     var sessionId by remember { mutableStateOf<String?>(null) }

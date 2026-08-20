@@ -155,11 +155,13 @@ object TerminalSessionManager {
         pairingKey: ByteArray,
         relayUrl: String,
         pairingJwt: String,
+        pairingRefreshToken: String = "",
     ): com.termfast.app.data.RemoteTunnelManager {
         val existing = tunnelManagers[pairingId]
         if (existing != null) return existing
         val manager = com.termfast.app.data.RemoteTunnelManager(
-            pairingId, pairingKey, relayUrl, pairingJwt
+            pairingId, pairingKey, relayUrl, pairingJwt,
+            pairingRefreshToken = pairingRefreshToken,
         )
         tunnelManagers[pairingId] = manager
         return manager

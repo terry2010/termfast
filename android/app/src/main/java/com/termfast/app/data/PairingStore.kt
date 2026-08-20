@@ -14,6 +14,7 @@ data class RemoteTunnelConfig(
     val pairingJwt: String,
     val desktopName: String,
     val desktopDeviceId: String,
+    val pairingRefreshToken: String = "",
 )
 
 object PairingStore {
@@ -80,6 +81,17 @@ object PairingStore {
     fun getAllPairings(): List<RemoteTunnelConfig> = readMap().values.toList()
 
     fun getPairing(pairingId: String): RemoteTunnelConfig? = readMap()[pairingId]
+
+    /** Update the pairingJwt (and optionally refresh token) for an existing pairing. */
+    fun updatePairingJwt(pairingId: String, newJwt: String, newRefreshToken: String? = null) {
+        val map = readMap()
+        val existing = map[pairingId] ?: return
+        map[pairingId] = existing.copy(
+            pairingJwt = newJwt,
+            pairingRefreshToken = newRefreshToken ?: existing.pairingRefreshToken,
+        )
+        writeMap(map)
+    }
 
     /** Find a mobile pairing by desktop device ID (used by desktop-pair QR scan flow). */
     fun getPairingByDeviceId(desktopDeviceId: String): RemoteTunnelConfig? =

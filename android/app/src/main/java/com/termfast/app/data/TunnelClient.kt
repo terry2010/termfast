@@ -66,7 +66,7 @@ fun parseControlMessage(text: String): ControlMessage {
  */
 data class TunnelConfig(
     val relayUrl: String,
-    val pairingJwt: String,
+    var pairingJwt: String,
     val pairingId: String,
 )
 
@@ -104,6 +104,7 @@ class TunnelConnection(
     private val callbacks: TunnelCallbacks,
     private val client: OkHttpClient,
     private val scope: CoroutineScope,
+    private val jwtRefresher: (suspend () -> String?)? = null,
 ) {
     @Volatile
     private var webSocket: WebSocket? = null
@@ -237,7 +238,29 @@ class TunnelConnection(
                 val code = response?.code
                 android.util.Log.e("TunnelClient", "onFailure: code=$code, throwable=${t.javaClass.name}: ${t.message}, response=${response?.message}")
                 if (code == 401) {
-                    // JWT invalid/expired — stop reconnecting
+                    // JWT invalid/expired — try to refresh before giving up
+                    if (jwtRefresher != null) {
+                        scope.launch {
+                            if (myGen != generation) return@launch
+                            android.util.Log.i("TunnelClient", "401 received, attempting JWT refresh")
+                            val newJwt = try { jwtRefresher() } catch (_: Exception) { null }
+                            if (newJwt != null && myGen == generation) {
+                                android.util.Log.i("TunnelClient", "JWT refresh succeeded, reconnecting")
+                                config.pairingJwt = newJwt
+                                connecting = false
+                                backoffMs = 1000
+                                scheduleReconnect(myGen)
+                            } else if (myGen == generation) {
+                                android.util.Log.w("TunnelClient", "JWT refresh failed, giving up")
+                                manuallyClosed = true
+                                connecting = false
+                                updateState(TunnelState.Error("authentication failed (401)"))
+                                callbacks.onError("authentication failed (401)")
+                            }
+                        }
+                        return
+                    }
+                    // No refresher — stop reconnecting
                     manuallyClosed = true
                     connecting = false
                     updateState(TunnelState.Error("authentication failed (401)"))
@@ -372,9 +395,9 @@ class TunnelManager(
     /**
      * Get or create a tunnel connection for a pairing_id.
      */
-    fun getOrCreate(config: TunnelConfig, callbacks: TunnelCallbacks): TunnelConnection {
+    fun getOrCreate(config: TunnelConfig, callbacks: TunnelCallbacks, jwtRefresher: (suspend () -> String?)? = null): TunnelConnection {
         return connections.computeIfAbsent(config.pairingId) {
-            TunnelConnection(config, callbacks, client, scope)
+            TunnelConnection(config, callbacks, client, scope, jwtRefresher)
         }
     }
 

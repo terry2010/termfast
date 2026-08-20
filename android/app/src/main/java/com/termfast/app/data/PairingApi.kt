@@ -118,6 +118,23 @@ object PairingApi {
         return if (token.isNotEmpty()) token else null
     }
 
+    /**
+     * Refresh a pairing JWT using a pairing refresh token.
+     * Returns the new pairing_jwt, or null if the refresh token is expired/invalid.
+     * Note: this does NOT use withAuth (pairing refresh token is separate from user JWT).
+     */
+    fun refreshPairingJwt(pairingRefreshToken: String): String? {
+        val body = JSONObject().put("refresh_token", pairingRefreshToken).toString()
+        val resp = client.newCall(Request.Builder()
+            .post(body.toRequestBody(jsonMedia))
+            .url("$BACKEND_URL/auth/refresh-pairing")
+            .build()).execute()
+        if (!resp.isSuccessful) return null
+        val json = JSONObject(resp.body!!.string())
+        val jwt = json.optString("pairing_jwt", "")
+        return if (jwt.isNotEmpty()) jwt else null
+    }
+
     fun initiatePairing(token: String, deviceId: String): JSONObject {
         val body = JSONObject().put("desktop_device_id", deviceId).toString()
         val resp = client.newCall(Request.Builder()

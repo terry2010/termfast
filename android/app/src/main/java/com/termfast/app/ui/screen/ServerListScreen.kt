@@ -270,6 +270,7 @@ fun ServerListScreen(navController: NavController) {
                             val status = result.optString("status")
                             if (status == "completed") {
                                 val jwt = result.optString("pairing_jwt")
+                                val pairingRefreshToken = result.optString("refresh_token", "")
                                 val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                                 val desktopDeviceId = updatedDevices.find { it.pairingId == pairingId }?.desktopDeviceId ?: ""
                                 if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
@@ -281,6 +282,7 @@ fun ServerListScreen(navController: NavController) {
                                             pairingJwt = jwt,
                                             desktopName = desktopName,
                                             desktopDeviceId = desktopDeviceId,
+                                            pairingRefreshToken = pairingRefreshToken,
                                         )
                                     )
                                 }

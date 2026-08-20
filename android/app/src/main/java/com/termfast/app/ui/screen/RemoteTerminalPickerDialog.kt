@@ -204,6 +204,7 @@ private fun TerminalListContent(
     val pairingKeyHex = pairing.pairingKey
     val relayUrl = pairing.relayUrl
     val pairingJwt = pairing.pairingJwt
+    val pairingRefreshToken = pairing.pairingRefreshToken
 
     val pairingKey = remember(pairingKeyHex) {
         pairingKeyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
@@ -216,7 +217,7 @@ private fun TerminalListContent(
     var protocolReady by remember { mutableStateOf(false) }
 
     val tunnelManager = remember(pairingId) {
-        TerminalSessionManager.getOrCreateTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt)
+        TerminalSessionManager.getOrCreateTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt, pairingRefreshToken)
     }
     val scope = rememberCoroutineScope()
 

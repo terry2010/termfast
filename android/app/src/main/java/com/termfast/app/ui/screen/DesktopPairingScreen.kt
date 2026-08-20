@@ -437,6 +437,7 @@ private suspend fun sendDesktopPairFrame(
                 pairing.pairingKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray(),
                 pairing.relayUrl,
                 pairing.pairingJwt,
+                pairing.pairingRefreshToken,
             )
 
             tunnelManager.start()
