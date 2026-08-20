@@ -173,6 +173,25 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeInit(
     crate::runtime::init_android_logging();
 }
 
+/// Set the hardware ID for credential binding (ANDROID_ID from Kotlin).
+/// Security: must be called before any credential operation to ensure
+/// envelope encryption is bound to this device.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetHwId(
+    mut env: JNIEnv,
+    _class: JClass,
+    hw_id: JString,
+) {
+    let id = jstring_to_string(&mut env, &hw_id);
+    if !id.is_empty() {
+        termfast_credential::hw_id::set_hw_id(id);
+        tracing::info!("nativeSetHwId: hw_id set for credential binding");
+    } else {
+        tracing::warn!("nativeSetHwId: empty hw_id ignored");
+    }
+}
+
 /// Set the Rust log level (M-1: Kotlin calls this with Debug or Warn based on BuildConfig.DEBUG)
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
@@ -1324,10 +1343,11 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGenerateKeypair(
     match termfast_core::ssh::auth::generate_keypair_at(&key_dir, &sid) {
         Ok((key_path, public_key, passphrase)) => {
             let private_key = std::fs::read_to_string(&key_path).unwrap_or_default();
+            // passphrase is Zeroizing<String>; deref to &str for JSON serialization
             let json = serde_json::json!({
                 "private_key": private_key,
                 "public_key": public_key,
-                "passphrase": passphrase,
+                "passphrase": passphrase.as_str(),
                 "key_path": key_path.to_string_lossy(),
             }).to_string();
             string_to_jstring(&mut env, &json).into_raw()

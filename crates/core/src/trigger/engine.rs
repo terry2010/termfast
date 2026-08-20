@@ -8,7 +8,7 @@ use crate::config::{TriggerInstance, TriggerTemplate, TriggerType};
 use crate::error::Result;
 use crate::ssh::client::SshClientHandle;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -74,8 +74,10 @@ pub struct TriggerEngine {
     global_paused: Mutex<bool>,
     /// Cooldown tracking: (server_id, trigger_id) -> last fired Instant
     cooldowns: Mutex<HashMap<CooldownKey, Instant>>,
-    /// Number of currently running trigger executions
-    running_count: Mutex<u32>,
+    /// Number of currently running trigger executions.
+    /// Uses AtomicU32 for lock-free increment/decrement (RAII guard
+    /// in Drop never fails, unlike Mutex::try_lock).
+    running_count: AtomicU32,
     /// Pending events accumulated while paused (§10.3)
     pending_events: Mutex<Vec<PendingEvent>>,
     /// User-defined custom variables (injected into every trigger execution)
@@ -91,7 +93,7 @@ impl TriggerEngine {
             paused: Mutex::new(HashMap::new()),
             global_paused: Mutex::new(false),
             cooldowns: Mutex::new(HashMap::new()),
-            running_count: Mutex::new(0),
+            running_count: AtomicU32::new(0),
             pending_events: Mutex::new(Vec::new()),
             custom_variables: StdMutex::new(Vec::new()),
         }
@@ -104,7 +106,7 @@ impl TriggerEngine {
 
     /// Check if any trigger is currently running
     pub async fn has_running(&self) -> bool {
-        *self.running_count.lock().await > 0
+        self.running_count.load(Ordering::Relaxed) > 0
     }
 
     /// Check if triggers are paused for a server
@@ -397,7 +399,7 @@ impl TriggerEngine {
         event: &TriggerEvent,
     ) -> TriggerExecutionResult {
         // Track running count for graceful drain
-        *self.running_count.lock().await += 1;
+        self.running_count.fetch_add(1, Ordering::Relaxed);
         let _guard = RunningGuard::new(self);
 
         let mut vars = std::collections::HashMap::new();
@@ -573,12 +575,8 @@ impl<'a> RunningGuard<'a> {
 
 impl<'a> Drop for RunningGuard<'a> {
     fn drop(&mut self) {
-        // Use try_lock to avoid deadlock; if locked, we skip (best-effort)
-        if let Ok(mut count) = self.0.running_count.try_lock() {
-            if *count > 0 {
-                *count -= 1;
-            }
-        }
+        // AtomicU32 fetch_sub is lock-free and never fails (unlike try_lock).
+        self.0.running_count.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

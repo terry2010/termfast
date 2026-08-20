@@ -55,6 +55,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         RustBridge.ensureLoaded()
+        // Security: set hw_id (ANDROID_ID) before any credential operation
+        RustBridge.setHwId(this)
         val dataDir = filesDir.absolutePath
         RustRepository.init(dataDir)
         PairingStore.init(this)

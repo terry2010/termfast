@@ -19,7 +19,31 @@ object RustBridge {
         }
     }
 
+    /**
+     * Set the hardware ID from Android's ANDROID_ID for credential binding.
+     * Security: must be called before any credential operation to ensure
+     * envelope encryption is bound to this device.
+     * @param context Android context for accessing Settings.Secure
+     */
+    fun setHwId(context: android.content.Context) {
+        ensureLoaded()
+        try {
+            val androidId = android.provider.Settings.Secure.getString(
+                context.contentResolver,
+                android.provider.Settings.Secure.ANDROID_ID
+            )
+            if (!androidId.isNullOrEmpty()) {
+                nativeSetHwId(androidId)
+            } else {
+                android.util.Log.w("RustBridge", "ANDROID_ID is null/empty — hw_id binding disabled")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("RustBridge", "Failed to get ANDROID_ID for hw_id binding", e)
+        }
+    }
+
     external fun nativeInit()
+    external fun nativeSetHwId(hwId: String)
     external fun nativeSetLogLevel(level: Int)
     external fun nativePing(): Int
 

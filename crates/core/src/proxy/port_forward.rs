@@ -139,6 +139,15 @@ impl LocalForwarder {
                     let (bin, bout) = (self.bytes_in.clone(), self.bytes_out.clone());
 
                     tokio::spawn(async move {
+                        // RAII guard: ensures active_connections is decremented
+                        // even if the task panics (e.g. during copy_bidirectional).
+                        struct ConnGuard<'a>(&'a AtomicU32);
+                        impl<'a> Drop for ConnGuard<'a> {
+                            fn drop(&mut self) {
+                                self.0.fetch_sub(1, Ordering::Relaxed);
+                            }
+                        }
+                        let _guard = ConnGuard(active.as_ref());
                         active.fetch_add(1, Ordering::Relaxed);
                         match opener.open_channel(&remote_host, remote_port).await {
                             Ok(channel) => {
@@ -156,7 +165,7 @@ impl LocalForwarder {
                                 );
                             }
                         }
-                        active.fetch_sub(1, Ordering::Relaxed);
+                        // _guard dropped here, fetch_sub executed
                     });
                 }
                 Ok(Err(e)) => {
@@ -449,6 +458,15 @@ impl RemoteForwarder {
                     let bin = bin.clone();
                     let bout = bout.clone();
                     tokio::spawn(async move {
+                        // RAII guard: ensures active_connections is decremented
+                        // even if the task panics.
+                        struct ConnGuard<'a>(&'a AtomicU32);
+                        impl<'a> Drop for ConnGuard<'a> {
+                            fn drop(&mut self) {
+                                self.0.fetch_sub(1, Ordering::Relaxed);
+                            }
+                        }
+                        let _guard = ConnGuard(active.as_ref());
                         active.fetch_add(1, Ordering::Relaxed);
                         match TcpStream::connect((rh.as_str(), remote_port)).await {
                             Ok(mut local_stream) => {
@@ -466,7 +484,7 @@ impl RemoteForwarder {
                                 );
                             }
                         }
-                        active.fetch_sub(1, Ordering::Relaxed);
+                        // _guard dropped here, fetch_sub executed
                     });
                 }
                 Ok(None) => {

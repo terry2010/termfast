@@ -24,7 +24,7 @@ use std::path::Path;
 ///
 /// Creates parent directories if needed. Sets 0600 permissions on Unix
 /// when `restrictive_perms` is true (use for credential/key files).
-pub fn write_atomic(path: &Path, data: &[u8], _restrictive_perms: bool) -> std::io::Result<()> {
+pub fn write_atomic(path: &Path, data: &[u8], restrictive_perms: bool) -> std::io::Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -45,8 +45,16 @@ pub fn write_atomic(path: &Path, data: &[u8], _restrictive_perms: bool) -> std::
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = if _restrictive_perms { 0o600 } else { 0o644 };
-        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode));
+        let mode = if restrictive_perms { 0o600 } else { 0o644 };
+        if let Err(e) = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode)) {
+            // Security: for sensitive files, permission failure is a real risk.
+            // Log warning and clean up temp file.
+            tracing::warn!("write_atomic: failed to set permissions on {:?}: {}", tmp_path, e);
+            if restrictive_perms {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e);
+            }
+        }
     }
 
     // 5. Atomic rename
@@ -60,7 +68,9 @@ pub fn write_atomic(path: &Path, data: &[u8], _restrictive_perms: bool) -> std::
     {
         if let Some(parent) = path.parent() {
             if let Ok(dir) = std::fs::File::open(parent) {
-                let _ = dir.sync_all();
+                if let Err(e) = dir.sync_all() {
+                    tracing::warn!("write_atomic: parent dir fsync failed for {:?}: {}", parent, e);
+                }
                 // macOS: sync_all only flushes to disk cache, not to platter.
                 // F_FULLFSYNC forces a physical write to the storage device.
                 #[cfg(target_os = "macos")]

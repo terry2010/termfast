@@ -9,18 +9,39 @@
 //! - macOS:   IOPlatformUUID (via ioread)
 //! - Windows: MachineGuid (from registry)
 //! - Linux:   /etc/machine-id
-//! - Android: ANDROID_ID (Settings.Secure)
+//! - Android: ANDROID_ID (Settings.Secure) — set via `set_hw_id()` from FFI
 //!
 //! Security properties:
 //! - Steal data disk only → cannot get hw_id → cannot decrypt ✅
 //! - Steal full disk → can get hw_id → but master_pw not on disk → still safe ✅
 //! - Full disk + master_pw → can decrypt (unavoidable for any scheme)
 
+use std::sync::OnceLock;
+
+/// Process-global override for hw_id, set by FFI layers (e.g. Android JNI).
+static HW_ID_OVERRIDE: OnceLock<String> = OnceLock::new();
+
+/// Set the hardware ID from an external source (e.g. Android ANDROID_ID via JNI).
+/// Must be called once during initialization, before any credential operations.
+/// Subsequent calls are ignored (the first value wins).
+pub fn set_hw_id(id: String) {
+    let _ = HW_ID_OVERRIDE.set(id);
+}
+
 /// Get the hardware ID for the current platform.
 /// Returns a string that uniquely identifies this machine.
-/// Falls back to a constant if the platform method fails (better than
-/// crashing, though hardware binding is weakened).
+///
+/// Priority: FFI override (set_hw_id) > env var (TERMFAST_HW_ID) > platform native.
+/// Falls back to a constant only if all methods fail (hardware binding weakened).
 pub fn get_hw_id() -> String {
+    // 1. Check FFI override (set by Android JNI layer)
+    if let Some(id) = HW_ID_OVERRIDE.get() {
+        return id.clone();
+    }
+    // 2. Check env var (for testing / standalone Rust code)
+    if let Ok(id) = std::env::var("TERMFAST_HW_ID") {
+        return id;
+    }
     #[cfg(target_os = "macos")]
     {
         if let Some(id) = get_macos_uuid() {
@@ -39,16 +60,9 @@ pub fn get_hw_id() -> String {
             return id;
         }
     }
-    #[cfg(target_os = "android")]
-    {
-        // On Android, ANDROID_ID is retrieved via JNI in the Kotlin layer
-        // and passed to Rust. For standalone Rust code, fall back to a
-        // constant — the Android FFI layer should override this.
-        if let Ok(id) = std::env::var("TERMFAST_HW_ID") {
-            return id;
-        }
-    }
     // Fallback: constant (hardware binding disabled, but app still works)
+    // This should only happen on Android if FFI layer didn't call set_hw_id.
+    tracing::warn!("get_hw_id: falling back to constant — hardware binding disabled");
     "unknown-hw-id".to_string()
 }
 

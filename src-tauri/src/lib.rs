@@ -1318,7 +1318,7 @@ async fn ipc_generate_ssh_key(
             .server
             .state()
             .credential_store
-            .save(&cred_key, &passphrase);
+            .save(&cred_key, passphrase.as_str());
     }
     Ok(serde_json::json!({ "key_path": key_path.to_string_lossy() }))
 }

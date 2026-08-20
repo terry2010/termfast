@@ -56,7 +56,7 @@ pub struct EncryptedBlob {
 pub fn validate_master_password(password: &str) -> Result<()> {
     if password.chars().count() < MIN_PASSWORD_LEN {
         return Err(Error::Ipc(IpcError::new(
-            ErrorCode::DecryptionFailed,
+            ErrorCode::InvalidParams,
             format!("password must be at least {} characters", MIN_PASSWORD_LEN),
         )));
     }
@@ -66,7 +66,7 @@ pub fn validate_master_password(password: &str) -> Result<()> {
 
     if !has_letter || !has_digit {
         return Err(Error::Ipc(IpcError::new(
-            ErrorCode::DecryptionFailed,
+            ErrorCode::InvalidParams,
             "password must contain both letters and numbers",
         )));
     }

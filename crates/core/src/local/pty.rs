@@ -10,7 +10,7 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 
-use super::shell::detect_default_shell;
+use super::shell::{detect_default_shell, validate_shell};
 #[cfg(unix)]
 use super::shell::resolve_full_path;
 
@@ -38,6 +38,11 @@ pub struct LocalPty {
 /// If `shell` is `None`, the system default shell is detected via
 /// `detect_default_shell()`. On Unix, the shell is started with `-l`
 /// (login mode) and a resolved PATH (see `resolve_full_path`).
+///
+/// Security: if `shell` is `Some`, it is validated via `validate_shell()`
+/// (whitelist + existence + executable check). Invalid shells fall back
+/// to the system default with a warning, preventing arbitrary binary
+/// execution from untrusted input (e.g. remote NEW_TERMINAL requests).
 pub fn open_local_pty(
     cols: u16,
     rows: u16,
@@ -51,8 +56,9 @@ pub fn open_local_pty(
         pixel_height: 0,
     })?;
 
+    // Validate caller-provided shell; fall back to default if invalid.
     let shell = shell
-        .map(|s| s.to_string())
+        .and_then(validate_shell)
         .unwrap_or_else(detect_default_shell);
     let mut cmd = CommandBuilder::new(&shell);
 

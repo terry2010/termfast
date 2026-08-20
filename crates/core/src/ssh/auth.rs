@@ -97,8 +97,9 @@ fn expand_tilde(path: &str) -> String {
 
 /// Generate an Ed25519 keypair for a server (§8.2-8.5)
 /// Uses the default `~/.ssh` directory.
-/// Returns (private_key_path, public_key_string, passphrase)
-pub fn generate_keypair(server_id: &str) -> Result<(PathBuf, String, String)> {
+/// Returns (private_key_path, public_key_string, passphrase).
+/// The passphrase is wrapped in Zeroizing<String> for memory safety.
+pub fn generate_keypair(server_id: &str) -> Result<(PathBuf, String, Zeroizing<String>)> {
     let home = directories::BaseDirs::new()
         .ok_or_else(|| Error::Config("cannot determine home directory".into()))?;
     let ssh_dir = home.home_dir().join(".ssh");
@@ -106,11 +107,12 @@ pub fn generate_keypair(server_id: &str) -> Result<(PathBuf, String, String)> {
 }
 
 /// Generate an Ed25519 keypair under a custom directory (e.g. Android app private dir).
-/// Returns (private_key_path, public_key_string, passphrase)
+/// Returns (private_key_path, public_key_string, passphrase).
+/// The passphrase is wrapped in Zeroizing<String> for memory safety.
 pub fn generate_keypair_at(
     ssh_dir: impl AsRef<std::path::Path>,
     server_id: &str,
-) -> Result<(PathBuf, String, String)> {
+) -> Result<(PathBuf, String, Zeroizing<String>)> {
     // Validate server_id to prevent path traversal — only allow [A-Za-z0-9_-]
     if server_id.is_empty()
         || !server_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -157,10 +159,12 @@ pub fn generate_keypair_at(
 
 /// Generate an Ed25519 keypair and return the key bytes + passphrase.
 /// The caller decides where to store the private/public key (e.g. Android Keystore).
+/// The passphrase is returned as Zeroizing<String> to ensure it is wiped
+/// from memory when dropped.
 #[allow(dead_code)]
 pub fn generate_keypair_bytes(
     _server_id: &str,
-) -> Result<(russh::keys::ssh_key::PrivateKey, String)> {
+) -> Result<(russh::keys::ssh_key::PrivateKey, Zeroizing<String>)> {
     use russh::keys::ssh_key;
     let mut rng = ssh_key::rand_core::UnwrapErr(ssh_key::getrandom::SysRng);
     let key_pair = ssh_key::PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519 {})
@@ -173,7 +177,7 @@ pub fn generate_keypair_bytes(
     let passphrase =
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, passphrase_bytes);
 
-    Ok((key_pair, passphrase))
+    Ok((key_pair, Zeroizing::new(passphrase)))
 }
 
 /// Push a public key to the remote server's authorized_keys via SSH exec.

@@ -76,7 +76,9 @@ impl EncryptedFileCredentialStore {
                     "found residual plaintext fallback file {:?}, removing (encrypted file exists)",
                     plaintext_path
                 );
-                let _ = std::fs::remove_file(&plaintext_path);
+                if let Err(e) = std::fs::remove_file(&plaintext_path) {
+                    tracing::warn!("failed to remove residual plaintext fallback {:?}: {}", plaintext_path, e);
+                }
             }
             HashMap::new()
         };
@@ -109,24 +111,28 @@ impl EncryptedFileCredentialStore {
     /// in-memory credentials (if any) and the given master password.
     /// Also unlocks (caches key + map). Transitions out of pending mode.
     /// Deletes the plaintext fallback file if it exists.
+    ///
+    /// Holds the inner lock for the entire duration to prevent concurrent
+    /// save/load operations from observing an inconsistent state (e.g.
+    /// `map: None` during Argon2 key derivation).
     pub fn initialize(&self, master_password: &str) -> Result<()> {
+        let mut inner = self.inner.lock().unwrap();
         // Grab the pending map (if in pending mode) so we can persist it.
-        let pending_map = {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.pending {
-                inner.map.take()
-            } else {
-                None
-            }
+        let pending_map = if inner.pending {
+            inner.map.take()
+        } else {
+            None
         };
         let initial_json = if let Some(ref map) = pending_map {
             serde_json::to_vec(map)?
         } else {
             b"{}".to_vec()
         };
+        // store.initialize + store.unlock may take 200-500ms (Argon2id).
+        // Holding the lock prevents concurrent save/load from seeing
+        // a half-initialized state.
         self.store.initialize(master_password, &initial_json)?;
         let key = self.store.unlock(master_password)?;
-        let mut inner = self.inner.lock().unwrap();
         inner.key = Some(key);
         inner.map = Some(pending_map.unwrap_or_default());
         inner.pending = false;
@@ -134,7 +140,9 @@ impl EncryptedFileCredentialStore {
         // Remove plaintext fallback file — credentials are now encrypted.
         let plaintext_path = self.store.path().with_extension("json");
         if plaintext_path.exists() {
-            let _ = std::fs::remove_file(&plaintext_path);
+            if let Err(e) = std::fs::remove_file(&plaintext_path) {
+                tracing::warn!("initialize: failed to remove plaintext fallback {:?}: {}", plaintext_path, e);
+            }
         }
         Ok(())
     }
@@ -216,7 +224,9 @@ impl EncryptedFileCredentialStore {
         // Also remove plaintext fallback file.
         let plaintext_path = self.store.path().with_extension("json");
         if plaintext_path.exists() {
-            let _ = std::fs::remove_file(&plaintext_path);
+            if let Err(e) = std::fs::remove_file(&plaintext_path) {
+                tracing::warn!("reset: failed to remove plaintext fallback {:?}: {}", plaintext_path, e);
+            }
         }
         let mut inner = self.inner.lock().unwrap();
         inner.key.zeroize();

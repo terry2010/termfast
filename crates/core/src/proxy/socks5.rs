@@ -364,8 +364,13 @@ async fn handle_connect(
 }
 
 /// Constant-time byte slice comparison. Returns true if slices are equal.
-/// Does NOT short-circuit on length mismatch — always compares the full
-///   shorter slice to avoid leaking length information via timing.
+///
+/// Note: this does NOT short-circuit on the first differing byte, but it
+/// does only compare up to `min(a.len(), b.len())` bytes. Length mismatch
+/// is detected via the length XOR, but the loop iteration count still
+/// leaks the shorter length via timing. In the SOCKS5 username/password
+/// auth context this is acceptable because both lengths are transmitted
+/// in plaintext per RFC 1929.
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     let mut diff = 0u32;
     // Compare full length difference (L-7: was truncated to u8, now u32)
