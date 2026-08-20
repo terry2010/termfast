@@ -112,6 +112,13 @@ export function RemoteTerminalView({
     window.addEventListener("resize", handleResize);
 
     return () => {
+      // Unsubscribe on cleanup — without this, React StrictMode's
+      // mount-unmount-mount cycle leaves two subscribers active,
+      // causing duplicated output and doubled input characters.
+      ipcInvoke("ipc_remote_client_unsubscribe", {
+        pairing_id: pairingId,
+        terminal_id: terminalId,
+      }).catch(() => {});
       inputDisposable.dispose();
       resizeDisposable.dispose();
       window.removeEventListener("resize", handleResize);
