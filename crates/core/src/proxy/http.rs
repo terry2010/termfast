@@ -76,7 +76,7 @@ pub async fn handle_connection(
     // request if the client sends headers across multiple TCP segments
     // (D-15: previously only read once, causing plain-HTTP requests to hang
     // when the full header wasn't delivered in a single read).
-    let mut buf = vec![0u8; 8192];
+    let mut buf = vec![0u8; 65536];
     let mut n = if !peeked.is_empty() {
         let len = peeked.len().min(buf.len());
         buf[..len].copy_from_slice(&peeked[..len]);
@@ -95,10 +95,11 @@ pub async fn handle_connection(
             break;
         }
         if n >= buf.len() {
-            // Buffer full without finding header terminator — proceed with
-            // what we have (the request may be malformed, but let the
-            // downstream parser deal with it rather than hanging forever).
-            break;
+            // Buffer full without finding header terminator — return error
+            // instead of processing truncated headers (security: truncated
+            // headers could cause the proxy to connect to the wrong target).
+            tracing::warn!("HTTP proxy: header too large (>{})", buf.len());
+            return Ok(()); // drop connection
         }
         let read_n = socket.read(&mut buf[n..]).await?;
         if read_n == 0 {

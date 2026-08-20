@@ -55,6 +55,66 @@ pub fn list_available_shells() -> Vec<String> {
     shells
 }
 
+/// Validate that a shell path is safe to execute.
+///
+/// Security: prevents remote devices from specifying arbitrary executables
+/// as the shell for NEW_TERMINAL. The shell must be:
+/// - An absolute path (or a bare name resolvable via `which`)
+/// - An existing executable file
+/// - One of the known shell binaries (zsh, bash, sh, fish, dash, pwsh, powershell, cmd.exe)
+///
+/// Returns the validated shell path, or None if validation fails.
+pub fn validate_shell(shell: &str) -> Option<String> {
+    if shell.is_empty() {
+        return None;
+    }
+    // Known safe shell names (basename match, case-insensitive on Windows)
+    const KNOWN_SHELLS: &[&str] = &[
+        "zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "csh",
+        "pwsh", "powershell", "cmd.exe",
+    ];
+    // Extract basename from the path
+    let basename = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(shell);
+    let is_known = KNOWN_SHELLS.iter().any(|&s| {
+        basename.eq_ignore_ascii_case(s)
+    });
+    if !is_known {
+        tracing::warn!(
+            "validate_shell: rejecting unknown shell {:?} (basename {:?} not in whitelist)",
+            shell, basename
+        );
+        return None;
+    }
+    // If it's a bare name (no path separator), resolve via which
+    if !shell.contains('/') && !shell.contains('\\') {
+        if which::which(shell).is_ok() {
+            return Some(shell.to_string());
+        }
+        return None;
+    }
+    // For absolute/relative paths, verify the file exists and is executable
+    let path = std::path::Path::new(shell);
+    if !path.exists() {
+        tracing::warn!("validate_shell: shell path does not exist: {:?}", shell);
+        return None;
+    }
+    // On Unix, check executable permission
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.permissions().mode() & 0o111 == 0 {
+                tracing::warn!("validate_shell: shell path not executable: {:?}", shell);
+                return None;
+            }
+        }
+    }
+    Some(shell.to_string())
+}
+
 /// Resolve the full user PATH.
 ///
 /// On macOS, Tauri apps launched from the Dock get a minimal PATH

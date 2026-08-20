@@ -138,7 +138,10 @@ impl FrameCipher {
         let mut output = Vec::with_capacity(NONCE_LEN + ciphertext.len());
         output.extend_from_slice(&nonce);
         output.extend_from_slice(&ciphertext);
-        self.counter += 1;
+        // Security: check counter overflow to prevent GCM nonce reuse.
+        // 2^64 frames is practically unreachable, but defense-in-depth.
+        self.counter = self.counter.checked_add(1)
+            .ok_or_else(|| "frame crypto counter overflow (nonce reuse risk)".to_string())?;
         Ok(output)
     }
 

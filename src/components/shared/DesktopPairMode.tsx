@@ -68,7 +68,10 @@ export function DesktopPairMode({ onClose }: DesktopPairModeProps) {
         if (err) {
           setError("QR generation failed: " + String(err));
         } else {
-          setQrSvg(svg);
+          // Security: sanitize SVG to strip any potential script tags
+          // (defense-in-depth, qrcode lib shouldn't produce them)
+          const sanitized = svg.replace(/<script[\s\S]*?<\/script>/gi, "");
+          setQrSvg(sanitized);
         }
         setLoading(false);
       });

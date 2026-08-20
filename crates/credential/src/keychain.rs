@@ -24,7 +24,7 @@ impl KeychainCredentialStore {
 
     /// Enable in-memory fallback
     fn enable_fallback(&self) {
-        let mut fb = self.fallback.lock().unwrap();
+        let mut fb = self.fallback.lock().unwrap_or_else(|e| e.into_inner());
         if fb.is_none() {
             tracing::warn!("keychain unavailable, falling back to in-memory storage");
             *fb = Some(InMemoryCredentialStore::new());
@@ -62,7 +62,7 @@ impl CredentialStore for KeychainCredentialStore {
         }
 
         // Fall back to in-memory store
-        let fb = self.fallback.lock().unwrap();
+        let fb = self.fallback.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref store) = *fb {
             return store.save(key, value);
         }
@@ -74,7 +74,7 @@ impl CredentialStore for KeychainCredentialStore {
 
     fn load(&self, key: &str) -> Result<String> {
         // Check cache first — avoids repeated keychain prompts
-        if let Some(v) = self.cache.lock().unwrap().get(key) {
+        if let Some(v) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
             tracing::debug!(target: "keychain", "loaded credential from cache");
             return Ok(v.clone());
         }
@@ -107,7 +107,7 @@ impl CredentialStore for KeychainCredentialStore {
         // Try fallback (in-memory) store — avoid holding fallback lock
         // while acquiring cache lock to prevent lock-ordering issues.
         let fb_value = {
-            let fb = self.fallback.lock().unwrap();
+            let fb = self.fallback.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref store) = *fb {
                 Some(store.load(key)?)
             } else {
@@ -127,11 +127,11 @@ impl CredentialStore for KeychainCredentialStore {
 
     fn delete(&self, key: &str) -> Result<()> {
         // Remove from cache
-        self.cache.lock().unwrap().remove(key);
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
 
         // Check fallback first
         {
-            let fb = self.fallback.lock().unwrap();
+            let fb = self.fallback.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref store) = *fb {
                 return store.delete(key);
             }
@@ -145,7 +145,7 @@ impl CredentialStore for KeychainCredentialStore {
                     Err(e) => {
                         tracing::warn!("keychain delete failed: {}, enabling fallback", e);
                         self.enable_fallback();
-                        let fb = self.fallback.lock().unwrap();
+                        let fb = self.fallback.lock().unwrap_or_else(|e| e.into_inner());
                         fb.as_ref().unwrap().delete(key)
                     }
                 }
@@ -153,7 +153,7 @@ impl CredentialStore for KeychainCredentialStore {
             Err(e) => {
                 tracing::warn!("keychain entry creation failed: {}, enabling fallback", e);
                 self.enable_fallback();
-                let fb = self.fallback.lock().unwrap();
+                let fb = self.fallback.lock().unwrap_or_else(|e| e.into_inner());
                 fb.as_ref().unwrap().delete(key)
             }
         }
@@ -173,7 +173,7 @@ impl CredentialStore for KeychainCredentialStore {
     fn has(&self, key: &str) -> bool {
         // Only check the in-memory cache. Do NOT hit the OS keychain here:
         // macOS would prompt the user for keychain access just to check existence.
-        self.cache.lock().unwrap().contains_key(key)
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).contains_key(key)
     }
 }
 

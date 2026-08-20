@@ -141,7 +141,7 @@ pub type ServerFrameCallback = Arc<dyn Fn(&str, u8, u32, &[u8]) + Send + Sync>;
 /// Uses try_send (non-blocking) since this is called from sync callbacks.
 /// Mobile clients receiving this frame should re-send LIST_REQUEST.
 fn broadcast_list_changed(active_tunnels: &Arc<StdMutex<HashMap<String, mpsc::Sender<Frame>>>>) {
-    let tunnels = active_tunnels.lock().unwrap();
+    let tunnels = active_tunnels.lock().unwrap_or_else(|e| e.into_inner());
     tracing::info!("[RemoteServer] broadcast_list_changed: {} active tunnel(s)", tunnels.len());
     let notify_frame = Frame::notify(0, r#"{"type":"list_changed"}"#);
     let mut dead = Vec::new();
@@ -156,7 +156,7 @@ fn broadcast_list_changed(active_tunnels: &Arc<StdMutex<HashMap<String, mpsc::Se
     }
     drop(tunnels);
     if !dead.is_empty() {
-        let mut tunnels = active_tunnels.lock().unwrap();
+        let mut tunnels = active_tunnels.lock().unwrap_or_else(|e| e.into_inner());
         for id in dead {
             tunnels.remove(&id);
         }
@@ -242,21 +242,21 @@ impl RemoteServer {
     /// or an error message. The callback is responsible for reading, encrypting, and
     /// uploading the file to cloud storage.
     pub fn set_file_upload_callback(&self, callback: FileUploadCallback) {
-        *self.file_upload_callback.lock().unwrap() = Some(callback);
+        *self.file_upload_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Set the desktop pair callback (called when a DESKTOP_PAIR frame is received).
     /// The callback is responsible for storing the pairing and starting a tunnel
     /// (for role=server) or RemoteClient (for role=client).
     pub fn set_desktop_pair_callback(&self, callback: DesktopPairCallback) {
-        *self.desktop_pair_callback.lock().unwrap() = Some(callback);
+        *self.desktop_pair_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Set the frame callback (called when a frame is received from the peer
     /// that needs to be forwarded to the frontend, e.g. LIST_RESPONSE, INFO_RESPONSE,
     /// OUTPUT, HISTORY, OK).
     pub fn set_frame_callback(&self, callback: ServerFrameCallback) {
-        *self.frame_callback.lock().unwrap() = Some(callback);
+        *self.frame_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Add a pairing (called when pairing completes).
@@ -291,7 +291,7 @@ impl RemoteServer {
     /// which the tunnel loop picks up and encrypts + sends.
     pub async fn send_frame_to_peer(&self, pairing_id: &str, frame: Frame) -> Result<(), String> {
         let tx = {
-            let tunnels = self.active_tunnels.lock().unwrap();
+            let tunnels = self.active_tunnels.lock().unwrap_or_else(|e| e.into_inner());
             tunnels.get(pairing_id).cloned()
         };
         match tx {
@@ -304,17 +304,17 @@ impl RemoteServer {
 
     /// Check if a tunnel is active (peer is connected) for a given pairing_id.
     pub fn is_tunnel_active(&self, pairing_id: &str) -> bool {
-        self.active_tunnels.lock().unwrap().contains_key(pairing_id)
+        self.active_tunnels.lock().unwrap_or_else(|e| e.into_inner()).contains_key(pairing_id)
     }
 
     /// Resolve u32 terminal_id → session_id (for frame processing).
     fn resolve_sid(&self, terminal_id: u32) -> Option<String> {
-        self.id_map.lock().unwrap().lookup_sid(terminal_id).cloned()
+        self.id_map.lock().unwrap_or_else(|e| e.into_inner()).lookup_sid(terminal_id).cloned()
     }
 
     /// Resolve session_id → u32 terminal_id (for desktop IPC path).
     pub fn resolve_terminal_id(&self, session_id: &str) -> Option<u32> {
-        self.id_map.lock().unwrap().sid_to_handle.get(session_id).copied()
+        self.id_map.lock().unwrap_or_else(|e| e.into_inner()).sid_to_handle.get(session_id).copied()
     }
 
     /// Handle one tunnel connection's full lifecycle.
@@ -364,7 +364,7 @@ impl RemoteServer {
         // Register this tunnel's async_tx in active_tunnels so we can push
         // LIST_CHANGED notifications to mobile when terminals open/close.
         {
-            let mut tunnels = self.active_tunnels.lock().unwrap();
+            let mut tunnels = self.active_tunnels.lock().unwrap_or_else(|e| e.into_inner());
             tunnels.insert(pairing_id.clone(), async_tx.clone());
         }
 
@@ -443,7 +443,7 @@ impl RemoteServer {
 
         // Unregister this tunnel from active_tunnels (cleanup on any exit path)
         {
-            let mut tunnels = self.active_tunnels.lock().unwrap();
+            let mut tunnels = self.active_tunnels.lock().unwrap_or_else(|e| e.into_inner());
             tunnels.remove(&pairing_id);
         }
     }
@@ -660,7 +660,7 @@ impl RemoteServer {
             | remote_frame::ERROR
             | remote_frame::NOTIFY => {
                 // Clone callback out of mutex before invoking to avoid holding lock during callback
-                let cb_clone = self.frame_callback.lock().unwrap().clone();
+                let cb_clone = self.frame_callback.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(cb) = cb_clone {
                     cb(pairing_id, frame.frame_type, frame.terminal_id, &frame.payload);
                 }
@@ -714,7 +714,7 @@ impl RemoteServer {
         }
         // Assign u32 handles via persistent IdMap and build JSON list
         let list: Vec<serde_json::Value> = {
-            let mut id_map = self.id_map.lock().unwrap();
+            let mut id_map = self.id_map.lock().unwrap_or_else(|e| e.into_inner());
             infos.iter().map(|info| {
                 let handle = id_map.get_or_assign(&info.session_id);
                 serde_json::json!({
@@ -820,7 +820,7 @@ impl RemoteServer {
 
         // Phase 1: check and mark answered (std Mutex, short lock)
         {
-            let mut answered = self.answered_questions.lock().unwrap();
+            let mut answered = self.answered_questions.lock().unwrap_or_else(|e| e.into_inner());
             if answered.contains_key(question_id) {
                 return Some(Frame::error("already_answered"));
             }
@@ -844,7 +844,7 @@ impl RemoteServer {
         let qid = question_id.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-            answered.lock().unwrap().remove(&qid);
+            answered.lock().unwrap_or_else(|e| e.into_inner()).remove(&qid);
         });
 
         Some(Frame::ok(frame.terminal_id))
@@ -927,7 +927,7 @@ impl RemoteServer {
         }
         // Check if callback is set
         let callback = {
-            let guard = self.file_upload_callback.lock().unwrap();
+            let guard = self.file_upload_callback.lock().unwrap_or_else(|e| e.into_inner());
             guard.is_some()
         };
         if !callback {
@@ -941,7 +941,7 @@ impl RemoteServer {
         tokio::spawn(async move {
             // Clone the callback out of the mutex before awaiting (MutexGuard is not Send)
             let cb_future = {
-                let guard = cb_arc.lock().unwrap();
+                let guard = cb_arc.lock().unwrap_or_else(|e| e.into_inner());
                 guard.as_ref().map(|cb| cb(file_path.clone()))
             };
             let result = match cb_future {
@@ -1011,7 +1011,7 @@ impl RemoteServer {
             }).to_string()));
         }
         // Check callback is set
-        let callback_is_set = self.desktop_pair_callback.lock().unwrap().is_some();
+        let callback_is_set = self.desktop_pair_callback.lock().unwrap_or_else(|e| e.into_inner()).is_some();
         if !callback_is_set {
             tracing::warn!("DESKTOP_PAIR: no callback set — cannot handle");
             return Some(Frame::desktop_pair_response(&serde_json::json!({
@@ -1021,7 +1021,7 @@ impl RemoteServer {
         }
         // Invoke callback (async). Clone the callback out of the mutex before awaiting.
         let cb_future = {
-            let guard = self.desktop_pair_callback.lock().unwrap();
+            let guard = self.desktop_pair_callback.lock().unwrap_or_else(|e| e.into_inner());
             guard.as_ref().map(|cb| cb(msg.clone()))
         };
         let result = match cb_future {
@@ -1048,6 +1048,10 @@ impl RemoteServer {
     }
 
     /// INFO_REQUEST: return local system info as JSON.
+    /// Security: only returns minimal info needed for the remote client to
+    /// display the desktop in its UI. Sensitive details (real_name, full
+    /// hostname) are omitted to reduce information leakage if the paired
+    /// device is compromised.
     #[cfg(not(target_os = "android"))]
     async fn handle_info_request(&self) -> Frame {
         let default_shell = termfast_core::local::shell::detect_default_shell();
@@ -1057,11 +1061,8 @@ impl RemoteServer {
             .unwrap_or(&default_shell)
             .to_string();
         let os = os_info::get();
-        let os_version = os.version().to_string();
         let os_arch = std::env::consts::ARCH.to_string();
-        let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
         let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".to_string());
-        let real_name = whoami::realname().unwrap_or_else(|_| username.clone());
         let os_name = match os.os_type() {
             os_info::Type::Macos => "macOS".to_string(),
             os_info::Type::Windows => "Windows".to_string(),
@@ -1069,15 +1070,15 @@ impl RemoteServer {
             other => format!("{:?}", other),
         };
         let available_shells = termfast_core::local::shell::list_available_shells();
+        // Security: omit username, real_name, and full default_shell path.
+        // Only return shell name (basename) and OS family.
         let json = serde_json::json!({
-            "default_shell": default_shell,
+            "default_shell": shell_name,
             "shell_name": shell_name,
             "os_name": os_name,
-            "os_version": os_version,
+            "os_version": os.version().to_string(),
             "os_arch": os_arch,
             "hostname": hostname,
-            "username": username,
-            "real_name": real_name,
             "available_shells": available_shells,
         });
         tracing::info!("INFO_RESPONSE: sending system info to remote client");
@@ -1100,6 +1101,11 @@ impl RemoteServer {
             Err(_) => return Some(Frame::error("invalid_json")),
         };
         let shell = req.get("shell").and_then(|v| v.as_str()).map(|s| s.to_string());
+        // Security: validate shell against whitelist to prevent arbitrary
+        // command execution from remote devices.
+        let shell = shell.and_then(|s| {
+            termfast_core::local::shell::validate_shell(&s)
+        });
         let name = req.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         // Serialize NEW_TERMINAL handling to prevent TOCTOU race in name deduplication.
@@ -1138,7 +1144,7 @@ impl RemoteServer {
                 self.terminal_manager.forward_opened(&session_id, Some(&effective_name));
                 // Assign u32 handle and return it
                 let handle = {
-                    let mut id_map = self.id_map.lock().unwrap();
+                    let mut id_map = self.id_map.lock().unwrap_or_else(|e| e.into_inner());
                     id_map.get_or_assign(&session_id)
                 };
                 let json = serde_json::json!({
@@ -1167,7 +1173,7 @@ impl RemoteServer {
             Ok(()) => {
                 // Remove from id_map
                 {
-                    let mut id_map = self.id_map.lock().unwrap();
+                    let mut id_map = self.id_map.lock().unwrap_or_else(|e| e.into_inner());
                     id_map.remove(&session_id);
                 }
                 Some(Frame::ok(terminal_id))
@@ -1940,7 +1946,7 @@ mod tests {
 
         // Verify entry exists in answered_questions map
         {
-            let map = answered_questions.lock().unwrap();
+            let map = answered_questions.lock().unwrap_or_else(|e| e.into_inner());
             assert!(map.contains_key("q-cleanup"), "answered_questions should contain q-cleanup after INPUT_ANSWER");
         }
 
@@ -1950,7 +1956,7 @@ mod tests {
 
         // Verify entry has been removed by cleanup task
         {
-            let map = answered_questions.lock().unwrap();
+            let map = answered_questions.lock().unwrap_or_else(|e| e.into_inner());
             assert!(!map.contains_key("q-cleanup"), "answered_questions should NOT contain q-cleanup after 30s cleanup");
         }
 

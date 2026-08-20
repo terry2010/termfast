@@ -128,7 +128,7 @@ fn bool_to_jbool(b: bool) -> jboolean {
 /// Called from the tracing layer and other event emitters.
 pub fn dispatch_event_to_kotlin(json: &str) {
     let callback = {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         st.event_callback.clone()
     };
     if let Some(global) = callback {
@@ -242,7 +242,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetDataDir(
         (std::collections::HashMap::new(), None)
     };
     // Now briefly acquire the lock to update state.
-    let mut st = state().lock().unwrap();
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     st.data_dir = dir;
     st.servers = servers;
     st.config_manager = config_manager;
@@ -254,7 +254,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetConfigJson(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let json = if let Some(ref cm) = st.config_manager {
         let config = cm.get_blocking();
         serde_json::to_string(&config).unwrap_or_default()
@@ -274,7 +274,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSaveConfigJson(
     let json_str = jstring_to_string(&mut env, &json);
     let result = serde_json::from_str::<Config>(&json_str)
         .map(|cfg| {
-            let st = state().lock().unwrap();
+            let st = state().lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref cm) = st.config_manager {
                 let rt = runtime();
                 rt.block_on(cm.modify(|c| *c = cfg))
@@ -301,7 +301,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeAddServer(
         Err(_) => return string_to_jstring(&mut env, "").into_raw(),
     };
     let id = server.id.clone();
-    let mut st = state().lock().unwrap();
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let templates = if let Some(ref cm) = st.config_manager {
         let rt = runtime();
         let _ = rt.block_on(cm.modify(|cfg| {
@@ -334,7 +334,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeUpdateServer(
         Err(_) => return bool_to_jbool(false),
     };
     let id = server.id.clone();
-    let mut st = state().lock().unwrap();
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     // Update config
     let templates = if let Some(ref cm) = st.config_manager {
         let rt = runtime();
@@ -370,7 +370,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoveServer(
     // the proxy keeps listening on its port, causing the edited server
     // to appear "still connected" even with wrong credentials.
     let instance = {
-        let mut st = state().lock().unwrap();
+        let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
         st.servers.remove(&id_str)
     };
     if let Some(instance) = instance {
@@ -388,7 +388,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoveServer(
         release_ports(&id_str);
     }
     // Remove from config
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref cm) = st.config_manager {
         let rt = runtime();
         let _ = rt.block_on(cm.modify(|cfg| {
@@ -416,7 +416,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeListServers(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let json = if let Some(ref cm) = st.config_manager {
         let config = cm.get_blocking();
         serde_json::to_string(&config.servers).unwrap_or_default()
@@ -439,13 +439,13 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
     // Validate server_id to prevent path traversal (L-7: consistent with generate_keypair_at)
     if !id_str.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         tracing::error!("nativeConnectServer: invalid server_id '{}'", id_str);
-        *last_error_code().lock().unwrap() = "InvalidParams".to_string();
-        *last_error_raw().lock().unwrap() = "无效的服务器 ID".to_string();
-        *last_connect_error().lock().unwrap() = "无效的服务器 ID".to_string();
+        *last_error_code().lock().unwrap_or_else(|e| e.into_inner()) = "InvalidParams".to_string();
+        *last_error_raw().lock().unwrap_or_else(|e| e.into_inner()) = "无效的服务器 ID".to_string();
+        *last_connect_error().lock().unwrap_or_else(|e| e.into_inner()) = "无效的服务器 ID".to_string();
         return bool_to_jbool(false);
     }
     let (instance, data_dir) = {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         let instance = match st.servers.get(&id_str).cloned() {
             Some(i) => i,
             None => {
@@ -467,9 +467,9 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
             .map(zeroize::Zeroizing::new);
         if key_content.is_empty() {
             tracing::error!("No key credential for {}", id_str);
-            *last_error_code().lock().unwrap() = "MissingCredential".to_string();
-            *last_error_raw().lock().unwrap() = "未保存密钥，请先在服务器设置中输入密钥".to_string();
-            *last_connect_error().lock().unwrap() = "未保存密钥，请先在服务器设置中输入密钥".to_string();
+            *last_error_code().lock().unwrap_or_else(|e| e.into_inner()) = "MissingCredential".to_string();
+            *last_error_raw().lock().unwrap_or_else(|e| e.into_inner()) = "未保存密钥，请先在服务器设置中输入密钥".to_string();
+            *last_connect_error().lock().unwrap_or_else(|e| e.into_inner()) = "未保存密钥，请先在服务器设置中输入密钥".to_string();
             return bool_to_jbool(false);
         }
         let key_dir = std::path::PathBuf::from(&data_dir).join("keys").join(&id_str);
@@ -484,9 +484,9 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
         let password = store.load(&termfast_credential::make_key(&id_str, "password")).unwrap_or_default();
         if password.is_empty() {
             tracing::error!("No password credential for {}", id_str);
-            *last_error_code().lock().unwrap() = "MissingCredential".to_string();
-            *last_error_raw().lock().unwrap() = "未保存密码，请先在服务器设置中输入密码".to_string();
-            *last_connect_error().lock().unwrap() = "未保存密码，请先在服务器设置中输入密码".to_string();
+            *last_error_code().lock().unwrap_or_else(|e| e.into_inner()) = "MissingCredential".to_string();
+            *last_error_raw().lock().unwrap_or_else(|e| e.into_inner()) = "未保存密码，请先在服务器设置中输入密码".to_string();
+            *last_connect_error().lock().unwrap_or_else(|e| e.into_inner()) = "未保存密码，请先在服务器设置中输入密码".to_string();
             return bool_to_jbool(false);
         }
         tracing::info!("nativeConnectServer: password loaded");
@@ -503,7 +503,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
                 if let Some(fp) = instance.get_host_key_fingerprint().await {
                     tracing::info!("nativeConnectServer: persisting host key fingerprint: {}", fp);
                     let mgr = {
-                        let st = state().lock().unwrap();
+                        let st = state().lock().unwrap_or_else(|e| e.into_inner());
                         st.config_manager.clone()
                     };
                     if let Some(mgr) = mgr {
@@ -537,9 +537,9 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeConnectServer(
                 // retrieve it via nativeGetLastError() after a failed
                 // nativeConnectServer call.
                 let user_msg = format_error_message(&code, &detail);
-                *last_connect_error().lock().unwrap() = user_msg;
-                *last_error_code().lock().unwrap() = code.clone();
-                *last_error_raw().lock().unwrap() = detail.clone();
+                *last_connect_error().lock().unwrap_or_else(|e| e.into_inner()) = user_msg;
+                *last_error_code().lock().unwrap_or_else(|e| e.into_inner()) = code.clone();
+                *last_error_raw().lock().unwrap_or_else(|e| e.into_inner()) = detail.clone();
                 // Emit status_changed event with error details so the UI
                 // can show a user-friendly localized message.
                 let event = crate::event::RustEvent::ServerStatusChanged {
@@ -567,7 +567,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeDisconnectServer
 ) -> jboolean {
     let id_str = jstring_to_string(&mut _env, &id);
     let instance = {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         st.servers.get(&id_str).cloned()
     };
     if let Some(instance) = instance {
@@ -575,7 +575,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeDisconnectServer
         let _ = rt.block_on(instance.disconnect());
         // Clean up the private key file from disk after disconnect (H-1)
         let data_dir = {
-            let st = state().lock().unwrap();
+            let st = state().lock().unwrap_or_else(|e| e.into_inner());
             st.data_dir.clone()
         };
         if !data_dir.is_empty() {
@@ -597,7 +597,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetServerStatus(
 ) -> jstring {
     let id_str = jstring_to_string(&mut env, &id);
     let instance = {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         st.servers.get(&id_str).cloned()
     };
     let status = if let Some(instance) = instance {
@@ -637,7 +637,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStartProxy(
     // not call it while holding the lock — collect the error first, release
     // the lock, then log.
     let (instance, port_conflict_msg) = {
-        let mut st = state().lock().unwrap();
+        let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
         let instance = st.servers.get(&id_str).cloned();
         let mut conflict: Option<String> = None;
         if let Some(ref inst) = instance {
@@ -674,8 +674,8 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStartProxy(
     if let Some(msg) = port_conflict_msg {
         tracing::error!("{}", msg);
         log_to_kotlin("error", &msg);
-        *last_error_code().lock().unwrap() = "PortInUse".to_string();
-        *last_error_raw().lock().unwrap() = msg;
+        *last_error_code().lock().unwrap_or_else(|e| e.into_inner()) = "PortInUse".to_string();
+        *last_error_raw().lock().unwrap_or_else(|e| e.into_inner()) = msg;
         return bool_to_jbool(false);
     }
     if let Some(instance) = instance {
@@ -700,7 +700,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStartProxy(
 
 /// Release all ports reserved by a server.
 fn release_ports(server_id: &str) {
-    let mut st = state().lock().unwrap();
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     st.reserved_ports.retain(|_, owner| owner != server_id);
 }
 
@@ -713,7 +713,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStopProxy(
 ) -> jboolean {
     let id_str = jstring_to_string(&mut _env, &id);
     let instance = {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         st.servers.get(&id_str).cloned()
     };
     if let Some(instance) = instance {
@@ -736,7 +736,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeIsProxyRunning(
 ) -> jboolean {
     let id_str = jstring_to_string(&mut _env, &id);
     let instance = {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         st.servers.get(&id_str).cloned()
     };
     if let Some(instance) = instance {
@@ -804,7 +804,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetLastError<'a>
     mut env: JNIEnv<'a>,
     _class: JClass<'a>,
 ) -> JString<'a> {
-    let msg = last_connect_error().lock().unwrap().clone();
+    let msg = last_connect_error().lock().unwrap_or_else(|e| e.into_inner()).clone();
     env.new_string(&msg).unwrap_or_else(|_| env.new_string("").unwrap())
 }
 
@@ -816,7 +816,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetLastErrorCode
     mut env: JNIEnv<'a>,
     _class: JClass<'a>,
 ) -> JString<'a> {
-    let code = last_error_code().lock().unwrap().clone();
+    let code = last_error_code().lock().unwrap_or_else(|e| e.into_inner()).clone();
     env.new_string(&code).unwrap_or_else(|_| env.new_string("").unwrap())
 }
 
@@ -828,7 +828,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGetLastErrorRaw<
     mut env: JNIEnv<'a>,
     _class: JClass<'a>,
 ) -> JString<'a> {
-    let raw = last_error_raw().lock().unwrap().clone();
+    let raw = last_error_raw().lock().unwrap_or_else(|e| e.into_inner()).clone();
     env.new_string(&raw).unwrap_or_else(|_| env.new_string("").unwrap())
 }
 
@@ -845,7 +845,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeAcceptHostKey(
     let id_str = jstring_to_string(&mut _env, &id);
     let fp_str = jstring_to_string(&mut _env, &fingerprint);
     let instance = {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         st.servers.get(&id_str).cloned()
     };
     if let Some(instance) = instance {
@@ -854,7 +854,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeAcceptHostKey(
             instance.accept_host_key(fp_str.clone()).await;
             // Persist to config
             let mgr = {
-                let st = state().lock().unwrap();
+                let st = state().lock().unwrap_or_else(|e| e.into_inner());
                 st.config_manager.clone()
             };
             if let Some(mgr) = mgr {
@@ -884,7 +884,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetEventListener
     // The previous GlobalRef (if any) is dropped automatically, which calls
     //   DeleteGlobalRef via jni crate's Drop impl.
     let global = env.new_global_ref(listener).ok();
-    let mut st = state().lock().unwrap();
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     st.event_callback = global;
 
     // Also set the core platform event callback so core can emit events
@@ -1082,7 +1082,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialUnlock
 
     // If SqlCipherStorage wasn't initialized (NEED_UNLOCK case), initialize it with the DEK
     if !crate::config::is_sqlcipher_initialized() {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         let dir = st.data_dir.clone();
         drop(st);
         if !dir.is_empty() {
@@ -1104,7 +1104,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeCredentialUnlock
                         let _ = rt.block_on(instance.set_socket_protector(Arc::new(crate::network::AndroidSocketProtector)));
                         servers.insert(server.id.clone(), instance);
                     }
-                    let mut st = state().lock().unwrap();
+                    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
                     st.servers = servers;
                     st.config_manager = Some(cm);
                 }
@@ -1317,7 +1317,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeGenerateKeypair(
     server_id: JString,
 ) -> jstring {
     let sid = jstring_to_string(&mut env, &server_id);
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let data_dir = st.data_dir.clone();
     let key_dir = std::path::PathBuf::from(&data_dir).join("keys").join(&sid);
     let _ = std::fs::create_dir_all(&key_dir);
@@ -1349,7 +1349,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeListTriggers(
     server_id: JString,
 ) -> jstring {
     let sid = jstring_to_string(&mut env, &server_id);
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let triggers = if let Some(ref cm) = st.config_manager {
         let cfg = cm.get_blocking();
         cfg.find_server(&sid).map(|s| s.triggers.clone()).unwrap_or_default()
@@ -1366,7 +1366,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeListTriggerTempl
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let templates = if let Some(ref cm) = st.config_manager {
         let cfg = cm.get_blocking();
         cfg.trigger_templates.clone()
@@ -1392,7 +1392,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetTriggerTempla
             return bool_to_jbool(false);
         }
     };
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref cm) = st.config_manager {
         let rt = runtime();
         let result = rt.block_on(async {
@@ -1424,7 +1424,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeSetServerTrigger
         }
     };
     let (cm, instance) = {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         (st.config_manager.clone(), st.servers.get(&sid).cloned())
     };
     if let Some(ref cm) = cm {
@@ -1452,7 +1452,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRunTrigger(
 ) -> jstring {
     let sid = jstring_to_string(&mut env, &server_id);
     let tid = jstring_to_string(&mut env, &trigger_id);
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let result = if let Some(instance) = st.servers.get(&sid).cloned() {
         let rt = runtime();
         // Check if SSH is connected before running trigger
@@ -1745,7 +1745,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeListPortForwards
     server_id: JString,
 ) -> jstring {
     let sid = jstring_to_string(&mut env, &server_id);
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
 
     // Get config rules
     let config_rules: Vec<termfast_core::config::PortForwardRule> = if let Some(ref cm) = st.config_manager {
@@ -1863,7 +1863,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeAddPortForward(
 
     let rule_id = rule.id.clone();
 
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let cm_opt = st.config_manager.clone();
     drop(st); // release lock before block_on
 
@@ -1955,7 +1955,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeUpdatePortForwar
     };
 
     // Stop running forwarder if active
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let was_running = if let Some(instance) = st.servers.get(&sid) {
         let mgr = instance.port_forward_manager();
         let rt = runtime();
@@ -2003,7 +2003,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeDeletePortForwar
     let sid = jstring_to_string(&mut env, &server_id);
     let rid = jstring_to_string(&mut env, &rule_id);
 
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
 
     // Stop the forwarder if running
     if let Some(instance) = st.servers.get(&sid) {
@@ -2046,7 +2046,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStartPortForward
     let sid = jstring_to_string(&mut env, &server_id);
     let rid = jstring_to_string(&mut env, &rule_id);
 
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
 
     // Find the rule in config
     let rule: termfast_core::config::PortForwardRule = {
@@ -2102,7 +2102,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeStopPortForward(
     let sid = jstring_to_string(&mut env, &server_id);
     let rid = jstring_to_string(&mut env, &rule_id);
 
-    let st = state().lock().unwrap();
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(instance) = st.servers.get(&sid) {
         let mgr = instance.port_forward_manager();
         let rt = runtime();

@@ -177,7 +177,6 @@ export function PairingCard() {
   const handleInitiatePairing = async () => {
     if (!token) return;
     try {
-      console.log("[PairingCard] initiate pairing with token:", token.substring(0, 20) + "...");
       const info = await ipcInvoke<any>("ipc_get_local_info");
       const hostname = info?.hostname || "unknown";
       const username = info?.username || "unknown";

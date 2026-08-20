@@ -2436,11 +2436,49 @@ async fn ipc_push_send(
 
 /// Upload a local file to cloud storage for FILE_REQUEST (local terminal file transfer).
 /// Reads the file, encrypts with master password, uploads to cloud, returns FileUploadResult.
+///
+/// Security: file_path is validated against a whitelist of allowed directories
+/// to prevent remote devices from reading arbitrary files (e.g. ~/.ssh/id_rsa).
 async fn upload_file_to_cloud(
     file_path: String,
     file_upload_config: Arc<tokio::sync::Mutex<Option<termfast_daemon::server::FileUploadConfig>>>,
     config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
 ) -> Result<termfast_daemon::remote_server::FileUploadResult, String> {
+    // Security: validate file_path is within allowed directories.
+    // Allowed: user home dir, temp dir. Reject paths containing ".." or
+    // sensitive system paths.
+    {
+        let path = std::path::Path::new(&file_path);
+        // Reject paths with .. components (path traversal)
+        if path.components().any(|c| c == std::path::Component::ParentDir) {
+            return Err("path traversal detected (.. not allowed)".to_string());
+        }
+        // Canonicalize and check against allowed roots
+        let canonical = path.canonicalize().map_err(|e| format!("invalid path: {}", e))?;
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let temp = std::env::temp_dir();
+        // Allow files under home dir or temp dir
+        let is_allowed = canonical.starts_with(&home) || canonical.starts_with(&temp);
+        // Reject sensitive paths even within home dir
+        let ssh_dir = home.join(".ssh");
+        let is_sensitive = canonical.starts_with(&ssh_dir);
+        if !is_allowed {
+            return Err(format!(
+                "access denied: path {:?} is outside allowed directories",
+                canonical
+            ));
+        }
+        if is_sensitive {
+            return Err(format!(
+                "access denied: path {:?} is in a sensitive directory (.ssh)",
+                canonical
+            ));
+        }
+    }
+
     // Get upload config
     let upload_cfg = {
         let guard = file_upload_config.lock().await;

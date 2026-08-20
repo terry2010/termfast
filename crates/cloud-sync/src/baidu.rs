@@ -26,9 +26,20 @@ const BAIDU_APP_NAME: &str = "云盘备份";
 /// Baidu's API requires absolute paths under the app sandbox directory.
 /// If the path already starts with `/apps/`, it is returned as-is (allows
 /// custom override).
+///
+/// Security: rejects paths containing `..` to prevent path traversal outside
+/// the app sandbox.
 fn baidu_path(path: &str) -> String {
     if path.starts_with("/apps/") {
         return path.to_string();
+    }
+    // Security: reject path traversal attempts
+    if path.contains("..") {
+        tracing::warn!("baidu_path: rejecting path with .. traversal: {:?}", path);
+        // Sanitize by removing .. components — fall through with cleaned path
+        let cleaned: String = path.split('/').filter(|c| *c != "..").collect::<Vec<_>>().join("/");
+        let p = if cleaned.starts_with('/') { cleaned } else { format!("/{}", cleaned) };
+        return format!("/apps/{}{}", BAIDU_APP_NAME, p);
     }
     // Ensure path starts with /
     let p = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };

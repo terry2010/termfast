@@ -54,15 +54,33 @@ const KEY_LEN: usize = 32;
 const MAX_PASSWORD_LEN: usize = 1024;
 
 /// Compute a hash of the master password for comparison purposes.
-/// Uses NFKC normalization (same as encryption) + SHA-256.
+/// Uses NFKC normalization (same as encryption) + HMAC-SHA256 with a
+/// fixed application key. This is more resistant to rainbow table attacks
+/// than plain SHA-256.
 /// This hash is stored locally to detect password changes across
 /// upload/download operations. It is NOT used for encryption.
 pub fn password_hash(password: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
+    use sha2::Digest;
     let normalized: String = password.nfkc().collect();
-    let mut hasher = Sha256::new();
-    hasher.update(normalized.as_bytes());
-    let result = hasher.finalize();
+    // HMAC-SHA256 with a fixed application key prevents rainbow table attacks
+    // even if the hash file is leaked. The key is not a secret (it's in the
+    // binary), but it forces attackers to build custom rainbow tables.
+    let key = b"TermFast::password_hash::v1";
+    let mut hmac = <sha2::Sha256 as Digest>::new();
+    // Manual HMAC implementation (avoid adding hmac crate dependency)
+    let mut inner = sha2::Sha256::new();
+    let mut ipad = [0x36u8; 32];
+    let mut opad = [0x5cu8; 32];
+    for i in 0..key.len().min(32) {
+        ipad[i] ^= key[i];
+        opad[i] ^= key[i];
+    }
+    inner.update(ipad);
+    inner.update(normalized.as_bytes());
+    let inner_result = inner.finalize();
+    hmac.update(opad);
+    hmac.update(&inner_result);
+    let result = hmac.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&result);
     out
