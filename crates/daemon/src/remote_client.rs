@@ -587,6 +587,10 @@ async fn handle_server_initiated_frame(
                         terminal_manager.set_session_name(&session_id, n).await;
                     }
                     terminal_manager.notify_opened();
+                    // Forward terminal:opened to the local GUI so it creates a tab.
+                    // open_local() no longer does this internally (to avoid double-tab
+                    // when the local frontend opens a terminal via IPC).
+                    terminal_manager.forward_opened(&session_id);
                     let handle = {
                         let mut map = id_map.lock().unwrap();
                         map.get_or_assign(&session_id)

@@ -1075,6 +1075,8 @@ impl RemoteServer {
                     self.terminal_manager.set_session_name(&session_id, n).await;
                 }
                 self.terminal_manager.notify_opened();
+                // Forward terminal:opened to the local GUI so it creates a tab.
+                self.terminal_manager.forward_opened(&session_id);
                 // Assign u32 handle and return it
                 let handle = {
                     let mut id_map = self.id_map.lock().unwrap();

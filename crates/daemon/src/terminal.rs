@@ -149,6 +149,14 @@ impl TerminalManager {
         }
     }
 
+    /// Forward terminal:opened event to the GUI.
+    /// Called when a terminal is opened by a remote desktop (via NEW_TERMINAL),
+    /// so the local frontend can auto-create a tab for it.
+    /// NOT called for locally-initiated terminal opens (those create tabs via IPC return).
+    pub fn forward_opened(&self, session_id: &str) {
+        forward_terminal_opened(&self.forwarder, session_id);
+    }
+
     /// Invoke the on_closed callback (if set) for a session_id.
     fn notify_closed(&self, session_id: &str) {
         if let Ok(cb) = self.on_closed_callback.lock() {
@@ -744,9 +752,14 @@ impl TerminalManager {
         } else {
             tracing::warn!("[TerminalManager] local_event_tx is None — Opened event for session {} dropped (subscribe_local_events not called?)", session_id);
         }
-        // Forward terminal:opened to the GUI so the frontend can auto-create a tab
-        // (needed when a terminal is opened by RemoteServer on behalf of a remote desktop)
-        forward_terminal_opened(&self.forwarder, &session_id);
+        // Note: forward_terminal_opened is NOT called here. When the local
+        // frontend opens a terminal via ipc_terminal_open, it creates the tab
+        // itself after the IPC returns. If we also send terminal:opened, a
+        // race condition creates two tabs for the same terminal.
+        // forward_terminal_opened is called explicitly by the remote client's
+        // NEW_TERMINAL handler (handle_server_initiated_frame) where the
+        // terminal is opened by a remote desktop and the local frontend needs
+        // to be notified to create a tab.
 
         // initial_output is empty — local PTY output (prompt, MOTD) is streamed
         // asynchronously via the binary forwarder, unlike SSH's synchronous read.
