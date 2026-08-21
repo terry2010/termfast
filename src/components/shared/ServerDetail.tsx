@@ -131,6 +131,10 @@ export function ServerDetail() {
   const rightClickButtonRef = useRef(false);
   // Ref to track remoteActiveTerminal without re-registering event listener
   const remoteActiveTerminalRef = useRef<number | null>(null);
+  // Ref: has the user made an explicit tab choice for the current pairing?
+  // false = no choice yet (auto-select first terminal on LIST_RESPONSE)
+  // true  = user clicked a tab or store had a persisted value (don't auto-select)
+  const remoteTabChoiceMadeRef = useRef(false);
   // Drag-to-reorder state for terminal tabs (overview tab is not draggable)
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
@@ -149,6 +153,7 @@ export function ServerDetail() {
   const updateRemoteActiveTerminal = useCallback((terminalId: number | null) => {
     remoteActiveTerminalRef.current = terminalId;
     setRemoteActiveTerminal(terminalId);
+    remoteTabChoiceMadeRef.current = true;
     if (remotePairingId) {
       setRemoteActiveTerminalInStore(remotePairingId, terminalId);
     }
@@ -167,9 +172,13 @@ export function ServerDetail() {
     setRemoteTerminals([]);
     // Restore remote active terminal from persisted store (null = overview tab)
     const newPid = selectedId?.startsWith("remote:") ? selectedId.slice("remote:".length) : null;
-    const restored = newPid ? (remoteActiveTerminalByPairing[newPid] ?? null) : null;
+    const hasPersistedChoice = newPid != null && (newPid in remoteActiveTerminalByPairing);
+    const restored = hasPersistedChoice ? (remoteActiveTerminalByPairing[newPid!] ?? null) : null;
     setRemoteActiveTerminal(restored);
     remoteActiveTerminalRef.current = restored;
+    // If we restored a persisted choice, mark that a choice was already made
+    // so LIST_RESPONSE doesn't auto-select a terminal (overriding overview).
+    remoteTabChoiceMadeRef.current = hasPersistedChoice;
     setRemoteInfo(null);
     setSelectedRemoteShell(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -234,9 +243,13 @@ export function ServerDetail() {
             // Auto-switch to the first new terminal (like "My Computer" auto-selects new tabs)
             // Note: do NOT subscribe here — RemoteTerminalView subscribes on mount.
             // Subscribing here would cause a double subscription → duplicated output.
-            if (newTerms.length > 0 && remoteActiveTerminalRef.current === null) {
+            // Only auto-select if the user hasn't made an explicit tab choice yet
+            // (e.g. first time entering this remote device). If the user chose
+            // overview or a specific terminal, respect that choice.
+            if (newTerms.length > 0 && !remoteTabChoiceMadeRef.current) {
               const firstNew = newTerms[0];
               updateRemoteActiveTerminal(firstNew.terminal_id);
+              remoteTabChoiceMadeRef.current = true;
             }
             return terms;
           });
