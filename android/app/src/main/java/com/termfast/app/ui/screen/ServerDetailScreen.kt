@@ -270,6 +270,11 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                     serverId = serverId,
                     serverConfig = serverConfig,
                     proxyRunning = proxyRunning,
+                    vpnRunning = vpnRunning,
+                    vpnStarting = vpnStarting,
+                    vpnFailed = vpnFailed,
+                    vpnError = vpnError,
+                    onVpnToggle = { toggleVpn() },
                     onToggle = { run ->
                         scope.launch {
                             withContext(Dispatchers.IO) {
@@ -360,72 +365,6 @@ private fun OverviewTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Error banner — shown when VPN connection failed
-        if (vpnFailed && vpnError != null) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                ),
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Icon(Icons.Filled.Warning, contentDescription = "错误")
-                    Text(vpnError!!, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                }
-            }
-        }
-        // VPN toggle — large primary button
-        Button(
-            onClick = onVpnToggle,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(14.dp),
-            enabled = !vpnStarting,
-            colors = when {
-                vpnRunning -> ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                )
-                vpnFailed -> ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                )
-                else -> ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                )
-            },
-        ) {
-            if (vpnStarting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    strokeWidth = 2.dp,
-                )
-            } else {
-                Icon(
-                    if (vpnRunning) Icons.Filled.Stop else Icons.Filled.Shield,
-                    contentDescription = null,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                when {
-                    vpnStarting -> "连接中..."
-                    vpnRunning -> "停止 VPN"
-                    vpnFailed -> "重试连接"
-                    else -> "启动 VPN"
-                },
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-
         // Terminal quick-access button — text changes based on existing sessions
         OutlinedButton(
             onClick = onTerminal,
@@ -733,6 +672,11 @@ private fun ProxyTab(
     serverId: String,
     serverConfig: ServerConfig?,
     proxyRunning: Boolean,
+    vpnRunning: Boolean,
+    vpnStarting: Boolean = false,
+    vpnFailed: Boolean = false,
+    vpnError: String? = null,
+    onVpnToggle: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onSaveTestUrl: (String) -> Unit,
 ) {
@@ -753,6 +697,78 @@ private fun ProxyTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // VPN toggle card
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("VPN", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                // Error banner — shown when VPN connection failed
+                if (vpnFailed && vpnError != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.Filled.Warning, contentDescription = "错误", tint = MaterialTheme.colorScheme.error)
+                        Text(vpnError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f))
+                    }
+                }
+                Button(
+                    onClick = onVpnToggle,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = !vpnStarting,
+                    colors = when {
+                        vpnRunning -> ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        vpnFailed -> ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        else -> ButtonDefaults.buttonColors()
+                    },
+                ) {
+                    if (vpnStarting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            if (vpnRunning) Icons.Filled.Stop else Icons.Filled.Shield,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        when {
+                            vpnStarting -> "连接中..."
+                            vpnRunning -> "停止 VPN"
+                            vpnFailed -> "重试连接"
+                            else -> "启动 VPN"
+                        },
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                if (vpnRunning) {
+                    Text("VPN 运行中", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                }
+                Text(
+                    "VPN 会接管系统所有流量并通过 SSH 隧道转发，适合全局科学上网。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
         // Proxy toggle card
         ElevatedCard(
             modifier = Modifier.fillMaxWidth(),
@@ -794,7 +810,7 @@ private fun ProxyTab(
                     )
                 }
                 Text(
-                    "注意：此功能仅启动本机 SOCKS5 代理端口，不会启动 VPN。如需 VPN 上网，请使用「启动 VPN」按钮。",
+                    "注意：此功能仅启动本机 SOCKS5 代理端口，不会启动 VPN。如需全局上网，请使用上方 VPN 按钮。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
