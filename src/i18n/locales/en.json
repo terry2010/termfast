@@ -150,6 +150,8 @@
     "terminal": "Terminal",
     "terminal_open_failed": "Failed to open terminal",
     "terminal_disconnected": "Terminal disconnected",
+    "remote_peer_disconnected": "Remote desktop disconnected",
+    "remote_peer_reconnected": "Remote desktop reconnected",
     "tmux_session_picker_title": "Restore tmux Session",
     "tmux_session_picker_subtitle": "Found existing TermFast sessions. Choose one to restore or create a new session.",
     "tmux_no_sessions": "No sessions to restore",

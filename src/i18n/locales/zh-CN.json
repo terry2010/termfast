@@ -152,6 +152,8 @@
     "terminal": "终端",
     "terminal_open_failed": "打开终端失败",
     "terminal_disconnected": "终端已断开连接",
+    "remote_peer_disconnected": "远程桌面已断开连接",
+    "remote_peer_reconnected": "远程桌面已重新连接",
     "tmux_session_picker_title": "恢复 tmux 会话",
     "tmux_session_picker_subtitle": "发现已有的 TermFast 会话，选择一个恢复或创建新会话",
     "tmux_no_sessions": "没有可恢复的会话",

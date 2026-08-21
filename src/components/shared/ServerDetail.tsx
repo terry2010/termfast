@@ -225,13 +225,14 @@ export function ServerDetail() {
             return terms;
           });
           // If the currently active terminal is no longer in the list, switch to overview.
-          // Only do this if the list is non-empty AND we're not in the OK grace period
-          // (the OK frame may have set activeTerminal before the terminal appears in the list).
+          // Also reset when the list becomes empty (e.g. remote desktop disconnected).
+          // Skip the reset during the OK grace period (the OK frame may have set
+          // activeTerminal before the terminal appears in the list).
           if (
-            terms.length > 0 &&
             remoteActiveTerminalRef.current !== null &&
-            !terms.some((t: any) => t.terminal_id === remoteActiveTerminalRef.current) &&
-            Date.now() > okGraceUntilRef.current
+            Date.now() > okGraceUntilRef.current &&
+            (terms.length === 0 ||
+              !terms.some((t: any) => t.terminal_id === remoteActiveTerminalRef.current))
           ) {
             remoteActiveTerminalRef.current = null;
             setRemoteActiveTerminal(null);
@@ -328,6 +329,40 @@ export function ServerDetail() {
       unlisten.then((fn) => fn());
     };
   }, [isRemote, remotePairingId]);
+
+  // Remote desktop: listen for connection state changes (connect/disconnect).
+  // On disconnect: show toast, clear remote terminals, reset active terminal.
+  // On reconnect: show toast.
+  useEffect(() => {
+    if (!isRemote || !remotePairingId) return;
+    let unlisten: UnlistenFn | undefined;
+    listen<{ pairing_id: string; connected: boolean }>(
+      "remote_client_state",
+      (event) => {
+        if (event.payload.pairing_id !== remotePairingId) return;
+        if (!event.payload.connected) {
+          // Peer disconnected — show toast and reset remote terminal state
+          toast.warning(t("server.remote_peer_disconnected"), {
+            description: remotePeer?.peerName || remotePairingId,
+          });
+          setRemoteTerminals([]);
+          remoteActiveTerminalRef.current = null;
+          setRemoteActiveTerminal(null);
+        } else {
+          // Peer reconnected
+          toast.success(t("server.remote_peer_reconnected"), {
+            description: remotePeer?.peerName || remotePairingId,
+          });
+        }
+      },
+    ).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [isRemote, remotePairingId, remotePeer?.peerName, t]);
+
   // Virtual server for local terminal (no SSH config, reuses overview UI)
   const displayServer: ServerState = isLocal
     ? ({
