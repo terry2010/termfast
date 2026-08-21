@@ -42,7 +42,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -542,10 +541,11 @@ fun ServerListScreen(navController: NavController) {
                     val dragModifier = Modifier
                         .fillMaxWidth()
                         .zIndex(if (isDragging) 1f else 0f)
-                        .then(if (isDragging) Modifier.shadow(8.dp, RoundedCornerShape(16.dp)) else Modifier)
                         .graphicsLayer {
                             if (isDragging) {
                                 translationY = dragOffsetY
+                                shadowElevation = 8f
+                                shape = RoundedCornerShape(16.dp)
                                 alpha = 0.9f
                             }
                         }
@@ -554,13 +554,12 @@ fun ServerListScreen(navController: NavController) {
                                 onDragStart = {
                                     draggedItemKey = item.key
                                     dragOffsetY = 0f
-                                    showReorderButtons = true
-                                    saveCountdown = 0
                                 },
                                 onDragEnd = {
-                                    // Start 3-second countdown to auto-save
+                                    // Show buttons + start 3-second countdown to auto-save
                                     draggedItemKey = null
                                     dragOffsetY = 0f
+                                    showReorderButtons = true
                                     saveCountdown = 3
                                     saveCountdownScope.launch {
                                         for (i in 3 downTo 1) {

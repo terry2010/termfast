@@ -19,7 +19,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -323,10 +322,11 @@ fun TerminalsScreen(
                     val dragModifier = Modifier
                         .fillMaxWidth()
                         .zIndex(if (isDragging) 1f else 0f)
-                        .then(if (isDragging) Modifier.shadow(8.dp, RoundedCornerShape(12.dp)) else Modifier)
                         .graphicsLayer {
                             if (isDragging) {
                                 translationY = dragOffsetY
+                                shadowElevation = 8f
+                                shape = RoundedCornerShape(12.dp)
                                 alpha = 0.9f
                             }
                         }
