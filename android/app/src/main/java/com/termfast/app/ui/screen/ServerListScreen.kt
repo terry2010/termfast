@@ -1325,7 +1325,7 @@ private fun ServerCard(
                             tint = MaterialTheme.colorScheme.onPrimary,
                         )
                         Text(
-                            "新建SSH终端",
+                            "打开SSH终端",
                             color = MaterialTheme.colorScheme.onPrimary,
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Medium,
