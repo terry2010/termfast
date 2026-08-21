@@ -554,6 +554,8 @@ fun ServerListScreen(navController: NavController) {
                                 onDragStart = {
                                     draggedItemKey = item.key
                                     dragOffsetY = 0f
+                                    showReorderButtons = true
+                                    saveCountdown = 0
                                 },
                                 onDragEnd = {
                                     // Show buttons + start 3-second countdown to auto-save
