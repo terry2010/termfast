@@ -7,7 +7,6 @@
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js",
     "start": "node scripts/dev-start.cjs && tauri dev",
-    "startwin": "node scripts/dev-start.cjs && tauri dev",
     "build": "node node_modules/typescript/bin/tsc && node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview",
     "tauri": "tauri",
