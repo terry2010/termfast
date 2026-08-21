@@ -627,6 +627,8 @@ export function ServerDetail() {
       const currentTabs =
         useServerStore.getState().terminal_tabs_by_server[serverId] || [];
       const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      // Sync name to Rust backend so mobile sees the correct tab label
+      ipcInvoke("ipc_set_session_name", { session_id: sessionId, name: defaultLabel }).catch(() => {});
       addTerminalTab(serverId, {
         id: tabId,
         sessionId,
@@ -662,6 +664,8 @@ export function ServerDetail() {
       const currentTabs =
         useServerStore.getState().terminal_tabs_by_server[serverId] || [];
       const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+      // Sync name to Rust backend so mobile sees the correct tab label
+      ipcInvoke("ipc_set_session_name", { session_id: sessionId, name: defaultLabel }).catch(() => {});
       addTerminalTab(serverId, {
         id: tabId,
         sessionId,
@@ -944,12 +948,12 @@ export function ServerDetail() {
       }
 
       try {
-        const result = await openTerminalWithChannel(serverId);
+        const currentTabs = store.terminal_tabs_by_server[serverId] || [];
+        const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+        const result = await openTerminalWithChannel(serverId, 80, 24, { name: defaultLabel });
         const sessionId = result.session_id;
         const initialOutput = result.initial_output || "";
         const tabId: Tab = `term:${sessionId}`;
-        const currentTabs = store.terminal_tabs_by_server[serverId] || [];
-        const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
         store.addTerminalTab(serverId, {
           id: tabId,
           sessionId,
@@ -1918,6 +1922,8 @@ export function ServerDetail() {
               const currentTabs =
                 useServerStore.getState().terminal_tabs_by_server[server.id] || [];
               const defaultLabel = `${t("server.terminal")} ${currentTabs.length + 1}`;
+              // Sync name to Rust backend so mobile sees the correct tab label
+              ipcInvoke("ipc_set_session_name", { session_id: sessionId, name: defaultLabel }).catch(() => {});
               addTerminalTab(server.id, {
                 id: tabId,
                 sessionId,
@@ -2705,10 +2711,6 @@ export function ServerDetail() {
                     }
                     // Open a new terminal session to replace the disconnected one
                     try {
-                      const result = await openTerminalWithChannel(serverId);
-                      const newSessionId = result.session_id;
-                      const newInitialOutput = result.initial_output || "";
-                      const newTabId: Tab = `term:${newSessionId}`;
                       const currentTabs =
                         useServerStore.getState().terminal_tabs_by_server[
                           serverId
@@ -2716,6 +2718,10 @@ export function ServerDetail() {
                       const defaultLabel =
                         tt.defaultLabel ||
                         `${t("server.terminal")} ${currentTabs.length + 1}`;
+                      const result = await openTerminalWithChannel(serverId, 80, 24, { name: defaultLabel });
+                      const newSessionId = result.session_id;
+                      const newInitialOutput = result.initial_output || "";
+                      const newTabId: Tab = `term:${newSessionId}`;
                       // Replace the disconnected tab with the new one
                       removeTerminalTab(serverId, tt.id);
                       addTerminalTab(serverId, {
