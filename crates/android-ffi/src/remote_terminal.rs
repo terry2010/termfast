@@ -922,4 +922,261 @@ mod tests {
     }
 
     // === SECTION: Tests part 4 END ===
+
+    // === SECTION: Trigger frame tests ===
+
+    #[test]
+    fn test_send_trigger_list_request_after_hello() {
+        let pairing_id = "test-trig-list-req-pid";
+        let pairing_key = [0xF1u8; 32];
+        do_hello_exchange(pairing_id, &pairing_key);
+
+        let ct = send_trigger_list_request(pairing_id).unwrap();
+        assert!(!ct.is_empty());
+
+        // Decrypt and verify frame type
+        let map = sessions().lock().unwrap();
+        let session = map.get(pairing_id).unwrap();
+        let cipher = session.recv_cipher.as_ref().unwrap();
+        let plaintext = cipher.decrypt(&ct).unwrap();
+        let frame = Frame::deserialize(&plaintext).unwrap();
+        assert_eq!(frame.frame_type, termfast_daemon::remote_frame::TRIGGER_LIST_REQUEST);
+        drop(map);
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_list_request_before_hello_fails() {
+        let pairing_id = "test-trig-list-req-fail-pid";
+        let pairing_key = [0xF2u8; 32];
+        init_tunnel(pairing_id, &pairing_key).unwrap();
+
+        let result = send_trigger_list_request(pairing_id);
+        assert!(result.is_err());
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_exec_after_hello() {
+        let pairing_id = "test-trig-exec-pid";
+        let pairing_key = [0xF3u8; 32];
+        do_hello_exchange(pairing_id, &pairing_key);
+
+        let payload = r#"{"trigger_id":"t-123"}"#;
+        let ct = send_trigger_exec(pairing_id, payload).unwrap();
+        assert!(!ct.is_empty());
+
+        // Decrypt and verify frame type + payload
+        let map = sessions().lock().unwrap();
+        let session = map.get(pairing_id).unwrap();
+        let cipher = session.recv_cipher.as_ref().unwrap();
+        let plaintext = cipher.decrypt(&ct).unwrap();
+        let frame = Frame::deserialize(&plaintext).unwrap();
+        assert_eq!(frame.frame_type, termfast_daemon::remote_frame::TRIGGER_EXEC);
+        let payload_str = std::str::from_utf8(&frame.payload).unwrap();
+        assert!(payload_str.contains("\"trigger_id\":\"t-123\""));
+        drop(map);
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_exec_before_hello_fails() {
+        let pairing_id = "test-trig-exec-fail-pid";
+        let pairing_key = [0xF4u8; 32];
+        init_tunnel(pairing_id, &pairing_key).unwrap();
+
+        let result = send_trigger_exec(pairing_id, "{}");
+        assert!(result.is_err());
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_add_after_hello() {
+        let pairing_id = "test-trig-add-pid";
+        let pairing_key = [0xF5u8; 32];
+        do_hello_exchange(pairing_id, &pairing_key);
+
+        let payload = r#"{"id":"t1","name":"test","trigger_type":"ManualFire"}"#;
+        let ct = send_trigger_add(pairing_id, payload).unwrap();
+        assert!(!ct.is_empty());
+
+        let map = sessions().lock().unwrap();
+        let session = map.get(pairing_id).unwrap();
+        let cipher = session.recv_cipher.as_ref().unwrap();
+        let plaintext = cipher.decrypt(&ct).unwrap();
+        let frame = Frame::deserialize(&plaintext).unwrap();
+        assert_eq!(frame.frame_type, termfast_daemon::remote_frame::TRIGGER_ADD);
+        drop(map);
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_add_before_hello_fails() {
+        let pairing_id = "test-trig-add-fail-pid";
+        let pairing_key = [0xF6u8; 32];
+        init_tunnel(pairing_id, &pairing_key).unwrap();
+
+        let result = send_trigger_add(pairing_id, "{}");
+        assert!(result.is_err());
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_update_after_hello() {
+        let pairing_id = "test-trig-upd-pid";
+        let pairing_key = [0xF7u8; 32];
+        do_hello_exchange(pairing_id, &pairing_key);
+
+        let payload = r#"{"id":"t1","name":"updated"}"#;
+        let ct = send_trigger_update(pairing_id, payload).unwrap();
+        assert!(!ct.is_empty());
+
+        let map = sessions().lock().unwrap();
+        let session = map.get(pairing_id).unwrap();
+        let cipher = session.recv_cipher.as_ref().unwrap();
+        let plaintext = cipher.decrypt(&ct).unwrap();
+        let frame = Frame::deserialize(&plaintext).unwrap();
+        assert_eq!(frame.frame_type, termfast_daemon::remote_frame::TRIGGER_UPDATE);
+        drop(map);
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_update_before_hello_fails() {
+        let pairing_id = "test-trig-upd-fail-pid";
+        let pairing_key = [0xF8u8; 32];
+        init_tunnel(pairing_id, &pairing_key).unwrap();
+
+        let result = send_trigger_update(pairing_id, "{}");
+        assert!(result.is_err());
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_remove_after_hello() {
+        let pairing_id = "test-trig-rm-pid";
+        let pairing_key = [0xF9u8; 32];
+        do_hello_exchange(pairing_id, &pairing_key);
+
+        let payload = r#"{"trigger_id":"t-999"}"#;
+        let ct = send_trigger_remove(pairing_id, payload).unwrap();
+        assert!(!ct.is_empty());
+
+        let map = sessions().lock().unwrap();
+        let session = map.get(pairing_id).unwrap();
+        let cipher = session.recv_cipher.as_ref().unwrap();
+        let plaintext = cipher.decrypt(&ct).unwrap();
+        let frame = Frame::deserialize(&plaintext).unwrap();
+        assert_eq!(frame.frame_type, termfast_daemon::remote_frame::TRIGGER_REMOVE);
+        let payload_str = std::str::from_utf8(&frame.payload).unwrap();
+        assert!(payload_str.contains("\"trigger_id\":\"t-999\""));
+        drop(map);
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_remove_before_hello_fails() {
+        let pairing_id = "test-trig-rm-fail-pid";
+        let pairing_key = [0xFAu8; 32];
+        init_tunnel(pairing_id, &pairing_key).unwrap();
+
+        let result = send_trigger_remove(pairing_id, "{}");
+        assert!(result.is_err());
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    #[test]
+    fn test_send_trigger_no_session_fails() {
+        assert!(send_trigger_list_request("nonexistent-trig-pid").is_err());
+        assert!(send_trigger_exec("nonexistent-trig-pid", "{}").is_err());
+        assert!(send_trigger_add("nonexistent-trig-pid", "{}").is_err());
+        assert!(send_trigger_update("nonexistent-trig-pid", "{}").is_err());
+        assert!(send_trigger_remove("nonexistent-trig-pid", "{}").is_err());
+    }
+
+    /// Integration test: TRIGGER_LIST_RESPONSE frame roundtrip (desktop → mobile).
+    #[test]
+    fn test_trigger_list_response_roundtrip() {
+        let pairing_id = "test-trig-list-resp-pid";
+        let pairing_key = [0xFBu8; 32];
+
+        // HELLO exchange
+        let hello_ct = init_tunnel(pairing_id, &pairing_key).unwrap();
+        let desktop_recv = FrameCipher::from_pairing_key(&pairing_key, DIR_MOBILE_TO_DESKTOP);
+        let hello_pt = desktop_recv.decrypt(&hello_ct).unwrap();
+        let hello_frame = Frame::deserialize(&hello_pt).unwrap();
+        let (_caps, client_random) = hello_frame.parse_hello().unwrap();
+
+        let server_random = generate_random_32();
+        let hello_resp = Frame::hello(CLIENT_CAPABILITIES, &server_random);
+        let mut desktop_send = FrameCipher::from_pairing_key(&pairing_key, DIR_DESKTOP_TO_MOBILE);
+        let hello_resp_ct = desktop_send.encrypt(&hello_resp.serialize()).unwrap();
+        process_binary(pairing_id, &hello_resp_ct).unwrap();
+
+        // Desktop sends TRIGGER_LIST_RESPONSE
+        let triggers_json = r#"[{"id":"t1","name":"trigger1","trigger_type":"ManualFire"}]"#;
+        let trig_resp = Frame::trigger_list_response(triggers_json);
+        let mut desktop_session_send = FrameCipher::from_session_key(
+            &pairing_key,
+            &client_random,
+            &server_random,
+            DIR_DESKTOP_TO_MOBILE,
+        );
+        let trig_resp_ct = desktop_session_send.encrypt(&trig_resp.serialize()).unwrap();
+
+        // Mobile processes TRIGGER_LIST_RESPONSE → should succeed
+        let result = process_binary(pairing_id, &trig_resp_ct);
+        assert!(result.is_ok());
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    /// Integration test: TRIGGER_EXEC_RESULT frame roundtrip (desktop → mobile).
+    #[test]
+    fn test_trigger_exec_result_roundtrip() {
+        let pairing_id = "test-trig-exec-resp-pid";
+        let pairing_key = [0xFCu8; 32];
+
+        // HELLO exchange
+        let hello_ct = init_tunnel(pairing_id, &pairing_key).unwrap();
+        let desktop_recv = FrameCipher::from_pairing_key(&pairing_key, DIR_MOBILE_TO_DESKTOP);
+        let hello_pt = desktop_recv.decrypt(&hello_ct).unwrap();
+        let hello_frame = Frame::deserialize(&hello_pt).unwrap();
+        let (_caps, client_random) = hello_frame.parse_hello().unwrap();
+
+        let server_random = generate_random_32();
+        let hello_resp = Frame::hello(CLIENT_CAPABILITIES, &server_random);
+        let mut desktop_send = FrameCipher::from_pairing_key(&pairing_key, DIR_DESKTOP_TO_MOBILE);
+        let hello_resp_ct = desktop_send.encrypt(&hello_resp.serialize()).unwrap();
+        process_binary(pairing_id, &hello_resp_ct).unwrap();
+
+        // Desktop sends TRIGGER_EXEC_RESULT
+        let result_json = r#"{"trigger_id":"t1","success":true}"#;
+        let exec_result = Frame::trigger_exec_result(result_json);
+        let mut desktop_session_send = FrameCipher::from_session_key(
+            &pairing_key,
+            &client_random,
+            &server_random,
+            DIR_DESKTOP_TO_MOBILE,
+        );
+        let exec_result_ct = desktop_session_send.encrypt(&exec_result.serialize()).unwrap();
+
+        // Mobile processes TRIGGER_EXEC_RESULT → should succeed
+        let result = process_binary(pairing_id, &exec_result_ct);
+        assert!(result.is_ok());
+
+        close_tunnel(pairing_id).unwrap();
+    }
+
+    // === SECTION: Trigger frame tests END ===
 }

@@ -87,6 +87,15 @@ android {
         }
     }
 
+    // Mock Android framework calls (e.g. android.util.Log) in unit tests
+    // instead of throwing RuntimeException. Required for tests that exercise
+    // code paths calling Log.i/w/e (e.g. RemoteTunnelManager callbacks).
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

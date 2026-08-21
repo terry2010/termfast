@@ -416,4 +416,143 @@ class RemoteTunnelManagerTest {
         // FFI returned null → sendRaw not called → returns false
         assertFalse(result)
     }
+
+    // === FP: sendTrigger* tests ===
+
+    @Test
+    fun testSendTriggerListRequestBeforeProtocolReadyFails() {
+        val manager = createManager()
+        val result = manager.sendTriggerListRequest()
+        assertFalse(result)
+        assertEquals(0, mockFfi.triggerListRequestCalls)
+    }
+
+    @Test
+    fun testSendTriggerListRequestAfterProtocolReadyCallsFfi() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        manager.sendTriggerListRequest()
+        assertEquals(1, mockFfi.triggerListRequestCalls)
+    }
+
+    @Test
+    fun testSendTriggerListRequestFfiReturnsNullFails() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        mockFfi.triggerListRequestResult = null
+        val result = manager.sendTriggerListRequest()
+        assertFalse(result)
+    }
+
+    @Test
+    fun testSendTriggerExecBeforeProtocolReadyFails() {
+        val manager = createManager()
+        val result = manager.sendTriggerExec("""{"trigger_id":"t1"}""")
+        assertFalse(result)
+        assertEquals(0, mockFfi.triggerExecCalls.size)
+    }
+
+    @Test
+    fun testSendTriggerExecAfterProtocolReadyCallsFfi() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        val payload = """{"trigger_id":"t-123"}"""
+        manager.sendTriggerExec(payload)
+        assertEquals(1, mockFfi.triggerExecCalls.size)
+        assertEquals("test-pairing-id", mockFfi.triggerExecCalls[0].first)
+        assertEquals(payload, mockFfi.triggerExecCalls[0].second)
+    }
+
+    @Test
+    fun testSendTriggerExecFfiReturnsNullFails() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        mockFfi.triggerExecResult = null
+        val result = manager.sendTriggerExec("""{"trigger_id":"t1"}""")
+        assertFalse(result)
+    }
+
+    @Test
+    fun testSendTriggerAddBeforeProtocolReadyFails() {
+        val manager = createManager()
+        val result = manager.sendTriggerAdd("""{"id":"t1"}""")
+        assertFalse(result)
+        assertEquals(0, mockFfi.triggerAddCalls.size)
+    }
+
+    @Test
+    fun testSendTriggerAddAfterProtocolReadyCallsFfi() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        val payload = """{"id":"t1","name":"test","trigger_type":"ManualFire"}"""
+        manager.sendTriggerAdd(payload)
+        assertEquals(1, mockFfi.triggerAddCalls.size)
+        assertEquals("test-pairing-id", mockFfi.triggerAddCalls[0].first)
+        assertEquals(payload, mockFfi.triggerAddCalls[0].second)
+    }
+
+    @Test
+    fun testSendTriggerAddFfiReturnsNullFails() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        mockFfi.triggerAddResult = null
+        val result = manager.sendTriggerAdd("""{"id":"t1"}""")
+        assertFalse(result)
+    }
+
+    @Test
+    fun testSendTriggerUpdateBeforeProtocolReadyFails() {
+        val manager = createManager()
+        val result = manager.sendTriggerUpdate("""{"id":"t1"}""")
+        assertFalse(result)
+        assertEquals(0, mockFfi.triggerUpdateCalls.size)
+    }
+
+    @Test
+    fun testSendTriggerUpdateAfterProtocolReadyCallsFfi() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        val payload = """{"id":"t1","name":"updated"}"""
+        manager.sendTriggerUpdate(payload)
+        assertEquals(1, mockFfi.triggerUpdateCalls.size)
+        assertEquals("test-pairing-id", mockFfi.triggerUpdateCalls[0].first)
+        assertEquals(payload, mockFfi.triggerUpdateCalls[0].second)
+    }
+
+    @Test
+    fun testSendTriggerUpdateFfiReturnsNullFails() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        mockFfi.triggerUpdateResult = null
+        val result = manager.sendTriggerUpdate("""{"id":"t1"}""")
+        assertFalse(result)
+    }
+
+    @Test
+    fun testSendTriggerRemoveBeforeProtocolReadyFails() {
+        val manager = createManager()
+        val result = manager.sendTriggerRemove("""{"trigger_id":"t1"}""")
+        assertFalse(result)
+        assertEquals(0, mockFfi.triggerRemoveCalls.size)
+    }
+
+    @Test
+    fun testSendTriggerRemoveAfterProtocolReadyCallsFfi() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        val payload = """{"trigger_id":"t-999"}"""
+        manager.sendTriggerRemove(payload)
+        assertEquals(1, mockFfi.triggerRemoveCalls.size)
+        assertEquals("test-pairing-id", mockFfi.triggerRemoveCalls[0].first)
+        assertEquals(payload, mockFfi.triggerRemoveCalls[0].second)
+    }
+
+    @Test
+    fun testSendTriggerRemoveFfiReturnsNullFails() {
+        val manager = createManager()
+        manager.onProtocolReady()
+        mockFfi.triggerRemoveResult = null
+        val result = manager.sendTriggerRemove("""{"trigger_id":"t1"}""")
+        assertFalse(result)
+    }
 }
