@@ -110,32 +110,23 @@ fun ServerListScreen(navController: NavController) {
         val ssh = servers.map { DragItem(it.id, "ssh", it.id) }
         remotes + ssh
     }
+    // Mutable display list for live reorder during drag
+    var displayItems by remember { mutableStateOf(allItems) }
+    LaunchedEffect(allItems) { displayItems = allItems }
+
     var draggedItemKey by remember { mutableStateOf<String?>(null) }
     var dragOffsetY by remember { mutableStateOf(0f) }
-    var dropTargetKey by remember { mutableStateOf<String?>(null) }
     val lazyListState = rememberLazyListState()
-    val density = LocalDensity.current
 
-    fun applyReorder(fromKey: String, toKey: String) {
-        if (fromKey == toKey) return
-        val fromIdx = allItems.indexOfFirst { it.key == fromKey }
-        val toIdx = allItems.indexOfFirst { it.key == toKey }
-        if (fromIdx == -1 || toIdx == -1) return
-        // Build new ordered list by moving from → to
-        val reordered = allItems.toMutableList()
-        val moved = reordered.removeAt(fromIdx)
-        reordered.add(toIdx, moved)
-        // Split into remote and ssh order
-        val remoteOrder = reordered.filter { it.type == "remote" }.map { it.id }
-        val sshOrder = reordered.filter { it.type == "ssh" }.map { it.id }
-        // Persist
+    fun persistOrder(items: List<DragItem>) {
+        val remoteOrder = items.filter { it.type == "remote" }.map { it.id }
+        val sshOrder = items.filter { it.type == "ssh" }.map { it.id }
         if (remoteOrder != remotePairings.map { it.pairingId }) {
             PairingStore.reorderPairings(remoteOrder)
             remoteVersion++
         }
         if (sshOrder != servers.map { it.id }) {
             RustRepository.reorderServers(sshOrder)
-            // Update local state immediately (refresh will be called on next lifecycle)
             servers = repo.listServersOrdered()
         }
     }
@@ -488,11 +479,11 @@ fun ServerListScreen(navController: NavController) {
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 80.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(allItems, key = { it.key }) { item ->
+                items(displayItems, key = { it.key }) { item ->
                     val isDragging = draggedItemKey == item.key
-                    val isDropTarget = dropTargetKey == item.key && draggedItemKey != null && draggedItemKey != item.key
                     val modifier = Modifier
                         .fillMaxWidth()
+                        .then(if (!isDragging) Modifier.animateItem() else Modifier)
                         .zIndex(if (isDragging) 1f else 0f)
                         .graphicsLayer {
                             if (isDragging) {
@@ -508,22 +499,21 @@ fun ServerListScreen(navController: NavController) {
                                     dragOffsetY = 0f
                                 },
                                 onDragEnd = {
-                                    if (draggedItemKey != null && dropTargetKey != null) {
-                                        applyReorder(draggedItemKey!!, dropTargetKey!!)
-                                    }
+                                    // Persist the final order
+                                    persistOrder(displayItems)
                                     draggedItemKey = null
-                                    dropTargetKey = null
                                     dragOffsetY = 0f
                                 },
                                 onDragCancel = {
+                                    // Revert to original order
+                                    displayItems = allItems
                                     draggedItemKey = null
-                                    dropTargetKey = null
                                     dragOffsetY = 0f
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
                                     dragOffsetY += dragAmount.y
-                                    // Determine drop target based on drag position
+                                    // Live reorder: swap when dragged center crosses another item's center
                                     val layoutInfo = lazyListState.layoutInfo
                                     val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == item.key }
                                     if (draggedInfo != null) {
@@ -533,17 +523,30 @@ fun ServerListScreen(navController: NavController) {
                                             draggedCenter >= vi.offset &&
                                             draggedCenter < vi.offset + vi.size
                                         }
-                                        dropTargetKey = target?.key as? String
+                                        if (target != null && target.key != item.key) {
+                                            // Swap in displayItems
+                                            val fromIdx = displayItems.indexOfFirst { it.key == item.key }
+                                            val toIdx = displayItems.indexOfFirst { it.key == target.key }
+                                            if (fromIdx != -1 && toIdx != -1) {
+                                                // Adjust dragOffsetY so the card stays under the finger
+                                                val offsetDiff = target.offset - draggedInfo.offset
+                                                dragOffsetY -= offsetDiff
+                                                displayItems = displayItems.toMutableList().also {
+                                                    val moved = it.removeAt(fromIdx)
+                                                    it.add(toIdx, moved)
+                                                }
+                                            }
+                                        }
                                     }
                                 },
                             )
                         }
-                        .then(if (isDropTarget) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(16.dp)) else Modifier)
 
                     if (item.type == "remote") {
                         val pairing = remotePairings.find { it.pairingId == item.id } ?: return@items
                         RemoteDeviceCard(
                             modifier = modifier,
+                            isDragging = isDragging,
                             desktopName = pairing.desktopName.ifEmpty { pairing.pairingId.take(8) },
                             desktopDeviceId = pairing.desktopDeviceId,
                             isOnline = onlineStatus[pairing.pairingId],
@@ -586,6 +589,7 @@ fun ServerListScreen(navController: NavController) {
                         val cardVpnError = if (cardVpnFailed) vpnError else null
                         ServerCard(
                             modifier = modifier,
+                            isDragging = isDragging,
                             server = server,
                             status = statuses[server.id],
                             vpnRunning = cardVpnRunning,
@@ -863,6 +867,7 @@ fun ServerListScreen(navController: NavController) {
 @Composable
 private fun RemoteDeviceCard(
     modifier: Modifier = Modifier,
+    isDragging: Boolean = false,
     desktopName: String,
     desktopDeviceId: String,
     isOnline: Boolean?,
@@ -904,27 +909,8 @@ private fun RemoteDeviceCard(
         )
     }
 
-    SwipeToDismissBox(
-        state = dismissState,
-        backgroundContent = {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.errorContainer)
-                    .padding(end = 20.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Icon(
-                    Icons.Filled.Delete,
-                    contentDescription = "解除配对",
-                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                    modifier = Modifier.size(28.dp),
-                )
-            }
-        },
-        enableDismissFromStartToEnd = false,
-    ) {
+    // Card content shared between drag and non-drag modes
+    val cardContent: @Composable () -> Unit = {
         ElevatedCard(
             modifier = modifier
                 .clickable(onClick = onClick),
@@ -1032,6 +1018,35 @@ private fun RemoteDeviceCard(
         }
         }
     }
+
+    // When dragging, render card directly (no SwipeToDismissBox → no red background)
+    if (isDragging) {
+        cardContent()
+    } else {
+        SwipeToDismissBox(
+            state = dismissState,
+            backgroundContent = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(end = 20.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "解除配对",
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
+            },
+            enableDismissFromStartToEnd = false,
+        ) {
+            cardContent()
+        }
+    }
 }
 
 @Composable
@@ -1068,6 +1083,7 @@ private fun EmptyServerState(modifier: Modifier = Modifier) {
 @Composable
 private fun ServerCard(
     modifier: Modifier = Modifier,
+    isDragging: Boolean = false,
     server: ServerConfig,
     status: ServerStatus?,
     vpnRunning: Boolean,
@@ -1120,31 +1136,13 @@ private fun ServerCard(
         )
     }
 
-    SwipeToDismissBox(
-        state = dismissState,
-        backgroundContent = {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.errorContainer)
-                    .padding(end = 20.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Icon(
-                    Icons.Filled.Delete,
-                    contentDescription = "删除",
-                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                    modifier = Modifier.size(28.dp),
-                )
-            }
-        },
-        enableDismissFromStartToEnd = false,
-    ) {
-        val cardColors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-        )
+    val cardColors = CardDefaults.elevatedCardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+    )
+
+    // Card content shared between drag and non-drag modes
+    val cardContent: @Composable () -> Unit = {
         ElevatedCard(
             modifier = modifier
                 .clickable(onClick = onClick),
@@ -1335,6 +1333,35 @@ private fun ServerCard(
                 )
             }
         }
+        }
+    }
+
+    // When dragging, render card directly (no SwipeToDismissBox → no red background)
+    if (isDragging) {
+        cardContent()
+    } else {
+        SwipeToDismissBox(
+            state = dismissState,
+            backgroundContent = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(end = 20.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "删除",
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
+            },
+            enableDismissFromStartToEnd = false,
+        ) {
+            cardContent()
         }
     }
 }

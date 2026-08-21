@@ -19,12 +19,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.termfast.app.data.PairingApi
 import com.termfast.app.data.PairingStore
 import com.termfast.app.data.RemoteTunnelConfig
 import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.RemoteTunnelManager
 import com.termfast.app.data.TunnelState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -68,18 +70,44 @@ fun RemoteTerminalPickerDialog(
         return
     }
 
+    // Fetch online status from backend — only show desktops that are online
+    var onlinePairingIds by remember { mutableStateOf<Set<String>?>(null) }
+    LaunchedEffect(Unit) {
+        try {
+            val devices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
+            onlinePairingIds = devices
+                .filter { it.pairingType == "mobile" && it.status == "completed" && it.isOnline }
+                .map { it.pairingId }
+                .toSet()
+        } catch (_: Exception) {
+            // If fetch fails, show all pairings as fallback
+            onlinePairingIds = pairings.map { it.pairingId }.toSet()
+        }
+    }
+
+    // Filter to only online desktops
+    val onlinePairings = remember(pairings, onlinePairingIds) {
+        if (onlinePairingIds == null) emptyList() // still loading
+        else pairings.filter { it.pairingId in onlinePairingIds!! }
+    }
+
     // If initialPairing is set, skip DesktopList stage and go directly to TerminalList.
-    // If only 1 desktop and no initialPairing, also skip DesktopList.
+    // If only 1 online desktop and no initialPairing, also skip DesktopList.
     var stage by remember {
         mutableStateOf<PickerStage>(
             if (initialPairing != null) {
                 PickerStage.TerminalList(initialPairing)
-            } else if (pairings.size == 1) {
-                PickerStage.TerminalList(pairings[0])
             } else {
                 PickerStage.DesktopList
             }
         )
+    }
+    // Auto-skip DesktopList when only 1 desktop is online (after fetch completes)
+    LaunchedEffect(onlinePairingIds) {
+        if (onlinePairingIds != null && initialPairing == null &&
+            stage is PickerStage.DesktopList && onlinePairings.size == 1) {
+            stage = PickerStage.TerminalList(onlinePairings[0])
+        }
     }
     // Track whether a terminal was selected (vs dismissed) — when selected,
     // tunnel is handed off to RemoteTerminalScreen and must NOT be stopped.
@@ -101,7 +129,7 @@ fun RemoteTerminalPickerDialog(
         onDismissRequest = handleDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (stage is PickerStage.TerminalList && pairings.size > 1) {
+                if (stage is PickerStage.TerminalList && onlinePairings.size > 1) {
                     IconButton(
                         onClick = {
                             if (!terminalSelected) {
@@ -125,12 +153,44 @@ fun RemoteTerminalPickerDialog(
         },
         text = {
             when (val s = stage) {
-                is PickerStage.DesktopList -> DesktopListContent(
-                    pairings = pairings,
-                    onSelect = { pairing ->
-                        stage = PickerStage.TerminalList(pairing)
-                    },
-                )
+                is PickerStage.DesktopList -> {
+                    if (onlinePairingIds == null) {
+                        // Loading online status
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(24.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator()
+                                Spacer(Modifier.height(12.dp))
+                                Text("正在获取在线状态...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    } else if (onlinePairings.isEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Icon(
+                                Icons.Filled.Computer,
+                                contentDescription = null,
+                                modifier = Modifier.size(32.dp),
+                                tint = MaterialTheme.colorScheme.outline,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text("没有桌面端在线", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.height(4.dp))
+                            Text("请先在电脑上打开 TermFast 桌面端", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                        }
+                    } else {
+                        DesktopListContent(
+                            pairings = onlinePairings,
+                            onSelect = { pairing ->
+                                stage = PickerStage.TerminalList(pairing)
+                            },
+                        )
+                    }
+                }
                 is PickerStage.TerminalList -> TerminalListContent(
                     pairing = s.pairing,
                     onTerminalClick = { terminalId, name ->

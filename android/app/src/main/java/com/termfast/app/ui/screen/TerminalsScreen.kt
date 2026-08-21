@@ -91,7 +91,6 @@ fun TerminalsScreen(
     // Drag-to-reorder state
     var draggedSessionId by remember { mutableStateOf<String?>(null) }
     var dragOffsetY by remember { mutableStateOf(0f) }
-    var dropTargetSessionId by remember { mutableStateOf<String?>(null) }
     // Remote picker dialog state: when non-null, show the picker for this pairing.
     // Clicking a remote server group header sets this to open the picker.
     var showRemotePickerFor by remember { mutableStateOf<RemoteTunnelConfig?>(null) }
@@ -319,9 +318,9 @@ fun TerminalsScreen(
                 // Terminal cards for this server
                 items(serverSessions, key = { it.sessionId }) { session ->
                     val isDragging = draggedSessionId == session.sessionId
-                    val isDropTarget = dropTargetSessionId == session.sessionId && draggedSessionId != null && draggedSessionId != session.sessionId
                     val cardModifier = Modifier
                         .fillMaxWidth()
+                        .then(if (!isDragging) Modifier.animateItem() else Modifier)
                         .zIndex(if (isDragging) 1f else 0f)
                         .graphicsLayer {
                             if (isDragging) {
@@ -337,31 +336,22 @@ fun TerminalsScreen(
                                     dragOffsetY = 0f
                                 },
                                 onDragEnd = {
-                                    if (draggedSessionId != null && dropTargetSessionId != null) {
-                                        // Reorder within this server group
-                                        val currentOrder = serverSessions.map { it.sessionId }
-                                        val fromIdx = currentOrder.indexOf(draggedSessionId!!)
-                                        val toIdx = currentOrder.indexOf(dropTargetSessionId!!)
-                                        if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
-                                            val reordered = currentOrder.toMutableList()
-                                            val moved = reordered.removeAt(fromIdx)
-                                            reordered.add(toIdx, moved)
-                                            TerminalSessionManager.reorderSessions(reordered)
-                                            refresh()
-                                        }
-                                    }
+                                    // Persist the final order to TerminalSessionManager
+                                    val groupSessionIds = serverSessions.map { it.sessionId }
+                                    TerminalSessionManager.reorderSessions(groupSessionIds)
                                     draggedSessionId = null
-                                    dropTargetSessionId = null
                                     dragOffsetY = 0f
                                 },
                                 onDragCancel = {
+                                    // Revert: reload from manager
+                                    refresh()
                                     draggedSessionId = null
-                                    dropTargetSessionId = null
                                     dragOffsetY = 0f
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
                                     dragOffsetY += dragAmount.y
+                                    // Live reorder: swap when dragged center crosses another item's center
                                     val layoutInfo = listState.layoutInfo
                                     val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == session.sessionId }
                                     if (draggedInfo != null) {
@@ -374,14 +364,27 @@ fun TerminalsScreen(
                                             draggedCenter >= vi.offset &&
                                             draggedCenter < vi.offset + vi.size
                                         }
-                                        dropTargetSessionId = target?.key as? String
+                                        if (target != null && target.key != session.sessionId) {
+                                            // Swap in sessions state for live reorder
+                                            val fromIdx = sessions.indexOfFirst { it.sessionId == session.sessionId }
+                                            val toIdx = sessions.indexOfFirst { it.sessionId == target.key }
+                                            if (fromIdx != -1 && toIdx != -1) {
+                                                // Adjust dragOffsetY so the card stays under the finger
+                                                val offsetDiff = target.offset - draggedInfo.offset
+                                                dragOffsetY -= offsetDiff
+                                                sessions = sessions.toMutableList().also {
+                                                    val moved = it.removeAt(fromIdx)
+                                                    it.add(toIdx, moved)
+                                                }
+                                            }
+                                        }
                                     }
                                 },
                             )
                         }
-                        .then(if (isDropTarget) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp)) else Modifier)
                     TerminalCard(
                         modifier = cardModifier,
+                        isDragging = isDragging,
                         session = session,
                         serverName = if (serverId.startsWith("remote:")) {
                             val pid = serverId.removePrefix("remote:")
@@ -440,6 +443,7 @@ fun TerminalsScreen(
 @Composable
 private fun TerminalCard(
     modifier: Modifier = Modifier,
+    isDragging: Boolean = false,
     session: TerminalSessionManager.SessionState,
     serverName: String,
     isFocused: Boolean,
@@ -481,40 +485,8 @@ private fun TerminalCard(
         positionalThreshold = { distance -> distance * 0.4f },
     )
 
-    SwipeToDismissBox(
-        state = swipeState,
-        backgroundContent = {
-            // Red background with "关闭终端会话" label, revealed on left swipe
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.errorContainer)
-                    .padding(horizontal = 20.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Icon(
-                        Icons.Filled.Close,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                    Text(
-                        "关闭终端会话",
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 14.sp,
-                    )
-                }
-            }
-        },
-        enableDismissFromStartToEnd = false,
-        modifier = modifier,
-    ) {
+    // Card content shared between drag and non-drag modes
+    val cardContent: @Composable () -> Unit = {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -607,6 +579,48 @@ private fun TerminalCard(
                     )
                 }
             }
+        }
+    }
+
+    // When dragging, render card directly with drag modifier (no SwipeToDismissBox → no red background)
+    if (isDragging) {
+        Box(modifier = modifier) { cardContent() }
+    } else {
+        SwipeToDismissBox(
+            state = swipeState,
+            backgroundContent = {
+                // Red background with "关闭终端会话" label, revealed on left swipe
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(horizontal = 20.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                        Text(
+                            "关闭终端会话",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 14.sp,
+                        )
+                    }
+                }
+            },
+            enableDismissFromStartToEnd = false,
+            modifier = modifier,
+        ) {
+            cardContent()
         }
     }
 
