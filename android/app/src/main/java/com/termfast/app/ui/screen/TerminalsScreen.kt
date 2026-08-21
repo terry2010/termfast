@@ -156,36 +156,79 @@ fun TerminalsScreen(
         }
     }
 
-    // Group sessions by serverId, with the focused server first (if any)
-    val grouped = sessions.groupBy { it.serverId }.let { map ->
+    // Three-level grouping:
+    // Level 1: paired desktop (remotePairingId) or local SSH server (serverId)
+    // Level 2 (remote only): desktop's server group (remoteServerId: "__local__" or SSH server ID)
+    // Level 3: terminal cards
+    data class TopGroup(
+        val topKey: String,        // "remote:<pid>" or SSH serverId
+        val topName: String,       // desktop name or SSH server name
+        val isRemote: Boolean,
+        val subGroups: Map<String, List<TerminalSessionManager.SessionState>>, // remoteServerId → sessions
+    )
+
+    val grouped: List<TopGroup> = remember(sessions, pairingNames, servers) {
+        val remoteSessions = sessions.filter { it.remotePairingId != null }
+        val localSessions = sessions.filter { it.remotePairingId == null }
+
+        val result = mutableListOf<TopGroup>()
+
+        // Remote groups: group by pairingId (level 1), then by remoteServerId (level 2)
+        val byPairing = remoteSessions.groupBy { it.remotePairingId!! }
+        byPairing.forEach { (pid, pidSessions) ->
+            val desktopName = pairingNames[pid]?.ifBlank { null } ?: "远程终端"
+            val subGroups = pidSessions.groupBy { it.remoteServerId }
+            result.add(TopGroup(
+                topKey = "remote:$pid",
+                topName = desktopName,
+                isRemote = true,
+                subGroups = subGroups,
+            ))
+        }
+
+        // Local SSH groups: each serverId is its own top-level group
+        val byServer = localSessions.groupBy { it.serverId }
+        byServer.forEach { (sid, sidSessions) ->
+            val serverName = servers[sid]?.name?.ifBlank { servers[sid]?.ssh?.host ?: sid } ?: sid
+            result.add(TopGroup(
+                topKey = sid,
+                topName = serverName,
+                isRemote = false,
+                subGroups = mapOf(sid to sidSessions),
+            ))
+        }
+
+        // Move focused group to top if needed
         if (focusServerId != null) {
-            // Move focused server's group to the top
-            val focused = map[focusServerId]
+            val focused = result.find { it.topKey == focusServerId }
             if (focused != null) {
-                linkedMapOf(focusServerId to focused) + (map - focusServerId)
-            } else map
-        } else map
+                result.remove(focused)
+                result.add(0, focused)
+            }
+        }
+
+        result
     }
 
     // Scroll to focused session or server on first composition
     LaunchedEffect(focusSessionId, focusServerId, sessions.size) {
         if (focusSessionId != null) {
-            // Find the flat index of the focused session
             var flatIndex = 0
             var foundIndex: Int? = null
-            grouped.forEach { (_, serverSessions) ->
-                flatIndex++ // header
-                serverSessions.forEach { s ->
-                    if (s.sessionId == focusSessionId) foundIndex = flatIndex
-                    flatIndex++
+            grouped.forEach { topGroup ->
+                flatIndex++ // top header
+                topGroup.subGroups.forEach { (_, subSessions) ->
+                    if (topGroup.isRemote) flatIndex++ // sub header (remote only)
+                    subSessions.forEach { s ->
+                        if (s.sessionId == focusSessionId) foundIndex = flatIndex
+                        flatIndex++
+                    }
                 }
             }
             if (foundIndex != null) {
                 listState.animateScrollToItem(foundIndex)
             }
         } else if (focusServerId != null) {
-            // Scroll to the focused server's group header (index 0, since we
-            //   moved it to the top of the list).
             listState.animateScrollToItem(0)
         }
     }
@@ -241,10 +284,10 @@ fun TerminalsScreen(
                     }
                     RemoteTerminalPickerDialog(
                         visible = showRemotePicker,
-                        onTerminalClick = { terminalId, name, pairingId ->
+                        onTerminalClick = { terminalId, name, pairingId, serverId, serverName ->
                             showRemotePicker = false
                             val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
-                            navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName")
+                            navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName/$serverId/$serverName")
                         },
                         onDismiss = { showRemotePicker = false },
                     )
@@ -262,168 +305,213 @@ fun TerminalsScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 16.dp),
         ) {
-            grouped.forEach { (serverId, serverSessions) ->
-                // Server group header — same style as RemoteTerminalPickerDialog
-                item(key = "header_$serverId") {
-                    val isRemote = serverId.startsWith("remote:")
-                    val serverName = if (isRemote) {
-                        val pid = serverId.removePrefix("remote:")
-                        pairingNames[pid]?.ifBlank { null } ?: "远程终端"
-                    } else {
-                        servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: serverId }
-                            ?: serverId
-                    }
+            grouped.forEach { topGroup ->
+                // === Level 1: Top-level header (desktop name or SSH server name) ===
+                item(key = "top_${topGroup.topKey}") {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 12.dp, bottom = 4.dp)
-                            .clickable {
-                                if (isRemote) {
-                                    val pid = serverId.removePrefix("remote:")
-                                    val pairing = PairingStore.getPairing(pid)
-                                    if (pairing != null) {
-                                        showRemotePickerFor = pairing
-                                    } else {
-                                        Toast.makeText(context, "未找到配对信息", Toast.LENGTH_SHORT).show()
-                                    }
-                                } else {
-                                    val newSessionId = TerminalSessionManager.getOrCreateSession(serverId)
-                                    navController.navigate("terminal/$serverId/$newSessionId")
-                                }
-                            },
+                            .padding(top = 16.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Icon(
-                            if (isRemote) Icons.Filled.Devices else Icons.Filled.Computer,
+                            if (topGroup.isRemote) Icons.Filled.Devices else Icons.Filled.Computer,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(18.dp),
                             tint = MaterialTheme.colorScheme.primary,
                         )
                         Text(
-                            serverName,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
+                            topGroup.topName,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary,
                         )
                         Spacer(Modifier.weight(1f))
-                        Text(
-                            "${serverSessions.size}",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.outline,
-                        )
-                    }
-                }
-                // Terminal cards for this server
-                items(serverSessions, key = { it.sessionId }) { session ->
-                    val isDragging = draggedSessionId == session.sessionId
-                    // Drag modifier stays on the outer Box — never changes between drag/non-drag
-                    val dragModifier = Modifier
-                        .fillMaxWidth()
-                        .zIndex(if (isDragging) 1f else 0f)
-                        .graphicsLayer {
-                            if (isDragging) {
-                                translationY = dragOffsetY
-                                shadowElevation = 8f
-                                shape = RoundedCornerShape(12.dp)
-                                alpha = 0.9f
+                        // New terminal button for local SSH (top-level)
+                        if (!topGroup.isRemote) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                tonalElevation = 1.dp,
+                                onClick = {
+                                    val newSessionId = TerminalSessionManager.getOrCreateSession(topGroup.topKey)
+                                    navController.navigate("terminal/${topGroup.topKey}/$newSessionId")
+                                },
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("新建SSH终端", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.primary)
+                                }
                             }
                         }
-                        .pointerInput(session.sessionId) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = {
-                                    draggedSessionId = session.sessionId
-                                    dragOffsetY = 0f
-                                },
-                                onDragEnd = {
-                                    // Persist the final order to TerminalSessionManager
-                                    val groupSessionIds = serverSessions.map { it.sessionId }
-                                    TerminalSessionManager.reorderSessions(groupSessionIds)
-                                    draggedSessionId = null
-                                    dragOffsetY = 0f
-                                },
-                                onDragCancel = {
-                                    // Revert: reload from manager
-                                    refresh()
-                                    draggedSessionId = null
-                                    dragOffsetY = 0f
-                                },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    dragOffsetY += dragAmount.y
-                                    // Live reorder: swap when dragged center crosses target's midpoint
-                                    val layoutInfo = listState.layoutInfo
-                                    val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == session.sessionId }
-                                    if (draggedInfo != null) {
-                                        val draggedCenter = draggedInfo.offset + draggedInfo.size / 2 + dragOffsetY.toInt()
-                                        // Only target sessions in the same server group
-                                        val groupSessionIds = serverSessions.map { it.sessionId }.toSet()
-                                        val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
-                                            if (vi.key !in groupSessionIds || vi.key == session.sessionId) return@firstOrNull false
-                                            val targetMid = vi.offset + vi.size / 2
-                                            if (draggedInfo.offset > vi.offset) {
-                                                // Dragging up: swap when center crosses target midpoint from below
-                                                draggedCenter < targetMid
-                                            } else {
-                                                // Dragging down: swap when center crosses target midpoint from above
-                                                draggedCenter > targetMid
-                                            }
+                    }
+                }
+
+                // === Level 2: Sub-group headers (remote only: 桌面端 / SSH服务器) ===
+                topGroup.subGroups.forEach { (subKey, subSessions) ->
+                    if (topGroup.isRemote) {
+                        item(key = "sub_${topGroup.topKey}_$subKey") {
+                            val isLocalDesktop = subKey == "__local__"
+                            val subName = subSessions.firstOrNull()?.remoteServerName
+                                ?: if (isLocalDesktop) "桌面端" else subKey
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 24.dp, top = 8.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    if (isLocalDesktop) Icons.Filled.Devices else Icons.Filled.Computer,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    subName,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                // New terminal button for this sub-group
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    tonalElevation = 1.dp,
+                                    onClick = {
+                                        val pid = topGroup.topKey.removePrefix("remote:")
+                                        val pairing = PairingStore.getPairing(pid)
+                                        if (pairing != null) {
+                                            showRemotePickerFor = pairing
+                                        } else {
+                                            Toast.makeText(context, "未找到配对信息", Toast.LENGTH_SHORT).show()
                                         }
-                                        if (target != null && target.key != session.sessionId) {
-                                            // Swap in sessions state for live reorder
-                                            val fromIdx = sessions.indexOfFirst { it.sessionId == session.sessionId }
-                                            val toIdx = sessions.indexOfFirst { it.sessionId == target.key }
-                                            if (fromIdx != -1 && toIdx != -1) {
-                                                // Adjust dragOffsetY so the card stays under the finger
-                                                val offsetDiff = target.offset - draggedInfo.offset
-                                                dragOffsetY -= offsetDiff
-                                                sessions = sessions.toMutableList().also {
-                                                    val moved = it.removeAt(fromIdx)
-                                                    it.add(toIdx, moved)
+                                    },
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            if (isLocalDesktop) "新建电脑终端" else "新建SSH终端",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // === Level 3: Terminal cards ===
+                    items(subSessions, key = { it.sessionId }) { session ->
+                        val isDragging = draggedSessionId == session.sessionId
+                        val dragModifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = if (topGroup.isRemote) 24.dp else 0.dp)
+                            .zIndex(if (isDragging) 1f else 0f)
+                            .graphicsLayer {
+                                if (isDragging) {
+                                    translationY = dragOffsetY
+                                    shadowElevation = 8f
+                                    shape = RoundedCornerShape(12.dp)
+                                    alpha = 0.9f
+                                }
+                            }
+                            .pointerInput(session.sessionId) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        draggedSessionId = session.sessionId
+                                        dragOffsetY = 0f
+                                    },
+                                    onDragEnd = {
+                                        val groupSessionIds = subSessions.map { it.sessionId }
+                                        TerminalSessionManager.reorderSessions(groupSessionIds)
+                                        draggedSessionId = null
+                                        dragOffsetY = 0f
+                                    },
+                                    onDragCancel = {
+                                        refresh()
+                                        draggedSessionId = null
+                                        dragOffsetY = 0f
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        dragOffsetY += dragAmount.y
+                                        val layoutInfo = listState.layoutInfo
+                                        val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == session.sessionId }
+                                        if (draggedInfo != null) {
+                                            val draggedCenter = draggedInfo.offset + draggedInfo.size / 2 + dragOffsetY.toInt()
+                                            val groupSessionIds = subSessions.map { it.sessionId }.toSet()
+                                            val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
+                                                if (vi.key !in groupSessionIds || vi.key == session.sessionId) return@firstOrNull false
+                                                val targetMid = vi.offset + vi.size / 2
+                                                if (draggedInfo.offset > vi.offset) {
+                                                    draggedCenter < targetMid
+                                                } else {
+                                                    draggedCenter > targetMid
+                                                }
+                                            }
+                                            if (target != null && target.key != session.sessionId) {
+                                                val fromIdx = sessions.indexOfFirst { it.sessionId == session.sessionId }
+                                                val toIdx = sessions.indexOfFirst { it.sessionId == target.key }
+                                                if (fromIdx != -1 && toIdx != -1) {
+                                                    val offsetDiff = target.offset - draggedInfo.offset
+                                                    dragOffsetY -= offsetDiff
+                                                    sessions = sessions.toMutableList().also {
+                                                        val moved = it.removeAt(fromIdx)
+                                                        it.add(toIdx, moved)
+                                                    }
                                                 }
                                             }
                                         }
+                                    },
+                                )
+                            }
+                        Box(modifier = dragModifier) {
+                        TerminalCard(
+                            isDragging = isDragging,
+                            session = session,
+                            isRemote = topGroup.isRemote,
+                            serverName = if (topGroup.isRemote) {
+                                session.remoteServerName
+                            } else {
+                                topGroup.topName
+                            },
+                            isFocused = session.sessionId == focusSessionId,
+                            onClick = {
+                                if (draggedSessionId == null) {
+                                    if (session.serverId.startsWith("remote:") && session.remotePairingId != null && session.remoteTerminalId != null) {
+                                        val pid = session.remotePairingId!!
+                                        val tid = session.remoteTerminalId!!
+                                        val encodedName = java.net.URLEncoder.encode(session.name.ifBlank { "Terminal" }, "UTF-8")
+                                        navController.navigate("remote_terminal/$pid/$tid/$encodedName/${session.remoteServerId}/${session.remoteServerName}")
+                                    } else {
+                                        navController.navigate("terminal/${session.serverId}/${session.sessionId}")
                                     }
-                                },
-                            )
-                        }
-                    Box(modifier = dragModifier) {
-                    TerminalCard(
-                        isDragging = isDragging,
-                        session = session,
-                        isRemote = serverId.startsWith("remote:"),
-                        serverName = if (serverId.startsWith("remote:")) {
-                            val pid = serverId.removePrefix("remote:")
-                            pairingNames[pid]?.ifBlank { null } ?: "远程终端"
-                        } else {
-                            servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: "" } ?: ""
-                        },
-                        isFocused = session.sessionId == focusSessionId,
-                        onClick = {
-                            if (draggedSessionId == null) {
-                                if (session.serverId.startsWith("remote:") && session.remotePairingId != null && session.remoteTerminalId != null) {
-                                    val pid = session.remotePairingId!!
-                                    val tid = session.remoteTerminalId!!
-                                    val encodedName = java.net.URLEncoder.encode(session.name.ifBlank { "Terminal" }, "UTF-8")
-                                    navController.navigate("remote_terminal/$pid/$tid/$encodedName")
-                                } else {
-                                    navController.navigate("terminal/${session.serverId}/${session.sessionId}")
                                 }
-                            }
-                        },
-                        onDisconnect = {
-                            scope.launch {
-                                TerminalSessionManager.removeSession(session.sessionId)
-                                refresh()
-                            }
-                        },
-                        onCloseTerminal = {
-                            scope.launch {
-                                TerminalSessionManager.closeTerminalSession(session.sessionId)
-                                refresh()
-                            }
-                        },
-                    )
+                            },
+                            onDisconnect = {
+                                scope.launch {
+                                    TerminalSessionManager.removeSession(session.sessionId)
+                                    refresh()
+                                }
+                            },
+                            onCloseTerminal = {
+                                scope.launch {
+                                    TerminalSessionManager.closeTerminalSession(session.sessionId)
+                                    refresh()
+                                }
+                            },
+                        )
+                        }
                     }
                 }
             }
@@ -436,10 +524,10 @@ fun TerminalsScreen(
         RemoteTerminalPickerDialog(
             visible = true,
             initialPairing = pairing,
-            onTerminalClick = { terminalId, name, pairingId ->
+            onTerminalClick = { terminalId, name, pairingId, serverId, serverName ->
                 showRemotePickerFor = null
                 val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
-                navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName")
+                navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName/$serverId/$serverName")
             },
             onDismiss = { showRemotePickerFor = null },
         )

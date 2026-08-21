@@ -39,6 +39,8 @@ fun RemoteTerminalScreen(
     pairingId: String,
     terminalId: Int,
     terminalName: String,
+    remoteServerId: String = "__local__",
+    remoteServerName: String = "桌面端",
 ) {
     val scope = rememberCoroutineScope()
     val terminalBg = Color(0xFF1E1E2E)
@@ -144,7 +146,8 @@ fun RemoteTerminalScreen(
                     if (event.pairing_id == pairingId && event.terminal_id.toInt() == terminalId) {
                         if (sessionId == null) {
                             sessionId = TerminalSessionManager.getOrCreateRemoteSession(
-                                pairingId, terminalId, tunnelManager, terminalName
+                                pairingId, terminalId, tunnelManager, terminalName,
+                                remoteServerId, remoteServerName,
                             )
                         }
                     }
@@ -153,7 +156,8 @@ fun RemoteTerminalScreen(
                     if (event.pairing_id == pairingId && event.terminal_id.toInt() == terminalId) {
                         if (sessionId == null) {
                             sessionId = TerminalSessionManager.getOrCreateRemoteSession(
-                                pairingId, terminalId, tunnelManager, terminalName
+                                pairingId, terminalId, tunnelManager, terminalName,
+                                remoteServerId, remoteServerName,
                             )
                         }
                     }

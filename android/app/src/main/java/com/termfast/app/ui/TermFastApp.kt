@@ -186,15 +186,19 @@ fun TermFastApp() {
                 com.termfast.app.ui.screen.TerminalsScreen(navController, focusServerId = serverId)
             }
             // Remote terminal rendering — opens a specific remote terminal session
-            composable("remote_terminal/{pairingId}/{terminalId}/{terminalName}") { backStack ->
+            composable("remote_terminal/{pairingId}/{terminalId}/{terminalName}/{remoteServerId}/{remoteServerName}") { backStack ->
                 val pairingId = backStack.arguments?.getString("pairingId") ?: ""
                 val terminalId = backStack.arguments?.getString("terminalId")?.toIntOrNull() ?: 0
                 val terminalName = backStack.arguments?.getString("terminalName") ?: "Remote"
+                val remoteServerId = backStack.arguments?.getString("remoteServerId") ?: "__local__"
+                val remoteServerName = backStack.arguments?.getString("remoteServerName") ?: "桌面端"
                 com.termfast.app.ui.screen.RemoteTerminalScreen(
                     navController = navController,
                     pairingId = pairingId,
                     terminalId = terminalId,
-                    terminalName = terminalName,
+                    terminalName = java.net.URLDecoder.decode(terminalName, "UTF-8"),
+                    remoteServerId = remoteServerId,
+                    remoteServerName = remoteServerName,
                 )
             }
             // Remote desktop detail — overview + triggers (like SSH server detail)

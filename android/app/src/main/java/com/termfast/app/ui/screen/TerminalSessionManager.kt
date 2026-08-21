@@ -78,6 +78,11 @@ object TerminalSessionManager {
         val remotePairingId: String? = null,
         // u32 terminal_id from desktop protocol server (valid when remotePairingId != null)
         val remoteTerminalId: Int = 0,
+        // Server ID on the desktop side: "__local__" for desktop's local terminal,
+        // or an SSH server ID for desktop's SSH terminal. Used for 3-level grouping.
+        val remoteServerId: String = "__local__",
+        // Server display name on the desktop side: "桌面端" or SSH server name.
+        val remoteServerName: String = "桌面端",
     )
 
     /** Whether this session is a remote terminal (vs. local SSH). */
@@ -128,6 +133,8 @@ object TerminalSessionManager {
         terminalId: Int,
         tunnelManager: com.termfast.app.data.RemoteTunnelManager,
         name: String,
+        remoteServerId: String = "__local__",
+        remoteServerName: String = "桌面端",
     ): String {
         // Register tunnel manager for this pairing (used by disconnectSession)
         tunnelManagers[pairingId] = tunnelManager
@@ -135,7 +142,14 @@ object TerminalSessionManager {
         val existing = sessions.values.firstOrNull {
             it.remotePairingId == pairingId && it.remoteTerminalId == terminalId
         }
-        if (existing != null) return existing.sessionId
+        if (existing != null) {
+            // Update server info in case it changed
+            sessions[existing.sessionId] = existing.copy(
+                remoteServerId = remoteServerId,
+                remoteServerName = remoteServerName,
+            )
+            return existing.sessionId
+        }
 
         val sessionId = UUID.randomUUID().toString()
         sessions[sessionId] = SessionState(
@@ -146,6 +160,8 @@ object TerminalSessionManager {
             name = name,
             remotePairingId = pairingId,
             remoteTerminalId = terminalId,
+            remoteServerId = remoteServerId,
+            remoteServerName = remoteServerName,
         )
         return sessionId
     }

@@ -875,11 +875,11 @@ fun ServerListScreen(navController: NavController) {
         RemoteTerminalPickerDialog(
             visible = showRemotePicker,
             initialPairing = selectedPairing,
-            onTerminalClick = { terminalId, name, pairingId ->
+            onTerminalClick = { terminalId, name, pairingId, serverId, serverName ->
                 showRemotePicker = false
                 selectedPairing = null
                 val encodedName = URLEncoder.encode(name, "UTF-8")
-                navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName")
+                navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName/$serverId/$serverName")
             },
             onDismiss = {
                 showRemotePicker = false

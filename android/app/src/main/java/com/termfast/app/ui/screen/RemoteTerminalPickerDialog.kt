@@ -44,13 +44,13 @@ sealed class PickerStage {
  * 2. TerminalList: connects tunnel, shows terminals for selected desktop
  *
  * On back from TerminalList → return to DesktopList (or dismiss if only 1 desktop).
- * On terminal select → onTerminalClick(id, name, pairingId), tunnel handed off.
+ * On terminal select → onTerminalClick(id, name, pairingId, serverId, serverName), tunnel handed off.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RemoteTerminalPickerDialog(
     visible: Boolean,
-    onTerminalClick: (terminalId: Int, name: String, pairingId: String) -> Unit,
+    onTerminalClick: (terminalId: Int, name: String, pairingId: String, serverId: String, serverName: String) -> Unit,
     onDismiss: () -> Unit,
     initialPairing: RemoteTunnelConfig? = null,
 ) {
@@ -193,9 +193,9 @@ fun RemoteTerminalPickerDialog(
                 }
                 is PickerStage.TerminalList -> TerminalListContent(
                     pairing = s.pairing,
-                    onTerminalClick = { terminalId, name ->
+                    onTerminalClick = { terminalId, name, serverId, serverName ->
                         terminalSelected = true
-                        onTerminalClick(terminalId, name, s.pairing.pairingId)
+                        onTerminalClick(terminalId, name, s.pairing.pairingId, serverId, serverName)
                     },
                     onTunnelManagerReady = { tm -> currentTunnelManager = tm },
                 )
@@ -260,7 +260,7 @@ private fun DesktopListContent(
 @Composable
 private fun TerminalListContent(
     pairing: RemoteTunnelConfig,
-    onTerminalClick: (terminalId: Int, name: String) -> Unit,
+    onTerminalClick: (terminalId: Int, name: String, serverId: String, serverName: String) -> Unit,
     onTunnelManagerReady: (RemoteTunnelManager) -> Unit,
 ) {
     val pairingId = pairing.pairingId
@@ -487,7 +487,7 @@ private fun TerminalListContent(
                                 creatingTerminal = false
                                 if (result != null) {
                                     val (newTerminalId, termName) = result
-                                    onTerminalClick(newTerminalId, termName.ifBlank { "Terminal" })
+                                    onTerminalClick(newTerminalId, termName.ifBlank { "Terminal" }, serverId, serverName)
                                 } else {
                                     withContext(kotlinx.coroutines.Dispatchers.Main) {
                                         android.widget.Toast.makeText(context, "新建超时，请重试", android.widget.Toast.LENGTH_SHORT).show()
@@ -522,7 +522,7 @@ private fun TerminalListContent(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     shape = RoundedCornerShape(8.dp),
                     tonalElevation = 1.dp,
-                    onClick = { onTerminalClick(terminal.id, terminal.name) },
+                    onClick = { onTerminalClick(terminal.id, terminal.name, terminal.serverId, terminal.serverName) },
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
