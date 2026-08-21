@@ -138,6 +138,9 @@ export function ServerDetail() {
   // Drag-to-reorder state for terminal tabs (overview tab is not draggable)
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
+  // Ref mirror of draggedTabId for synchronous access in drag events
+  // (state updates are async, onDragOver may fire before re-render)
+  const draggedTabIdRef = useRef<string | null>(null);
 
   const isLocal = selectedId === "__local__";
   const isRemote = selectedId?.startsWith("remote:") ?? false;
@@ -168,6 +171,7 @@ export function ServerDetail() {
     setShowDisconnectConfirm(false);
     setRenamingTabId(null);
     setDraggedTabId(null);
+    draggedTabIdRef.current = null;
     setDragOverTabId(null);
     setRemoteTerminals([]);
     // Restore remote active terminal from persisted store (null = overview tab)
@@ -1652,16 +1656,18 @@ export function ServerDetail() {
               onDragStart={(e) => {
                 if (!isDraggable) return;
                 setDraggedTabId(tab.key);
+                draggedTabIdRef.current = tab.key;
                 e.dataTransfer.effectAllowed = "move";
                 // Required for Firefox to start a drag
                 e.dataTransfer.setData("text/plain", tab.key);
               }}
               onDragEnd={() => {
                 setDraggedTabId(null);
+                draggedTabIdRef.current = null;
                 setDragOverTabId(null);
               }}
               onDragOver={(e) => {
-                if (!isDraggable || !draggedTabId || draggedTabId === tab.key)
+                if (!isDraggable || !draggedTabIdRef.current || draggedTabIdRef.current === tab.key)
                   return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
@@ -1671,12 +1677,13 @@ export function ServerDetail() {
                 if (dragOverTabId === tab.key) setDragOverTabId(null);
               }}
               onDrop={(e) => {
-                if (!isDraggable || !draggedTabId) return;
+                if (!isDraggable || !draggedTabIdRef.current) return;
                 e.preventDefault();
-                if (draggedTabId !== tab.key) {
-                  handleReorderTabs(draggedTabId, tab.key);
+                if (draggedTabIdRef.current !== tab.key) {
+                  handleReorderTabs(draggedTabIdRef.current, tab.key);
                 }
                 setDraggedTabId(null);
+                draggedTabIdRef.current = null;
                 setDragOverTabId(null);
               }}
               className={`flex items-center gap-1 pl-4 ${isOverview ? "pr-4" : "pr-0"} py-2 text-sm font-medium transition-colors cursor-pointer rounded-b-lg flex-shrink-0 bg-white dark:bg-[#1E1E1E] border border-gray-200/80 dark:border-white/[0.06] border-t-0 ${
