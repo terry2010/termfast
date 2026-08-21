@@ -46,6 +46,21 @@ interface RemoteTunnelFfi {
     /** Create + encrypt CLOSE_TERMINAL frame. Returns ciphertext or null on error. */
     fun sendCloseTerminal(pairingId: String, terminalId: Int): ByteArray?
 
+    /** Create + encrypt TRIGGER_LIST_REQUEST. Returns ciphertext or null on error. */
+    fun sendTriggerListRequest(pairingId: String): ByteArray?
+
+    /** Create + encrypt TRIGGER_EXEC. Returns ciphertext or null on error. */
+    fun sendTriggerExec(pairingId: String, triggerJson: String): ByteArray?
+
+    /** Create + encrypt TRIGGER_ADD. Returns ciphertext or null on error. */
+    fun sendTriggerAdd(pairingId: String, triggerJson: String): ByteArray?
+
+    /** Create + encrypt TRIGGER_UPDATE. Returns ciphertext or null on error. */
+    fun sendTriggerUpdate(pairingId: String, triggerJson: String): ByteArray?
+
+    /** Create + encrypt TRIGGER_REMOVE. Returns ciphertext or null on error. */
+    fun sendTriggerRemove(pairingId: String, triggerJson: String): ByteArray?
+
     /** Close tunnel: send GOODBYE + remove session. Returns GOODBYE ciphertext or null. */
     fun close(pairingId: String): ByteArray?
 }
@@ -84,6 +99,21 @@ object DefaultRemoteTunnelFfi : RemoteTunnelFfi {
 
     override fun sendCloseTerminal(pairingId: String, terminalId: Int): ByteArray? =
         RustRepository.remoteTunnelSendCloseTerminal(pairingId, terminalId)
+
+    override fun sendTriggerListRequest(pairingId: String): ByteArray? =
+        RustRepository.remoteTunnelSendTriggerListRequest(pairingId)
+
+    override fun sendTriggerExec(pairingId: String, triggerJson: String): ByteArray? =
+        RustRepository.remoteTunnelSendTriggerExec(pairingId, triggerJson)
+
+    override fun sendTriggerAdd(pairingId: String, triggerJson: String): ByteArray? =
+        RustRepository.remoteTunnelSendTriggerAdd(pairingId, triggerJson)
+
+    override fun sendTriggerUpdate(pairingId: String, triggerJson: String): ByteArray? =
+        RustRepository.remoteTunnelSendTriggerUpdate(pairingId, triggerJson)
+
+    override fun sendTriggerRemove(pairingId: String, triggerJson: String): ByteArray? =
+        RustRepository.remoteTunnelSendTriggerRemove(pairingId, triggerJson)
 
     override fun close(pairingId: String): ByteArray? =
         RustRepository.remoteTunnelClose(pairingId)
@@ -358,6 +388,38 @@ class RemoteTunnelManager(
     fun sendCloseTerminal(terminalId: Int): Boolean {
         if (!_protocolReady.value) return false
         val ct = ffi.sendCloseTerminal(pairingId, terminalId) ?: return false
+        return sendRaw(ct)
+    }
+
+    // === Remote trigger management ===
+
+    fun sendTriggerListRequest(): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendTriggerListRequest(pairingId) ?: return false
+        return sendRaw(ct)
+    }
+
+    fun sendTriggerExec(triggerJson: String): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendTriggerExec(pairingId, triggerJson) ?: return false
+        return sendRaw(ct)
+    }
+
+    fun sendTriggerAdd(triggerJson: String): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendTriggerAdd(pairingId, triggerJson) ?: return false
+        return sendRaw(ct)
+    }
+
+    fun sendTriggerUpdate(triggerJson: String): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendTriggerUpdate(pairingId, triggerJson) ?: return false
+        return sendRaw(ct)
+    }
+
+    fun sendTriggerRemove(triggerJson: String): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendTriggerRemove(pairingId, triggerJson) ?: return false
         return sendRaw(ct)
     }
 

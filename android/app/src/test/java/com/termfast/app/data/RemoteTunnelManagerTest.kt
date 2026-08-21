@@ -21,6 +21,13 @@ class MockRemoteTunnelFfi : RemoteTunnelFfi {
     var inputCalls = mutableListOf<Pair<Int, ByteArray>>()
     var resizeCalls = mutableListOf<Triple<Int, Int, Int>>()
     var desktopPairCalls = mutableListOf<Pair<String, String>>()
+    var newTerminalCalls = mutableListOf<Triple<String, String, String>>()
+    var closeTerminalCalls = mutableListOf<Pair<String, Int>>()
+    var triggerListRequestCalls = 0
+    var triggerExecCalls = mutableListOf<Pair<String, String>>()
+    var triggerAddCalls = mutableListOf<Pair<String, String>>()
+    var triggerUpdateCalls = mutableListOf<Pair<String, String>>()
+    var triggerRemoveCalls = mutableListOf<Pair<String, String>>()
     var closeCalls = 0
 
     /** Configurable return values (null = simulate FFI error). */
@@ -31,6 +38,13 @@ class MockRemoteTunnelFfi : RemoteTunnelFfi {
     var inputResult: ByteArray? = byteArrayOf(0x40)
     var resizeResult: ByteArray? = byteArrayOf(0x50)
     var desktopPairResult: ByteArray? = byteArrayOf(0x70)
+    var newTerminalResult: ByteArray? = byteArrayOf(0x80.toByte())
+    var closeTerminalResult: ByteArray? = byteArrayOf(0x90.toByte())
+    var triggerListRequestResult: ByteArray? = byteArrayOf(0xA0.toByte())
+    var triggerExecResult: ByteArray? = byteArrayOf(0xA1.toByte())
+    var triggerAddResult: ByteArray? = byteArrayOf(0xA2.toByte())
+    var triggerUpdateResult: ByteArray? = byteArrayOf(0xA3.toByte())
+    var triggerRemoveResult: ByteArray? = byteArrayOf(0xA4.toByte())
     var closeResult: ByteArray? = byteArrayOf(0x60)
 
     /** If set, init() throws this exception (simulates FFI failure). */
@@ -74,6 +88,41 @@ class MockRemoteTunnelFfi : RemoteTunnelFfi {
     override fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray? {
         desktopPairCalls.add(pairingId to payloadJson)
         return desktopPairResult
+    }
+
+    override fun sendNewTerminal(pairingId: String, shell: String, name: String): ByteArray? {
+        newTerminalCalls.add(Triple(pairingId, shell, name))
+        return newTerminalResult
+    }
+
+    override fun sendCloseTerminal(pairingId: String, terminalId: Int): ByteArray? {
+        closeTerminalCalls.add(pairingId to terminalId)
+        return closeTerminalResult
+    }
+
+    override fun sendTriggerListRequest(pairingId: String): ByteArray? {
+        triggerListRequestCalls++
+        return triggerListRequestResult
+    }
+
+    override fun sendTriggerExec(pairingId: String, triggerJson: String): ByteArray? {
+        triggerExecCalls.add(pairingId to triggerJson)
+        return triggerExecResult
+    }
+
+    override fun sendTriggerAdd(pairingId: String, triggerJson: String): ByteArray? {
+        triggerAddCalls.add(pairingId to triggerJson)
+        return triggerAddResult
+    }
+
+    override fun sendTriggerUpdate(pairingId: String, triggerJson: String): ByteArray? {
+        triggerUpdateCalls.add(pairingId to triggerJson)
+        return triggerUpdateResult
+    }
+
+    override fun sendTriggerRemove(pairingId: String, triggerJson: String): ByteArray? {
+        triggerRemoveCalls.add(pairingId to triggerJson)
+        return triggerRemoveResult
     }
 
     override fun close(pairingId: String): ByteArray? {
@@ -309,6 +358,13 @@ class RemoteTunnelManagerTest {
             override fun sendInput(pairingId: String, terminalId: Int, data: ByteArray) = null
             override fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int) = null
             override fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray? = null
+            override fun sendNewTerminal(pairingId: String, shell: String, name: String): ByteArray? = null
+            override fun sendCloseTerminal(pairingId: String, terminalId: Int): ByteArray? = null
+            override fun sendTriggerListRequest(pairingId: String): ByteArray? = null
+            override fun sendTriggerExec(pairingId: String, triggerJson: String): ByteArray? = null
+            override fun sendTriggerAdd(pairingId: String, triggerJson: String): ByteArray? = null
+            override fun sendTriggerUpdate(pairingId: String, triggerJson: String): ByteArray? = null
+            override fun sendTriggerRemove(pairingId: String, triggerJson: String): ByteArray? = null
             override fun close(pairingId: String) = null
         }
         val mgr = RemoteTunnelManager(

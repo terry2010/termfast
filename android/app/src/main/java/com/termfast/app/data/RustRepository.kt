@@ -239,4 +239,31 @@ object RustRepository {
      *  a terminal session. Returns ciphertext to send via WebSocket. */
     fun remoteTunnelSendCloseTerminal(pairingId: String, terminalId: Int): ByteArray? =
         RustBridge.nativeRemoteTunnelSendCloseTerminal(pairingId, terminalId)
+
+    // === Remote trigger management ===
+
+    /** Create + encrypt a TRIGGER_LIST_REQUEST frame. Asks the desktop to send
+     *  its local trigger list. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendTriggerListRequest(pairingId: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendTriggerListRequest(pairingId)
+
+    /** Create + encrypt a TRIGGER_EXEC frame. Asks the desktop to execute a trigger.
+     *  triggerJson = JSON { "trigger_id": "..." }. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendTriggerExec(pairingId: String, triggerJson: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendTriggerExec(pairingId, triggerJson)
+
+    /** Create + encrypt a TRIGGER_ADD frame. Asks the desktop to add a trigger.
+     *  triggerJson = JSON trigger object. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendTriggerAdd(pairingId: String, triggerJson: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendTriggerAdd(pairingId, triggerJson)
+
+    /** Create + encrypt a TRIGGER_UPDATE frame. Asks the desktop to update a trigger.
+     *  triggerJson = JSON trigger object. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendTriggerUpdate(pairingId: String, triggerJson: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendTriggerUpdate(pairingId, triggerJson)
+
+    /** Create + encrypt a TRIGGER_REMOVE frame. Asks the desktop to remove a trigger.
+     *  triggerJson = JSON { "trigger_id": "..." }. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendTriggerRemove(pairingId: String, triggerJson: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendTriggerRemove(pairingId, triggerJson)
 }

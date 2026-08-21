@@ -208,7 +208,9 @@ class MainActivity : ComponentActivity() {
             is RustEvent.RemoteTerminalResize,
             is RustEvent.RemoteTerminalError,
             is RustEvent.RemoteTerminalNotify,
-            is RustEvent.RemoteTerminalOk -> { }
+            is RustEvent.RemoteTerminalOk,
+            is RustEvent.RemoteTriggerList,
+            is RustEvent.RemoteTriggerExecResult -> { }
         }
     }
 

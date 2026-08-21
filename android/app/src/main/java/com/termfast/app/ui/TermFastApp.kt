@@ -197,6 +197,11 @@ fun TermFastApp() {
                     terminalName = terminalName,
                 )
             }
+            // Remote desktop detail — overview + triggers (like SSH server detail)
+            composable("remote_detail/{pairingId}") { backStack ->
+                val pairingId = backStack.arguments?.getString("pairingId") ?: ""
+                com.termfast.app.ui.screen.RemoteDetailScreen(navController, pairingId)
+            }
         }
     }
 }

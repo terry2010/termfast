@@ -182,6 +182,7 @@ fn dispatch_frame_event(pairing_id: &str, frame_type: u8, terminal_id: u32, payl
         use base64::Engine;
         use termfast_daemon::remote_frame::{
             ERROR, HISTORY, LIST_RESPONSE, NOTIFY, OK, OUTPUT, RESIZE,
+            TRIGGER_LIST_RESPONSE, TRIGGER_EXEC_RESULT,
         };
         match frame_type {
             LIST_RESPONSE => {
@@ -261,6 +262,22 @@ fn dispatch_frame_event(pairing_id: &str, frame_type: u8, terminal_id: u32, payl
                     };
                     crate::jni::dispatch_event_to_kotlin(&event.to_json());
                 }
+            }
+            TRIGGER_LIST_RESPONSE => {
+                let json = String::from_utf8_lossy(payload).to_string();
+                let event = crate::event::RustEvent::RemoteTriggerList {
+                    pairing_id: pairing_id.to_string(),
+                    triggers: json,
+                };
+                crate::jni::dispatch_event_to_kotlin(&event.to_json());
+            }
+            TRIGGER_EXEC_RESULT => {
+                let json = String::from_utf8_lossy(payload).to_string();
+                let event = crate::event::RustEvent::RemoteTriggerExecResult {
+                    pairing_id: pairing_id.to_string(),
+                    result: json,
+                };
+                crate::jni::dispatch_event_to_kotlin(&event.to_json());
             }
             _ => {
                 tracing::warn!(
@@ -352,6 +369,38 @@ pub fn send_desktop_pair(pairing_id: &str, payload_json: &str) -> Result<Vec<u8>
 /// The desktop will terminate the terminal process and remove it from the list.
 pub fn send_close_terminal(pairing_id: &str, terminal_id: u32) -> Result<Vec<u8>, String> {
     encrypt_outgoing(pairing_id, Frame::close_terminal(terminal_id))
+}
+
+// === Trigger management frames (desktop-to-desktop / mobile-to-desktop) ===
+
+/// Create and encrypt a TRIGGER_LIST_REQUEST frame.
+/// Asks the desktop to send its local trigger list.
+pub fn send_trigger_list_request(pairing_id: &str) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(pairing_id, Frame::trigger_list_request())
+}
+
+/// Create and encrypt a TRIGGER_EXEC frame.
+/// Asks the desktop to execute a trigger. `trigger_json` = JSON { "trigger_id": "..." }
+pub fn send_trigger_exec(pairing_id: &str, trigger_json: &str) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(pairing_id, Frame::trigger_exec(trigger_json))
+}
+
+/// Create and encrypt a TRIGGER_ADD frame.
+/// Asks the desktop to add a trigger. `trigger_json` = JSON trigger object.
+pub fn send_trigger_add(pairing_id: &str, trigger_json: &str) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(pairing_id, Frame::trigger_add(trigger_json))
+}
+
+/// Create and encrypt a TRIGGER_UPDATE frame.
+/// Asks the desktop to update a trigger. `trigger_json` = JSON trigger object.
+pub fn send_trigger_update(pairing_id: &str, trigger_json: &str) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(pairing_id, Frame::trigger_update(trigger_json))
+}
+
+/// Create and encrypt a TRIGGER_REMOVE frame.
+/// Asks the desktop to remove a trigger. `trigger_json` = JSON { "trigger_id": "..." }
+pub fn send_trigger_remove(pairing_id: &str, trigger_json: &str) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(pairing_id, Frame::trigger_remove(trigger_json))
 }
 
 /// Create and encrypt a GOODBYE frame, then remove the session.

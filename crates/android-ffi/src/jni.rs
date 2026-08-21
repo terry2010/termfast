@@ -2576,3 +2576,100 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSend
 }
 
 // === Pairing END ===
+
+// === Remote Trigger management ===
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendTriggerListRequest(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    match crate::remote_terminal::send_trigger_list_request(&pid) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendTriggerListRequest: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendTriggerExec(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    trigger_json: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let json = jstring_to_string(&mut env, &trigger_json);
+    match crate::remote_terminal::send_trigger_exec(&pid, &json) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendTriggerExec: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendTriggerAdd(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    trigger_json: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let json = jstring_to_string(&mut env, &trigger_json);
+    match crate::remote_terminal::send_trigger_add(&pid, &json) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendTriggerAdd: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendTriggerUpdate(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    trigger_json: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let json = jstring_to_string(&mut env, &trigger_json);
+    match crate::remote_terminal::send_trigger_update(&pid, &json) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendTriggerUpdate: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendTriggerRemove(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    trigger_json: JString,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let json = jstring_to_string(&mut env, &trigger_json);
+    match crate::remote_terminal::send_trigger_remove(&pid, &json) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendTriggerRemove: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+// === Remote Trigger END ===

@@ -449,6 +449,9 @@ fun ServerListScreen(navController: NavController) {
                             desktopDeviceId = pairing.desktopDeviceId,
                             isOnline = onlineStatus[pairing.pairingId],
                             onClick = {
+                                navController.navigate("remote_detail/${pairing.pairingId}")
+                            },
+                            onTerminalClick = {
                                 selectedPairing = pairing
                                 showRemotePicker = true
                             },
@@ -748,6 +751,7 @@ private fun RemoteDeviceCard(
     desktopDeviceId: String,
     isOnline: Boolean?,
     onClick: () -> Unit,
+    onTerminalClick: () -> Unit,
 ) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -816,12 +820,18 @@ private fun RemoteDeviceCard(
                     )
                 }
             }
-            Icon(
-                Icons.Filled.Terminal,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f),
-            )
+            // Terminal icon button — opens terminal picker dialog
+            IconButton(
+                onClick = onTerminalClick,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Terminal,
+                    contentDescription = "终端",
+                    modifier = Modifier.size(22.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f),
+                )
+            }
         }
     }
 }

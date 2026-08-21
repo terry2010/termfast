@@ -109,6 +109,18 @@ pub enum RustEvent {
         terminal_id: u32,
         payload: String,
     },
+    /// TRIGGER_LIST_RESPONSE — remote trigger list JSON payload.
+    #[serde(rename = "RemoteTriggerList")]
+    RemoteTriggerList {
+        pairing_id: String,
+        triggers: String,
+    },
+    /// TRIGGER_EXEC_RESULT — result of remote trigger execution.
+    #[serde(rename = "RemoteTriggerExecResult")]
+    RemoteTriggerExecResult {
+        pairing_id: String,
+        result: String,
+    },
 }
 
 impl RustEvent {

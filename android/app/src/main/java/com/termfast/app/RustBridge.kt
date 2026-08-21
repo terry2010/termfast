@@ -148,6 +148,13 @@ object RustBridge {
     // --- Close terminal on remote desktop (send CLOSE_TERMINAL frame via existing tunnel) ---
     external fun nativeRemoteTunnelSendCloseTerminal(pairingId: String, terminalId: Int): ByteArray?
 
+    // --- Remote trigger management (send TRIGGER_* frames via existing tunnel) ---
+    external fun nativeRemoteTunnelSendTriggerListRequest(pairingId: String): ByteArray?
+    external fun nativeRemoteTunnelSendTriggerExec(pairingId: String, triggerJson: String): ByteArray?
+    external fun nativeRemoteTunnelSendTriggerAdd(pairingId: String, triggerJson: String): ByteArray?
+    external fun nativeRemoteTunnelSendTriggerUpdate(pairingId: String, triggerJson: String): ByteArray?
+    external fun nativeRemoteTunnelSendTriggerRemove(pairingId: String, triggerJson: String): ByteArray?
+
     // --- Cloud Sync ---
     external fun nativeCloudSyncAuthUrl(provider: String): String
     external fun nativeCloudSyncExchangeCode(code: String): String

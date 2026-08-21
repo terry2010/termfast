@@ -133,4 +133,18 @@ sealed class RustEvent {
         val terminal_id: Int,
         val payload: String,
     ) : RustEvent()
+
+    @Serializable
+    @SerialName("RemoteTriggerList")
+    data class RemoteTriggerList(
+        val pairing_id: String,
+        val triggers: String,
+    ) : RustEvent()
+
+    @Serializable
+    @SerialName("RemoteTriggerExecResult")
+    data class RemoteTriggerExecResult(
+        val pairing_id: String,
+        val result: String,
+    ) : RustEvent()
 }
