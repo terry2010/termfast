@@ -7,12 +7,15 @@ import com.termfast.app.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -40,10 +43,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -93,6 +100,45 @@ fun ServerListScreen(navController: NavController) {
         if (isLoggedIn) PairingStore.getAllPairings() else emptyList()
     }
     val hasRemoteConfig = remotePairings.isNotEmpty()
+
+    // --- Drag-to-reorder state ---
+    // Unified list: remote pairings first, then SSH servers.
+    // Each item has a stable key and a type for callback dispatch.
+    data class DragItem(val key: String, val type: String, val id: String)
+    val allItems = remember(remotePairings, servers) {
+        val remotes = remotePairings.map { DragItem("remote_${it.pairingId}", "remote", it.pairingId) }
+        val ssh = servers.map { DragItem(it.id, "ssh", it.id) }
+        remotes + ssh
+    }
+    var draggedItemKey by remember { mutableStateOf<String?>(null) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    var dropTargetKey by remember { mutableStateOf<String?>(null) }
+    val lazyListState = rememberLazyListState()
+    val density = LocalDensity.current
+
+    fun applyReorder(fromKey: String, toKey: String) {
+        if (fromKey == toKey) return
+        val fromIdx = allItems.indexOfFirst { it.key == fromKey }
+        val toIdx = allItems.indexOfFirst { it.key == toKey }
+        if (fromIdx == -1 || toIdx == -1) return
+        // Build new ordered list by moving from → to
+        val reordered = allItems.toMutableList()
+        val moved = reordered.removeAt(fromIdx)
+        reordered.add(toIdx, moved)
+        // Split into remote and ssh order
+        val remoteOrder = reordered.filter { it.type == "remote" }.map { it.id }
+        val sshOrder = reordered.filter { it.type == "ssh" }.map { it.id }
+        // Persist
+        if (remoteOrder != remotePairings.map { it.pairingId }) {
+            PairingStore.reorderPairings(remoteOrder)
+            remoteVersion++
+        }
+        if (sshOrder != servers.map { it.id }) {
+            RustRepository.reorderServers(sshOrder)
+            // Update local state immediately (refresh will be called on next lifecycle)
+            servers = repo.listServersOrdered()
+        }
+    }
 
     // Desktop interconnection state
     var desktopPairings by remember { mutableStateOf<List<PairingApi.DeviceInfo>>(emptyList()) }
@@ -158,7 +204,7 @@ fun ServerListScreen(navController: NavController) {
     fun refresh() {
         scope.launch {
             withContext(Dispatchers.IO) {
-                val list = repo.listServers()
+                val list = repo.listServersOrdered()
                 val st = list.associate { it.id to repo.getServerStatus(it.id) }
                 val vpn = SshVpnService.isRunning(context)
                 val starting = SshVpnService.isStarting(context)
@@ -437,24 +483,79 @@ fun ServerListScreen(navController: NavController) {
             Box(modifier = Modifier.fillMaxSize().padding(padding)) {
                 Column(modifier = Modifier.fillMaxSize()) {
                 LazyColumn(
+                state = lazyListState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 80.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Remote paired devices — show each as a card
-                if (hasRemoteConfig) {
-                    items(remotePairings, key = { "remote_${it.pairingId}" }) { pairing ->
+                items(allItems, key = { it.key }) { item ->
+                    val isDragging = draggedItemKey == item.key
+                    val isDropTarget = dropTargetKey == item.key && draggedItemKey != null && draggedItemKey != item.key
+                    val modifier = Modifier
+                        .fillMaxWidth()
+                        .zIndex(if (isDragging) 1f else 0f)
+                        .graphicsLayer {
+                            if (isDragging) {
+                                translationY = dragOffsetY
+                                shadowElevation = 8f
+                                alpha = 0.9f
+                            }
+                        }
+                        .pointerInput(item.key) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    draggedItemKey = item.key
+                                    dragOffsetY = 0f
+                                },
+                                onDragEnd = {
+                                    if (draggedItemKey != null && dropTargetKey != null) {
+                                        applyReorder(draggedItemKey!!, dropTargetKey!!)
+                                    }
+                                    draggedItemKey = null
+                                    dropTargetKey = null
+                                    dragOffsetY = 0f
+                                },
+                                onDragCancel = {
+                                    draggedItemKey = null
+                                    dropTargetKey = null
+                                    dragOffsetY = 0f
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragOffsetY += dragAmount.y
+                                    // Determine drop target based on drag position
+                                    val layoutInfo = lazyListState.layoutInfo
+                                    val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == item.key }
+                                    if (draggedInfo != null) {
+                                        val draggedCenter = draggedInfo.offset + draggedInfo.size / 2 + dragOffsetY.toInt()
+                                        val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
+                                            vi.key != item.key &&
+                                            draggedCenter >= vi.offset &&
+                                            draggedCenter < vi.offset + vi.size
+                                        }
+                                        dropTargetKey = target?.key as? String
+                                    }
+                                },
+                            )
+                        }
+                        .then(if (isDropTarget) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(16.dp)) else Modifier)
+
+                    if (item.type == "remote") {
+                        val pairing = remotePairings.find { it.pairingId == item.id } ?: return@items
                         RemoteDeviceCard(
+                            modifier = modifier,
                             desktopName = pairing.desktopName.ifEmpty { pairing.pairingId.take(8) },
                             desktopDeviceId = pairing.desktopDeviceId,
                             isOnline = onlineStatus[pairing.pairingId],
                             terminalSessionCount = TerminalSessionManager.getRemoteSessionCount(pairing.pairingId),
                             onClick = {
-                                navController.navigate("remote_detail/${pairing.pairingId}")
+                                if (draggedItemKey == null) navController.navigate("remote_detail/${pairing.pairingId}")
                             },
                             onTerminalClick = {
-                                selectedPairing = pairing
-                                showRemotePicker = true
+                                if (draggedItemKey == null) {
+                                    selectedPairing = pairing
+                                    showRemotePicker = true
+                                }
                             },
                             onUnpair = {
                                 scope.launch {
@@ -474,124 +575,120 @@ fun ServerListScreen(navController: NavController) {
                                 }
                             },
                         )
-                    }
-                }
-                items(servers, key = { it.id }) { server ->
-                    var testResult by remember { mutableStateOf<String?>(null) }
-                    var testing by remember { mutableStateOf(false) }
-                    val isThisVpn = vpnServerId == server.id
-                    val cardVpnRunning = vpnRunning && isThisVpn
-                    val cardVpnStarting = vpnStarting && isThisVpn
-                    val cardVpnFailed = vpnFailed && isThisVpn
-                    val cardVpnError = if (cardVpnFailed) vpnError else null
-                    ServerCard(
-                        server = server,
-                        status = statuses[server.id],
-                        vpnRunning = cardVpnRunning,
-                        vpnStarting = cardVpnStarting,
-                        vpnFailed = cardVpnFailed,
-                        vpnError = cardVpnError,
-                        terminalSessionCount = TerminalSessionManager.getSessions(server.id).size,
-                        testResult = testResult,
-                        testing = testing,
-                        onVpnToggle = {
-                            if (cardVpnRunning || cardVpnStarting) {
-                                // This card's VPN is running — stop it
-                                SshVpnService.stop(context)
-                                vpnRunning = false
-                                vpnStarting = false
-                                vpnServerId = ""
-                            } else {
-                                // Clear previous error and start new connection
-                                vpnFailed = false
-                                vpnError = null
-                                vpnStarting = true
-                                vpnServerId = server.id
-                                startVpn(server)
-                            }
-                        },
-                        proxyRunning = server.id in proxyRunningIds,
-                        proxyStarting = server.id in proxyStartingIds,
-                        onProxyToggle = {
-                            scope.launch {
-                                if (server.id in proxyRunningIds) {
-                                    // Stop proxy
-                                    withContext(Dispatchers.IO) {
-                                        repo.stopProxy(server.id)
-                                    }
-                                    proxyRunningIds = proxyRunningIds - server.id
+                    } else {
+                        val server = servers.find { it.id == item.id } ?: return@items
+                        var testResult by remember { mutableStateOf<String?>(null) }
+                        var testing by remember { mutableStateOf(false) }
+                        val isThisVpn = vpnServerId == server.id
+                        val cardVpnRunning = vpnRunning && isThisVpn
+                        val cardVpnStarting = vpnStarting && isThisVpn
+                        val cardVpnFailed = vpnFailed && isThisVpn
+                        val cardVpnError = if (cardVpnFailed) vpnError else null
+                        ServerCard(
+                            modifier = modifier,
+                            server = server,
+                            status = statuses[server.id],
+                            vpnRunning = cardVpnRunning,
+                            vpnStarting = cardVpnStarting,
+                            vpnFailed = cardVpnFailed,
+                            vpnError = cardVpnError,
+                            terminalSessionCount = TerminalSessionManager.getSessions(server.id).size,
+                            testResult = testResult,
+                            testing = testing,
+                            onVpnToggle = {
+                                if (cardVpnRunning || cardVpnStarting) {
+                                    SshVpnService.stop(context)
+                                    vpnRunning = false
+                                    vpnStarting = false
+                                    vpnServerId = ""
                                 } else {
-                                    // Start proxy — ensure SSH connected first
-                                    proxyStartingIds = proxyStartingIds + server.id
-                                    val ok = withContext(Dispatchers.IO) {
-                                        // Connect SSH if not already connected
-                                        val st = repo.getServerStatus(server.id)
-                                        if (st.status != "connected") {
-                                            val connected = repo.connectServer(server.id)
-                                            if (!connected) {
-                                                android.util.Log.w("ServerList", "proxy: connectServer failed for ${server.id}")
-                                                return@withContext false
+                                    vpnFailed = false
+                                    vpnError = null
+                                    vpnStarting = true
+                                    vpnServerId = server.id
+                                    startVpn(server)
+                                }
+                            },
+                            proxyRunning = server.id in proxyRunningIds,
+                            proxyStarting = server.id in proxyStartingIds,
+                            onProxyToggle = {
+                                scope.launch {
+                                    if (server.id in proxyRunningIds) {
+                                        withContext(Dispatchers.IO) {
+                                            repo.stopProxy(server.id)
+                                        }
+                                        proxyRunningIds = proxyRunningIds - server.id
+                                    } else {
+                                        proxyStartingIds = proxyStartingIds + server.id
+                                        val ok = withContext(Dispatchers.IO) {
+                                            val st = repo.getServerStatus(server.id)
+                                            if (st.status != "connected") {
+                                                val connected = repo.connectServer(server.id)
+                                                if (!connected) {
+                                                    android.util.Log.w("ServerList", "proxy: connectServer failed for ${server.id}")
+                                                    return@withContext false
+                                                }
                                             }
+                                            val socks5Port = server.proxy?.socks5_port ?: 1080
+                                            val startOk = repo.startProxy(server.id, socks5Port, 0, 0)
+                                            if (BuildConfig.DEBUG) android.util.Log.i("ServerList", "proxy: startProxy returned $startOk for ${server.id} port $socks5Port")
+                                            startOk
                                         }
-                                        val socks5Port = server.proxy?.socks5_port ?: 1080
-                                        val startOk = repo.startProxy(server.id, socks5Port, 0, 0)
-                                        if (BuildConfig.DEBUG) android.util.Log.i("ServerList", "proxy: startProxy returned $startOk for ${server.id} port $socks5Port")
-                                        startOk
-                                    }
-                                    if (BuildConfig.DEBUG) android.util.Log.i("ServerList", "proxy: ok=$ok, clearing starting state for ${server.id}")
-                                    proxyStartingIds = proxyStartingIds - server.id
-                                    if (ok) {
-                                        proxyRunningIds = proxyRunningIds + server.id
-                                    }
-                                }
-                            }
-                        },
-                        onTest = {
-                            scope.launch {
-                                testing = true
-                                testResult = null
-                                withContext(Dispatchers.IO) {
-                                    try {
-                                        var testUrl = server.test_url.ifBlank { "https://google.com" }
-                                        // Auto-add https:// if no scheme
-                                        if (!testUrl.startsWith("http://") && !testUrl.startsWith("https://")) {
-                                            testUrl = "https://$testUrl"
+                                        if (BuildConfig.DEBUG) android.util.Log.i("ServerList", "proxy: ok=$ok, clearing starting state for ${server.id}")
+                                        proxyStartingIds = proxyStartingIds - server.id
+                                        if (ok) {
+                                            proxyRunningIds = proxyRunningIds + server.id
                                         }
-                                        val conn = URL(testUrl).openConnection() as HttpURLConnection
-                                        conn.connectTimeout = 8000
-                                        conn.readTimeout = 8000
-                                        conn.instanceFollowRedirects = false
-                                        conn.requestMethod = "GET"
-                                        val start = System.currentTimeMillis()
-                                        val code = conn.responseCode
-                                        val latency = System.currentTimeMillis() - start
-                                        testResult = if (code in 200..399) {
-                                            "✓ $code · ${latency}ms"
-                                        } else {
-                                            "✗ HTTP $code"
-                                        }
-                                        conn.disconnect()
-                                    } catch (e: Exception) {
-                                        testResult = "✗ ${e.message ?: "失败"}"
                                     }
                                 }
-                                testing = false
-                            }
-                        },
-                        onClick = { navController.navigate("server_detail/${server.id}") },
-                        onTerminal = {
-                            // Always create a new terminal session
-                            navController.navigate("terminal/${server.id}")
-                        },
-                        onDelete = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    repo.removeServer(server.id)
+                            },
+                            onTest = {
+                                scope.launch {
+                                    testing = true
+                                    testResult = null
+                                    withContext(Dispatchers.IO) {
+                                        try {
+                                            var testUrl = server.test_url.ifBlank { "https://google.com" }
+                                            if (!testUrl.startsWith("http://") && !testUrl.startsWith("https://")) {
+                                                testUrl = "https://$testUrl"
+                                            }
+                                            val conn = URL(testUrl).openConnection() as HttpURLConnection
+                                            conn.connectTimeout = 8000
+                                            conn.readTimeout = 8000
+                                            conn.instanceFollowRedirects = false
+                                            conn.requestMethod = "GET"
+                                            val start = System.currentTimeMillis()
+                                            val code = conn.responseCode
+                                            val latency = System.currentTimeMillis() - start
+                                            testResult = if (code in 200..399) {
+                                                "✓ $code · ${latency}ms"
+                                            } else {
+                                                "✗ HTTP $code"
+                                            }
+                                            conn.disconnect()
+                                        } catch (e: Exception) {
+                                            testResult = "✗ ${e.message ?: "失败"}"
+                                        }
+                                    }
+                                    testing = false
                                 }
-                                refresh()
+                            },
+                            onClick = {
+                                if (draggedItemKey == null) navController.navigate("server_detail/${server.id}")
+                            },
+                            onTerminal = {
+                                if (draggedItemKey == null) navController.navigate("terminal/${server.id}")
+                            },
+                            onDelete = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        repo.removeServer(server.id)
+                                    }
+                                    refresh()
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
             }
@@ -765,6 +862,7 @@ fun ServerListScreen(navController: NavController) {
 
 @Composable
 private fun RemoteDeviceCard(
+    modifier: Modifier = Modifier,
     desktopName: String,
     desktopDeviceId: String,
     isOnline: Boolean?,
@@ -828,12 +926,8 @@ private fun RemoteDeviceCard(
         enableDismissFromStartToEnd = false,
     ) {
         ElevatedCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = { showUnpairDialog = true },
-                ),
+            modifier = modifier
+                .clickable(onClick = onClick),
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.elevatedCardColors(
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -973,6 +1067,7 @@ private fun EmptyServerState(modifier: Modifier = Modifier) {
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun ServerCard(
+    modifier: Modifier = Modifier,
     server: ServerConfig,
     status: ServerStatus?,
     vpnRunning: Boolean,
@@ -1051,12 +1146,8 @@ private fun ServerCard(
             contentColor = MaterialTheme.colorScheme.onSurface,
         )
         ElevatedCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = { showDeleteDialog = true },
-                ),
+            modifier = modifier
+                .clickable(onClick = onClick),
             shape = RoundedCornerShape(16.dp),
             colors = cardColors,
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),

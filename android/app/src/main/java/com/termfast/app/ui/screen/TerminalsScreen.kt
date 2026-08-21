@@ -1,7 +1,9 @@
 package com.termfast.app.ui.screen
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -17,10 +19,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.navigation.NavController
 import android.widget.Toast
 import com.termfast.app.data.PairingStore
@@ -83,6 +88,10 @@ fun TerminalsScreen(
     var sessions by remember { mutableStateOf(TerminalSessionManager.getAllSessions()) }
     val servers by remember { mutableStateOf(repo.listServers().associateBy { it.id }) }
     val listState = rememberLazyListState()
+    // Drag-to-reorder state
+    var draggedSessionId by remember { mutableStateOf<String?>(null) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    var dropTargetSessionId by remember { mutableStateOf<String?>(null) }
     // Remote picker dialog state: when non-null, show the picker for this pairing.
     // Clicking a remote server group header sets this to open the picker.
     var showRemotePickerFor by remember { mutableStateOf<RemoteTunnelConfig?>(null) }
@@ -309,7 +318,70 @@ fun TerminalsScreen(
                 }
                 // Terminal cards for this server
                 items(serverSessions, key = { it.sessionId }) { session ->
+                    val isDragging = draggedSessionId == session.sessionId
+                    val isDropTarget = dropTargetSessionId == session.sessionId && draggedSessionId != null && draggedSessionId != session.sessionId
+                    val cardModifier = Modifier
+                        .fillMaxWidth()
+                        .zIndex(if (isDragging) 1f else 0f)
+                        .graphicsLayer {
+                            if (isDragging) {
+                                translationY = dragOffsetY
+                                shadowElevation = 8f
+                                alpha = 0.9f
+                            }
+                        }
+                        .pointerInput(session.sessionId) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    draggedSessionId = session.sessionId
+                                    dragOffsetY = 0f
+                                },
+                                onDragEnd = {
+                                    if (draggedSessionId != null && dropTargetSessionId != null) {
+                                        // Reorder within this server group
+                                        val currentOrder = serverSessions.map { it.sessionId }
+                                        val fromIdx = currentOrder.indexOf(draggedSessionId!!)
+                                        val toIdx = currentOrder.indexOf(dropTargetSessionId!!)
+                                        if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
+                                            val reordered = currentOrder.toMutableList()
+                                            val moved = reordered.removeAt(fromIdx)
+                                            reordered.add(toIdx, moved)
+                                            TerminalSessionManager.reorderSessions(reordered)
+                                            refresh()
+                                        }
+                                    }
+                                    draggedSessionId = null
+                                    dropTargetSessionId = null
+                                    dragOffsetY = 0f
+                                },
+                                onDragCancel = {
+                                    draggedSessionId = null
+                                    dropTargetSessionId = null
+                                    dragOffsetY = 0f
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragOffsetY += dragAmount.y
+                                    val layoutInfo = listState.layoutInfo
+                                    val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == session.sessionId }
+                                    if (draggedInfo != null) {
+                                        val draggedCenter = draggedInfo.offset + draggedInfo.size / 2 + dragOffsetY.toInt()
+                                        // Only target sessions in the same server group
+                                        val groupSessionIds = serverSessions.map { it.sessionId }.toSet()
+                                        val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
+                                            vi.key != session.sessionId &&
+                                            vi.key in groupSessionIds &&
+                                            draggedCenter >= vi.offset &&
+                                            draggedCenter < vi.offset + vi.size
+                                        }
+                                        dropTargetSessionId = target?.key as? String
+                                    }
+                                },
+                            )
+                        }
+                        .then(if (isDropTarget) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp)) else Modifier)
                     TerminalCard(
+                        modifier = cardModifier,
                         session = session,
                         serverName = if (serverId.startsWith("remote:")) {
                             val pid = serverId.removePrefix("remote:")
@@ -319,15 +391,15 @@ fun TerminalsScreen(
                         },
                         isFocused = session.sessionId == focusSessionId,
                         onClick = {
-                            if (session.serverId.startsWith("remote:") && session.remotePairingId != null && session.remoteTerminalId != null) {
-                                // Remote terminal: navigate to remote terminal screen
-                                val pid = session.remotePairingId!!
-                                val tid = session.remoteTerminalId!!
-                                val encodedName = java.net.URLEncoder.encode(session.name.ifBlank { "Terminal" }, "UTF-8")
-                                navController.navigate("remote_terminal/$pid/$tid/$encodedName")
-                            } else {
-                                // Local SSH: navigate to normal terminal screen
-                                navController.navigate("terminal/${session.serverId}/${session.sessionId}")
+                            if (draggedSessionId == null) {
+                                if (session.serverId.startsWith("remote:") && session.remotePairingId != null && session.remoteTerminalId != null) {
+                                    val pid = session.remotePairingId!!
+                                    val tid = session.remoteTerminalId!!
+                                    val encodedName = java.net.URLEncoder.encode(session.name.ifBlank { "Terminal" }, "UTF-8")
+                                    navController.navigate("remote_terminal/$pid/$tid/$encodedName")
+                                } else {
+                                    navController.navigate("terminal/${session.serverId}/${session.sessionId}")
+                                }
                             }
                         },
                         onDisconnect = {
@@ -367,6 +439,7 @@ fun TerminalsScreen(
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun TerminalCard(
+    modifier: Modifier = Modifier,
     session: TerminalSessionManager.SessionState,
     serverName: String,
     isFocused: Boolean,
@@ -440,7 +513,7 @@ private fun TerminalCard(
             }
         },
         enableDismissFromStartToEnd = false,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
     ) {
         Card(
             modifier = Modifier

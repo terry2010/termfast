@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
         RustBridge.setHwId(this)
         val dataDir = filesDir.absolutePath
         RustRepository.init(dataDir)
+        RustRepository.initOrdering(this)
         PairingStore.init(this)
         CloudSyncManager.appContext = applicationContext
         // Start global terminal session event collector

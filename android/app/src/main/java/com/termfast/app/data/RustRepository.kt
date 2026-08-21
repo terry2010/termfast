@@ -2,6 +2,7 @@ package com.termfast.app.data
 
 import android.util.Base64
 import android.util.Log
+import android.content.Context
 import com.termfast.app.RustBridge
 import com.termfast.app.RustEventListener
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -67,6 +68,34 @@ object RustRepository {
         val raw = RustBridge.nativeListServers()
         return if (raw.isBlank()) emptyList()
         else json.decodeFromString(ListSerializer(ServerConfig.serializer()), raw)
+    }
+
+    // --- Server ordering (stored in SharedPreferences, separate from Rust config) ---
+    private const val ORDER_PREFS = "server_order"
+    private const val ORDER_KEY = "ordered_ids"
+    private var appContext: Context? = null
+
+    fun initOrdering(context: Context) {
+        appContext = context.applicationContext
+    }
+
+    /** Get servers sorted by user-defined order (unsaved servers appended at end). */
+    fun listServersOrdered(): List<ServerConfig> {
+        val all = listServers()
+        val ctx = appContext ?: return all
+        val prefs = ctx.getSharedPreferences(ORDER_PREFS, Context.MODE_PRIVATE)
+        val orderedIds = prefs.getString(ORDER_KEY, "")?.split(",")?.filter { it.isNotEmpty() } ?: emptyList()
+        val idSet = all.map { it.id }.toSet()
+        val ordered = orderedIds.filter { it in idSet }.mapNotNull { id -> all.find { it.id == id } }
+        val remaining = all.filter { it.id !in orderedIds }
+        return ordered + remaining
+    }
+
+    /** Persist the new server order. [orderedIds] is the full list of server IDs in desired order. */
+    fun reorderServers(orderedIds: List<String>) {
+        val ctx = appContext ?: return
+        val prefs = ctx.getSharedPreferences(ORDER_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putString(ORDER_KEY, orderedIds.joinToString(",")).apply()
     }
 
     fun addServer(config: ServerConfig): String {

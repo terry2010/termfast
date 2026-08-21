@@ -15,6 +15,7 @@ data class RemoteTunnelConfig(
     val desktopName: String,
     val desktopDeviceId: String,
     val pairingRefreshToken: String = "",
+    val sortOrder: Int = 0,
 )
 
 object PairingStore {
@@ -78,7 +79,16 @@ object PairingStore {
         writeMap(map)
     }
 
-    fun getAllPairings(): List<RemoteTunnelConfig> = readMap().values.toList()
+    fun getAllPairings(): List<RemoteTunnelConfig> = readMap().values.sortedBy { it.sortOrder }
+
+    /** Reorder pairings by updating sortOrder. [orderedIds] is the new desired order. */
+    fun reorderPairings(orderedIds: List<String>) {
+        val map = readMap()
+        orderedIds.forEachIndexed { index, id ->
+            map[id]?.let { map[id] = it.copy(sortOrder = index) }
+        }
+        writeMap(map)
+    }
 
     fun getPairing(pairingId: String): RemoteTunnelConfig? = readMap()[pairingId]
 

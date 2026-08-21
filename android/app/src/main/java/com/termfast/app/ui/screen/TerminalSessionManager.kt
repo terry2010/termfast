@@ -22,6 +22,9 @@ import java.util.UUID
  */
 object TerminalSessionManager {
     private val sessions = mutableMapOf<String, SessionState>()
+    // User-defined session order (sessionId → orderIndex). Sessions not in this
+    // map fall back to createdAt ordering. Used for drag-to-reorder.
+    private val sessionOrder = mutableMapOf<String, Int>()
     private var collectorStarted = false
     // Tunnel managers registered by pairingId — used for UNSUBSCRIBE on disconnect
     private val tunnelManagers = mutableMapOf<String, com.termfast.app.data.RemoteTunnelManager>()
@@ -362,16 +365,27 @@ object TerminalSessionManager {
     @Synchronized
     fun closeSessionBySessionId(sessionId: String) {
         sessions.remove(sessionId)
+        sessionOrder.remove(sessionId)
     }
 
     @Synchronized
     fun getSessions(serverId: String): List<SessionState> {
-        return sessions.values.filter { it.serverId == serverId }.sortedBy { it.createdAt }
+        return sessions.values.filter { it.serverId == serverId }
+            .sortedWith(compareBy({ sessionOrder[it.sessionId] ?: Int.MAX_VALUE }, { it.createdAt }))
     }
 
     @Synchronized
     fun getAllSessions(): List<SessionState> {
-        return sessions.values.sortedBy { it.createdAt }
+        return sessions.values
+            .sortedWith(compareBy({ sessionOrder[it.sessionId] ?: Int.MAX_VALUE }, { it.createdAt }))
+    }
+
+    /** Reorder sessions within a server group. [orderedSessionIds] is the new order. */
+    @Synchronized
+    fun reorderSessions(orderedSessionIds: List<String>) {
+        orderedSessionIds.forEachIndexed { index, sid ->
+            sessionOrder[sid] = index
+        }
     }
 
     @Synchronized
