@@ -108,7 +108,17 @@ fun ServerListScreen(navController: NavController) {
     val allItems = remember(remotePairings, servers) {
         val remotes = remotePairings.map { DragItem("remote_${it.pairingId}", "remote", it.pairingId) }
         val ssh = servers.map { DragItem(it.id, "ssh", it.id) }
-        remotes + ssh
+        // Apply saved global order if available
+        val globalOrder = RustRepository.getGlobalOrder()
+        if (globalOrder.isEmpty()) {
+            remotes + ssh
+        } else {
+            val byKey = (remotes + ssh).associateBy { it.key }
+            val ordered = globalOrder.mapNotNull { byKey[it] }
+            // Append any items not in saved order (newly added)
+            val remaining = (remotes + ssh).filter { it.key !in globalOrder.toSet() }
+            ordered + remaining
+        }
     }
     // Mutable display list for live reorder during drag
     var displayItems by remember { mutableStateOf(allItems) }
@@ -119,6 +129,13 @@ fun ServerListScreen(navController: NavController) {
     val lazyListState = rememberLazyListState()
 
     fun persistOrder(items: List<DragItem>) {
+        // Persist unified global order (handles cross-type reorder)
+        val newKeys = items.map { it.key }
+        val oldKeys = RustRepository.getGlobalOrder()
+        if (newKeys != oldKeys) {
+            RustRepository.reorderGlobal(newKeys)
+        }
+        // Also persist per-type order for backward compat
         val remoteOrder = items.filter { it.type == "remote" }.map { it.id }
         val sshOrder = items.filter { it.type == "ssh" }.map { it.id }
         if (remoteOrder != remotePairings.map { it.pairingId }) {

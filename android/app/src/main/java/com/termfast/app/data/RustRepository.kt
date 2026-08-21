@@ -73,10 +73,26 @@ object RustRepository {
     // --- Server ordering (stored in SharedPreferences, separate from Rust config) ---
     private const val ORDER_PREFS = "server_order"
     private const val ORDER_KEY = "ordered_ids"
+    // Unified global ordering: stores mixed item keys (remote_xxx / ssh_id)
+    private const val GLOBAL_ORDER_KEY = "global_ordered_keys"
     private var appContext: Context? = null
 
     fun initOrdering(context: Context) {
         appContext = context.applicationContext
+    }
+
+    /** Persist the unified global order (mixed remote_ and ssh keys). */
+    fun reorderGlobal(orderedKeys: List<String>) {
+        val ctx = appContext ?: return
+        val prefs = ctx.getSharedPreferences(ORDER_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putString(GLOBAL_ORDER_KEY, orderedKeys.joinToString(",")).apply()
+    }
+
+    /** Get the saved global order (mixed keys). Empty if never saved. */
+    fun getGlobalOrder(): List<String> {
+        val ctx = appContext ?: return emptyList()
+        val prefs = ctx.getSharedPreferences(ORDER_PREFS, Context.MODE_PRIVATE)
+        return prefs.getString(GLOBAL_ORDER_KEY, "")?.split(",")?.filter { it.isNotEmpty() } ?: emptyList()
     }
 
     /** Get servers sorted by user-defined order (unsaved servers appended at end). */
