@@ -208,6 +208,10 @@ pub struct RemoteServer {
     /// ConfigManager for resolving server_name in LIST_RESPONSE.
     /// Wrapped in tokio Mutex because ConfigManager.get() is async.
     config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
+    /// ServerManager for opening SSH terminals (NEW_TERMINAL with server_id).
+    /// Optional — None on Android (no SSH client).
+    #[cfg(not(target_os = "android"))]
+    server_manager: Option<Arc<termfast_core::server::ServerManager>>,
     /// Persistent u32↔session_id mapping (survives across LIST_REQUEST calls).
     id_map: Arc<StdMutex<IdMap>>,
     /// Pairing ID → 32-byte pairing key K. Added on pairing, removed on revoke.
@@ -242,6 +246,16 @@ impl RemoteServer {
         terminal_manager: Arc<TerminalManager>,
         config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
     ) -> Self {
+        Self::new_with_server_manager(terminal_manager, config_manager, None)
+    }
+
+    /// Create RemoteServer with ServerManager (enables NEW_TERMINAL for SSH terminals).
+    #[cfg(not(target_os = "android"))]
+    pub fn new_with_server_manager(
+        terminal_manager: Arc<TerminalManager>,
+        config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
+        server_manager: Option<Arc<termfast_core::server::ServerManager>>,
+    ) -> Self {
         let id_map = Arc::new(StdMutex::new(IdMap::new()));
 
         // active_tunnels registry — used to broadcast LIST_CHANGED to all connected mobiles
@@ -268,6 +282,7 @@ impl RemoteServer {
         Self {
             terminal_manager,
             config_manager,
+            server_manager,
             id_map,
             auth_keys: Arc::new(RwLock::new(HashMap::new())),
             answered_questions: Arc::new(StdMutex::new(HashMap::new())),
@@ -278,6 +293,16 @@ impl RemoteServer {
             frame_callback: Arc::new(std::sync::Mutex::new(None)),
             new_terminal_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Android variant — no server_manager (no SSH client).
+    #[cfg(target_os = "android")]
+    pub fn new_with_server_manager(
+        terminal_manager: Arc<TerminalManager>,
+        config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
+        _server_manager: Option<Arc<termfast_core::server::ServerManager>>,
+    ) -> Self {
+        Self::new(terminal_manager, config_manager)
     }
 
     /// Set the file upload callback (called when mobile sends FILE_REQUEST on local terminal).
@@ -1313,21 +1338,55 @@ impl RemoteServer {
             termfast_core::local::shell::validate_shell(&s)
         });
         let name = req.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let server_id = req.get("server_id").and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty() && *s != "__local__");
 
         // Serialize NEW_TERMINAL handling to prevent TOCTOU race in name deduplication.
         let _lock = self.new_terminal_lock.lock().await;
 
         // Generate a unique "终端 N" name: start with count+1, keep incrementing
-        // until no duplicate name exists among local sessions.
+        // until no duplicate name exists among sessions on the same server.
         let existing_names: std::collections::HashSet<String> = self.terminal_manager
             .list_session_infos().await
             .iter()
-            .filter(|i| i.server_id == "__local__")
+            .filter(|i| i.server_id == server_id.unwrap_or("__local__"))
             .map(|i| i.name.clone())
             .collect();
         let base_count = existing_names.len();
 
-        match self.terminal_manager.open_local(80, 24, shell, None).await {
+        // Open terminal: local or SSH depending on server_id
+        let open_result: Result<(String, Vec<u8>), String> = if let Some(sid) = server_id {
+            // SSH terminal — need ServerManager to get SSH handle
+            #[cfg(not(target_os = "android"))]
+            {
+                let sm = match &self.server_manager {
+                    Some(sm) => sm.clone(),
+                    None => return Some(Frame::error("server_manager_not_available")),
+                };
+                let server = match sm.get_server(sid).await {
+                    Ok(s) => s,
+                    Err(_) => return Some(Frame::error("server_not_found")),
+                };
+                if !server.ssh_client.is_connected().await {
+                    return Some(Frame::error("server_not_connected"));
+                }
+                let ssh_handle = match server.ssh_client.get_handle().await {
+                    Some(h) => h,
+                    None => return Some(Frame::error("ssh_handle_not_available")),
+                };
+                self.terminal_manager.open(&ssh_handle, sid, 80, 24).await
+            }
+            #[cfg(target_os = "android")]
+            {
+                let _ = sid;
+                return Some(Frame::error("ssh_terminal_not_supported_on_android"));
+            }
+        } else {
+            // Local terminal
+            self.terminal_manager.open_local(80, 24, shell, None).await
+        };
+
+        match open_result {
             Ok((session_id, _initial_output)) => {
                 // Use provided name, or generate a unique "终端 N"
                 let effective_name = match name {
@@ -1361,7 +1420,7 @@ impl RemoteServer {
                 Some(Frame::ok_with_payload(0, &json.to_string()))
             }
             Err(e) => {
-                tracing::error!("NEW_TERMINAL: failed to open local terminal: {}", e);
+                tracing::error!("NEW_TERMINAL: failed to open terminal: {}", e);
                 Some(Frame::error(&format!("open_failed: {}", e)))
             }
         }

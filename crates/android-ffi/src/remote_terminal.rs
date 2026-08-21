@@ -341,16 +341,18 @@ pub fn send_resize(
 }
 
 /// Create and encrypt a NEW_TERMINAL frame.
-/// Used by the phone to ask the desktop to open a new local terminal.
+/// Used by the phone to ask the desktop to open a new terminal.
 /// `shell` and `name` are optional (None = desktop default).
+/// `server_id` is optional (None or "__local__" = local terminal, otherwise SSH terminal).
 pub fn send_new_terminal(
     pairing_id: &str,
     shell: Option<&str>,
     name: Option<&str>,
+    server_id: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     encrypt_outgoing(
         pairing_id,
-        Frame::new_terminal(shell, name),
+        Frame::new_terminal(shell, name, server_id),
     )
 }
 

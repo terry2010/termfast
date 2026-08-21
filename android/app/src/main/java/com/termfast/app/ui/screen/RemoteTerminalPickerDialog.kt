@@ -429,63 +429,7 @@ private fun TerminalListContent(
         if (terminals.isEmpty()) {
             Text("没有可用的远程终端", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
-            Text("请在桌面端打开终端，或点击下方新建", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
-        }
-
-        // "新建本地终端" button — sends NEW_TERMINAL frame to desktop,
-        // asking it to open a new local terminal. On OK response, navigates
-        // to the new terminal just like clicking an existing one.
-        if (protocolReady && !creatingTerminal) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp, bottom = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-                tonalElevation = 1.dp,
-                onClick = {
-                    creatingTerminal = true
-                    scope.launch {
-                        val sent = tunnelManager.sendNewTerminal()
-                        if (!sent) {
-                            creatingTerminal = false
-                            withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                android.widget.Toast.makeText(context, "发送失败，请重试", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                            return@launch
-                        }
-                        val result = awaitNewTerminalOk(pairingId)
-                        creatingTerminal = false
-                        if (result != null) {
-                            val (newTerminalId, termName) = result
-                            onTerminalClick(newTerminalId, termName.ifBlank { "Terminal" })
-                        } else {
-                            withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                android.widget.Toast.makeText(context, "新建超时，请重试", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                },
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Filled.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        "新建本地终端",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
+            Text("请在桌面端打开终端，或点击分组右侧按钮新建", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
         }
 
         // Loading indicator while creating a new terminal
@@ -504,16 +448,75 @@ private fun TerminalListContent(
             }
         }
 
-        // Group terminals by serverName
-        val grouped = terminals.groupBy { it.serverName }
-        grouped.forEach { (serverName, groupTerminals) ->
-            Text(
-                serverName,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-            )
+        // Group terminals by serverName, with a "new terminal" button per group
+        val grouped = terminals.groupBy { it.serverId }
+        grouped.forEach { (serverId, groupTerminals) ->
+            val serverName = groupTerminals.first().serverName
+            val isLocalGroup = serverId == "__local__"
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    serverName,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                if (protocolReady && !creatingTerminal) {
+                    // New terminal button for this group
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        tonalElevation = 1.dp,
+                        onClick = {
+                            creatingTerminal = true
+                            scope.launch {
+                                val sid = if (isLocalGroup) "" else serverId
+                                val sent = tunnelManager.sendNewTerminal(serverId = sid)
+                                if (!sent) {
+                                    creatingTerminal = false
+                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        android.widget.Toast.makeText(context, "发送失败，请重试", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                    return@launch
+                                }
+                                val result = awaitNewTerminalOk(pairingId)
+                                creatingTerminal = false
+                                if (result != null) {
+                                    val (newTerminalId, termName) = result
+                                    onTerminalClick(newTerminalId, termName.ifBlank { "Terminal" })
+                                } else {
+                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        android.widget.Toast.makeText(context, "新建超时，请重试", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                if (isLocalGroup) "新建电脑终端" else "新建SSH终端",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            }
             groupTerminals.forEach { terminal ->
                 Surface(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),

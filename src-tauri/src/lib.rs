@@ -2863,10 +2863,12 @@ async fn ipc_tunnel_start(
                 let daemon = daemon_guard.as_ref().expect("daemon should be ready");
                 let terminal_manager = daemon.server.state().terminal_manager.clone();
                 let config_manager = daemon.server.state().config_manager.clone();
+                let server_manager = daemon.server.state().server_manager.clone();
                 let file_upload_config = daemon.server.state().file_upload_config.clone();
-                let tm = Arc::new(tunnel_manager::DesktopTunnelManager::new(
+                let tm = Arc::new(tunnel_manager::DesktopTunnelManager::new_with_server_manager(
                     terminal_manager,
                     config_manager.clone(),
+                    Some(server_manager),
                 ));
                 // Register file upload callback for FILE_REQUEST (local terminal file transfer)
                 let config_mgr_cb = config_manager.clone();
@@ -3634,6 +3636,7 @@ async fn ipc_remote_client_new_terminal(
     pairing_id: String,
     shell: Option<String>,
     name: Option<String>,
+    server_id: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let role = get_peer_role(&pairing_id);
@@ -3641,14 +3644,14 @@ async fn ipc_remote_client_new_terminal(
         let tm_guard = state.tunnel_manager.lock().await;
         if let Some(ref tm) = *tm_guard {
             let rs = tm.remote_server();
-            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::new_terminal(shell.as_deref(), name.as_deref())).await
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::new_terminal(shell.as_deref(), name.as_deref(), server_id.as_deref())).await
         } else {
             Err("tunnel manager not initialized".to_string())
         }
     } else {
         let rcm_guard = state.remote_client_manager.lock().await;
         let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
-        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::NewTerminal { shell, name }).await
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::NewTerminal { shell, name, server_id }).await
     }
 }
 

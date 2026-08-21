@@ -89,7 +89,7 @@ pub enum OutboundFrame {
     Resize(u32, u16, u16),
     Goodbye,
     InfoRequest,
-    NewTerminal { shell: Option<String>, name: Option<String> },
+    NewTerminal { shell: Option<String>, name: Option<String>, server_id: Option<String> },
     CloseTerminal(u32),
     // Trigger management (desktop-to-desktop)
     TriggerListRequest,
@@ -466,8 +466,8 @@ async fn run_client_once(
                             OutboundFrame::Resize(tid, cols, rows) => Frame::resize(tid, cols, rows),
                             OutboundFrame::Goodbye => Frame::goodbye(),
                             OutboundFrame::InfoRequest => Frame::info_request(),
-                            OutboundFrame::NewTerminal { shell, name } => {
-                                Frame::new_terminal(shell.as_deref(), name.as_deref())
+                            OutboundFrame::NewTerminal { shell, name, server_id } => {
+                                Frame::new_terminal(shell.as_deref(), name.as_deref(), server_id.as_deref())
                             }
                             OutboundFrame::CloseTerminal(tid) => Frame::close_terminal(tid),
                             OutboundFrame::TriggerListRequest => Frame::trigger_list_request(),

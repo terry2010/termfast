@@ -29,8 +29,21 @@ impl DesktopTunnelManager {
         terminal_manager: Arc<TerminalManager>,
         config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
     ) -> Self {
+        Self::new_with_server_manager(terminal_manager, config_manager, None)
+    }
+
+    /// Create with ServerManager (enables NEW_TERMINAL for SSH terminals from mobile).
+    pub fn new_with_server_manager(
+        terminal_manager: Arc<TerminalManager>,
+        config_manager: Arc<tokio::sync::Mutex<termfast_core::config::ConfigManager>>,
+        server_manager: Option<Arc<termfast_core::server::ServerManager>>,
+    ) -> Self {
         Self {
-            remote_server: Arc::new(RemoteServer::new(terminal_manager, config_manager)),
+            remote_server: Arc::new(RemoteServer::new_with_server_manager(
+                terminal_manager,
+                config_manager,
+                server_manager,
+            )),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
         }
     }

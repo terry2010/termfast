@@ -146,11 +146,14 @@ impl Frame {
         Self::new(INFO_RESPONSE, 0, json.as_bytes().to_vec())
     }
 
-    /// NEW_TERMINAL: payload is JSON { "shell": "zsh", "name": "Terminal 1" }
-    pub fn new_terminal(shell: Option<&str>, name: Option<&str>) -> Self {
+    /// NEW_TERMINAL: payload is JSON { "shell": "zsh", "name": "Terminal 1", "server_id": "xxx" }
+    /// server_id is optional — omitted or "__local__" opens a local terminal,
+    /// any other value opens an SSH terminal on that server.
+    pub fn new_terminal(shell: Option<&str>, name: Option<&str>, server_id: Option<&str>) -> Self {
         let json = serde_json::json!({
             "shell": shell,
             "name": name,
+            "server_id": server_id,
         });
         Self::new(NEW_TERMINAL, 0, json.to_string().as_bytes().to_vec())
     }

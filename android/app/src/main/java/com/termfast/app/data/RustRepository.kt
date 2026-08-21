@@ -275,10 +275,11 @@ object RustRepository {
         RustBridge.nativeRemoteTunnelSendDesktopPair(pairingId, payloadJson)
 
     /** Create + encrypt a NEW_TERMINAL frame. Asks the desktop to open a new
-     *  local terminal. shell/name are optional (empty = desktop default).
+     *  terminal. shell/name are optional (empty = desktop default).
+     *  serverId: empty = local terminal, otherwise SSH terminal on that server.
      *  Returns ciphertext to send via WebSocket. */
-    fun remoteTunnelSendNewTerminal(pairingId: String, shell: String, name: String): ByteArray? =
-        RustBridge.nativeRemoteTunnelSendNewTerminal(pairingId, shell, name)
+    fun remoteTunnelSendNewTerminal(pairingId: String, shell: String, name: String, serverId: String): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendNewTerminal(pairingId, shell, name, serverId)
 
     /** Create + encrypt a CLOSE_TERMINAL frame. Asks the desktop to close (kill)
      *  a terminal session. Returns ciphertext to send via WebSocket. */

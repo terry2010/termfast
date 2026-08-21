@@ -143,7 +143,7 @@ object RustBridge {
     external fun nativeRemoteTunnelSendDesktopPair(pairingId: String, payloadJson: String): ByteArray?
 
     // --- New terminal on remote desktop (send NEW_TERMINAL frame via existing tunnel) ---
-    external fun nativeRemoteTunnelSendNewTerminal(pairingId: String, shell: String, name: String): ByteArray?
+    external fun nativeRemoteTunnelSendNewTerminal(pairingId: String, shell: String, name: String, serverId: String): ByteArray?
 
     // --- Close terminal on remote desktop (send CLOSE_TERMINAL frame via existing tunnel) ---
     external fun nativeRemoteTunnelSendCloseTerminal(pairingId: String, terminalId: Int): ByteArray?
