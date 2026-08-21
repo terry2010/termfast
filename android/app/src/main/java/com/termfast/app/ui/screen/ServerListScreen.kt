@@ -485,7 +485,6 @@ fun ServerListScreen(navController: NavController) {
                     // so pointerInput is not recreated and gesture is not interrupted.
                     val dragModifier = Modifier
                         .fillMaxWidth()
-                        .then(if (!isDragging) Modifier.animateItem() else Modifier)
                         .zIndex(if (isDragging) 1f else 0f)
                         .graphicsLayer {
                             if (isDragging) {

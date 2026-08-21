@@ -321,7 +321,6 @@ fun TerminalsScreen(
                     // Drag modifier stays on the outer Box — never changes between drag/non-drag
                     val dragModifier = Modifier
                         .fillMaxWidth()
-                        .then(if (!isDragging) Modifier.animateItem() else Modifier)
                         .zIndex(if (isDragging) 1f else 0f)
                         .graphicsLayer {
                             if (isDragging) {
