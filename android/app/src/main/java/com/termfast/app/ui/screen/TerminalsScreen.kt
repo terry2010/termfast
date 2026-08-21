@@ -102,6 +102,8 @@ fun TerminalsScreen(
     var draggedTopKey by remember { mutableStateOf<String?>(null) }
     var topDragOffsetY by remember { mutableStateOf(0f) }
     var topReorderMode by remember { mutableStateOf(false) } // true after long-press activates reorder
+    // Local top-level order during drag (avoids flicker from refresh())
+    var localTopOrder by remember { mutableStateOf<List<String>?>(null) }
     // Collapse state: which top-level / sub-level groups are collapsed
     var collapsedTopKeys by remember { mutableStateOf(setOf<String>()) }
     var collapsedSubKeys by remember { mutableStateOf(setOf<String>()) }
@@ -180,7 +182,7 @@ fun TerminalsScreen(
         val subGroups: Map<String, List<TerminalSessionManager.SessionState>>, // remoteServerId → sessions
     )
 
-    val grouped: List<TopGroup> = remember(sessions, pairingNames, servers) {
+    val grouped: List<TopGroup> = remember(sessions, pairingNames, servers, localTopOrder) {
         val remoteSessions = sessions.filter { it.remotePairingId != null }
         val localSessions = sessions.filter { it.remotePairingId == null }
 
@@ -211,8 +213,9 @@ fun TerminalsScreen(
             ))
         }
 
-        // Sort by user-defined top-level order (fallback to natural order)
-        result.sortBy { TerminalSessionManager.getTopLevelOrder(it.topKey) ?: Int.MAX_VALUE }
+        // Sort: use localTopOrder during drag, otherwise topLevelOrder from manager
+        val orderMap = localTopOrder?.mapIndexed { idx, key -> key to idx }?.toMap()
+        result.sortBy { orderMap?.get(it.topKey) ?: TerminalSessionManager.getTopLevelOrder(it.topKey) ?: Int.MAX_VALUE }
 
         // Move focused group to top if needed
         if (focusServerId != null) {
@@ -374,17 +377,19 @@ fun TerminalsScreen(
                                         topDragOffsetY = 0f
                                         topReorderMode = true
                                         collapsedTopKeys = grouped.map { it.topKey }.toSet()
+                                        // Snapshot current order into localTopOrder
+                                        localTopOrder = grouped.map { it.topKey }
                                     },
                                     onDragEnd = {
-                                        // Persist top-level order
-                                        val orderedKeys = grouped.map { it.topKey }
-                                        TerminalSessionManager.reorderTopLevels(orderedKeys)
+                                        // Persist local order to manager
+                                        localTopOrder?.let { TerminalSessionManager.reorderTopLevels(it) }
+                                        localTopOrder = null
                                         draggedTopKey = null
                                         topDragOffsetY = 0f
                                         topReorderMode = false
                                     },
                                     onDragCancel = {
-                                        refresh()
+                                        localTopOrder = null
                                         draggedTopKey = null
                                         topDragOffsetY = 0f
                                         topReorderMode = false
@@ -397,7 +402,8 @@ fun TerminalsScreen(
                                         val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == "top_${topGroup.topKey}" }
                                         if (draggedInfo != null) {
                                             val draggedCenter = draggedInfo.offset + draggedInfo.size / 2 + topDragOffsetY.toInt()
-                                            val topKeys = grouped.map { it.topKey }.toSet()
+                                            val currentOrder = localTopOrder ?: return@detectDragGesturesAfterLongPress
+                                            val topKeys = currentOrder.toSet()
                                             val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
                                                 val viKey = vi.key as? String ?: return@firstOrNull false
                                                 if (!viKey.startsWith("top_")) return@firstOrNull false
@@ -408,20 +414,17 @@ fun TerminalsScreen(
                                             }
                                             if (target != null) {
                                                 val targetKey = (target.key as String).removePrefix("top_")
-                                                val fromIdx = grouped.indexOfFirst { it.topKey == topGroup.topKey }
-                                                val toIdx = grouped.indexOfFirst { it.topKey == targetKey }
-                                                if (fromIdx != -1 && toIdx != -1) {
+                                                val fromIdx = currentOrder.indexOfFirst { it == topGroup.topKey }
+                                                val toIdx = currentOrder.indexOfFirst { it == targetKey }
+                                                if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
+                                                    // Adjust offset so the header stays under the finger
                                                     val offsetDiff = target.offset - draggedInfo.offset
                                                     topDragOffsetY -= offsetDiff
-                                                    // Reorder grouped list — need to update sessions to trigger recompose
-                                                    val newOrdered = grouped.toMutableList()
-                                                    val moved = newOrdered.removeAt(fromIdx)
-                                                    newOrdered.add(toIdx, moved)
-                                                    // Persist immediately for live reorder
-                                                    TerminalSessionManager.reorderTopLevels(newOrdered.map { it.topKey })
-                                                    // Force recompose by refreshing sessions snapshot
-                                                    sessions = sessions // trigger
-                                                    refresh()
+                                                    // Update local order only (no refresh, no flicker)
+                                                    localTopOrder = currentOrder.toMutableList().also {
+                                                        val moved = it.removeAt(fromIdx)
+                                                        it.add(toIdx, moved)
+                                                    }
                                                 }
                                             }
                                         }
