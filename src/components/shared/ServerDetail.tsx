@@ -136,11 +136,16 @@ export function ServerDetail() {
   // true  = user clicked a tab or store had a persisted value (don't auto-select)
   const remoteTabChoiceMadeRef = useRef(false);
   // Drag-to-reorder state for terminal tabs (overview tab is not draggable)
+  // Uses mouse events instead of HTML5 DnD (dragOver/drop don't fire reliably
+  // in macOS WKWebView used by Tauri).
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
-  // Ref mirror of draggedTabId for synchronous access in drag events
-  // (state updates are async, onDragOver may fire before re-render)
+  // Ref mirror of draggedTabId for synchronous access in mouse events
   const draggedTabIdRef = useRef<string | null>(null);
+  // Track mouse down position to distinguish click vs drag
+  const mouseDownPosRef = useRef<{ x: number; y: number; tabId: string } | null>(null);
+  // Flag: suppress next click if it was the end of a drag
+  const suppressClickRef = useRef(false);
 
   const isLocal = selectedId === "__local__";
   const isRemote = selectedId?.startsWith("remote:") ?? false;
@@ -162,6 +167,23 @@ export function ServerDetail() {
     }
   }, [remotePairingId, setRemoteActiveTerminalInStore]);
   const server = servers.find((s) => s.id === selectedId);
+
+  // Global mouseup listener to end drag-to-reorder (in case mouseup happens
+  // outside any tab). Uses mouse events instead of HTML5 DnD because
+  // dragOver/drop don't fire reliably in macOS WKWebView (Tauri).
+  useEffect(() => {
+    const handleMouseUp = () => {
+      if (draggedTabIdRef.current) {
+        suppressClickRef.current = true;
+        setDraggedTabId(null);
+        draggedTabIdRef.current = null;
+        setDragOverTabId(null);
+        mouseDownPosRef.current = null;
+      }
+    };
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => window.removeEventListener("mouseup", handleMouseUp);
+  }, []);
 
   // Reset transient UI state when switching to a different server
   // (the component is reused across servers, so local state persists otherwise)
@@ -1652,45 +1674,38 @@ export function ServerDetail() {
           return (
             <div
               key={tab.key}
-              draggable={isDraggable}
-              onDragStart={(e) => {
-                if (!isDraggable) return;
-                console.log("[DND] dragStart", tab.key);
-                setDraggedTabId(tab.key);
+              // Mouse-based drag-to-reorder (HTML5 DnD dragOver/drop don't fire in WKWebView)
+              onMouseMove={(e) => {
+                // Start drag if mouse moved more than 4px while button is down
+                const down = mouseDownPosRef.current;
+                if (!down || down.tabId !== tab.key) return;
+                const dx = Math.abs(e.clientX - down.x);
+                const dy = Math.abs(e.clientY - down.y);
+                if (dx < 4 && dy < 4) return;
+                // Threshold exceeded — enter drag mode
+                if (!draggedTabIdRef.current) {
+                  draggedTabIdRef.current = down.tabId;
+                  setDraggedTabId(down.tabId);
+                }
+              }}
+              onMouseEnter={() => {
+                // When dragging, highlight the tab we're hovering over
+                if (!draggedTabIdRef.current || draggedTabIdRef.current === tab.key) return;
+                setDragOverTabId(tab.key);
+                // Live reorder: swap positions immediately as mouse enters
+                handleReorderTabs(draggedTabIdRef.current, tab.key);
                 draggedTabIdRef.current = tab.key;
-                e.dataTransfer.effectAllowed = "move";
-                // Required for Firefox to start a drag
-                e.dataTransfer.setData("text/plain", tab.key);
+                setDraggedTabId(tab.key);
               }}
-              onDragEnd={() => {
-                console.log("[DND] dragEnd");
-                setDraggedTabId(null);
-                draggedTabIdRef.current = null;
-                setDragOverTabId(null);
-              }}
-              onDragOver={(e) => {
-                if (!isDraggable || !draggedTabIdRef.current || draggedTabIdRef.current === tab.key)
-                  return;
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-                if (dragOverTabId !== tab.key) {
-                  console.log("[DND] dragOver", tab.key, "from", draggedTabIdRef.current);
-                  setDragOverTabId(tab.key);
+              onMouseUp={() => {
+                // End drag
+                if (draggedTabIdRef.current) {
+                  suppressClickRef.current = true;
+                  setDraggedTabId(null);
+                  draggedTabIdRef.current = null;
+                  setDragOverTabId(null);
                 }
-              }}
-              onDragLeave={() => {
-                if (dragOverTabId === tab.key) setDragOverTabId(null);
-              }}
-              onDrop={(e) => {
-                console.log("[DND] drop", tab.key, "draggedTabIdRef:", draggedTabIdRef.current);
-                if (!isDraggable || !draggedTabIdRef.current) return;
-                e.preventDefault();
-                if (draggedTabIdRef.current !== tab.key) {
-                  handleReorderTabs(draggedTabIdRef.current, tab.key);
-                }
-                setDraggedTabId(null);
-                draggedTabIdRef.current = null;
-                setDragOverTabId(null);
+                mouseDownPosRef.current = null;
               }}
               className={`flex items-center gap-1 pl-4 ${isOverview ? "pr-4" : "pr-0"} py-2 text-sm font-medium transition-colors cursor-pointer rounded-b-lg flex-shrink-0 bg-white dark:bg-[#1E1E1E] border border-gray-200/80 dark:border-white/[0.06] border-t-0 ${
                 isActive
@@ -1702,6 +1717,11 @@ export function ServerDetail() {
                 draggedTabId === tab.key ? "opacity-40" : ""
               }`}
               onClick={(e) => {
+                // Skip if this click was the end of a drag-to-reorder
+                if (suppressClickRef.current) {
+                  suppressClickRef.current = false;
+                  return;
+                }
                 // Skip if this click was triggered by a right-click sequence
                 if (rightClickButtonRef.current) {
                   rightClickButtonRef.current = false;
@@ -1729,6 +1749,10 @@ export function ServerDetail() {
                 // macOS: real right-click = button=2, Ctrl+click = button=0+ctrlKey
                 if (e.button === 2 || e.ctrlKey) {
                   rightClickButtonRef.current = true;
+                }
+                // Left-click: start tracking for potential drag-to-reorder
+                if (isDraggable && e.button === 0) {
+                  mouseDownPosRef.current = { x: e.clientX, y: e.clientY, tabId: tab.key };
                 }
               }}
               onDoubleClick={(e) => {
