@@ -25,6 +25,10 @@ object TerminalSessionManager {
     // User-defined session order (sessionId → orderIndex). Sessions not in this
     // map fall back to createdAt ordering. Used for drag-to-reorder.
     private val sessionOrder = mutableMapOf<String, Int>()
+    // User-defined top-level group order (topKey → orderIndex). Top keys not in
+    // this map fall back to natural order (first-seen). Used for drag-to-reorder
+    // top-level groups (desktops / SSH servers).
+    private val topLevelOrder = mutableMapOf<String, Int>()
     private var collectorStarted = false
     // Tunnel managers registered by pairingId — used for UNSUBSCRIBE on disconnect
     private val tunnelManagers = mutableMapOf<String, com.termfast.app.data.RemoteTunnelManager>()
@@ -403,6 +407,18 @@ object TerminalSessionManager {
             sessionOrder[sid] = index
         }
     }
+
+    /** Reorder top-level groups. [orderedTopKeys] is the new order of top-level keys. */
+    @Synchronized
+    fun reorderTopLevels(orderedTopKeys: List<String>) {
+        orderedTopKeys.forEachIndexed { index, key ->
+            topLevelOrder[key] = index
+        }
+    }
+
+    /** Get the user-defined order index for a top-level key, or null if unset. */
+    @Synchronized
+    fun getTopLevelOrder(topKey: String): Int? = topLevelOrder[topKey]
 
     @Synchronized
     fun hasSessions(serverId: String): Boolean {

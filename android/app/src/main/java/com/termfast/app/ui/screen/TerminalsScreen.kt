@@ -15,6 +15,11 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.UnfoldMore
+import androidx.compose.material.icons.filled.UnfoldLess
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -77,6 +82,7 @@ internal suspend fun awaitNewTerminalOk(
     return result
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun TerminalsScreen(
     navController: NavController,
@@ -89,9 +95,16 @@ fun TerminalsScreen(
     var sessions by remember { mutableStateOf(TerminalSessionManager.getAllSessions()) }
     val servers by remember { mutableStateOf(repo.listServers().associateBy { it.id }) }
     val listState = rememberLazyListState()
-    // Drag-to-reorder state
+    // Drag-to-reorder state (terminal cards within a group)
     var draggedSessionId by remember { mutableStateOf<String?>(null) }
     var dragOffsetY by remember { mutableStateOf(0f) }
+    // Drag-to-reorder state (top-level groups)
+    var draggedTopKey by remember { mutableStateOf<String?>(null) }
+    var topDragOffsetY by remember { mutableStateOf(0f) }
+    var topReorderMode by remember { mutableStateOf(false) } // true after long-press activates reorder
+    // Collapse state: which top-level / sub-level groups are collapsed
+    var collapsedTopKeys by remember { mutableStateOf(setOf<String>()) }
+    var collapsedSubKeys by remember { mutableStateOf(setOf<String>()) }
     // Remote picker dialog state: when non-null, show the picker for this pairing.
     // Clicking a remote server group header sets this to open the picker.
     var showRemotePickerFor by remember { mutableStateOf<RemoteTunnelConfig?>(null) }
@@ -198,6 +211,9 @@ fun TerminalsScreen(
             ))
         }
 
+        // Sort by user-defined top-level order (fallback to natural order)
+        result.sortBy { TerminalSessionManager.getTopLevelOrder(it.topKey) ?: Int.MAX_VALUE }
+
         // Move focused group to top if needed
         if (focusServerId != null) {
             val focused = result.find { it.topKey == focusServerId }
@@ -233,7 +249,34 @@ fun TerminalsScreen(
         }
     }
 
-    Scaffold { inner ->
+    val allTopCollapsed = grouped.isNotEmpty() && grouped.all { it.topKey in collapsedTopKeys }
+    Scaffold(
+        topBar = {
+            androidx.compose.material3.TopAppBar(
+                title = { Text("终端", fontSize = 16.sp) },
+                actions = {
+                    if (grouped.isNotEmpty()) {
+                        // Expand/collapse all toggle
+                        IconButton(onClick = {
+                            if (allTopCollapsed) {
+                                // Expand all
+                                collapsedTopKeys = emptySet()
+                                collapsedSubKeys = emptySet()
+                            } else {
+                                // Collapse all
+                                collapsedTopKeys = grouped.map { it.topKey }.toSet()
+                            }
+                        }) {
+                            Icon(
+                                if (allTopCollapsed) Icons.Filled.UnfoldMore else Icons.Filled.UnfoldLess,
+                                contentDescription = if (allTopCollapsed) "展开所有" else "收起所有",
+                            )
+                        }
+                    }
+                },
+            )
+        },
+    ) { inner ->
         if (sessions.isEmpty()) {
             // Empty state
             Column(
@@ -306,55 +349,168 @@ fun TerminalsScreen(
             contentPadding = PaddingValues(vertical = 16.dp),
         ) {
             grouped.forEach { topGroup ->
-                // === Level 1: Top-level header (desktop name or SSH server name) ===
+                val isTopCollapsed = topGroup.topKey in collapsedTopKeys
+                // === Level 1: Top-level header ===
                 item(key = "top_${topGroup.topKey}") {
+                    val isDraggingTop = draggedTopKey == topGroup.topKey
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 16.dp, bottom = 4.dp),
+                            .padding(top = 16.dp, bottom = 4.dp)
+                            .zIndex(if (isDraggingTop) 1f else 0f)
+                            .graphicsLayer {
+                                if (isDraggingTop) {
+                                    translationY = topDragOffsetY
+                                    shadowElevation = 8f
+                                    shape = RoundedCornerShape(12.dp)
+                                    alpha = 0.9f
+                                }
+                            }
+                            .pointerInput(topGroup.topKey) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        // Long-press: enter reorder mode, collapse all top groups
+                                        draggedTopKey = topGroup.topKey
+                                        topDragOffsetY = 0f
+                                        topReorderMode = true
+                                        collapsedTopKeys = grouped.map { it.topKey }.toSet()
+                                    },
+                                    onDragEnd = {
+                                        // Persist top-level order
+                                        val orderedKeys = grouped.map { it.topKey }
+                                        TerminalSessionManager.reorderTopLevels(orderedKeys)
+                                        draggedTopKey = null
+                                        topDragOffsetY = 0f
+                                        topReorderMode = false
+                                    },
+                                    onDragCancel = {
+                                        refresh()
+                                        draggedTopKey = null
+                                        topDragOffsetY = 0f
+                                        topReorderMode = false
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        topDragOffsetY += dragAmount.y
+                                        // Live reorder: swap top groups when dragged crosses target
+                                        val layoutInfo = listState.layoutInfo
+                                        val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == "top_${topGroup.topKey}" }
+                                        if (draggedInfo != null) {
+                                            val draggedCenter = draggedInfo.offset + draggedInfo.size / 2 + topDragOffsetY.toInt()
+                                            val topKeys = grouped.map { it.topKey }.toSet()
+                                            val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
+                                                val viKey = vi.key as? String ?: return@firstOrNull false
+                                                if (!viKey.startsWith("top_")) return@firstOrNull false
+                                                val tKey = viKey.removePrefix("top_")
+                                                if (tKey !in topKeys || tKey == topGroup.topKey) return@firstOrNull false
+                                                val targetMid = vi.offset + vi.size / 2
+                                                if (draggedInfo.offset > vi.offset) draggedCenter < targetMid else draggedCenter > targetMid
+                                            }
+                                            if (target != null) {
+                                                val targetKey = (target.key as String).removePrefix("top_")
+                                                val fromIdx = grouped.indexOfFirst { it.topKey == topGroup.topKey }
+                                                val toIdx = grouped.indexOfFirst { it.topKey == targetKey }
+                                                if (fromIdx != -1 && toIdx != -1) {
+                                                    val offsetDiff = target.offset - draggedInfo.offset
+                                                    topDragOffsetY -= offsetDiff
+                                                    // Reorder grouped list — need to update sessions to trigger recompose
+                                                    val newOrdered = grouped.toMutableList()
+                                                    val moved = newOrdered.removeAt(fromIdx)
+                                                    newOrdered.add(toIdx, moved)
+                                                    // Persist immediately for live reorder
+                                                    TerminalSessionManager.reorderTopLevels(newOrdered.map { it.topKey })
+                                                    // Force recompose by refreshing sessions snapshot
+                                                    sessions = sessions // trigger
+                                                    refresh()
+                                                }
+                                            }
+                                        }
+                                    },
+                                )
+                            },
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
+                        // Drag handle (visible in reorder mode)
+                        if (topReorderMode) {
+                            Icon(
+                                Icons.Filled.DragHandle,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.outline,
+                            )
+                        }
+                        // Collapse/expand arrow — clickable to toggle
                         Icon(
-                            if (topGroup.isRemote) Icons.Filled.Devices else Icons.Filled.Computer,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
+                            if (isTopCollapsed) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
+                            contentDescription = if (isTopCollapsed) "展开" else "收起",
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable {
+                                    collapsedTopKeys = if (isTopCollapsed) {
+                                        collapsedTopKeys - topGroup.topKey
+                                    } else {
+                                        collapsedTopKeys + topGroup.topKey
+                                    }
+                                },
                             tint = MaterialTheme.colorScheme.primary,
                         )
+                        // Title text — clickable to toggle collapse
                         Text(
                             topGroup.topName,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        // New terminal button for local SSH (top-level)
-                        if (!topGroup.isRemote) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                tonalElevation = 1.dp,
-                                onClick = {
-                                    val newSessionId = TerminalSessionManager.getOrCreateSession(topGroup.topKey)
-                                    navController.navigate("terminal/${topGroup.topKey}/$newSessionId")
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    collapsedTopKeys = if (isTopCollapsed) {
+                                        collapsedTopKeys - topGroup.topKey
+                                    } else {
+                                        collapsedTopKeys + topGroup.topKey
+                                    }
                                 },
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
+                        )
+                        // Terminal count
+                        val totalCount = topGroup.subGroups.values.sumOf { it.size }
+                        Text(
+                            "$totalCount",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                        // New terminal button (hidden in reorder mode or when collapsed)
+                        if (!topReorderMode && !isTopCollapsed) {
+                            if (!topGroup.isRemote) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    tonalElevation = 1.dp,
+                                    onClick = {
+                                        val newSessionId = TerminalSessionManager.getOrCreateSession(topGroup.topKey)
+                                        navController.navigate("terminal/${topGroup.topKey}/$newSessionId")
+                                    },
                                 ) {
-                                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("新建SSH终端", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.primary)
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("新建SSH终端", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.primary)
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // === Level 2: Sub-group headers (remote only: 桌面端 / SSH服务器) ===
+                // === Level 2 + Level 3: only render if top group is expanded ===
+                if (!isTopCollapsed) {
                 topGroup.subGroups.forEach { (subKey, subSessions) ->
+                    val subGroupKey = "${topGroup.topKey}_$subKey"
+                    val isSubCollapsed = subGroupKey in collapsedSubKeys
                     if (topGroup.isRemote) {
-                        item(key = "sub_${topGroup.topKey}_$subKey") {
+                        // === Level 2: Sub-group header (remote only) ===
+                        item(key = "sub_$subGroupKey") {
                             val isLocalDesktop = subKey == "__local__"
                             val subName = subSessions.firstOrNull()?.remoteServerName
                                 ?: if (isLocalDesktop) "桌面端" else subKey
@@ -371,14 +527,44 @@ fun TerminalsScreen(
                                     tint = MaterialTheme.colorScheme.primary,
                                 )
                                 Spacer(Modifier.width(6.dp))
+                                // Collapse/expand arrow
+                                Icon(
+                                    if (isSubCollapsed) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
+                                    contentDescription = if (isSubCollapsed) "展开" else "收起",
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable {
+                                            collapsedSubKeys = if (isSubCollapsed) {
+                                                collapsedSubKeys - subGroupKey
+                                            } else {
+                                                collapsedSubKeys + subGroupKey
+                                            }
+                                        },
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                // Title text — clickable to toggle
                                 Text(
                                     subName,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            collapsedSubKeys = if (isSubCollapsed) {
+                                                collapsedSubKeys - subGroupKey
+                                            } else {
+                                                collapsedSubKeys + subGroupKey
+                                            }
+                                        },
                                 )
-                                // New terminal button for this sub-group
+                                Text(
+                                    "${subSessions.size}",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.outline,
+                                )
+                                // New terminal button
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
                                     tonalElevation = 1.dp,
@@ -410,7 +596,8 @@ fun TerminalsScreen(
                         }
                     }
 
-                    // === Level 3: Terminal cards ===
+                    // === Level 3: Terminal cards (only if sub-group expanded) ===
+                    if (!isSubCollapsed) {
                     items(subSessions, key = { it.sessionId }) { session ->
                         val isDragging = draggedSessionId == session.sessionId
                         val dragModifier = Modifier
@@ -453,11 +640,7 @@ fun TerminalsScreen(
                                             val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
                                                 if (vi.key !in groupSessionIds || vi.key == session.sessionId) return@firstOrNull false
                                                 val targetMid = vi.offset + vi.size / 2
-                                                if (draggedInfo.offset > vi.offset) {
-                                                    draggedCenter < targetMid
-                                                } else {
-                                                    draggedCenter > targetMid
-                                                }
+                                                if (draggedInfo.offset > vi.offset) draggedCenter < targetMid else draggedCenter > targetMid
                                             }
                                             if (target != null && target.key != session.sessionId) {
                                                 val fromIdx = sessions.indexOfFirst { it.sessionId == session.sessionId }
@@ -487,7 +670,7 @@ fun TerminalsScreen(
                             },
                             isFocused = session.sessionId == focusSessionId,
                             onClick = {
-                                if (draggedSessionId == null) {
+                                if (draggedSessionId == null && draggedTopKey == null) {
                                     if (session.serverId.startsWith("remote:") && session.remotePairingId != null && session.remoteTerminalId != null) {
                                         val pid = session.remotePairingId!!
                                         val tid = session.remoteTerminalId!!
@@ -513,7 +696,9 @@ fun TerminalsScreen(
                         )
                         }
                     }
+                    } // end if !isSubCollapsed
                 }
+                } // end if !isTopCollapsed
             }
         }
     }
