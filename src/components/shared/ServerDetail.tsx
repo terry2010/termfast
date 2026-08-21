@@ -146,6 +146,8 @@ export function ServerDetail() {
   const mouseDownPosRef = useRef<{ x: number; y: number; tabId: string } | null>(null);
   // Flag: suppress next click if it was the end of a drag
   const suppressClickRef = useRef(false);
+  // Target tab id for drop (set on mouseEnter during drag, applied on mouseUp)
+  const dropTargetTabIdRef = useRef<string | null>(null);
 
   const isLocal = selectedId === "__local__";
   const isRemote = selectedId?.startsWith("remote:") ?? false;
@@ -174,10 +176,16 @@ export function ServerDetail() {
   useEffect(() => {
     const handleMouseUp = () => {
       if (draggedTabIdRef.current) {
+        // Apply reorder if drop target is valid
+        if (dropTargetTabIdRef.current &&
+            draggedTabIdRef.current !== dropTargetTabIdRef.current) {
+          handleReorderTabs(draggedTabIdRef.current, dropTargetTabIdRef.current);
+        }
         suppressClickRef.current = true;
         setDraggedTabId(null);
         draggedTabIdRef.current = null;
         setDragOverTabId(null);
+        dropTargetTabIdRef.current = null;
         mouseDownPosRef.current = null;
       }
     };
@@ -1692,18 +1700,21 @@ export function ServerDetail() {
                 // When dragging, highlight the tab we're hovering over
                 if (!draggedTabIdRef.current || draggedTabIdRef.current === tab.key) return;
                 setDragOverTabId(tab.key);
-                // Live reorder: swap positions immediately as mouse enters
-                handleReorderTabs(draggedTabIdRef.current, tab.key);
-                draggedTabIdRef.current = tab.key;
-                setDraggedTabId(tab.key);
+                // Record drop target — actual reorder happens on mouseUp
+                dropTargetTabIdRef.current = tab.key;
               }}
               onMouseUp={() => {
-                // End drag
+                // End drag: apply reorder if we have a valid drop target
+                if (draggedTabIdRef.current && dropTargetTabIdRef.current &&
+                    draggedTabIdRef.current !== dropTargetTabIdRef.current) {
+                  handleReorderTabs(draggedTabIdRef.current, dropTargetTabIdRef.current);
+                }
                 if (draggedTabIdRef.current) {
                   suppressClickRef.current = true;
                   setDraggedTabId(null);
                   draggedTabIdRef.current = null;
                   setDragOverTabId(null);
+                  dropTargetTabIdRef.current = null;
                 }
                 mouseDownPosRef.current = null;
               }}
