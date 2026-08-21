@@ -398,6 +398,8 @@ pub fn run() {
             ipc_remote_client_get_info,
             ipc_remote_client_new_terminal,
             ipc_remote_client_close_terminal,
+            // Session name sync (frontend tab label → Rust backend)
+            ipc_set_session_name,
             // Remote trigger management (desktop-to-desktop)
             ipc_remote_trigger_list,
             ipc_remote_trigger_exec,
@@ -3473,6 +3475,21 @@ async fn ipc_remote_client_list_terminals(
     // Terminal list is returned asynchronously via remote_client_frame event (LIST_RESPONSE frame).
     // Return empty list here; frontend updates via event listener.
     Ok(serde_json::json!({ "terminals": [] }))
+}
+
+/// Set a terminal session's display name (synced from frontend tab label).
+#[tauri::command]
+async fn ipc_set_session_name(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    name: String,
+) -> Result<(), String> {
+    let daemon_guard = state.daemon.lock().await;
+    let daemon = daemon_guard.as_ref().ok_or("daemon not started")?;
+    let tm = daemon.server.state().terminal_manager.clone();
+    drop(daemon_guard);
+    tm.set_session_name(&session_id, &name).await;
+    Ok(())
 }
 
 /// Subscribe to a terminal on the remote desktop.

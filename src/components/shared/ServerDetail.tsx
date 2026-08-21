@@ -1130,8 +1130,12 @@ export function ServerDetail() {
           prev.map((rt) => rt.terminal_id === termId ? { ...rt, name: newLabel } : rt),
         );
       } else {
-        // Local SSH or "My Computer": update in Zustand store
+        // Local SSH or "My Computer": update in Zustand store + sync to Rust backend
+        const tab = terminalTabsByServer[serverId]?.find((tt) => tt.id === renamingTabId);
         renameTerminalTab(serverId, renamingTabId, newLabel);
+        if (tab?.sessionId) {
+          ipcInvoke("ipc_set_session_name", { session_id: tab.sessionId, name: newLabel }).catch(() => {});
+        }
       }
     }
     setRenamingTabId(null);
@@ -1291,6 +1295,10 @@ export function ServerDetail() {
       const tab = terminalTabsByServer[serverId]?.find((tt) => tt.id === tabId);
       if (tab) {
         renameTerminalTab(serverId, tabId, tab.defaultLabel);
+        // Sync to Rust backend so mobile sees the restored name
+        if (tab.sessionId) {
+          ipcInvoke("ipc_set_session_name", { session_id: tab.sessionId, name: tab.defaultLabel }).catch(() => {});
+        }
       }
     }
   };
