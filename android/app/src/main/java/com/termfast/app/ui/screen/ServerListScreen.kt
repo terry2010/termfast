@@ -131,6 +131,7 @@ fun ServerListScreen(navController: NavController) {
     var showReorderButtons by remember { mutableStateOf(false) }
     var saveCountdown by remember { mutableStateOf(0) }
     val saveCountdownScope = rememberCoroutineScope()
+    var countdownJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     fun persistOrder(items: List<DragItem>) {
         // Persist unified global order (handles cross-type reorder)
@@ -505,6 +506,8 @@ fun ServerListScreen(navController: NavController) {
                         OutlinedButton(
                             onClick = {
                                 // Restore default order
+                                countdownJob?.cancel()
+                                countdownJob = null
                                 displayItems = allItems
                                 showReorderButtons = false
                                 saveCountdown = 0
@@ -517,6 +520,8 @@ fun ServerListScreen(navController: NavController) {
                         Button(
                             onClick = {
                                 // Save immediately
+                                countdownJob?.cancel()
+                                countdownJob = null
                                 saveCountdown = 0
                                 showReorderButtons = false
                                 persistOrder(displayItems)
@@ -552,18 +557,21 @@ fun ServerListScreen(navController: NavController) {
                         .pointerInput(item.key) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = {
+                                    // Cancel any ongoing countdown, keep buttons visible
+                                    countdownJob?.cancel()
+                                    countdownJob = null
+                                    saveCountdown = 0
+                                    showReorderButtons = true
                                     draggedItemKey = item.key
                                     dragOffsetY = 0f
-                                    showReorderButtons = true
-                                    saveCountdown = 0
                                 },
                                 onDragEnd = {
-                                    // Show buttons + start 3-second countdown to auto-save
+                                    // Start 3-second countdown to auto-save
                                     draggedItemKey = null
                                     dragOffsetY = 0f
                                     showReorderButtons = true
                                     saveCountdown = 3
-                                    saveCountdownScope.launch {
+                                    countdownJob = saveCountdownScope.launch {
                                         for (i in 3 downTo 1) {
                                             saveCountdown = i
                                             kotlinx.coroutines.delay(1000)
@@ -571,10 +579,13 @@ fun ServerListScreen(navController: NavController) {
                                         saveCountdown = 0
                                         showReorderButtons = false
                                         persistOrder(displayItems)
+                                        countdownJob = null
                                     }
                                 },
                                 onDragCancel = {
                                     // Revert to original order
+                                    countdownJob?.cancel()
+                                    countdownJob = null
                                     displayItems = allItems
                                     draggedItemKey = null
                                     dragOffsetY = 0f
