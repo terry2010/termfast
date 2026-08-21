@@ -263,7 +263,7 @@ fun TerminalsScreen(
             contentPadding = PaddingValues(vertical = 16.dp),
         ) {
             grouped.forEach { (serverId, serverSessions) ->
-                // Server group header — styled as a pill/tag with background
+                // Server group header — same style as RemoteTerminalPickerDialog
                 item(key = "header_$serverId") {
                     val isRemote = serverId.startsWith("remote:")
                     val serverName = if (isRemote) {
@@ -273,55 +273,45 @@ fun TerminalsScreen(
                         servers[serverId]?.name?.ifBlank { servers[serverId]?.ssh?.host ?: serverId }
                             ?: serverId
                     }
-                    Surface(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 12.dp, bottom = 4.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (isRemote) {
-                                        val pid = serverId.removePrefix("remote:")
-                                        val pairing = PairingStore.getPairing(pid)
-                                        if (pairing != null) {
-                                            showRemotePickerFor = pairing
-                                        } else {
-                                            Toast.makeText(context, "未找到配对信息", Toast.LENGTH_SHORT).show()
-                                        }
+                            .padding(top = 12.dp, bottom = 4.dp)
+                            .clickable {
+                                if (isRemote) {
+                                    val pid = serverId.removePrefix("remote:")
+                                    val pairing = PairingStore.getPairing(pid)
+                                    if (pairing != null) {
+                                        showRemotePickerFor = pairing
                                     } else {
-                                        // Local SSH: create new session and navigate
-                                        val newSessionId = TerminalSessionManager.getOrCreateSession(serverId)
-                                        navController.navigate("terminal/$serverId/$newSessionId")
+                                        Toast.makeText(context, "未找到配对信息", Toast.LENGTH_SHORT).show()
                                     }
+                                } else {
+                                    val newSessionId = TerminalSessionManager.getOrCreateSession(serverId)
+                                    navController.navigate("terminal/$serverId/$newSessionId")
                                 }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            // Icon: Devices for remote desktop, Computer for SSH server
-                            Icon(
-                                if (isRemote) Icons.Filled.Devices else Icons.Filled.Computer,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Text(
-                                serverName,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Spacer(Modifier.weight(1f))
-                            Text(
-                                "${serverSessions.size}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f),
-                            )
-                        }
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            if (isRemote) Icons.Filled.Devices else Icons.Filled.Computer,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            serverName,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            "${serverSessions.size}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
                     }
                 }
                 // Terminal cards for this server
@@ -330,7 +320,6 @@ fun TerminalsScreen(
                     // Drag modifier stays on the outer Box — never changes between drag/non-drag
                     val dragModifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 24.dp)
                         .zIndex(if (isDragging) 1f else 0f)
                         .graphicsLayer {
                             if (isDragging) {
