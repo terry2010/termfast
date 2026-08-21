@@ -1325,28 +1325,72 @@ async fn ipc_list_local_triggers(
 
 #[tauri::command]
 async fn ipc_save_local_trigger(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     trigger: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    forward_to_daemon(
+    let result = forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::SaveLocalTrigger,
         serde_json::json!({ "trigger": trigger }),
     )
-    .await
+    .await?;
+    // Notify: local trigger changed → refresh frontend + push to remote peers
+    notify_local_trigger_changed(&app).await;
+    Ok(result)
 }
 
 #[tauri::command]
 async fn ipc_remove_local_trigger(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     trigger_id: String,
 ) -> Result<serde_json::Value, String> {
-    forward_to_daemon(
+    let result = forward_to_daemon(
         &state,
         termfast_daemon::proto::Action::RemoveLocalTrigger,
         serde_json::json!({ "trigger_id": trigger_id }),
     )
-    .await
+    .await?;
+    // Notify: local trigger changed → refresh frontend + push to remote peers
+    notify_local_trigger_changed(&app).await;
+    Ok(result)
+}
+
+/// Notify that local triggers have changed.
+/// 1. Emit "local_trigger_changed" event so the local frontend refreshes.
+/// 2. For server role: broadcast TRIGGER_LIST_RESPONSE to all connected client peers.
+/// 3. For client role: send TRIGGER_LIST_REQUEST to all connected server peers
+///    (so the server re-sends its list — but actually for client role, the
+///    remote desktop is the server, and the server's trigger list is what we
+///    display remotely. So we don't need to do anything for client role here —
+///    the server will push its own changes when its local triggers change.)
+async fn notify_local_trigger_changed(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let _ = app.emit("local_trigger_changed", ());
+
+    // Server role: push updated trigger list to all connected client desktops
+    let app_state = app.state::<AppState>();
+    let tm_guard = app_state.tunnel_manager.lock().await;
+    if let Some(ref tm) = *tm_guard {
+        let rs = tm.remote_server();
+        // Get current local triggers
+        let daemon_state = {
+            let guard = app_state.daemon.lock().await;
+            guard.as_ref().map(|d| d.server.state().clone())
+        };
+        if let Some(ds) = daemon_state {
+            let config = ds.config_manager.lock().await.get().await;
+            let triggers_json = serde_json::to_string(&config.local_triggers)
+                .unwrap_or_else(|_| "[]".to_string());
+            let frame = termfast_daemon::remote_frame::Frame::trigger_list_response(&triggers_json);
+            // Broadcast to all active tunnels
+            let sent = rs.broadcast_frame_to_all(frame).await;
+            if sent > 0 {
+                tracing::info!("notify_local_trigger_changed: pushed trigger list to {} peer(s)", sent);
+            }
+        }
+    }
 }
 
 #[tauri::command]

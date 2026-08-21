@@ -351,6 +351,37 @@ impl RemoteServer {
         }
     }
 
+    /// Broadcast a frame to all active tunnels (all connected peers).
+    /// Returns the number of peers the frame was sent to.
+    /// Uses try_send for non-blocking delivery; disconnected peers are cleaned up.
+    pub async fn broadcast_frame_to_all(&self, frame: Frame) -> usize {
+        let tunnels = self.active_tunnels.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sent = 0;
+        let mut dead = Vec::new();
+        for (pairing_id, tx) in tunnels.iter() {
+            match tx.try_send(frame.clone()) {
+                Ok(()) => {
+                    sent += 1;
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!("[RemoteServer] broadcast_frame_to_all: channel full for pairing {}", pairing_id);
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::debug!("[RemoteServer] broadcast_frame_to_all: channel closed for pairing {}", pairing_id);
+                    dead.push(pairing_id.clone());
+                }
+            }
+        }
+        drop(tunnels);
+        if !dead.is_empty() {
+            let mut tunnels = self.active_tunnels.lock().unwrap_or_else(|e| e.into_inner());
+            for id in dead {
+                tunnels.remove(&id);
+            }
+        }
+        sent
+    }
+
     /// Check if a tunnel is active (peer is connected) for a given pairing_id.
     pub fn is_tunnel_active(&self, pairing_id: &str) -> bool {
         self.active_tunnels.lock().unwrap_or_else(|e| e.into_inner()).contains_key(pairing_id)
