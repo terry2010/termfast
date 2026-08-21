@@ -3132,7 +3132,7 @@ async fn handle_terminal_open(state: &DaemonState, params: &serde_json::Value) -
                 );
                 for cmd in &rendered_cmds {
                     let mut data = cmd.as_bytes().to_vec();
-                    data.push(b'\n');
+                    data.push(b'\r');
                     if let Err(e) = state
                         .terminal_manager
                         .input_with_ack(&session_id, &data, true)
@@ -3279,9 +3279,10 @@ async fn handle_terminal_close(state: &DaemonState, params: &serde_json::Value) 
                     trigger.name
                 );
                 for cmd in &rendered_cmds {
-                    // Send command + newline to the terminal PTY
+                    // Send command + CR to the terminal PTY (CR is the standard
+                    // Enter key; \n alone doesn't execute in PowerShell on Windows)
                     let mut data = cmd.as_bytes().to_vec();
-                    data.push(b'\n');
+                    data.push(b'\r');
                     if let Err(e) = state
                         .terminal_manager
                         .input_with_ack(session_id, &data, true)

@@ -306,7 +306,7 @@ pub async fn start_local_interval_timers(state: &DaemonState) {
                                     let rendered_cmds = engine.render_commands(&event, trigger);
                                     for cmd in &rendered_cmds {
                                         let mut data = cmd.as_bytes().to_vec();
-                                        data.push(b'\n');
+                                        data.push(b'\r');
                                         if let Err(e) = terminal_manager
                                             .input_with_ack(sid, &data, true)
                                             .await
@@ -377,7 +377,7 @@ pub async fn start_local_interval_timers(state: &DaemonState) {
                                             let rendered_cmds = engine.render_commands(&event, trigger);
                                             for cmd in &rendered_cmds {
                                                 let mut data = cmd.as_bytes().to_vec();
-                                                data.push(b'\n');
+                                                data.push(b'\r');
                                                 if let Err(e) = terminal_manager
                                                     .input_with_ack(sid, &data, true)
                                                     .await
@@ -458,7 +458,7 @@ pub async fn start_local_interval_timers(state: &DaemonState) {
                                             let rendered_cmds = engine.render_commands(&event, trigger);
                                             for cmd in &rendered_cmds {
                                                 let mut data = cmd.as_bytes().to_vec();
-                                                data.push(b'\n');
+                                                data.push(b'\r');
                                                 if let Err(e) = terminal_manager
                                                     .input_with_ack(sid, &data, true)
                                                     .await
@@ -756,7 +756,7 @@ impl DaemonServer {
                             );
                             for cmd in &rendered_cmds {
                                 let mut data = cmd.as_bytes().to_vec();
-                                data.push(b'\n');
+                                data.push(b'\r');
                                 if let Err(e) = state_clone
                                     .terminal_manager
                                     .input_with_ack(&sid, &data, true)
@@ -895,7 +895,7 @@ impl DaemonServer {
                             );
                             for cmd in &rendered_cmds {
                                 let mut data = cmd.as_bytes().to_vec();
-                                data.push(b'\n');
+                                data.push(b'\r');
                                 if let Err(e) = state_clone2
                                     .terminal_manager
                                     .input_with_ack(sid, &data, true)
