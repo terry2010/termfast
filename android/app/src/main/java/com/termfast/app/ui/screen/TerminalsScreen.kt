@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -264,7 +265,8 @@ fun TerminalsScreen(
             grouped.forEach { (serverId, serverSessions) ->
                 // Server group header
                 item(key = "header_$serverId") {
-                    val serverName = if (serverId.startsWith("remote:")) {
+                    val isRemote = serverId.startsWith("remote:")
+                    val serverName = if (isRemote) {
                         val pid = serverId.removePrefix("remote:")
                         pairingNames[pid]?.ifBlank { null } ?: "远程终端"
                     } else {
@@ -278,6 +280,13 @@ fun TerminalsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
+                        // Icon: Devices for remote desktop, Computer for SSH server
+                        Icon(
+                            if (isRemote) Icons.Filled.Devices else Icons.Filled.Computer,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
                         // Server name — clickable to create new terminal:
                         // - remote: opens RemoteTerminalPickerDialog for this pairing
                         // - local SSH: creates a new session and navigates
@@ -392,6 +401,7 @@ fun TerminalsScreen(
                     TerminalCard(
                         isDragging = isDragging,
                         session = session,
+                        isRemote = serverId.startsWith("remote:"),
                         serverName = if (serverId.startsWith("remote:")) {
                             val pid = serverId.removePrefix("remote:")
                             pairingNames[pid]?.ifBlank { null } ?: "远程终端"
@@ -451,6 +461,7 @@ fun TerminalsScreen(
 private fun TerminalCard(
     isDragging: Boolean = false,
     session: TerminalSessionManager.SessionState,
+    isRemote: Boolean = false,
     serverName: String,
     isFocused: Boolean,
     onClick: () -> Unit,
@@ -508,7 +519,7 @@ private fun TerminalCard(
                 verticalAlignment = Alignment.Top,
             ) {
                 Icon(
-                    Icons.Filled.Terminal,
+                    if (isRemote) Icons.Filled.Devices else Icons.Filled.Computer,
                     contentDescription = null,
                     modifier = Modifier
                         .size(20.dp)
