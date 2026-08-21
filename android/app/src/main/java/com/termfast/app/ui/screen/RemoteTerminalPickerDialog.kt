@@ -275,6 +275,7 @@ private fun TerminalListContent(
     }
 
     var terminals by remember { mutableStateOf<List<TerminalEntry>>(emptyList()) }
+    var allServers by remember { mutableStateOf<List<ServerEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var transportState by remember { mutableStateOf<TunnelState>(TunnelState.Disconnected) }
@@ -337,7 +338,9 @@ private fun TerminalListContent(
                 }
                 is RustEvent.RemoteTerminalList -> {
                     if (event.pairing_id == pairingId) {
-                        terminals = parseTerminalList(event.terminals)
+                        val result = parseTerminalListResult(event.terminals)
+                        terminals = result.terminals
+                        allServers = result.servers
                         loading = false
                         error = null
                     }
@@ -426,7 +429,7 @@ private fun TerminalListContent(
             return@Column
         }
 
-        if (terminals.isEmpty()) {
+        if (terminals.isEmpty() && allServers.isEmpty()) {
             Text("没有可用的远程终端", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
             Text("请在桌面端打开终端，或点击分组右侧按钮新建", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
@@ -448,23 +451,41 @@ private fun TerminalListContent(
             }
         }
 
-        // Group terminals by serverName, with a "new terminal" button per group
-        val grouped = terminals.groupBy { it.serverId }
-        grouped.forEach { (serverId, groupTerminals) ->
-            val serverName = groupTerminals.first().serverName
-            val isLocalGroup = serverId == "__local__"
+        // Build group list: use allServers (from desktop config) as the source of truth,
+        // so every configured SSH server + local desktop shows up even with 0 terminals.
+        // Fallback: if allServers is empty (old desktop), derive from terminals.
+        val grouped: Map<String, List<TerminalEntry>> = terminals.groupBy { it.serverId }
+        val groupEntries: List<Triple<String, String, Boolean>> = if (allServers.isNotEmpty()) {
+            allServers.map { Triple(it.serverId, it.serverName, it.isLocal) }
+        } else {
+            grouped.map { (sid, ts) -> Triple(sid, ts.first().serverName, sid == "__local__") }
+        }
+        groupEntries.forEach { (serverId, serverName, isLocalGroup) ->
+            val groupTerminals = grouped[serverId] ?: emptyList()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Icon(
+                    if (isLocalGroup) Icons.Filled.Devices else Icons.Filled.Computer,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(6.dp))
                 Text(
                     serverName,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "${groupTerminals.size}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.outline,
                 )
                 if (protocolReady && !creatingTerminal) {
                     // New terminal button for this group
@@ -516,6 +537,14 @@ private fun TerminalListContent(
                         }
                     }
                 }
+            }
+            if (groupTerminals.isEmpty()) {
+                Text(
+                    "没有打开的终端",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(start = 22.dp, bottom = 4.dp),
+                )
             }
             groupTerminals.forEach { terminal ->
                 Surface(
@@ -582,12 +611,41 @@ private data class TerminalJson(
     val tmux_session_name: String? = null,
 )
 
+@Serializable
+private data class ServerJson(
+    val server_id: String? = null,
+    val server_name: String? = null,
+    val is_local: Boolean? = null,
+)
+
+@Serializable
+private data class TerminalListResponse(
+    val terminals: List<TerminalJson>? = null,
+    val servers: List<ServerJson>? = null,
+)
+
+data class ServerEntry(
+    val serverId: String,
+    val serverName: String,
+    val isLocal: Boolean,
+)
+
+data class TerminalListResult(
+    val terminals: List<TerminalEntry>,
+    val servers: List<ServerEntry>,
+)
+
 private val terminalListJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
 internal fun parseTerminalList(json: String): List<TerminalEntry> {
+    return parseTerminalListResult(json).terminals
+}
+
+internal fun parseTerminalListResult(json: String): TerminalListResult {
     return try {
-        val items = terminalListJson.decodeFromString<List<TerminalJson>>(json)
-        items.map { item ->
+        // Try new format: { "terminals": [...], "servers": [...] }
+        val response = terminalListJson.decodeFromString<TerminalListResponse>(json)
+        val terminals = (response.terminals ?: emptyList()).map { item ->
             val serverId = item.server_id ?: ""
             val isLocal = item.is_local ?: (serverId == "__local__")
             TerminalEntry(
@@ -600,8 +658,37 @@ internal fun parseTerminalList(json: String): List<TerminalEntry> {
                 tmuxSessionName = item.tmux_session_name?.ifEmpty { null },
             )
         }
+        val servers = (response.servers ?: emptyList()).map { s ->
+            val sid = s.server_id ?: ""
+            val isLocal = s.is_local ?: (sid == "__local__")
+            ServerEntry(
+                serverId = sid,
+                serverName = s.server_name ?: if (isLocal) "桌面端" else sid,
+                isLocal = isLocal,
+            )
+        }
+        TerminalListResult(terminals = terminals, servers = servers)
     } catch (_: Exception) {
-        emptyList()
+        // Fallback: old format — plain array of terminals
+        try {
+            val items = terminalListJson.decodeFromString<List<TerminalJson>>(json)
+            val terminals = items.map { item ->
+                val serverId = item.server_id ?: ""
+                val isLocal = item.is_local ?: (serverId == "__local__")
+                TerminalEntry(
+                    id = item.terminal_id ?: item.id ?: -1,
+                    name = item.name ?: "Terminal",
+                    serverId = serverId,
+                    serverName = item.server_name ?: if (isLocal) "桌面端" else serverId,
+                    isLocal = isLocal,
+                    terminalType = item.terminal_type ?: if (isLocal) "local" else "ssh",
+                    tmuxSessionName = item.tmux_session_name?.ifEmpty { null },
+                )
+            }
+            TerminalListResult(terminals = terminals, servers = emptyList())
+        } catch (_: Exception) {
+            TerminalListResult(terminals = emptyList(), servers = emptyList())
+        }
     }
 }
 

@@ -813,8 +813,9 @@ impl RemoteServer {
     /// LIST_REQUEST: list all terminals, assign u32 handles via persistent IdMap,
     /// fill server_name from ConfigManager, send LIST_RESPONSE via async_tx.
     ///
-    /// Per design doc: JSON array of objects with fields:
-    ///   id (u32), name, status, preview, server_id, server_name, terminal_type, tmux_session_name
+    /// Per design doc: JSON object with fields:
+    ///   terminals: array of { id (u32), name, status, preview, server_id, server_name, terminal_type, tmux_session_name }
+    ///   servers: array of { server_id, server_name, is_local } — all configured SSH servers + local desktop
     async fn handle_list_request(
         &self,
         async_tx: &mpsc::Sender<Frame>,
@@ -836,7 +837,7 @@ impl RemoteServer {
             };
         }
         // Assign u32 handles via persistent IdMap and build JSON list
-        let list: Vec<serde_json::Value> = {
+        let terminals: Vec<serde_json::Value> = {
             let mut id_map = self.id_map.lock().unwrap_or_else(|e| e.into_inner());
             infos.iter().map(|info| {
                 let handle = id_map.get_or_assign(&info.session_id);
@@ -852,7 +853,23 @@ impl RemoteServer {
                 })
             }).collect()
         };
-        let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
+        // Build servers list: local desktop + all configured SSH servers
+        let servers: Vec<serde_json::Value> = {
+            let mut vec = vec![serde_json::json!({
+                "server_id": "__local__",
+                "server_name": "桌面端",
+                "is_local": true,
+            })];
+            for srv in &config.servers {
+                vec.push(serde_json::json!({
+                    "server_id": srv.id,
+                    "server_name": srv.name,
+                    "is_local": false,
+                }));
+            }
+            vec
+        };
+        let json = serde_json::json!({ "terminals": terminals, "servers": servers }).to_string();
         let frame = Frame::list_response(0, &json);
         let _ = async_tx.send(frame).await;
     }
