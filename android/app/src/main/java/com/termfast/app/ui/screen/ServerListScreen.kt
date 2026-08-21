@@ -1406,43 +1406,6 @@ private fun ServerCard(
                     }
                 }
             }
-
-            Spacer(Modifier.height(12.dp))
-
-            // Action buttons row: proxy+terminal+test on right
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Spacer(Modifier.weight(1f))
-                // SOCKS5 proxy toggle button
-                OutlinedIconButton(
-                    icon = if (proxyRunning) Icons.Filled.Stop else Icons.Filled.Public,
-                    contentDescription = "代理",
-                    onClick = onProxyToggle,
-                    loading = proxyStarting,
-                    tint = if (proxyRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                // VPN toggle button with badge
-                Box {
-                    OutlinedIconButton(
-                        icon = if (vpnRunning) Icons.Filled.Stop else Icons.Filled.Shield,
-                        contentDescription = "VPN",
-                        onClick = onVpnToggle,
-                        loading = vpnStarting,
-                        tint = if (vpnRunning) MaterialTheme.colorScheme.error
-                               else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                // Test button
-                OutlinedIconButton(
-                    icon = Icons.Filled.Speed,
-                    contentDescription = "测试",
-                    onClick = onTest,
-                    enabled = !testing,
-                    loading = testing,
-                )
-            }
         }
         }
     }
