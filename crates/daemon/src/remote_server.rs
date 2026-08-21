@@ -41,6 +41,12 @@ pub struct IdMap {
     next_id: u32,
 }
 
+impl Default for IdMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IdMap {
     pub fn new() -> Self {
         Self {
