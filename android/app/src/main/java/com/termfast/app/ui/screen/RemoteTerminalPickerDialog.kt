@@ -337,8 +337,7 @@ private fun TerminalListContent(
                 }
                 is RustEvent.RemoteTerminalList -> {
                     if (event.pairing_id == pairingId) {
-                        // Only show desktop's local terminals — filter out SSH terminals
-                        terminals = parseTerminalList(event.terminals).filter { it.isLocal }
+                        terminals = parseTerminalList(event.terminals)
                         loading = false
                         error = null
                     }
