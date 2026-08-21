@@ -24,6 +24,7 @@ use std::path::Path;
 ///
 /// Creates parent directories if needed. Sets 0600 permissions on Unix
 /// when `restrictive_perms` is true (use for credential/key files).
+#[allow(unused_variables)]
 pub fn write_atomic(path: &Path, data: &[u8], restrictive_perms: bool) -> std::io::Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {

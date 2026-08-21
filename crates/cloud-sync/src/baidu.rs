@@ -14,6 +14,19 @@ use crate::{
 use serde::Deserialize;
 use std::time::Duration;
 
+/// Truncate a string to at most `max_bytes` bytes without splitting a UTF-8
+/// character. Stable replacement for the unstable `str::floor_char_boundary`.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Baidu API base URLs
 const PCS_BASE: &str = "https://d.pcs.baidu.com";
 const PAN_BASE: &str = "https://pan.baidu.com";
@@ -452,7 +465,7 @@ impl CloudProviderTrait for BaiduProvider {
 
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            tracing::warn!("baidu file_info: HTTP {} body={}", status, &body[..body.floor_char_boundary(200)]);
+            tracing::warn!("baidu file_info: HTTP {} body={}", status, truncate_utf8(&body, 200));
             return Err(http_error(
                 "查询文件信息失败",
                 status, body
@@ -460,7 +473,7 @@ impl CloudProviderTrait for BaiduProvider {
         }
 
         let body_text = resp.text().await.unwrap_or_default();
-        tracing::debug!("baidu file_info: response body={}", &body_text[..body_text.floor_char_boundary(500)]);
+        tracing::debug!("baidu file_info: response body={}", truncate_utf8(&body_text, 500));
 
         let meta: BaiduFileMeta = serde_json::from_str(&body_text)
             .map_err(|e| {
