@@ -447,7 +447,7 @@ fun ServerListScreen(navController: NavController) {
                         RemoteDeviceCard(
                             desktopName = pairing.desktopName.ifEmpty { pairing.pairingId.take(8) },
                             desktopDeviceId = pairing.desktopDeviceId,
-                            isOnline = onlineStatus[pairing.pairingId] ?: false,
+                            isOnline = onlineStatus[pairing.pairingId],
                             onClick = {
                                 selectedPairing = pairing
                                 showRemotePicker = true
@@ -746,7 +746,7 @@ fun ServerListScreen(navController: NavController) {
 private fun RemoteDeviceCard(
     desktopName: String,
     desktopDeviceId: String,
-    isOnline: Boolean,
+    isOnline: Boolean?,
     onClick: () -> Unit,
 ) {
     ElevatedCard(
@@ -787,18 +787,30 @@ private fun RemoteDeviceCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .background(
-                                if (isOnline) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.outlineVariant,
-                                shape = androidx.compose.foundation.shape.CircleShape
-                            )
-                    )
+                    if (isOnline == null) {
+                        // Status not yet fetched — show small spinner
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .background(
+                                    if (isOnline) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outlineVariant,
+                                    shape = androidx.compose.foundation.shape.CircleShape
+                                )
+                        )
+                    }
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        if (isOnline) "在线" else "离线",
+                        when (isOnline) {
+                            null -> "获取中..."
+                            true -> "在线"
+                            false -> "离线"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                     )

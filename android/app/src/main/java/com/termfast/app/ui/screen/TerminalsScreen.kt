@@ -24,13 +24,13 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import android.widget.Toast
 import com.termfast.app.data.PairingStore
+import com.termfast.app.data.RemoteTunnelConfig
 import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
 import com.termfast.app.data.RemoteTunnelManager
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -83,6 +83,9 @@ fun TerminalsScreen(
     var sessions by remember { mutableStateOf(TerminalSessionManager.getAllSessions()) }
     val servers by remember { mutableStateOf(repo.listServers().associateBy { it.id }) }
     val listState = rememberLazyListState()
+    // Remote picker dialog state: when non-null, show the picker for this pairing.
+    // Clicking a remote server group header sets this to open the picker.
+    var showRemotePickerFor by remember { mutableStateOf<RemoteTunnelConfig?>(null) }
 
     // Pre-load pairing desktop names for remote terminal display
     val pairingNames by remember {
@@ -114,14 +117,18 @@ fun TerminalsScreen(
         // Stop tunnels for pairings that no longer have any remote sessions
         TerminalSessionManager.stopTunnelsNotIn(remotePids)
     }
+
+    fun refresh() {
+        sessions = TerminalSessionManager.getAllSessions()
+    }
+
     LaunchedEffect(Unit) {
         RustRepository.events.collect { event ->
             when (event) {
                 is RustEvent.RemoteTunnelReady -> {
-                    val tm = TerminalSessionManager.getTunnelManager(event.pairing_id)
-                    tm?.onProtocolReady()
-                    // Request list to sync: remove sessions whose terminals no longer exist on desktop
-                    tm?.sendListRequest()
+                    // Global collector (TerminalSessionManager) handles session sync
+                    // and sendListRequest. Just refresh the UI snapshot.
+                    refresh()
                 }
                 is RustEvent.RemoteTerminalNotify -> {
                     val pid = event.pairing_id
@@ -131,27 +138,9 @@ fun TerminalsScreen(
                     }
                 }
                 is RustEvent.RemoteTerminalList -> {
-                    val pid = event.pairing_id
-                    try {
-                        val arr = org.json.JSONArray(event.terminals)
-                        val aliveIds = (0 until arr.length()).mapNotNull { i ->
-                            arr.getJSONObject(i).optInt("id", -1).takeIf { it >= 0 }
-                        }.toSet()
-                        val toRemove = TerminalSessionManager.getAllSessions().filter { s ->
-                            s.remotePairingId == pid && s.remoteTerminalId != null &&
-                                s.remoteTerminalId !in aliveIds
-                        }
-                        if (toRemove.isNotEmpty()) {
-                            val names = toRemove.mapNotNull { it.name }.ifEmpty { listOf("远程终端") }.joinToString(", ")
-                            toRemove.forEach { s ->
-                                TerminalSessionManager.closeSessionBySessionId(s.sessionId)
-                            }
-                            sessions = TerminalSessionManager.getAllSessions()
-                            withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                Toast.makeText(context, "远程终端已关闭: $names", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    } catch (_: Exception) {}
+                    // Global collector already removed stale sessions.
+                    // Refresh the UI snapshot to reflect the changes.
+                    refresh()
                 }
                 else -> {}
             }
@@ -190,10 +179,6 @@ fun TerminalsScreen(
             //   moved it to the top of the list).
             listState.animateScrollToItem(0)
         }
-    }
-
-    fun refresh() {
-        sessions = TerminalSessionManager.getAllSessions()
     }
 
     Scaffold { inner ->
@@ -285,11 +270,29 @@ fun TerminalsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
+                        // Server name — clickable to create new terminal:
+                        // - remote: opens RemoteTerminalPickerDialog for this pairing
+                        // - local SSH: creates a new session and navigates
                         Text(
                             serverName,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable {
+                                if (serverId.startsWith("remote:")) {
+                                    val pid = serverId.removePrefix("remote:")
+                                    val pairing = PairingStore.getPairing(pid)
+                                    if (pairing != null) {
+                                        showRemotePickerFor = pairing
+                                    } else {
+                                        Toast.makeText(context, "未找到配对信息", Toast.LENGTH_SHORT).show()
+                                    }
+                                } else {
+                                    // Local SSH: create new session and navigate
+                                    val newSessionId = TerminalSessionManager.getOrCreateSession(serverId)
+                                    navController.navigate("terminal/$serverId/$newSessionId")
+                                }
+                            },
                         )
                         Spacer(
                             Modifier
@@ -302,100 +305,6 @@ fun TerminalsScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.outline,
                         )
-                        // + button: create new terminal on this server
-                        IconButton(
-                            onClick = {
-                                android.util.Log.i("TerminalsScreen", "+ button clicked: serverId=$serverId")
-                                if (serverId.startsWith("remote:")) {
-                                    // Remote terminal: send NEW_TERMINAL frame via tunnel
-                                    val pid = serverId.removePrefix("remote:")
-                                    android.util.Log.i("TerminalsScreen", "remote terminal: pid=$pid")
-                                    val tm = TerminalSessionManager.getTunnelManager(pid)
-                                    if (tm != null && tm.protocolReady.value) {
-                                        android.util.Log.i("TerminalsScreen", "tunnel ready, sending NEW_TERMINAL")
-                                        val sent = tm.sendNewTerminal()
-                                        android.util.Log.i("TerminalsScreen", "sendNewTerminal result=$sent")
-                                        if (sent) {
-                                            scope.launch {
-                                                val result = awaitNewTerminalOk(pid)
-                                                if (result != null) {
-                                                    val (newTerminalId, termName) = result
-                                                    val encodedName = java.net.URLEncoder.encode(termName.ifBlank { "Terminal" }, "UTF-8")
-                                                    navController.navigate("remote_terminal/$pid/$newTerminalId/$encodedName")
-                                                } else {
-                                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                        Toast.makeText(context, "新建超时，请在远程终端列表中查看", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        android.util.Log.i("TerminalsScreen", "tunnel not ready (tm=${tm != null}, ready=${tm?.protocolReady?.value}), starting tunnel...")
-                                        // Tunnel not ready — need to start it first
-                                        val pairing = PairingStore.getPairing(pid)
-                                        if (pairing != null) {
-                                            scope.launch {
-                                                val key = pairing.pairingKey.chunked(2)
-                                                    .map { it.toInt(16).toByte() }.toByteArray()
-                                                val newTm = TerminalSessionManager.getOrCreateTunnelManager(
-                                                    pid, key, pairing.relayUrl, pairing.pairingJwt,
-                                                    pairing.pairingRefreshToken,
-                                                )
-                                                // Listen for RemoteTunnelReady to mark protocol ready
-                                                val readyJob = scope.launch {
-                                                    RustRepository.events.collect { event ->
-                                                        if (event is RustEvent.RemoteTunnelReady && event.pairing_id == pid) {
-                                                            newTm.onProtocolReady()
-                                                        }
-                                                    }
-                                                }
-                                                newTm.start()
-                                                val ready = waitForProtocolReady(newTm, timeoutMs = 10000)
-                                                readyJob.cancel()
-                                                if (ready) {
-                                                    val sent = newTm.sendNewTerminal()
-                                                    if (sent) {
-                                                        val result = awaitNewTerminalOk(pid)
-                                                        if (result != null) {
-                                                            val (newTerminalId, termName) = result
-                                                            val encodedName = java.net.URLEncoder.encode(termName.ifBlank { "Terminal" }, "UTF-8")
-                                                            navController.navigate("remote_terminal/$pid/$newTerminalId/$encodedName")
-                                                        } else {
-                                                            withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                                Toast.makeText(context, "新建超时，请在远程终端列表中查看", Toast.LENGTH_SHORT).show()
-                                                            }
-                                                        }
-                                                    } else {
-                                                        withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                            Toast.makeText(context, "发送失败，请重试", Toast.LENGTH_SHORT).show()
-                                                        }
-                                                    }
-                                                } else {
-                                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                        Toast.makeText(context, "无法连接到电脑，请确认电脑端在线", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            android.util.Log.w("TerminalsScreen", "no pairing found for pid=$pid")
-                                            Toast.makeText(context, "未找到配对信息", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                } else {
-                                    // Local SSH: create new session and navigate
-                                    val newSessionId = TerminalSessionManager.getOrCreateSession(serverId)
-                                    navController.navigate("terminal/$serverId/$newSessionId")
-                                }
-                            },
-                            modifier = Modifier.size(28.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.Add,
-                                contentDescription = "新建终端",
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
                     }
                 }
                 // Terminal cards for this server
@@ -421,9 +330,15 @@ fun TerminalsScreen(
                                 navController.navigate("terminal/${session.serverId}/${session.sessionId}")
                             }
                         },
-                        onClose = {
+                        onDisconnect = {
                             scope.launch {
-                                TerminalSessionManager.closeSessionBySessionId(session.sessionId)
+                                TerminalSessionManager.disconnectSession(session.sessionId)
+                                refresh()
+                            }
+                        },
+                        onCloseTerminal = {
+                            scope.launch {
+                                TerminalSessionManager.closeTerminalSession(session.sessionId)
                                 refresh()
                             }
                         },
@@ -432,16 +347,34 @@ fun TerminalsScreen(
             }
         }
     }
+
+    // Remote terminal picker dialog — opened by clicking a remote server group header.
+    // Uses initialPairing to skip the desktop list and go straight to the terminal list.
+    showRemotePickerFor?.let { pairing ->
+        RemoteTerminalPickerDialog(
+            visible = true,
+            initialPairing = pairing,
+            onTerminalClick = { terminalId, name, pairingId ->
+                showRemotePickerFor = null
+                val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
+                navController.navigate("remote_terminal/$pairingId/$terminalId/$encodedName")
+            },
+            onDismiss = { showRemotePickerFor = null },
+        )
+    }
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun TerminalCard(
     session: TerminalSessionManager.SessionState,
     serverName: String,
     isFocused: Boolean,
     onClick: () -> Unit,
-    onClose: () -> Unit,
+    onDisconnect: () -> Unit,
+    onCloseTerminal: () -> Unit,
 ) {
+    var showDisconnectDialog by remember { mutableStateOf(false) }
     var showCloseDialog by remember { mutableStateOf(false) }
     val borderColor = if (isFocused) MaterialTheme.colorScheme.primary
                      else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
@@ -463,96 +396,189 @@ private fun TerminalCard(
         }
     }
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = bgColor),
-        border = androidx.compose.foundation.BorderStroke(if (isFocused) 2.dp else 1.dp, borderColor),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Icon(
-                Icons.Filled.Terminal,
-                contentDescription = null,
+    // Swipe-to-dismiss: left swipe reveals "关闭终端会话" action
+    val swipeState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value == SwipeToDismissBoxValue.EndToStart) {
+                showCloseDialog = true
+            }
+            // Always return false so the card snaps back; the dialog handles the action
+            false
+        },
+        positionalThreshold = { distance -> distance * 0.4f },
+    )
+
+    SwipeToDismissBox(
+        state = swipeState,
+        backgroundContent = {
+            // Red background with "关闭终端会话" label, revealed on left swipe
+            Box(
                 modifier = Modifier
-                    .size(20.dp)
-                    .padding(top = 2.dp),
-                tint = if (session.connected) MaterialTheme.colorScheme.primary
-                       else MaterialTheme.colorScheme.outline,
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 20.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.error,
+                    )
                     Text(
-                        session.name.ifBlank { "终端" },
-                        style = MaterialTheme.typography.titleSmall,
+                        "关闭终端会话",
+                        color = MaterialTheme.colorScheme.error,
                         fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                    )
+                }
+            }
+        },
+        enableDismissFromStartToEnd = false,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = bgColor),
+            border = androidx.compose.foundation.BorderStroke(if (isFocused) 2.dp else 1.dp, borderColor),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    Icons.Filled.Terminal,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .padding(top = 2.dp),
+                    tint = if (session.connected) MaterialTheme.colorScheme.primary
+                           else MaterialTheme.colorScheme.outline,
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            session.name.ifBlank { "终端" },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (session.connected) {
+                            // Online: small green dot
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(MaterialTheme.colorScheme.primary)
+                            )
+                        } else {
+                            // Offline: prominent red label
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.errorContainer,
+                            ) {
+                                Text(
+                                    "离线",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "$serverName · $timeStr",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    // Connection status dot
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(
-                                if (session.connected) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.outlineVariant
-                            )
+                }
+                // X button — disconnect only (terminal stays alive on desktop)
+                IconButton(
+                    onClick = { showDisconnectDialog = true },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "断开连接",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.outline,
                     )
                 }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    preview,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    fontSize = 12.sp,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "$serverName · $timeStr",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            // Close button — opens confirmation dialog
-            IconButton(
-                onClick = { showCloseDialog = true },
-                modifier = Modifier.size(32.dp),
-            ) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "关闭终端",
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.outline,
-                )
             }
         }
     }
 
-    // Close confirmation dialog
+    // Disconnect confirmation dialog (X button)
+    if (showDisconnectDialog) {
+        AlertDialog(
+            onDismissRequest = { showDisconnectDialog = false },
+            title = { Text("断开连接") },
+            text = {
+                val msg = if (session.remotePairingId != null) {
+                    "确定要断开「${session.name.ifBlank { "终端" }}」的连接吗？\n终端会话将保留在桌面端，可稍后重新连接。"
+                } else {
+                    "确定要断开「${session.name.ifBlank { "终端" }}」的连接吗？"
+                }
+                Text(msg)
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDisconnectDialog = false
+                    onDisconnect()
+                }) { Text("断开", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDisconnectDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // Close terminal confirmation dialog (left swipe)
     if (showCloseDialog) {
         AlertDialog(
             onDismissRequest = { showCloseDialog = false },
-            title = { Text("关闭终端") },
-            text = { Text("确定要关闭「${session.name.ifBlank { "终端" }}」并断开连接吗？") },
+            title = { Text("关闭终端会话") },
+            text = {
+                val msg = if (session.remotePairingId != null) {
+                    "确定要关闭「${session.name.ifBlank { "终端" }}」吗？\n终端中的进程将被终止，未保存的输出将丢失。"
+                } else {
+                    "确定要关闭「${session.name.ifBlank { "终端" }}」吗？\n终端中的进程将被终止，未保存的输出将丢失。"
+                }
+                Text(msg)
+            },
             confirmButton = {
                 TextButton(onClick = {
                     showCloseDialog = false
-                    onClose()
+                    onCloseTerminal()
                 }) { Text("关闭", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {

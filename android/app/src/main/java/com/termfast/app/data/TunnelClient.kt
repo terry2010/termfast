@@ -284,6 +284,20 @@ class TunnelConnection(
                     scheduleReconnect(myGen)
                     return
                 }
+                // DNS resolution failure (common right after screen unlock —
+                // network stack not fully ready). Use short backoff and don't
+                // show error state; just silently retry.
+                val isDnsError = t is java.net.UnknownHostException ||
+                    t.message?.contains("Unable to resolve host") == true
+                if (isDnsError) {
+                    android.util.Log.i("TunnelClient", "DNS not ready, retrying in 500ms")
+                    backoffMs = 500
+                    connecting = false
+                    // Keep state as Connecting (not Error) so UI doesn't show error
+                    updateState(TunnelState.Connecting)
+                    scheduleReconnect(myGen)
+                    return
+                }
                 val errMsg = "${t.javaClass.simpleName}: ${t.message ?: "unknown"} (code=$code)"
                 handleDisconnect("failure: $errMsg", myGen)
             }

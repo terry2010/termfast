@@ -1,5 +1,6 @@
 package com.termfast.app.data
 
+import com.termfast.app.ui.screen.TerminalSessionManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,9 @@ interface RemoteTunnelFfi {
     /** Create + encrypt NEW_TERMINAL frame. Returns ciphertext or null on error. */
     fun sendNewTerminal(pairingId: String, shell: String, name: String): ByteArray?
 
+    /** Create + encrypt CLOSE_TERMINAL frame. Returns ciphertext or null on error. */
+    fun sendCloseTerminal(pairingId: String, terminalId: Int): ByteArray?
+
     /** Close tunnel: send GOODBYE + remove session. Returns GOODBYE ciphertext or null. */
     fun close(pairingId: String): ByteArray?
 }
@@ -77,6 +81,9 @@ object DefaultRemoteTunnelFfi : RemoteTunnelFfi {
 
     override fun sendNewTerminal(pairingId: String, shell: String, name: String): ByteArray? =
         RustRepository.remoteTunnelSendNewTerminal(pairingId, shell, name)
+
+    override fun sendCloseTerminal(pairingId: String, terminalId: Int): ByteArray? =
+        RustRepository.remoteTunnelSendCloseTerminal(pairingId, terminalId)
 
     override fun close(pairingId: String): ByteArray? =
         RustRepository.remoteTunnelClose(pairingId)
@@ -133,8 +140,12 @@ class RemoteTunnelManager(
         }
 
         override fun onPeerDisconnected() {
+            android.util.Log.i("RemoteTunnel", "onPeerDisconnected")
             _transportState.value = TunnelState.Disconnected
             _protocolReady.value = false
+            // Mark all remote sessions for this pairing as disconnected,
+            // so the terminal list shows them as offline.
+            TerminalSessionManager.markRemoteSessionsDisconnected(pairingId)
         }
 
         override fun onPeerTimeout() {
@@ -242,6 +253,9 @@ class RemoteTunnelManager(
 
     /**
      * Stop the tunnel: send GOODBYE and close WebSocket.
+     * The pairing key is NOT zeroized here — the manager instance may be
+     * reused (it stays in TerminalSessionManager's map). Key zeroization
+     * happens in [stopAndDestroy] when the manager is permanently removed.
      */
     fun stop() {
         // Send GOODBYE via FFI (best-effort, ignore errors)
@@ -256,6 +270,15 @@ class RemoteTunnelManager(
         }
         _protocolReady.value = false
         _transportState.value = TunnelState.Disconnected
+    }
+
+    /**
+     * Stop the tunnel AND zeroize the pairing key.
+     * Called when the manager is permanently removed from the registry
+     * (no more remote sessions for this pairing).
+     */
+    fun stopAndDestroy() {
+        stop()
         // Zeroize the pairing key to prevent residual secret in memory
         java.util.Arrays.fill(pairingKey, 0)
     }
@@ -329,12 +352,24 @@ class RemoteTunnelManager(
     }
 
     /**
+     * Send a CLOSE_TERMINAL frame to ask the desktop to close (kill) a terminal.
+     * Only valid after protocolReady == true.
+     */
+    fun sendCloseTerminal(terminalId: Int): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendCloseTerminal(pairingId, terminalId) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
      * Called when RemoteTunnelReady event is received from Rust FFI.
      * Marks protocol as ready and triggers LIST_REQUEST.
      */
     fun onProtocolReady() {
         android.util.Log.i("RemoteTunnel", "onProtocolReady: pairingId=$pairingId")
         _protocolReady.value = true
+        // Mark all remote sessions for this pairing as connected again
+        TerminalSessionManager.markRemoteSessionsConnected(pairingId)
     }
 
     /**

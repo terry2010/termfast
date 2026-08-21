@@ -234,4 +234,9 @@ object RustRepository {
      *  Returns ciphertext to send via WebSocket. */
     fun remoteTunnelSendNewTerminal(pairingId: String, shell: String, name: String): ByteArray? =
         RustBridge.nativeRemoteTunnelSendNewTerminal(pairingId, shell, name)
+
+    /** Create + encrypt a CLOSE_TERMINAL frame. Asks the desktop to close (kill)
+     *  a terminal session. Returns ciphertext to send via WebSocket. */
+    fun remoteTunnelSendCloseTerminal(pairingId: String, terminalId: Int): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendCloseTerminal(pairingId, terminalId)
 }

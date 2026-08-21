@@ -347,6 +347,13 @@ pub fn send_desktop_pair(pairing_id: &str, payload_json: &str) -> Result<Vec<u8>
     )
 }
 
+/// Create and encrypt a CLOSE_TERMINAL frame.
+/// Used by the phone to ask the desktop to close (kill) a terminal session.
+/// The desktop will terminate the terminal process and remove it from the list.
+pub fn send_close_terminal(pairing_id: &str, terminal_id: u32) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(pairing_id, Frame::close_terminal(terminal_id))
+}
+
 /// Create and encrypt a GOODBYE frame, then remove the session.
 pub fn close_tunnel(pairing_id: &str) -> Result<Vec<u8>, String> {
     let mut map = sessions().lock().unwrap();

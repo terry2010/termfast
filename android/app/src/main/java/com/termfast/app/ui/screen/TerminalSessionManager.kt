@@ -193,7 +193,7 @@ object TerminalSessionManager {
         val toStop = tunnelManagers.keys.filter { it !in activePids }
         for (pid in toStop) {
             val tm = tunnelManagers.remove(pid)
-            tm?.stop()
+            tm?.stopAndDestroy()
         }
     }
 
@@ -395,6 +395,28 @@ object TerminalSessionManager {
     }
 
     /**
+     * Close (kill) a terminal session permanently.
+     * - Remote: sends CLOSE_TERMINAL to desktop (kills the terminal process),
+     *           then removes the local session.
+     * - Local SSH: closes the PTY and removes the session.
+     * Unlike [disconnectSession], the terminal process is terminated on the desktop.
+     */
+    @Synchronized
+    fun closeTerminalSession(sessionId: String) {
+        val session = sessions[sessionId] ?: return
+        if (session.remotePairingId != null) {
+            // Remote: send CLOSE_TERMINAL to kill the terminal on desktop
+            val tunnelManager = tunnelManagers[session.remotePairingId]
+            tunnelManager?.sendCloseTerminal(session.remoteTerminalId)
+            tunnelManager?.sendUnsubscribe(session.remoteTerminalId)
+        } else {
+            // Local SSH: close the PTY
+            RustRepository.closeTerminal(sessionId)
+        }
+        sessions.remove(sessionId)
+    }
+
+    /**
      * Write keyboard input to a session (SSH or remote).
      * For SSH: writes to the PTY via RustRepository.
      * For remote: sends INPUT frame via RemoteTunnelManager.
@@ -496,10 +518,18 @@ object TerminalSessionManager {
                 handleRemoteError(event)
             }
             is RustEvent.RemoteTunnelReady -> {
-                // Tunnel ready — handled by RemoteTunnelManager, nothing to do here
+                // Tunnel ready — mark protocol ready on the tunnel manager,
+                // mark sessions connected, and request terminal list to sync
+                // (remove sessions whose terminals no longer exist on desktop).
+                val tm = tunnelManagers[event.pairing_id]
+                tm?.onProtocolReady()
+                markRemoteSessionsConnected(event.pairing_id)
+                tm?.sendListRequest()
             }
             is RustEvent.RemoteTerminalList -> {
-                // LIST_RESPONSE — handled by RemoteTerminalListScreen
+                // LIST_RESPONSE — check if any remote sessions for this pairing
+                // have terminals that no longer exist on desktop, and remove them.
+                syncRemoteSessionsWithList(event.pairing_id, event.terminals)
             }
             else -> {}
         }
@@ -573,5 +603,54 @@ object TerminalSessionManager {
         }.forEach {
             sessions[it.sessionId] = it.copy(connected = false)
         }
+    }
+
+    /**
+     * Mark all remote sessions for a pairing as disconnected.
+     * Called when the tunnel peer disconnects (desktop went offline).
+     */
+    @Synchronized
+    fun markRemoteSessionsDisconnected(pairingId: String) {
+        sessions.values.filter { it.remotePairingId == pairingId }.forEach {
+            sessions[it.sessionId] = it.copy(connected = false)
+        }
+    }
+
+    /**
+     * Mark all remote sessions for a pairing as connected.
+     * Called when the tunnel protocol becomes ready again (reconnected).
+     */
+    @Synchronized
+    fun markRemoteSessionsConnected(pairingId: String) {
+        sessions.values.filter { it.remotePairingId == pairingId }.forEach {
+            sessions[it.sessionId] = it.copy(connected = true)
+        }
+    }
+
+    /**
+     * Sync remote sessions with a LIST_RESPONSE from desktop.
+     * Removes sessions whose terminalId no longer exists on the desktop
+     * (e.g. desktop was restarted, or terminal was closed while offline).
+     * Returns the list of removed session names (for Toast notification).
+     */
+    @Synchronized
+    fun syncRemoteSessionsWithList(pairingId: String, terminalsJson: String): List<String> {
+        val aliveIds = try {
+            val arr = org.json.JSONArray(terminalsJson)
+            (0 until arr.length()).mapNotNull { i ->
+                arr.getJSONObject(i).optInt("id", -1).takeIf { it >= 0 }
+            }.toSet()
+        } catch (_: Exception) {
+            return emptyList()
+        }
+        val toRemove = sessions.values.filter { s ->
+            s.remotePairingId == pairingId && s.remoteTerminalId !in aliveIds
+        }
+        val names = toRemove.mapNotNull { it.name.ifBlank { null } }
+            .ifEmpty { toRemove.map { "远程终端" } }
+        toRemove.forEach { s ->
+            sessions.remove(s.sessionId)
+        }
+        return names
     }
 }

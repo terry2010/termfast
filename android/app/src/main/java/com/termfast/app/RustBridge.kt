@@ -145,6 +145,9 @@ object RustBridge {
     // --- New terminal on remote desktop (send NEW_TERMINAL frame via existing tunnel) ---
     external fun nativeRemoteTunnelSendNewTerminal(pairingId: String, shell: String, name: String): ByteArray?
 
+    // --- Close terminal on remote desktop (send CLOSE_TERMINAL frame via existing tunnel) ---
+    external fun nativeRemoteTunnelSendCloseTerminal(pairingId: String, terminalId: Int): ByteArray?
+
     // --- Cloud Sync ---
     external fun nativeCloudSyncAuthUrl(provider: String): String
     external fun nativeCloudSyncExchangeCode(code: String): String
