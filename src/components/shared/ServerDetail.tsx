@@ -1655,6 +1655,7 @@ export function ServerDetail() {
               draggable={isDraggable}
               onDragStart={(e) => {
                 if (!isDraggable) return;
+                console.log("[DND] dragStart", tab.key);
                 setDraggedTabId(tab.key);
                 draggedTabIdRef.current = tab.key;
                 e.dataTransfer.effectAllowed = "move";
@@ -1662,6 +1663,7 @@ export function ServerDetail() {
                 e.dataTransfer.setData("text/plain", tab.key);
               }}
               onDragEnd={() => {
+                console.log("[DND] dragEnd");
                 setDraggedTabId(null);
                 draggedTabIdRef.current = null;
                 setDragOverTabId(null);
@@ -1671,12 +1673,16 @@ export function ServerDetail() {
                   return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
-                setDragOverTabId(tab.key);
+                if (dragOverTabId !== tab.key) {
+                  console.log("[DND] dragOver", tab.key, "from", draggedTabIdRef.current);
+                  setDragOverTabId(tab.key);
+                }
               }}
               onDragLeave={() => {
                 if (dragOverTabId === tab.key) setDragOverTabId(null);
               }}
               onDrop={(e) => {
+                console.log("[DND] drop", tab.key, "draggedTabIdRef:", draggedTabIdRef.current);
                 if (!isDraggable || !draggedTabIdRef.current) return;
                 e.preventDefault();
                 if (draggedTabIdRef.current !== tab.key) {
