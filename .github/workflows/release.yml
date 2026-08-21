@@ -299,7 +299,7 @@ jobs:
 
       - name: Build release APK
         working-directory: android
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace -PskipCargoBuild
 
       - name: Rename APK with version
         run: |
