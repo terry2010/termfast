@@ -7261,7 +7261,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-android-ffi"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "android_logger 0.14.1",
  "anyhow",
@@ -7290,7 +7290,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-app"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -7337,7 +7337,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-cli"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7356,7 +7356,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-cloud-sync"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -7386,7 +7386,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-core"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -7423,7 +7423,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-credential"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -7446,7 +7446,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-daemon"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -7482,7 +7482,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-desktop"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7515,7 +7515,7 @@ dependencies = [
 
 [[package]]
 name = "termfast-test-utils"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "rand 0.10.2",
