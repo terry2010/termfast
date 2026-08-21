@@ -379,6 +379,12 @@ object TerminalSessionManager {
         return sessions.values.any { it.serverId == serverId }
     }
 
+    /** Count active remote terminal sessions for a given pairingId. */
+    @Synchronized
+    fun getRemoteSessionCount(pairingId: String): Int {
+        return sessions.values.count { it.remotePairingId == pairingId }
+    }
+
     @Synchronized
     fun disconnectSession(sessionId: String) {
         val session = sessions[sessionId]
@@ -392,6 +398,27 @@ object TerminalSessionManager {
             RustRepository.closeTerminal(sessionId)
             setConnectedBySession(sessionId, false)
         }
+    }
+
+    /**
+     * Remove a session from the local list (card disappears, badge updates).
+     * - Remote: sends UNSUBSCRIBE only (terminal stays alive on desktop,
+     *           can be reopened from the terminal picker later).
+     * - Local SSH: closes the PTY and removes the session.
+     * Unlike [closeTerminalSession], the terminal process is NOT killed on the desktop.
+     */
+    @Synchronized
+    fun removeSession(sessionId: String) {
+        val session = sessions[sessionId] ?: return
+        if (session.remotePairingId != null) {
+            // Remote: unsubscribe only, terminal stays alive on desktop
+            val tunnelManager = tunnelManagers[session.remotePairingId]
+            tunnelManager?.sendUnsubscribe(session.remoteTerminalId)
+        } else {
+            // Local SSH: close the PTY
+            RustRepository.closeTerminal(sessionId)
+        }
+        sessions.remove(sessionId)
     }
 
     /**

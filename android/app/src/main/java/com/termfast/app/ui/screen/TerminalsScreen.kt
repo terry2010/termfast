@@ -332,7 +332,7 @@ fun TerminalsScreen(
                         },
                         onDisconnect = {
                             scope.launch {
-                                TerminalSessionManager.disconnectSession(session.sessionId)
+                                TerminalSessionManager.removeSession(session.sessionId)
                                 refresh()
                             }
                         },
@@ -521,14 +521,14 @@ private fun TerminalCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                // X button — disconnect only (terminal stays alive on desktop)
+                // X button — close terminal card (terminal stays alive on desktop)
                 IconButton(
                     onClick = { showDisconnectDialog = true },
                     modifier = Modifier.size(32.dp),
                 ) {
                     Icon(
                         Icons.Filled.Close,
-                        contentDescription = "断开连接",
+                        contentDescription = "关闭终端",
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.outline,
                     )
@@ -541,12 +541,12 @@ private fun TerminalCard(
     if (showDisconnectDialog) {
         AlertDialog(
             onDismissRequest = { showDisconnectDialog = false },
-            title = { Text("断开连接") },
+            title = { Text("关闭终端") },
             text = {
                 val msg = if (session.remotePairingId != null) {
-                    "确定要断开「${session.name.ifBlank { "终端" }}」的连接吗？\n终端会话将保留在桌面端，可稍后重新连接。"
+                    "确定要关闭「${session.name.ifBlank { "终端" }}」吗？\n终端会话将保留在桌面端，可稍后从终端列表重新打开。"
                 } else {
-                    "确定要断开「${session.name.ifBlank { "终端" }}」的连接吗？"
+                    "确定要关闭「${session.name.ifBlank { "终端" }}」吗？"
                 }
                 Text(msg)
             },
@@ -554,7 +554,7 @@ private fun TerminalCard(
                 TextButton(onClick = {
                     showDisconnectDialog = false
                     onDisconnect()
-                }) { Text("断开", color = MaterialTheme.colorScheme.error) }
+                }) { Text("关闭", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
                 TextButton(onClick = { showDisconnectDialog = false }) { Text("取消") }

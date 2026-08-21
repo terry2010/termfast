@@ -42,6 +42,8 @@ interface ServerStore {
   loading: boolean;
   terminal_tabs_by_server: Record<string, TerminalTab[]>;
   active_terminal_tab_by_server: Record<string, string>;
+  // Remote desktop active terminal per pairingId (null = overview tab)
+  remote_active_terminal_by_pairing: Record<string, number | null>;
 
   setServers: (servers: ServerState[]) => void;
   updateServerStatus: (serverId: string, status: ServerStatus, ip?: string, clientIp?: string | null) => void;
@@ -62,6 +64,7 @@ interface ServerStore {
   setTerminalTabDisconnected: (serverId: string, sessionId: string) => void;
   clearTerminalTabs: (serverId: string) => void;
   setTerminalTabAgentStatus: (serverId: string, tabId: string, status: AgentStatus) => void;
+  setRemoteActiveTerminal: (pairingId: string, terminalId: number | null) => void;
 }
 
 export const useServerStore = create<ServerStore>((set, get) => ({
@@ -71,6 +74,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
   loading: false,
   terminal_tabs_by_server: {},
   active_terminal_tab_by_server: {},
+  remote_active_terminal_by_pairing: {},
 
   setServers: (servers) => set({ servers }),
 
@@ -236,4 +240,12 @@ export const useServerStore = create<ServerStore>((set, get) => ({
         },
       };
     }),
+
+  setRemoteActiveTerminal: (pairingId, terminalId) =>
+    set((state) => ({
+      remote_active_terminal_by_pairing: {
+        ...state.remote_active_terminal_by_pairing,
+        [pairingId]: terminalId,
+      },
+    })),
 }));

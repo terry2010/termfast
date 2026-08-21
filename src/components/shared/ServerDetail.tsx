@@ -67,11 +67,16 @@ export function ServerDetail() {
   const activeTerminalTabByServer = useServerStore(
     (s) => s.active_terminal_tab_by_server,
   );
+  const remoteActiveTerminalByPairing = useServerStore((s) => s.remote_active_terminal_by_pairing);
+  const setRemoteActiveTerminalInStore = useServerStore((s) => s.setRemoteActiveTerminal);
   const termTabs = terminalTabsByServer[selectedId || ""] || [];
   const isRemoteSelected = selectedId?.startsWith("remote:") ?? false;
   // Remote desktop terminal list (from LIST_RESPONSE frames)
   const [remoteTerminals, setRemoteTerminals] = useState<{ terminal_id: number; name: string }[]>([]);
-  const [remoteActiveTerminal, setRemoteActiveTerminal] = useState<number | null>(null);
+  // Active remote terminal: read from persisted store (survives server switches)
+  const remotePairingIdForStore = selectedId?.startsWith("remote:") ? selectedId.slice("remote:".length) : null;
+  const persistedRemoteActive = remotePairingIdForStore ? (remoteActiveTerminalByPairing[remotePairingIdForStore] ?? null) : null;
+  const [remoteActiveTerminal, setRemoteActiveTerminal] = useState<number | null>(persistedRemoteActive);
   // Grace period ref: after OK frame sets activeTerminal, don't let LIST_RESPONSE reset it
   // for 3 seconds (the terminal might not appear in the list immediately)
   const okGraceUntilRef = useRef<number>(0);
@@ -140,6 +145,14 @@ export function ServerDetail() {
   // For client role: connected if activeConnection matches and peer is online.
   // For server role: connected if peer is online (tunnel is active, no remote_client_state event).
   const remoteIsConnected = remotePairingId ? (!!remotePeer?.online) : false;
+  // Helper: update remote active terminal in local state, ref, and persisted store
+  const updateRemoteActiveTerminal = useCallback((terminalId: number | null) => {
+    remoteActiveTerminalRef.current = terminalId;
+    setRemoteActiveTerminal(terminalId);
+    if (remotePairingId) {
+      setRemoteActiveTerminalInStore(remotePairingId, terminalId);
+    }
+  }, [remotePairingId, setRemoteActiveTerminalInStore]);
   const server = servers.find((s) => s.id === selectedId);
 
   // Reset transient UI state when switching to a different server
@@ -152,10 +165,14 @@ export function ServerDetail() {
     setDraggedTabId(null);
     setDragOverTabId(null);
     setRemoteTerminals([]);
-    setRemoteActiveTerminal(null);
-    remoteActiveTerminalRef.current = null;
+    // Restore remote active terminal from persisted store (null = overview tab)
+    const newPid = selectedId?.startsWith("remote:") ? selectedId.slice("remote:".length) : null;
+    const restored = newPid ? (remoteActiveTerminalByPairing[newPid] ?? null) : null;
+    setRemoteActiveTerminal(restored);
+    remoteActiveTerminalRef.current = restored;
     setRemoteInfo(null);
     setSelectedRemoteShell(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
   // Remote desktop: load terminal list when a remote peer is selected
@@ -219,8 +236,7 @@ export function ServerDetail() {
             // Subscribing here would cause a double subscription → duplicated output.
             if (newTerms.length > 0 && remoteActiveTerminalRef.current === null) {
               const firstNew = newTerms[0];
-              remoteActiveTerminalRef.current = firstNew.terminal_id;
-              setRemoteActiveTerminal(firstNew.terminal_id);
+              updateRemoteActiveTerminal(firstNew.terminal_id);
             }
             return terms;
           });
@@ -234,8 +250,7 @@ export function ServerDetail() {
             (terms.length === 0 ||
               !terms.some((t: any) => t.terminal_id === remoteActiveTerminalRef.current))
           ) {
-            remoteActiveTerminalRef.current = null;
-            setRemoteActiveTerminal(null);
+            updateRemoteActiveTerminal(null);
           }
         } catch {
           // ignore parse errors
@@ -299,8 +314,7 @@ export function ServerDetail() {
               // Auto-switch to the new terminal.
               // Note: do NOT subscribe here — RemoteTerminalView subscribes on mount.
               // Subscribing here would cause a double subscription → duplicated output.
-              remoteActiveTerminalRef.current = newTermId;
-              setRemoteActiveTerminal(newTermId);
+              updateRemoteActiveTerminal(newTermId);
               // Set grace period: don't let LIST_RESPONSE reset activeTerminal for 3s
               okGraceUntilRef.current = Date.now() + 3000;
               // Refresh terminal list after a short delay to get accurate names.
@@ -346,8 +360,7 @@ export function ServerDetail() {
             description: remotePeer?.peerName || remotePairingId,
           });
           setRemoteTerminals([]);
-          remoteActiveTerminalRef.current = null;
-          setRemoteActiveTerminal(null);
+          updateRemoteActiveTerminal(null);
         } else {
           // Peer reconnected
           toast.success(t("server.remote_peer_reconnected"), {
@@ -1602,12 +1615,10 @@ export function ServerDetail() {
                   return;
                 }
                 if (isRemote && tab.key === "overview") {
-                  remoteActiveTerminalRef.current = null;
-                  setRemoteActiveTerminal(null);
+                  updateRemoteActiveTerminal(null);
                 } else if (isRemote && tab.key.startsWith("remote_term:")) {
                   const termId = parseInt(tab.key.slice("remote_term:".length), 10);
-                  remoteActiveTerminalRef.current = termId;
-                  setRemoteActiveTerminal(termId);
+                  updateRemoteActiveTerminal(termId);
                   if (remotePairingId) {
                     ipcInvoke("ipc_remote_client_subscribe", {
                       pairing_id: remotePairingId,
@@ -1696,8 +1707,7 @@ export function ServerDetail() {
                       // Remove from remoteTerminals and reset activeTerminal
                       setRemoteTerminals((prev) => prev.filter((t) => t.terminal_id !== termId));
                       if (remoteActiveTerminalRef.current === termId) {
-                        remoteActiveTerminalRef.current = null;
-                        setRemoteActiveTerminal(null);
+                        updateRemoteActiveTerminal(null);
                       }
                     } else {
                       setPendingCloseTab(tab.key);

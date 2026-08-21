@@ -448,12 +448,30 @@ fun ServerListScreen(navController: NavController) {
                             desktopName = pairing.desktopName.ifEmpty { pairing.pairingId.take(8) },
                             desktopDeviceId = pairing.desktopDeviceId,
                             isOnline = onlineStatus[pairing.pairingId],
+                            terminalSessionCount = TerminalSessionManager.getRemoteSessionCount(pairing.pairingId),
                             onClick = {
                                 navController.navigate("remote_detail/${pairing.pairingId}")
                             },
                             onTerminalClick = {
                                 selectedPairing = pairing
                                 showRemotePicker = true
+                            },
+                            onUnpair = {
+                                scope.launch {
+                                    val token = PairingStore.getToken()
+                                    if (token != null) {
+                                        withContext(Dispatchers.IO) {
+                                            try {
+                                                PairingApi.revoke(token, pairing.pairingId)
+                                            } catch (e: Exception) {
+                                                android.util.Log.w("ServerList", "revoke failed: ${e.message}")
+                                            }
+                                        }
+                                    }
+                                    PairingStore.removePairing(pairing.pairingId)
+                                    remoteVersion++
+                                    Toast.makeText(context, "已解除与「${pairing.desktopName.ifEmpty { pairing.pairingId.take(8) }}」的配对", Toast.LENGTH_SHORT).show()
+                                }
                             },
                         )
                     }
@@ -750,19 +768,79 @@ private fun RemoteDeviceCard(
     desktopName: String,
     desktopDeviceId: String,
     isOnline: Boolean?,
+    terminalSessionCount: Int = 0,
     onClick: () -> Unit,
     onTerminalClick: () -> Unit,
+    onUnpair: () -> Unit,
 ) {
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
-        onClick = onClick,
+    var showUnpairDialog by remember { mutableStateOf(false) }
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = {
+            if (it == SwipeToDismissBoxValue.EndToStart) {
+                showUnpairDialog = true
+            }
+            false // Don't actually dismiss, just show dialog
+        }
+    )
+
+    // Swipe-to-unpair confirmation dialog
+    if (showUnpairDialog) {
+        AlertDialog(
+            onDismissRequest = { showUnpairDialog = false },
+            title = { Text("解除配对") },
+            text = { Text("确定要解除与「$desktopName」的配对吗？解除后将无法远程访问该电脑。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showUnpairDialog = false
+                        onUnpair()
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("解除配对") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnpairDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    SwipeToDismissBox(
+        state = dismissState,
+        backgroundContent = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(end = 20.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "解除配对",
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+        },
+        enableDismissFromStartToEnd = false,
     ) {
+        ElevatedCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { showUnpairDialog = true },
+                ),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            ),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+        ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -820,18 +898,44 @@ private fun RemoteDeviceCard(
                     )
                 }
             }
-            // Terminal icon button — opens terminal picker dialog
-            IconButton(
-                onClick = onTerminalClick,
-                modifier = Modifier.size(36.dp),
-            ) {
-                Icon(
-                    Icons.Filled.Terminal,
-                    contentDescription = "终端",
-                    modifier = Modifier.size(22.dp),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f),
-                )
+            // Terminal button — opens terminal picker dialog
+            Box {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.primary)
+                        .clickable(onClick = onTerminalClick)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Terminal,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Text(
+                        "打开电脑终端",
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                if (terminalSessionCount > 0) {
+                    Badge(
+                        modifier = Modifier.align(Alignment.TopEnd),
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ) {
+                        Text(
+                            if (terminalSessionCount > 9) "9+" else terminalSessionCount.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
             }
+        }
         }
     }
 }
