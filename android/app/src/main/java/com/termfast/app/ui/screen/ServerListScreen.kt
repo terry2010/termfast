@@ -42,6 +42,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -127,6 +128,10 @@ fun ServerListScreen(navController: NavController) {
     var draggedItemKey by remember { mutableStateOf<String?>(null) }
     var dragOffsetY by remember { mutableStateOf(0f) }
     val lazyListState = rememberLazyListState()
+    // Show reorder buttons during drag and countdown after drag ends
+    var showReorderButtons by remember { mutableStateOf(false) }
+    var saveCountdown by remember { mutableStateOf(0) }
+    val saveCountdownScope = rememberCoroutineScope()
 
     fun persistOrder(items: List<DragItem>) {
         // Persist unified global order (handles cross-type reorder)
@@ -490,6 +495,40 @@ fun ServerListScreen(navController: NavController) {
         } else {
             Box(modifier = Modifier.fillMaxSize().padding(padding)) {
                 Column(modifier = Modifier.fillMaxSize()) {
+                // Reorder buttons — show during drag and countdown
+                if (showReorderButtons) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                // Restore default order
+                                displayItems = allItems
+                                showReorderButtons = false
+                                saveCountdown = 0
+                                // Clear saved global order
+                                RustRepository.reorderGlobal(emptyList())
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                        ) { Text("恢复默认排序") }
+                        Button(
+                            onClick = {
+                                // Save immediately
+                                saveCountdown = 0
+                                showReorderButtons = false
+                                persistOrder(displayItems)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text(if (saveCountdown > 0) "保存排序($saveCountdown)" else "保存排序")
+                        }
+                    }
+                }
                 LazyColumn(
                 state = lazyListState,
                 modifier = Modifier.fillMaxSize(),
@@ -503,10 +542,10 @@ fun ServerListScreen(navController: NavController) {
                     val dragModifier = Modifier
                         .fillMaxWidth()
                         .zIndex(if (isDragging) 1f else 0f)
+                        .then(if (isDragging) Modifier.shadow(8.dp, RoundedCornerShape(16.dp)) else Modifier)
                         .graphicsLayer {
                             if (isDragging) {
                                 translationY = dragOffsetY
-                                shadowElevation = 8f
                                 alpha = 0.9f
                             }
                         }
@@ -515,18 +554,31 @@ fun ServerListScreen(navController: NavController) {
                                 onDragStart = {
                                     draggedItemKey = item.key
                                     dragOffsetY = 0f
+                                    showReorderButtons = true
+                                    saveCountdown = 0
                                 },
                                 onDragEnd = {
-                                    // Persist the final order
-                                    persistOrder(displayItems)
+                                    // Start 3-second countdown to auto-save
                                     draggedItemKey = null
                                     dragOffsetY = 0f
+                                    saveCountdown = 3
+                                    saveCountdownScope.launch {
+                                        for (i in 3 downTo 1) {
+                                            saveCountdown = i
+                                            kotlinx.coroutines.delay(1000)
+                                        }
+                                        saveCountdown = 0
+                                        showReorderButtons = false
+                                        persistOrder(displayItems)
+                                    }
                                 },
                                 onDragCancel = {
                                     // Revert to original order
                                     displayItems = allItems
                                     draggedItemKey = null
                                     dragOffsetY = 0f
+                                    showReorderButtons = false
+                                    saveCountdown = 0
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
