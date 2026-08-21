@@ -481,7 +481,9 @@ fun ServerListScreen(navController: NavController) {
             ) {
                 items(displayItems, key = { it.key }) { item ->
                     val isDragging = draggedItemKey == item.key
-                    val modifier = Modifier
+                    // Drag modifier stays on the outer Box — never changes between drag/non-drag,
+                    // so pointerInput is not recreated and gesture is not interrupted.
+                    val dragModifier = Modifier
                         .fillMaxWidth()
                         .then(if (!isDragging) Modifier.animateItem() else Modifier)
                         .zIndex(if (isDragging) 1f else 0f)
@@ -544,9 +546,10 @@ fun ServerListScreen(navController: NavController) {
 
                     if (item.type == "remote") {
                         val pairing = remotePairings.find { it.pairingId == item.id } ?: return@items
-                        RemoteDeviceCard(
-                            modifier = modifier,
-                            isDragging = isDragging,
+                        // Wrap in Box with drag modifier — inner card switches SwipeToDismissBox/direct
+                        Box(modifier = dragModifier) {
+                            RemoteDeviceCard(
+                                isDragging = isDragging,
                             desktopName = pairing.desktopName.ifEmpty { pairing.pairingId.take(8) },
                             desktopDeviceId = pairing.desktopDeviceId,
                             isOnline = onlineStatus[pairing.pairingId],
@@ -578,6 +581,7 @@ fun ServerListScreen(navController: NavController) {
                                 }
                             },
                         )
+                        }
                     } else {
                         val server = servers.find { it.id == item.id } ?: return@items
                         var testResult by remember { mutableStateOf<String?>(null) }
@@ -587,8 +591,8 @@ fun ServerListScreen(navController: NavController) {
                         val cardVpnStarting = vpnStarting && isThisVpn
                         val cardVpnFailed = vpnFailed && isThisVpn
                         val cardVpnError = if (cardVpnFailed) vpnError else null
+                        Box(modifier = dragModifier) {
                         ServerCard(
-                            modifier = modifier,
                             isDragging = isDragging,
                             server = server,
                             status = statuses[server.id],
@@ -692,6 +696,7 @@ fun ServerListScreen(navController: NavController) {
                                 }
                             }
                         )
+                        }
                     }
                 }
             }
@@ -866,7 +871,6 @@ fun ServerListScreen(navController: NavController) {
 
 @Composable
 private fun RemoteDeviceCard(
-    modifier: Modifier = Modifier,
     isDragging: Boolean = false,
     desktopName: String,
     desktopDeviceId: String,
@@ -912,7 +916,8 @@ private fun RemoteDeviceCard(
     // Card content shared between drag and non-drag modes
     val cardContent: @Composable () -> Unit = {
         ElevatedCard(
-            modifier = modifier
+            modifier = Modifier
+                .fillMaxWidth()
                 .clickable(onClick = onClick),
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.elevatedCardColors(
@@ -1082,7 +1087,6 @@ private fun EmptyServerState(modifier: Modifier = Modifier) {
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun ServerCard(
-    modifier: Modifier = Modifier,
     isDragging: Boolean = false,
     server: ServerConfig,
     status: ServerStatus?,
@@ -1144,7 +1148,8 @@ private fun ServerCard(
     // Card content shared between drag and non-drag modes
     val cardContent: @Composable () -> Unit = {
         ElevatedCard(
-            modifier = modifier
+            modifier = Modifier
+                .fillMaxWidth()
                 .clickable(onClick = onClick),
             shape = RoundedCornerShape(16.dp),
             colors = cardColors,

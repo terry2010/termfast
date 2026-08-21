@@ -318,7 +318,8 @@ fun TerminalsScreen(
                 // Terminal cards for this server
                 items(serverSessions, key = { it.sessionId }) { session ->
                     val isDragging = draggedSessionId == session.sessionId
-                    val cardModifier = Modifier
+                    // Drag modifier stays on the outer Box — never changes between drag/non-drag
+                    val dragModifier = Modifier
                         .fillMaxWidth()
                         .then(if (!isDragging) Modifier.animateItem() else Modifier)
                         .zIndex(if (isDragging) 1f else 0f)
@@ -382,8 +383,8 @@ fun TerminalsScreen(
                                 },
                             )
                         }
+                    Box(modifier = dragModifier) {
                     TerminalCard(
-                        modifier = cardModifier,
                         isDragging = isDragging,
                         session = session,
                         serverName = if (serverId.startsWith("remote:")) {
@@ -418,6 +419,7 @@ fun TerminalsScreen(
                             }
                         },
                     )
+                    }
                 }
             }
         }
@@ -442,7 +444,6 @@ fun TerminalsScreen(
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun TerminalCard(
-    modifier: Modifier = Modifier,
     isDragging: Boolean = false,
     session: TerminalSessionManager.SessionState,
     serverName: String,
@@ -582,9 +583,9 @@ private fun TerminalCard(
         }
     }
 
-    // When dragging, render card directly with drag modifier (no SwipeToDismissBox → no red background)
+    // When dragging, render card directly (no SwipeToDismissBox → no red background)
     if (isDragging) {
-        Box(modifier = modifier) { cardContent() }
+        cardContent()
     } else {
         SwipeToDismissBox(
             state = swipeState,
@@ -618,7 +619,7 @@ private fun TerminalCard(
                 }
             },
             enableDismissFromStartToEnd = false,
-            modifier = modifier,
+            modifier = Modifier.fillMaxWidth(),
         ) {
             cardContent()
         }
