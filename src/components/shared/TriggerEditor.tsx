@@ -20,6 +20,7 @@ interface TriggerEditorProps {
   trigger: TriggerInstance | null; // null = creating new
   onClose: () => void;
   onSaved?: () => void;
+  remotePairingId?: string; // When set, use remote trigger IPC
 }
 
 // === SECTION 1 END ===
@@ -29,6 +30,7 @@ export function TriggerEditor({
   trigger,
   onClose,
   onSaved,
+  remotePairingId,
 }: TriggerEditorProps) {
   const { t } = useTranslation();
   const editorRef = useRef<HTMLDivElement>(null);
@@ -204,8 +206,40 @@ export function TriggerEditor({
     setSaving(true);
 
     const isLocal = serverId === "__local__";
+    const isRemote = !!remotePairingId;
     try {
-      if (isLocal) {
+      if (isRemote) {
+        // Remote desktop trigger: use ipc_remote_trigger_add / ipc_remote_trigger_update
+        const triggerObj = {
+          id: isEditing && trigger ? trigger.id : `trig_${Date.now()}`,
+          template_id: "",
+          name,
+          trigger_type: eventType,
+          enabled: isEditing && trigger ? trigger.enabled : true,
+          continue_on_error: continueOnError,
+          commands,
+          parameters: {},
+          timeout_secs: timeoutSecs,
+          cooldown_secs: cooldownSecs,
+          notify_on_success: notifyOnSuccess,
+          notify_on_failure: notifyOnFailure,
+          last_fired_at: trigger?.last_fired_at ?? null,
+          template_hash_at_addition: "",
+          exec_in_terminal: execInTerminal,
+          bind_new_terminals: bindNewTerminals,
+          interval_secs: intervalSecs,
+          schedule_mode: scheduleMode,
+          cron_expr: cronExpr,
+          scheduled_at: scheduledAt,
+        };
+        const ipcName = isEditing && trigger
+          ? "ipc_remote_trigger_update"
+          : "ipc_remote_trigger_add";
+        await ipcInvoke(ipcName, {
+          pairing_id: remotePairingId,
+          trigger_json: JSON.stringify(triggerObj),
+        });
+      } else if (isLocal) {
         // 本地触发器：使用 ipc_save_local_trigger（add + update 共用）
         await ipcInvoke("ipc_save_local_trigger", {
           trigger: {
@@ -314,7 +348,7 @@ export function TriggerEditor({
     "ManualFire",
   ];
   const eventTypes: TriggerType[] =
-    serverId === "__local__" ? localEventTypes : sshEventTypes;
+    serverId === "__local__" || !!remotePairingId ? localEventTypes : sshEventTypes;
 
   return (
     <>

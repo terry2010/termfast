@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { ipcInvoke } from "@/hooks/useIpc";
+import type { TriggerInstance } from "@/types";
 
 export interface RemotePeer {
   pairingId: string;
@@ -27,6 +28,8 @@ interface RemoteDesktopStore {
   activeConnection: string | null;
   // Remote terminals for the active connection
   remoteTerminals: RemoteTerminal[];
+  // Remote triggers per pairing_id (from TRIGGER_LIST_RESPONSE)
+  remoteTriggers: Record<string, TriggerInstance[]>;
   // Load desktop pairings from the local store
   loadPeers: () => Promise<void>;
   // Set online status for a peer (from remote_client_state event)
@@ -35,6 +38,8 @@ interface RemoteDesktopStore {
   setActiveConnection: (pairingId: string | null) => void;
   // Set remote terminals
   setRemoteTerminals: (terminals: RemoteTerminal[]) => void;
+  // Set remote triggers for a pairing
+  setRemoteTriggers: (pairingId: string, triggers: TriggerInstance[]) => void;
 }
 
 export const useRemoteDesktopStore = create<RemoteDesktopStore>((set) => ({
@@ -43,6 +48,7 @@ export const useRemoteDesktopStore = create<RemoteDesktopStore>((set) => ({
   error: null,
   activeConnection: null,
   remoteTerminals: [],
+  remoteTriggers: {},
 
   loadPeers: async () => {
     set({ loading: true, error: null });
@@ -76,4 +82,9 @@ export const useRemoteDesktopStore = create<RemoteDesktopStore>((set) => ({
     set({ activeConnection: pairingId, remoteTerminals: [] }),
 
   setRemoteTerminals: (terminals) => set({ remoteTerminals: terminals }),
+
+  setRemoteTriggers: (pairingId, triggers) =>
+    set((state) => ({
+      remoteTriggers: { ...state.remoteTriggers, [pairingId]: triggers },
+    })),
 }));

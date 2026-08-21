@@ -36,6 +36,14 @@ pub const INFO_REQUEST: u8 = 0x12;
 pub const INFO_RESPONSE: u8 = 0x13;
 pub const NEW_TERMINAL: u8 = 0x14;
 pub const CLOSE_TERMINAL: u8 = 0x15;
+// Trigger management (desktop-to-desktop)
+pub const TRIGGER_LIST_REQUEST: u8 = 0x16;
+pub const TRIGGER_LIST_RESPONSE: u8 = 0x17;
+pub const TRIGGER_EXEC: u8 = 0x18;
+pub const TRIGGER_EXEC_RESULT: u8 = 0x19;
+pub const TRIGGER_ADD: u8 = 0x1A;
+pub const TRIGGER_UPDATE: u8 = 0x1B;
+pub const TRIGGER_REMOVE: u8 = 0x1C;
 
 /// In-memory frame representation.
 #[derive(Debug, Clone)]
@@ -149,6 +157,44 @@ impl Frame {
 
     pub fn close_terminal(terminal_id: u32) -> Self {
         Self::new(CLOSE_TERMINAL, terminal_id, Vec::new())
+    }
+
+    // === Trigger management frames (desktop-to-desktop) ===
+    // All trigger frames use terminal_id=0 and payload=JSON.
+
+    /// Request the peer's local trigger list.
+    pub fn trigger_list_request() -> Self {
+        Self::new(TRIGGER_LIST_REQUEST, 0, Vec::new())
+    }
+
+    /// Response to TRIGGER_LIST_REQUEST. payload = JSON array of triggers.
+    pub fn trigger_list_response(json: &str) -> Self {
+        Self::new(TRIGGER_LIST_RESPONSE, 0, json.as_bytes().to_vec())
+    }
+
+    /// Execute a trigger on the peer. payload = JSON { "trigger_id": "..." }
+    pub fn trigger_exec(json: &str) -> Self {
+        Self::new(TRIGGER_EXEC, 0, json.as_bytes().to_vec())
+    }
+
+    /// Result of trigger execution. payload = JSON { "trigger_id", "success", "results", ... }
+    pub fn trigger_exec_result(json: &str) -> Self {
+        Self::new(TRIGGER_EXEC_RESULT, 0, json.as_bytes().to_vec())
+    }
+
+    /// Add a trigger on the peer. payload = JSON trigger object.
+    pub fn trigger_add(json: &str) -> Self {
+        Self::new(TRIGGER_ADD, 0, json.as_bytes().to_vec())
+    }
+
+    /// Update a trigger on the peer. payload = JSON trigger object.
+    pub fn trigger_update(json: &str) -> Self {
+        Self::new(TRIGGER_UPDATE, 0, json.as_bytes().to_vec())
+    }
+
+    /// Remove a trigger on the peer. payload = JSON { "trigger_id": "..." }
+    pub fn trigger_remove(json: &str) -> Self {
+        Self::new(TRIGGER_REMOVE, 0, json.as_bytes().to_vec())
     }
 
     /// Construct a NOTIFY frame with JSON payload.
@@ -406,6 +452,112 @@ mod tests {
         let serialized = frame.serialize();
         let deserialized = Frame::deserialize(&serialized).unwrap();
         assert_eq!(deserialized.frame_type, DESKTOP_PAIR);
+        assert_eq!(deserialized.payload, json.as_bytes());
+    }
+
+    // === Trigger frame tests ===
+
+    #[test]
+    fn test_frame_trigger_list_request() {
+        let frame = Frame::trigger_list_request();
+        assert_eq!(frame.frame_type, TRIGGER_LIST_REQUEST);
+        assert_eq!(frame.terminal_id, 0);
+        assert!(frame.payload.is_empty());
+
+        // Round-trip
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, TRIGGER_LIST_REQUEST);
+        assert!(deserialized.payload.is_empty());
+    }
+
+    #[test]
+    fn test_frame_trigger_list_response() {
+        let json = r#"[{"id":"t1","name":"Test","commands":["echo hi"]}]"#;
+        let frame = Frame::trigger_list_response(json);
+        assert_eq!(frame.frame_type, TRIGGER_LIST_RESPONSE);
+        assert_eq!(frame.terminal_id, 0);
+        assert_eq!(frame.payload, json.as_bytes());
+
+        // Round-trip
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, TRIGGER_LIST_RESPONSE);
+        assert_eq!(deserialized.payload, json.as_bytes());
+    }
+
+    #[test]
+    fn test_frame_trigger_exec() {
+        let json = r#"{"trigger_id":"t1"}"#;
+        let frame = Frame::trigger_exec(json);
+        assert_eq!(frame.frame_type, TRIGGER_EXEC);
+        assert_eq!(frame.terminal_id, 0);
+        assert_eq!(frame.payload, json.as_bytes());
+
+        // Round-trip
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, TRIGGER_EXEC);
+        assert_eq!(deserialized.payload, json.as_bytes());
+    }
+
+    #[test]
+    fn test_frame_trigger_exec_result() {
+        let json = r#"{"success":true,"trigger_id":"t1","executed_commands":2}"#;
+        let frame = Frame::trigger_exec_result(json);
+        assert_eq!(frame.frame_type, TRIGGER_EXEC_RESULT);
+        assert_eq!(frame.terminal_id, 0);
+        assert_eq!(frame.payload, json.as_bytes());
+
+        // Round-trip
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, TRIGGER_EXEC_RESULT);
+        assert_eq!(deserialized.payload, json.as_bytes());
+    }
+
+    #[test]
+    fn test_frame_trigger_add() {
+        let json = r#"{"trigger":{"id":"t1","name":"New","commands":["ls"]}}"#;
+        let frame = Frame::trigger_add(json);
+        assert_eq!(frame.frame_type, TRIGGER_ADD);
+        assert_eq!(frame.terminal_id, 0);
+        assert_eq!(frame.payload, json.as_bytes());
+
+        // Round-trip
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, TRIGGER_ADD);
+        assert_eq!(deserialized.payload, json.as_bytes());
+    }
+
+    #[test]
+    fn test_frame_trigger_update() {
+        let json = r#"{"trigger":{"id":"t1","name":"Updated","commands":["pwd"]}}"#;
+        let frame = Frame::trigger_update(json);
+        assert_eq!(frame.frame_type, TRIGGER_UPDATE);
+        assert_eq!(frame.terminal_id, 0);
+        assert_eq!(frame.payload, json.as_bytes());
+
+        // Round-trip
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, TRIGGER_UPDATE);
+        assert_eq!(deserialized.payload, json.as_bytes());
+    }
+
+    #[test]
+    fn test_frame_trigger_remove() {
+        let json = r#"{"trigger_id":"t1"}"#;
+        let frame = Frame::trigger_remove(json);
+        assert_eq!(frame.frame_type, TRIGGER_REMOVE);
+        assert_eq!(frame.terminal_id, 0);
+        assert_eq!(frame.payload, json.as_bytes());
+
+        // Round-trip
+        let serialized = frame.serialize();
+        let deserialized = Frame::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.frame_type, TRIGGER_REMOVE);
         assert_eq!(deserialized.payload, json.as_bytes());
     }
 }

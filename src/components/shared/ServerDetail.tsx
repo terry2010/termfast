@@ -136,6 +136,7 @@ export function ServerDetail() {
   const remotePeers = useRemoteDesktopStore((s) => s.peers);
   const remotePeer = remotePairingId ? remotePeers.find((p) => p.pairingId === remotePairingId) : null;
   const remoteActiveConnection = useRemoteDesktopStore((s) => s.activeConnection);
+  const setRemoteTriggers = useRemoteDesktopStore((s) => s.setRemoteTriggers);
   // For client role: connected if activeConnection matches and peer is online.
   // For server role: connected if peer is online (tunnel is active, no remote_client_state event).
   const remoteIsConnected = remotePairingId ? (!!remotePeer?.online) : false;
@@ -182,6 +183,10 @@ export function ServerDetail() {
     });
     // Request system info (works for both client and server roles)
     ipcInvoke("ipc_remote_client_get_info", {
+      pairing_id: remotePairingId,
+    }).catch(() => {});
+    // Request remote trigger list (desktop-to-desktop trigger sync)
+    ipcInvoke("ipc_remote_trigger_list", {
       pairing_id: remotePairingId,
     }).catch(() => {});
   }, [isRemote, remotePairingId, remotePeer, remoteIsConnected]);
@@ -252,6 +257,28 @@ export function ServerDetail() {
         try {
           const info = decodeBase64Json<any>(payload.data);
           setRemoteInfo(info);
+        } catch {
+          // ignore parse errors
+        }
+      } else if (payload.frame_type === 0x17) {
+        // TRIGGER_LIST_RESPONSE — payload is JSON array of triggers
+        try {
+          const triggers = decodeBase64Json<any>(payload.data);
+          const triggerList = Array.isArray(triggers) ? triggers : [];
+          setRemoteTriggers(remotePairingId, triggerList);
+        } catch {
+          // ignore parse errors
+        }
+      } else if (payload.frame_type === 0x19) {
+        // TRIGGER_EXEC_RESULT — payload is JSON with execution result
+        try {
+          const result = decodeBase64Json<any>(payload.data);
+          // Show a toast with the execution result
+          if (result.success) {
+            toast.success(t("trigger.exec_success", { id: result.trigger_id }));
+          } else {
+            toast.error(t("trigger.exec_failed", { id: result.trigger_id }));
+          }
         } catch {
           // ignore parse errors
         }
@@ -2344,8 +2371,8 @@ export function ServerDetail() {
                 )}
               </div>
 
-              {/* Triggers panel — full width (hidden for remote) */}
-              {!isRemote && (
+              {/* Triggers panel — full width (local + remote desktops) */}
+              {(isLocal || isRemote) && (
               <div className="bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-[16px] border border-gray-200/80 dark:border-white/[0.06] overflow-hidden">
                 <div className="px-4 py-3 border-b border-gray-100 dark:border-white/[0.06] flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -2365,7 +2392,10 @@ export function ServerDetail() {
                   </button>
                 </div>
                 <div className="p-4">
-                  <TriggerList serverId={displayServer.id} />
+                  <TriggerList
+                    serverId={displayServer.id}
+                    remotePairingId={isRemote ? remotePairingId ?? undefined : undefined}
+                  />
                 </div>
               </div>
               )}

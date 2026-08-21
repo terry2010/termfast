@@ -52,6 +52,15 @@ pub type FrameCallback = Arc<
 /// (pairing_id, connected: bool)
 pub type StateCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
+/// Callback for handling trigger management requests from the peer desktop
+/// (when this desktop is the client and the server sends TRIGGER_* frames).
+/// Same type as RemoteServer's TriggerCallback.
+pub type ClientTriggerCallback = Arc<
+    dyn Fn(crate::remote_server::TriggerRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::remote_server::TriggerResponse> + Send + 'static>>
+        + Send
+        + Sync,
+>;
+
 /// Manages RemoteClient instances for all desktop-to-desktop pairings
 /// where this desktop is the client (Desktop A).
 /// One RemoteClient per pairing_id. Auto-reconnects on disconnect.
@@ -66,6 +75,8 @@ pub struct RemoteClientManager {
     terminal_manager: Arc<crate::terminal::TerminalManager>,
     /// ID map for terminal_id ↔ session_id mapping (for server-initiated terminals)
     id_map: Arc<StdMutex<IdMap>>,
+    /// Trigger callback (for handling server-initiated TRIGGER_* frames)
+    trigger_callback: Arc<StdMutex<Option<ClientTriggerCallback>>>,
 }
 
 /// An outbound frame to be encrypted and sent via WebSocket.
@@ -80,6 +91,12 @@ pub enum OutboundFrame {
     InfoRequest,
     NewTerminal { shell: Option<String>, name: Option<String> },
     CloseTerminal(u32),
+    // Trigger management (desktop-to-desktop)
+    TriggerListRequest,
+    TriggerExec { trigger_id: String },
+    TriggerAdd { trigger_json: String },
+    TriggerUpdate { trigger_json: String },
+    TriggerRemove { trigger_id: String },
 }
 
 impl RemoteClientManager {
@@ -90,7 +107,14 @@ impl RemoteClientManager {
             connected: Arc::new(Mutex::new(std::collections::HashSet::new())),
             terminal_manager,
             id_map: Arc::new(StdMutex::new(IdMap::new())),
+            trigger_callback: Arc::new(StdMutex::new(None)),
         }
+    }
+
+    /// Set the trigger callback (called when TRIGGER_* frames are received
+    /// from the server desktop and need to be handled locally).
+    pub fn set_trigger_callback(&self, callback: ClientTriggerCallback) {
+        *self.trigger_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Check if a remote client for the given pairing_id is connected (HELLO completed).
@@ -126,9 +150,10 @@ impl RemoteClientManager {
         let connected_set = self.connected.clone();
         let tm = self.terminal_manager.clone();
         let id_map = self.id_map.clone();
+        let trigger_cb = self.trigger_callback.clone();
 
         let handle = tokio::spawn(async move {
-            run_client_loop(config, frame_cb, state_cb, rx, connected_set, tm, id_map).await;
+            run_client_loop(config, frame_cb, state_cb, rx, connected_set, tm, id_map, trigger_cb).await;
             senders.lock().await.remove(&pairing_id_clone);
         });
 
@@ -178,6 +203,7 @@ impl Default for RemoteClientManager {
 
 /// Run the client loop: connect → HELLO → bridge + outbound frame sending.
 /// Auto-reconnects on disconnect.
+#[allow(clippy::too_many_arguments)]
 async fn run_client_loop(
     config: RemoteClientConfig,
     frame_cb: FrameCallback,
@@ -186,6 +212,7 @@ async fn run_client_loop(
     connected_set: Arc<Mutex<std::collections::HashSet<String>>>,
     terminal_manager: Arc<crate::terminal::TerminalManager>,
     id_map: Arc<StdMutex<IdMap>>,
+    trigger_cb: Arc<StdMutex<Option<ClientTriggerCallback>>>,
 ) {
     let mut backoff = std::time::Duration::from_secs(1);
     let max_backoff = std::time::Duration::from_secs(30);
@@ -197,7 +224,7 @@ async fn run_client_loop(
             config.relay_url
         );
 
-        match run_client_once(&config, &frame_cb, &state_cb, &mut rx, &connected_set, &terminal_manager, &id_map).await {
+        match run_client_once(&config, &frame_cb, &state_cb, &mut rx, &connected_set, &terminal_manager, &id_map, &trigger_cb).await {
             Ok(()) => {
                 tracing::info!(
                     "remote_client_loop: closed cleanly for pairing {}",
@@ -235,6 +262,7 @@ async fn run_client_loop(
 // === SECTION 3 END ===
 
 /// Run one connection lifecycle: connect → HELLO → bridge (inbound + outbound) → disconnect.
+#[allow(clippy::too_many_arguments)]
 async fn run_client_once(
     config: &RemoteClientConfig,
     frame_cb: &FrameCallback,
@@ -243,6 +271,7 @@ async fn run_client_once(
     connected_set: &Arc<Mutex<std::collections::HashSet<String>>>,
     terminal_manager: &Arc<crate::terminal::TerminalManager>,
     id_map: &Arc<StdMutex<IdMap>>,
+    trigger_cb: &Arc<StdMutex<Option<ClientTriggerCallback>>>,
 ) -> Result<(), String> {
     // 1. Connect WebSocket
     let host = crate::tunnel_client::extract_host(&config.relay_url);
@@ -394,6 +423,7 @@ async fn run_client_once(
                             terminal_manager,
                             id_map,
                             &async_tx,
+                            trigger_cb,
                         ).await;
                         #[cfg(target_os = "android")]
                         let reply: Option<Frame> = None;
@@ -440,6 +470,23 @@ async fn run_client_once(
                                 Frame::new_terminal(shell.as_deref(), name.as_deref())
                             }
                             OutboundFrame::CloseTerminal(tid) => Frame::close_terminal(tid),
+                            OutboundFrame::TriggerListRequest => Frame::trigger_list_request(),
+                            OutboundFrame::TriggerExec { trigger_id } => {
+                                let json = serde_json::json!({ "trigger_id": trigger_id }).to_string();
+                                Frame::trigger_exec(&json)
+                            }
+                            OutboundFrame::TriggerAdd { trigger_json } => {
+                                let json = serde_json::json!({ "trigger": serde_json::from_str::<serde_json::Value>(&trigger_json).unwrap_or(serde_json::Value::Null) }).to_string();
+                                Frame::trigger_add(&json)
+                            }
+                            OutboundFrame::TriggerUpdate { trigger_json } => {
+                                let json = serde_json::json!({ "trigger": serde_json::from_str::<serde_json::Value>(&trigger_json).unwrap_or(serde_json::Value::Null) }).to_string();
+                                Frame::trigger_update(&json)
+                            }
+                            OutboundFrame::TriggerRemove { trigger_id } => {
+                                let json = serde_json::json!({ "trigger_id": trigger_id }).to_string();
+                                Frame::trigger_remove(&json)
+                            }
                         };
                         let encrypted = match send_cipher.encrypt(&proto_frame.serialize()) {
                             Ok(data) => data,
@@ -496,6 +543,11 @@ fn is_server_initiated_frame(frame_type: u8) -> bool {
             | remote_frame::UNSUBSCRIBE
             | remote_frame::INPUT
             | remote_frame::RESIZE
+            | remote_frame::TRIGGER_LIST_REQUEST
+            | remote_frame::TRIGGER_EXEC
+            | remote_frame::TRIGGER_ADD
+            | remote_frame::TRIGGER_UPDATE
+            | remote_frame::TRIGGER_REMOVE
     )
 }
 
@@ -514,6 +566,7 @@ async fn handle_server_initiated_frame(
     terminal_manager: &Arc<crate::terminal::TerminalManager>,
     id_map: &Arc<StdMutex<IdMap>>,
     async_tx: &tokio::sync::mpsc::Sender<Frame>,
+    trigger_cb: &Arc<StdMutex<Option<ClientTriggerCallback>>>,
 ) -> Option<Frame> {
     match frame.frame_type {
         remote_frame::INFO_REQUEST => {
@@ -711,7 +764,101 @@ async fn handle_server_initiated_frame(
             }
             None // No reply for RESIZE
         }
+        // === Trigger management (server-initiated) ===
+        remote_frame::TRIGGER_LIST_REQUEST
+        | remote_frame::TRIGGER_EXEC
+        | remote_frame::TRIGGER_ADD
+        | remote_frame::TRIGGER_UPDATE
+        | remote_frame::TRIGGER_REMOVE => {
+            handle_trigger_frame_client(frame, pairing_id, trigger_cb).await
+        }
         _ => None,
+    }
+}
+
+/// Handle TRIGGER_* frames on the client side (server-initiated requests).
+/// Delegates to the trigger callback (which has access to DaemonState).
+#[cfg(not(target_os = "android"))]
+async fn handle_trigger_frame_client(
+    frame: &Frame,
+    _pairing_id: &str,
+    trigger_cb: &Arc<StdMutex<Option<ClientTriggerCallback>>>,
+) -> Option<Frame> {
+    use crate::remote_server::{TriggerRequest, TriggerResponse};
+
+    let action = match frame.frame_type {
+        remote_frame::TRIGGER_LIST_REQUEST => "list",
+        remote_frame::TRIGGER_EXEC => "exec",
+        remote_frame::TRIGGER_ADD => "add",
+        remote_frame::TRIGGER_UPDATE => "update",
+        remote_frame::TRIGGER_REMOVE => "remove",
+        _ => return Some(Frame::error("unknown_trigger_frame")),
+    };
+
+    // Parse payload
+    let trigger_id = if frame.frame_type == remote_frame::TRIGGER_LIST_REQUEST {
+        String::new()
+    } else {
+        let payload = match std::str::from_utf8(&frame.payload) {
+            Ok(s) => s,
+            Err(e) => return Some(Frame::error(&format!("utf8: {}", e))),
+        };
+        let req: serde_json::Value = match serde_json::from_str(payload) {
+            Ok(v) => v,
+            Err(e) => return Some(Frame::error(&format!("parse: {}", e))),
+        };
+        req.get("trigger_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    };
+
+    // For add/update, extract the trigger object
+    let trigger_obj = if frame.frame_type == remote_frame::TRIGGER_ADD
+        || frame.frame_type == remote_frame::TRIGGER_UPDATE
+    {
+        let payload = std::str::from_utf8(&frame.payload).ok()?;
+        let req: serde_json::Value = serde_json::from_str(payload).ok()?;
+        req.get("trigger").cloned()
+    } else {
+        None
+    };
+
+    let request = TriggerRequest {
+        action: action.to_string(),
+        trigger_id,
+        trigger: trigger_obj,
+    };
+
+    // Check callback is set
+    let cb_is_set = trigger_cb.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    if !cb_is_set {
+        tracing::warn!("remote_client: TRIGGER {}: no callback set", action);
+        return Some(Frame::error("trigger_not_configured"));
+    }
+
+    // Invoke callback
+    let cb_future = {
+        let guard = trigger_cb.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().map(|cb| cb(request.clone()))
+    };
+    let response: TriggerResponse = match cb_future {
+        Some(fut) => fut.await,
+        None => return Some(Frame::error("callback_disappeared")),
+    };
+
+    if !response.success {
+        let err_msg = response.data.as_str().unwrap_or("trigger_error");
+        return Some(Frame::error(err_msg));
+    }
+
+    match action {
+        "list" => {
+            let json = serde_json::to_string(&response.data).unwrap_or_else(|_| "[]".to_string());
+            Some(Frame::trigger_list_response(&json))
+        }
+        "exec" => {
+            let json = serde_json::to_string(&response.data).unwrap_or_else(|_| "{}".to_string());
+            Some(Frame::trigger_exec_result(&json))
+        }
+        _ => Some(Frame::ok(0)),
     }
 }
 

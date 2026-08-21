@@ -33,6 +33,11 @@ pub struct AppState {
     /// Remote client manager — manages RemoteClient connections for desktop-to-desktop
     /// pairings where this desktop is the client (Desktop A).
     pub remote_client_manager: tokio::sync::Mutex<Option<Arc<termfast_daemon::remote_client::RemoteClientManager>>>,
+    /// Trigger callback — shared between RemoteServer (server role) and
+    /// RemoteClientManager (client role). Stored here so it can be set on
+    /// the tunnel_manager's RemoteServer when it is lazily initialized
+    /// (in ipc_tunnel_start), since init() runs before tunnel_manager exists.
+    pub trigger_callback: std::sync::OnceLock<termfast_daemon::remote_client::ClientTriggerCallback>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -224,6 +229,7 @@ pub fn run() {
                 terminal_channels: std::sync::Mutex::new(std::collections::HashMap::new()),
                 tunnel_manager: tokio::sync::Mutex::new(None),
                 remote_client_manager: tokio::sync::Mutex::new(None),
+                trigger_callback: std::sync::OnceLock::new(),
             };
             app.manage(initial_state);
 
@@ -392,6 +398,12 @@ pub fn run() {
             ipc_remote_client_get_info,
             ipc_remote_client_new_terminal,
             ipc_remote_client_close_terminal,
+            // Remote trigger management (desktop-to-desktop)
+            ipc_remote_trigger_list,
+            ipc_remote_trigger_exec,
+            ipc_remote_trigger_add,
+            ipc_remote_trigger_update,
+            ipc_remote_trigger_remove,
             ipc_list_desktop_pairings,
             ipc_initiate_desktop_pairing,
         ])
@@ -595,6 +607,149 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
             },
         ));
     }
+
+    // Set trigger_callback on RemoteServer (for server-role desktops)
+    // and RemoteClientManager (for client-role desktops).
+    // Both use the same callback implementation that accesses DaemonState.
+    // We use Arc<dyn Fn> so the same closure can be shared between both.
+    let handle_for_trigger = handle.clone();
+    #[allow(clippy::type_complexity)]
+    let trigger_fn: termfast_daemon::remote_client::ClientTriggerCallback = Arc::new(
+        move |req: termfast_daemon::remote_server::TriggerRequest| {
+            let handle = handle_for_trigger.clone();
+            Box::pin(async move {
+                let app_state = handle.state::<AppState>();
+                let daemon_state = {
+                    let guard = app_state.daemon.lock().await;
+                    guard.as_ref().map(|d| d.server.state().clone())
+                };
+                let ds = match daemon_state {
+                    Some(ds) => ds,
+                    None => return termfast_daemon::remote_server::TriggerResponse {
+                        success: false,
+                        data: serde_json::json!("daemon not ready"),
+                    },
+                };
+
+                match req.action.as_str() {
+                    "list" => {
+                        // Return local triggers
+                        let config = ds.config_manager.lock().await.get().await;
+                        let triggers_json = serde_json::to_value(&config.local_triggers)
+                            .unwrap_or(serde_json::json!([]));
+                        termfast_daemon::remote_server::TriggerResponse {
+                            success: true,
+                            data: triggers_json,
+                        }
+                    }
+                    "exec" => {
+                        // Execute a local trigger by ID via ManualFireLocalTrigger
+                        let proto_req = termfast_daemon::proto::Request::new(
+                            termfast_daemon::proto::Action::ManualFireLocalTrigger,
+                            serde_json::json!({ "trigger_id": req.trigger_id }),
+                        );
+                        let resp = termfast_daemon::handler::handle_request(&proto_req, &ds).await;
+                        match resp {
+                            termfast_daemon::proto::Response::Ok { data, .. } => {
+                                termfast_daemon::remote_server::TriggerResponse {
+                                    success: true,
+                                    data,
+                                }
+                            }
+                            termfast_daemon::proto::Response::Err { error, .. } => {
+                                termfast_daemon::remote_server::TriggerResponse {
+                                    success: false,
+                                    data: serde_json::json!(format!("{:?}: {}", error.code, error.detail)),
+                                }
+                            }
+                            _ => termfast_daemon::remote_server::TriggerResponse {
+                                success: false,
+                                data: serde_json::json!("unexpected response"),
+                            },
+                        }
+                    }
+                    "add" | "update" => {
+                        let trigger_json = match &req.trigger {
+                            Some(t) => t,
+                            None => return termfast_daemon::remote_server::TriggerResponse {
+                                success: false,
+                                data: serde_json::json!("missing trigger object"),
+                            },
+                        };
+                        // SaveLocalTrigger handles both add and update
+                        let proto_req = termfast_daemon::proto::Request::new(
+                            termfast_daemon::proto::Action::SaveLocalTrigger,
+                            serde_json::json!({ "trigger": trigger_json }),
+                        );
+                        let resp = termfast_daemon::handler::handle_request(&proto_req, &ds).await;
+                        match resp {
+                            termfast_daemon::proto::Response::Ok { .. } => {
+                                termfast_daemon::remote_server::TriggerResponse {
+                                    success: true,
+                                    data: serde_json::json!("ok"),
+                                }
+                            }
+                            termfast_daemon::proto::Response::Err { error, .. } => {
+                                termfast_daemon::remote_server::TriggerResponse {
+                                    success: false,
+                                    data: serde_json::json!(format!("{:?}: {}", error.code, error.detail)),
+                                }
+                            }
+                            _ => termfast_daemon::remote_server::TriggerResponse {
+                                success: false,
+                                data: serde_json::json!("unexpected response"),
+                            },
+                        }
+                    }
+                    "remove" => {
+                        let proto_req = termfast_daemon::proto::Request::new(
+                            termfast_daemon::proto::Action::RemoveLocalTrigger,
+                            serde_json::json!({ "trigger_id": req.trigger_id }),
+                        );
+                        let resp = termfast_daemon::handler::handle_request(&proto_req, &ds).await;
+                        match resp {
+                            termfast_daemon::proto::Response::Ok { .. } => {
+                                termfast_daemon::remote_server::TriggerResponse {
+                                    success: true,
+                                    data: serde_json::json!("ok"),
+                                }
+                            }
+                            termfast_daemon::proto::Response::Err { error, .. } => {
+                                termfast_daemon::remote_server::TriggerResponse {
+                                    success: false,
+                                    data: serde_json::json!(format!("{:?}: {}", error.code, error.detail)),
+                                }
+                            }
+                            _ => termfast_daemon::remote_server::TriggerResponse {
+                                success: false,
+                                data: serde_json::json!("unexpected response"),
+                            },
+                        }
+                    }
+                    _ => termfast_daemon::remote_server::TriggerResponse {
+                        success: false,
+                        data: serde_json::json!("unknown action"),
+                    },
+                }
+            })
+        },
+    );
+
+    // Store trigger_fn in AppState so it can be set on the tunnel_manager's
+    // RemoteServer when it is lazily initialized (in ipc_tunnel_start).
+    // init() runs before tunnel_manager exists, so we can't set it directly here.
+    let _ = handle.state::<AppState>().trigger_callback.set(trigger_fn.clone());
+
+    // Set on RemoteServer (server role) — if tunnel_manager already exists
+    if let Some(ref tm) = tm_for_cb {
+        let cb_for_server = trigger_fn.clone();
+        tm.remote_server().set_trigger_callback(Box::new(move |req| {
+            let cb = cb_for_server.clone();
+            Box::pin(async move { cb(req).await })
+        }));
+    }
+    // Set on RemoteClientManager (client role) — Arc directly
+    rcm.set_trigger_callback(trigger_fn);
 
     tracing::info!("Tauri app state initialized with event forwarding");
 }
@@ -2686,6 +2841,19 @@ async fn ipc_tunnel_start(
                         }));
                     },
                 ));
+                // Set trigger callback (stored in AppState by init(), applied here
+                // because tunnel_manager is lazily initialized)
+                {
+                    let app_state = app.state::<AppState>();
+                    if let Some(trigger_fn) = app_state.trigger_callback.get() {
+                        let cb_for_server = trigger_fn.clone();
+                        tm.remote_server().set_trigger_callback(Box::new(move |req| {
+                            let cb = cb_for_server.clone();
+                            Box::pin(async move { cb(req).await })
+                        }));
+                        tracing::info!("trigger_callback set on RemoteServer (lazily initialized tunnel_manager)");
+                    }
+                }
                 *tm_guard = Some(tm.clone());
                 tracing::info!("DesktopTunnelManager initialized");
                 tm
@@ -3438,6 +3606,131 @@ async fn ipc_remote_client_close_terminal(
         let rcm_guard = state.remote_client_manager.lock().await;
         let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
         rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::CloseTerminal(terminal_id)).await
+    }
+}
+
+// === Remote trigger management IPC (desktop-to-desktop) ===
+
+/// Request the remote desktop's local trigger list.
+#[tauri::command]
+async fn ipc_remote_trigger_list(
+    app: tauri::AppHandle,
+    pairing_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::trigger_list_request()).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::TriggerListRequest).await
+    }
+}
+
+/// Execute a trigger on the remote desktop by ID.
+#[tauri::command]
+async fn ipc_remote_trigger_exec(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    trigger_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            let json = serde_json::json!({ "trigger_id": trigger_id }).to_string();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::trigger_exec(&json)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::TriggerExec { trigger_id }).await
+    }
+}
+
+/// Add a trigger on the remote desktop.
+#[tauri::command]
+async fn ipc_remote_trigger_add(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    trigger_json: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            let json = serde_json::json!({ "trigger": serde_json::from_str::<serde_json::Value>(&trigger_json).unwrap_or(serde_json::Value::Null) }).to_string();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::trigger_add(&json)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::TriggerAdd { trigger_json }).await
+    }
+}
+
+/// Update a trigger on the remote desktop.
+#[tauri::command]
+async fn ipc_remote_trigger_update(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    trigger_json: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            let json = serde_json::json!({ "trigger": serde_json::from_str::<serde_json::Value>(&trigger_json).unwrap_or(serde_json::Value::Null) }).to_string();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::trigger_update(&json)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::TriggerUpdate { trigger_json }).await
+    }
+}
+
+/// Remove a trigger on the remote desktop by ID.
+#[tauri::command]
+async fn ipc_remote_trigger_remove(
+    app: tauri::AppHandle,
+    pairing_id: String,
+    trigger_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let role = get_peer_role(&pairing_id);
+    if role == "server" {
+        let tm_guard = state.tunnel_manager.lock().await;
+        if let Some(ref tm) = *tm_guard {
+            let rs = tm.remote_server();
+            let json = serde_json::json!({ "trigger_id": trigger_id }).to_string();
+            rs.send_frame_to_peer(&pairing_id, termfast_daemon::remote_frame::Frame::trigger_remove(&json)).await
+        } else {
+            Err("tunnel manager not initialized".to_string())
+        }
+    } else {
+        let rcm_guard = state.remote_client_manager.lock().await;
+        let rcm = rcm_guard.as_ref().ok_or("remote client manager not initialized")?;
+        rcm.send_frame(&pairing_id, termfast_daemon::remote_client::OutboundFrame::TriggerRemove { trigger_id }).await
     }
 }
 

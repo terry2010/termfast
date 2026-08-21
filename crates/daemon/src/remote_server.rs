@@ -143,6 +143,39 @@ pub type DesktopPairCallback = Box<
 /// Same signature as RemoteClientManager's FrameCallback.
 pub type ServerFrameCallback = Arc<dyn Fn(&str, u8, u32, &[u8]) + Send + Sync>;
 
+/// Trigger management request type (parsed from TRIGGER_* frames).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TriggerRequest {
+    /// "list", "exec", "add", "update", "remove"
+    pub action: String,
+    /// Trigger ID (for exec / remove)
+    #[serde(default)]
+    pub trigger_id: String,
+    /// Full trigger JSON object (for add / update)
+    #[serde(default)]
+    pub trigger: Option<serde_json::Value>,
+}
+
+/// Trigger management response (returned by the callback).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TriggerResponse {
+    pub success: bool,
+    /// For "list": JSON array of triggers. For "exec": execution result.
+    /// For errors: error message.
+    pub data: serde_json::Value,
+}
+
+/// Callback for handling trigger management requests from the peer desktop.
+/// Called when TRIGGER_LIST_REQUEST / TRIGGER_EXEC / TRIGGER_ADD /
+/// TRIGGER_UPDATE / TRIGGER_REMOVE frames are received.
+/// The callback is responsible for accessing the local DaemonState
+/// (config + trigger engine) and performing the requested operation.
+pub type TriggerCallback = Box<
+    dyn Fn(TriggerRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = TriggerResponse> + Send + 'static>>
+        + Send
+        + Sync,
+>;
+
 /// Broadcast a LIST_CHANGED NOTIFY frame to all active tunnels.
 /// Uses try_send (non-blocking) since this is called from sync callbacks.
 /// Mobile clients receiving this frame should re-send LIST_REQUEST.
@@ -188,6 +221,9 @@ pub struct RemoteServer {
     /// Callback for handling DESKTOP_PAIR frames (set by desktop app).
     /// Receives the parsed DesktopPairMessage → Ok or error message.
     desktop_pair_callback: Arc<std::sync::Mutex<Option<DesktopPairCallback>>>,
+    /// Callback for handling trigger management frames (set by desktop app).
+    /// Receives a TriggerRequest → TriggerResponse.
+    trigger_callback: Arc<std::sync::Mutex<Option<TriggerCallback>>>,
     /// Active tunnel connections: pairing_id → async_tx (for pushing frames to mobile).
     /// Used to broadcast LIST_CHANGED notifications when terminals are created/closed.
     active_tunnels: Arc<StdMutex<HashMap<String, mpsc::Sender<Frame>>>>,
@@ -237,6 +273,7 @@ impl RemoteServer {
             answered_questions: Arc::new(StdMutex::new(HashMap::new())),
             file_upload_callback: Arc::new(std::sync::Mutex::new(None)),
             desktop_pair_callback: Arc::new(std::sync::Mutex::new(None)),
+            trigger_callback: Arc::new(std::sync::Mutex::new(None)),
             active_tunnels,
             frame_callback: Arc::new(std::sync::Mutex::new(None)),
             new_terminal_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -256,6 +293,12 @@ impl RemoteServer {
     /// (for role=server) or RemoteClient (for role=client).
     pub fn set_desktop_pair_callback(&self, callback: DesktopPairCallback) {
         *self.desktop_pair_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
+    }
+
+    /// Set the trigger callback (called when TRIGGER_* frames are received).
+    /// The callback handles list/exec/add/update/remove operations on local triggers.
+    pub fn set_trigger_callback(&self, callback: TriggerCallback) {
+        *self.trigger_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Set the frame callback (called when a frame is received from the peer
@@ -641,6 +684,24 @@ impl RemoteServer {
             #[cfg(target_os = "android")]
             remote_frame::CLOSE_TERMINAL => {
                 tracing::warn!("CLOSE_TERMINAL not supported on Android");
+                (Some(Frame::error("not_supported")), false)
+            }
+            // Trigger management (desktop-to-desktop) — not on Android
+            #[cfg(not(target_os = "android"))]
+            remote_frame::TRIGGER_LIST_REQUEST
+            | remote_frame::TRIGGER_EXEC
+            | remote_frame::TRIGGER_ADD
+            | remote_frame::TRIGGER_UPDATE
+            | remote_frame::TRIGGER_REMOVE => {
+                let resp = self.handle_trigger_frame(frame).await;
+                (resp, false)
+            }
+            #[cfg(target_os = "android")]
+            remote_frame::TRIGGER_LIST_REQUEST
+            | remote_frame::TRIGGER_EXEC
+            | remote_frame::TRIGGER_ADD
+            | remote_frame::TRIGGER_UPDATE
+            | remote_frame::TRIGGER_REMOVE => {
                 (Some(Frame::error("not_supported")), false)
             }
             remote_frame::GOODBYE => {
@@ -1049,6 +1110,114 @@ impl RemoteServer {
                     "pairing_id": msg.pairing_id,
                     "message": e,
                 }).to_string()))
+            }
+        }
+    }
+
+    /// Handle TRIGGER_* frames (list / exec / add / update / remove).
+    ///
+    /// All trigger frames carry JSON in the payload. The frame_type determines
+    /// the action. The actual operation is delegated to the `trigger_callback`
+    /// set by the app layer (which has access to DaemonState).
+    ///
+    /// Response is sent as a TRIGGER_LIST_RESPONSE (for list) or
+    /// TRIGGER_EXEC_RESULT (for exec) or OK/ERROR (for add/update/remove).
+    #[cfg(not(target_os = "android"))]
+    async fn handle_trigger_frame(&self, frame: Frame) -> Option<Frame> {
+        // Determine action from frame type
+        let action = match frame.frame_type {
+            remote_frame::TRIGGER_LIST_REQUEST => "list",
+            remote_frame::TRIGGER_EXEC => "exec",
+            remote_frame::TRIGGER_ADD => "add",
+            remote_frame::TRIGGER_UPDATE => "update",
+            remote_frame::TRIGGER_REMOVE => "remove",
+            _ => return Some(Frame::error("unknown_trigger_frame")),
+        };
+
+        // Parse payload (empty for list request, JSON for others)
+        let trigger_id = if frame.frame_type == remote_frame::TRIGGER_LIST_REQUEST {
+            String::new()
+        } else {
+            let payload = match std::str::from_utf8(&frame.payload) {
+                Ok(s) => s,
+                Err(e) => return Some(Frame::error(&format!("utf8: {}", e))),
+            };
+            let req: serde_json::Value = match serde_json::from_str(payload) {
+                Ok(v) => v,
+                Err(e) => return Some(Frame::error(&format!("parse: {}", e))),
+            };
+            req.get("trigger_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        // For add/update, extract the trigger object from payload
+        let trigger_obj = if frame.frame_type == remote_frame::TRIGGER_ADD
+            || frame.frame_type == remote_frame::TRIGGER_UPDATE
+        {
+            let payload = match std::str::from_utf8(&frame.payload) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("TRIGGER add/update: utf8 parse error: {}", e);
+                    return Some(Frame::error(&format!("utf8: {}", e)));
+                }
+            };
+            let req: serde_json::Value = match serde_json::from_str(payload) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("TRIGGER add/update: json parse error: {}", e);
+                    return Some(Frame::error(&format!("parse: {}", e)));
+                }
+            };
+            req.get("trigger").cloned()
+        } else {
+            None
+        };
+
+        let request = TriggerRequest {
+            action: action.to_string(),
+            trigger_id,
+            trigger: trigger_obj,
+        };
+
+        // Check callback is set
+        let callback_is_set = self.trigger_callback.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        if !callback_is_set {
+            tracing::warn!("TRIGGER {}: no callback set", action);
+            return Some(Frame::error("trigger_not_configured"));
+        }
+
+        // Invoke callback (async)
+        let cb_future = {
+            let guard = self.trigger_callback.lock().unwrap_or_else(|e| e.into_inner());
+            guard.as_ref().map(|cb| cb(request.clone()))
+        };
+        let response = match cb_future {
+            Some(fut) => fut.await,
+            None => {
+                return Some(Frame::error("callback_disappeared"));
+            }
+        };
+
+        if !response.success {
+            let err_msg = response.data.as_str().unwrap_or("trigger_error");
+            return Some(Frame::error(err_msg));
+        }
+
+        // Return appropriate response frame based on action
+        match action {
+            "list" => {
+                let json = serde_json::to_string(&response.data).unwrap_or_else(|_| "[]".to_string());
+                Some(Frame::trigger_list_response(&json))
+            }
+            "exec" => {
+                let json = serde_json::to_string(&response.data).unwrap_or_else(|_| "{}".to_string());
+                Some(Frame::trigger_exec_result(&json))
+            }
+            _ => {
+                // add / update / remove — return OK
+                Some(Frame::ok(0))
             }
         }
     }

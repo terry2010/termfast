@@ -15,6 +15,7 @@
     "import": "Import",
     "close": "Close",
     "done": "Done",
+    "refresh": "Refresh",
     "seconds": "seconds",
     "minutes": "minutes",
     "hours": "hours",
@@ -335,7 +336,13 @@
       "OnInterval": "On Interval",
       "OnSchedule": "On Schedule",
       "ManualFire": "Manual Fire"
-    }
+    },
+    "remote_triggers": "Remote Triggers",
+    "no_remote_triggers": "No remote triggers",
+    "execute": "Execute",
+    "exec_success": "Trigger {{id}} executed successfully",
+    "exec_failed": "Trigger {{id}} execution failed",
+    "commands_unit": "commands"
   },
   "template": {
     "library": "Template Library",

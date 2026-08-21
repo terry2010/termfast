@@ -15,6 +15,7 @@
     "import": "导入",
     "close": "关闭",
     "done": "完成",
+    "refresh": "刷新",
     "seconds": "秒",
     "minutes": "分钟",
     "hours": "小时",
@@ -337,7 +338,13 @@
       "OnInterval": "定时触发（OnInterval）",
       "OnSchedule": "计划任务（OnSchedule）",
       "ManualFire": "手动触发（ManualFire）"
-    }
+    },
+    "remote_triggers": "远程触发器",
+    "no_remote_triggers": "暂无远程触发器",
+    "execute": "执行",
+    "exec_success": "触发器 {{id}} 执行成功",
+    "exec_failed": "触发器 {{id}} 执行失败",
+    "commands_unit": "条命令"
   },
   "template": {
     "library": "模板库",

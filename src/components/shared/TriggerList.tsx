@@ -5,6 +5,7 @@ import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useTriggerStore } from "@/stores/triggerStore";
 import { useServerStore } from "@/stores/serverStore";
+import { useRemoteDesktopStore } from "@/stores/remoteDesktopStore";
 import type { TriggerExecution, CommandResult } from "@/stores/triggerStore";
 import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
 import { toast } from "@/components/ui/toast";
@@ -43,11 +44,25 @@ const EVENT_TYPE_COLORS: Record<TriggerType, string> = {
 
 const EMPTY_TRIGGERS: TriggerInstance[] = [];
 
-export function TriggerList({ serverId }: { serverId: string }) {
+export function TriggerList({
+  serverId,
+  remotePairingId,
+}: {
+  serverId: string;
+  remotePairingId?: string;
+}) {
   const { t } = useTranslation();
-  const triggers = useTriggerStore(
+  const isRemote = !!remotePairingId;
+  // For remote: read from remoteDesktopStore; for local/SSH: read from triggerStore
+  const remoteTriggersMap = useRemoteDesktopStore((s) => s.remoteTriggers);
+  const remoteTriggers = isRemote
+    ? remoteTriggersMap[remotePairingId!] || EMPTY_TRIGGERS
+    : EMPTY_TRIGGERS;
+  const localTriggers = useTriggerStore(
     (s) => s.serverTriggers[serverId] || EMPTY_TRIGGERS,
   );
+  const triggers = isRemote ? remoteTriggers : localTriggers;
+
   const setServerTriggers = useTriggerStore((s) => s.setServerTriggers);
   const executing = useTriggerStore((s) => s.executing);
   const templates = useTriggerStore((s) => s.templates);
@@ -57,13 +72,25 @@ export function TriggerList({ serverId }: { serverId: string }) {
   >(undefined);
   const serverStatus = servers.find((s) => s.id === serverId)?.current_status;
 
-  // Load triggers from server config — only update if server has triggers data
+  // Load triggers — for remote, request via IPC (response comes async via event);
+  // for local/SSH, fetch directly via IPC
   useEffect(() => {
+    if (isRemote) {
+      // Remote: send list request, data arrives via remote_client_frame event
+      // which is handled in ServerDetail and stored in remoteDesktopStore
+      ipcInvoke("ipc_remote_trigger_list", {
+        pairing_id: remotePairingId,
+      }).catch((e) =>
+        console.warn(`[TriggerList] remote trigger list failed:`, String(e)),
+      );
+      return;
+    }
+    // Local / SSH server
     const server = servers.find((s) => s.id === serverId);
     if (server?.triggers && server.triggers.length > 0) {
       setServerTriggers(serverId, server.triggers);
     }
-  }, [serverId, servers, setServerTriggers]);
+  }, [serverId, servers, setServerTriggers, isRemote, remotePairingId]);
 
   // Listen for "trigger-add" event from the panel header button
   useEffect(() => {
@@ -79,6 +106,7 @@ export function TriggerList({ serverId }: { serverId: string }) {
 
   // Fetch triggers directly via IPC on mount and when serverId changes
   useEffect(() => {
+    if (isRemote) return; // Remote handled by the effect above + event store
     const isLocal = serverId === "__local__";
     const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
     const ipcParams = isLocal ? {} : { server_id: serverId };
@@ -91,28 +119,46 @@ export function TriggerList({ serverId }: { serverId: string }) {
       .catch((e) =>
         console.warn(`[TriggerList] ${ipcName} failed:`, String(e)),
       );
-  }, [serverId, setServerTriggers]);
+  }, [serverId, setServerTriggers, isRemote]);
+
+  // Refresh trigger list after an operation
+  const refreshTriggers = () => {
+    if (isRemote) {
+      // Remote: send list request, data arrives via event
+      ipcInvoke("ipc_remote_trigger_list", {
+        pairing_id: remotePairingId,
+      }).catch(() => {});
+    } else {
+      const isLocal = serverId === "__local__";
+      const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
+      const ipcParams = isLocal ? {} : { server_id: serverId };
+      ipcInvoke<TriggerInstance[]>(ipcName, ipcParams)
+        .then((triggers) => {
+          if (Array.isArray(triggers)) {
+            setServerTriggers(serverId, triggers);
+          }
+          if (!isLocal) {
+            ipcInvoke<{ servers: any[] }>("ipc_list_servers")
+              .then((data) => {
+                if (data?.servers) {
+                  useServerStore.setState({ servers: data.servers });
+                }
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }
+  };
 
   const handleSaved = () => {
-    const isLocal = serverId === "__local__";
-    const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
-    const ipcParams = isLocal ? {} : { server_id: serverId };
-    ipcInvoke<TriggerInstance[]>(ipcName, ipcParams)
-      .then((triggers) => {
-        if (Array.isArray(triggers)) {
-          setServerTriggers(serverId, triggers);
-        }
-        if (!isLocal) {
-          ipcInvoke<{ servers: any[] }>("ipc_list_servers")
-            .then((data) => {
-              if (data?.servers) {
-                useServerStore.setState({ servers: data.servers });
-              }
-            })
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
+    if (isRemote) {
+      // Remote save is fire-and-forget; wait briefly for the OK frame,
+      // then refresh the list
+      setTimeout(refreshTriggers, 500);
+    } else {
+      refreshTriggers();
+    }
   };
 
   return (
@@ -123,6 +169,7 @@ export function TriggerList({ serverId }: { serverId: string }) {
           trigger={editingTrigger}
           onClose={() => setEditingTrigger(undefined)}
           onSaved={handleSaved}
+          remotePairingId={remotePairingId}
         />
       )}
       {triggers.length === 0 ? (
@@ -159,6 +206,7 @@ export function TriggerList({ serverId }: { serverId: string }) {
                 (e) => e.trigger_id === trigger.id,
               )}
               serverId={serverId}
+              remotePairingId={remotePairingId}
               triggerType={
                 trigger.trigger_type ||
                 templates.find((tpl) => tpl.id === trigger.template_id)?.type ||
@@ -169,7 +217,7 @@ export function TriggerList({ serverId }: { serverId: string }) {
                   ?.built_in || false
               }
               onEdit={() => setEditingTrigger(trigger)}
-              connected={serverStatus === "connected"}
+              connected={isRemote ? true : serverStatus === "connected"}
             />
           ))}
         </div>
@@ -184,6 +232,7 @@ function TriggerCard({
   trigger,
   executing,
   serverId,
+  remotePairingId,
   triggerType,
   builtIn,
   onEdit,
@@ -192,12 +241,14 @@ function TriggerCard({
   trigger: TriggerInstance;
   executing?: TriggerExecution;
   serverId: string;
+  remotePairingId?: string;
   triggerType: TriggerType;
   builtIn: boolean;
   onEdit: () => void;
   connected: boolean;
 }) {
   const { t } = useTranslation();
+  const isRemote = !!remotePairingId;
   const startExecution = useTriggerStore((s) => s.startExecution);
   const finishExecution = useTriggerStore((s) => s.finishExecution);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -209,39 +260,54 @@ function TriggerCard({
 
   const handleToggleBindNewTerminals = async (v: boolean) => {
     try {
-      const isLocal = serverId === "__local__";
-      if (isLocal) {
+      if (isRemote) {
+        // Remote: send update with modified trigger
         const updated = { ...trigger, bind_new_terminals: v };
-        await ipcInvoke("ipc_save_local_trigger", { trigger: updated });
-      } else {
-        await ipcInvoke("ipc_update_trigger", {
-          params: {
-            server_id: serverId,
-            trigger_id: trigger.id,
-            name: trigger.name,
-            trigger_type: trigger.trigger_type,
-            enabled: trigger.enabled,
-            timeout_secs: trigger.timeout_secs,
-            cooldown_secs: trigger.cooldown_secs,
-            continue_on_error: trigger.continue_on_error,
-            notify_on_success: trigger.notify_on_success,
-            notify_on_failure: trigger.notify_on_failure,
-            commands: trigger.commands,
-            exec_in_terminal: trigger.exec_in_terminal,
-            bind_new_terminals: v,
-            interval_secs: trigger.interval_secs,
-            schedule_mode: trigger.schedule_mode,
-            cron_expr: trigger.cron_expr,
-            scheduled_at: trigger.scheduled_at,
-          },
+        await ipcInvoke("ipc_remote_trigger_update", {
+          pairing_id: remotePairingId,
+          trigger_json: JSON.stringify(updated),
         });
-      }
-      // Refresh trigger list
-      const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
-      const ipcParams = isLocal ? {} : { server_id: serverId };
-      const triggers = await ipcInvoke<TriggerInstance[]>(ipcName, ipcParams);
-      if (Array.isArray(triggers)) {
-        useTriggerStore.getState().setServerTriggers(serverId, triggers);
+        // Refresh after a delay (fire-and-forget)
+        setTimeout(() => {
+          ipcInvoke("ipc_remote_trigger_list", {
+            pairing_id: remotePairingId,
+          }).catch(() => {});
+        }, 500);
+      } else {
+        const isLocal = serverId === "__local__";
+        if (isLocal) {
+          const updated = { ...trigger, bind_new_terminals: v };
+          await ipcInvoke("ipc_save_local_trigger", { trigger: updated });
+        } else {
+          await ipcInvoke("ipc_update_trigger", {
+            params: {
+              server_id: serverId,
+              trigger_id: trigger.id,
+              name: trigger.name,
+              trigger_type: trigger.trigger_type,
+              enabled: trigger.enabled,
+              timeout_secs: trigger.timeout_secs,
+              cooldown_secs: trigger.cooldown_secs,
+              continue_on_error: trigger.continue_on_error,
+              notify_on_success: trigger.notify_on_success,
+              notify_on_failure: trigger.notify_on_failure,
+              commands: trigger.commands,
+              exec_in_terminal: trigger.exec_in_terminal,
+              bind_new_terminals: v,
+              interval_secs: trigger.interval_secs,
+              schedule_mode: trigger.schedule_mode,
+              cron_expr: trigger.cron_expr,
+              scheduled_at: trigger.scheduled_at,
+            },
+          });
+        }
+        // Refresh trigger list
+        const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
+        const ipcParams = isLocal ? {} : { server_id: serverId };
+        const triggers = await ipcInvoke<TriggerInstance[]>(ipcName, ipcParams);
+        if (Array.isArray(triggers)) {
+          useTriggerStore.getState().setServerTriggers(serverId, triggers);
+        }
       }
     } catch (e) {
       console.error("toggle bind_new_terminals failed:", e);
@@ -251,10 +317,29 @@ function TriggerCard({
 
   const handleDelete = async () => {
     try {
-      if (serverId === "__local__") {
+      if (isRemote) {
+        await ipcInvoke("ipc_remote_trigger_remove", {
+          pairing_id: remotePairingId,
+          trigger_id: trigger.id,
+        });
+        // Refresh after a delay (fire-and-forget)
+        setTimeout(() => {
+          ipcInvoke("ipc_remote_trigger_list", {
+            pairing_id: remotePairingId,
+          }).catch(() => {});
+        }, 500);
+      } else if (serverId === "__local__") {
         await ipcInvoke("ipc_remove_local_trigger", {
           trigger_id: trigger.id,
         });
+        // Refresh trigger list after successful deletion
+        const triggers = await ipcInvoke<TriggerInstance[]>(
+          "ipc_list_local_triggers",
+          {},
+        );
+        if (Array.isArray(triggers)) {
+          useTriggerStore.getState().setServerTriggers(serverId, triggers);
+        }
       } else {
         await ipcInvoke("ipc_remove_trigger", {
           params: {
@@ -262,14 +347,14 @@ function TriggerCard({
             trigger_id: trigger.id,
           },
         });
-      }
-      // Refresh trigger list after successful deletion
-      const isLocal = serverId === "__local__";
-      const ipcName = isLocal ? "ipc_list_local_triggers" : "ipc_list_triggers";
-      const ipcParams = isLocal ? {} : { server_id: serverId };
-      const triggers = await ipcInvoke<TriggerInstance[]>(ipcName, ipcParams);
-      if (Array.isArray(triggers)) {
-        useTriggerStore.getState().setServerTriggers(serverId, triggers);
+        // Refresh trigger list after successful deletion
+        const triggers = await ipcInvoke<TriggerInstance[]>(
+          "ipc_list_triggers",
+          { server_id: serverId },
+        );
+        if (Array.isArray(triggers)) {
+          useTriggerStore.getState().setServerTriggers(serverId, triggers);
+        }
       }
     } catch (e) {
       console.error("delete trigger failed:", e);
@@ -291,22 +376,40 @@ function TriggerCard({
       success: null,
     });
     try {
-      const isLocal = serverId === "__local__";
-      const result = await ipcInvoke<{
-        success: boolean;
-        executed_commands: number;
-        total_commands: number;
-        results?: CommandResult[];
-      }>(isLocal ? "ipc_manual_fire_local_trigger" : "ipc_manual_fire_trigger",
-        isLocal
-          ? { trigger_id: trigger.id }
-          : { serverId, triggerId: trigger.id },
-      );
-      useTriggerStore.getState().updateExecution(execId, {
-        success: result.success,
-        executed_commands: result.executed_commands,
-        results: result.results,
-      });
+      if (isRemote) {
+        // Remote: fire-and-forget, result comes via TRIGGER_EXEC_RESULT event
+        await ipcInvoke("ipc_remote_trigger_exec", {
+          pairing_id: remotePairingId,
+          trigger_id: trigger.id,
+        });
+        // The result will come asynchronously via the remote_client_frame event.
+        // For now, mark as completed after a delay.
+        // TODO: properly handle TRIGGER_EXEC_RESULT event to update execution state.
+        setTimeout(() => {
+          useTriggerStore.getState().updateExecution(execId, {
+            success: true,
+            executed_commands: trigger.commands.length,
+            results: [],
+          });
+        }, 1000);
+      } else {
+        const isLocal = serverId === "__local__";
+        const result = await ipcInvoke<{
+          success: boolean;
+          executed_commands: number;
+          total_commands: number;
+          results?: CommandResult[];
+        }>(isLocal ? "ipc_manual_fire_local_trigger" : "ipc_manual_fire_trigger",
+          isLocal
+            ? { trigger_id: trigger.id }
+            : { serverId, triggerId: trigger.id },
+        );
+        useTriggerStore.getState().updateExecution(execId, {
+          success: result.success,
+          executed_commands: result.executed_commands,
+          results: result.results,
+        });
+      }
     } catch (e) {
       console.error("fire trigger failed:", e);
       useTriggerStore.getState().updateExecution(execId, {
