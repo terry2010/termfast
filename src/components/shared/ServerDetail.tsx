@@ -236,21 +236,11 @@ export function ServerDetail() {
             terminal_id: t.id ?? t.terminal_id,
             name: t.name || `Terminal #${t.id ?? t.terminal_id}`,
           }));
-          // Auto-select new terminals that weren't in the list before
+          // Update remote terminal list from LIST_RESPONSE
           setRemoteTerminals((prev) => {
-            const prevIds = new Set(prev.map((t) => t.terminal_id));
-            const newTerms = terms.filter((t: any) => !prevIds.has(t.terminal_id));
-            // Auto-switch to the first new terminal (like "My Computer" auto-selects new tabs)
-            // Note: do NOT subscribe here — RemoteTerminalView subscribes on mount.
-            // Subscribing here would cause a double subscription → duplicated output.
-            // Only auto-select if the user hasn't made an explicit tab choice yet
-            // (e.g. first time entering this remote device). If the user chose
-            // overview or a specific terminal, respect that choice.
-            if (newTerms.length > 0 && !remoteTabChoiceMadeRef.current) {
-              const firstNew = newTerms[0];
-              updateRemoteActiveTerminal(firstNew.terminal_id);
-              remoteTabChoiceMadeRef.current = true;
-            }
+            // Do NOT auto-select on LIST_RESPONSE — default to overview tab.
+            // Auto-switch to a new terminal only happens via OK frame (user
+            // explicitly created a new terminal).
             return terms;
           });
           // If the currently active terminal is no longer in the list, switch to overview.
