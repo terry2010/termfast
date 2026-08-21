@@ -119,6 +119,70 @@ android {
     }
 }
 
+// === Rust .so auto-build integration ===
+// Prevents stale .so issues: Gradle automatically runs `cargo build` and
+// copies the fresh .so into jniLibs before every Android build.
+// To skip (e.g. during pure Kotlin iteration), pass -PskipCargoBuild.
+val skipCargoBuild = project.hasProperty("skipCargoBuild")
+val projectRoot = rootProject.projectDir.parentFile!!
+val rustTargetDir = File(projectRoot, "target")
+val cargoToml = File(projectRoot, "Cargo.toml")
+val abi = "arm64-v8a"
+val rustTargetTriple = "aarch64-linux-android"
+
+// Output .so paths
+val debugSo = File(rustTargetDir, "$rustTargetTriple/debug/libtermfast_android_ffi.so")
+val releaseSo = File(rustTargetDir, "$rustTargetTriple/release/libtermfast_android_ffi.so")
+val jniLibDir = File(projectDir, "src/main/jniLibs/$abi")
+val jniLibSo = File(jniLibDir, "libtermfast_android_ffi.so")
+
+val isReleaseBuild = gradle.startParameter.taskNames.any {
+    it.contains("Release", ignoreCase = true)
+}
+
+val cargoBuildTask = tasks.register<Exec>("cargoBuildNative") {
+    group = "rust"
+    description = "Compile Rust .so for Android (auto-invoked before preBuild)"
+    onlyIf { !skipCargoBuild }
+
+    // Re-run if Cargo.toml or any Rust source changes (cargo itself also
+    // does incremental compilation, so this is just a Gradle-level guard).
+    inputs.file(cargoToml).withPropertyName("cargoToml")
+    inputs.dir(File(projectRoot, "crates"))
+        .withPropertyName("rustSources")
+    outputs.file(if (isReleaseBuild) releaseSo else debugSo)
+        .withPropertyName("rustSo")
+
+    workingDir = rootProject.projectDir.parentFile
+    val cargoArgs = if (isReleaseBuild) {
+        listOf("build", "--release", "--target", rustTargetTriple, "-p", "termfast-android-ffi")
+    } else {
+        listOf("build", "--target", rustTargetTriple, "-p", "termfast-android-ffi")
+    }
+    commandLine("cargo", *cargoArgs.toTypedArray())
+
+    // Suppress stdout on incremental no-op builds; show on actual compile
+    isIgnoreExitValue = false
+}
+
+val copyNativeLibTask = tasks.register<Copy>("copyNativeLib") {
+    group = "rust"
+    description = "Copy fresh .so into jniLibs (auto-invoked after cargoBuildNative)"
+    onlyIf { !skipCargoBuild }
+    dependsOn(cargoBuildTask)
+
+    from(if (isReleaseBuild) releaseSo else debugSo)
+    into(jniLibDir)
+    rename { "libtermfast_android_ffi.so" }
+}
+
+// Hook into Android build lifecycle: run before preBuild so the .so is
+// in place before the APK packaging step.
+tasks.named("preBuild") {
+    dependsOn(copyNativeLibTask)
+}
+// === Rust .so auto-build integration END ===
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
     implementation(composeBom)
