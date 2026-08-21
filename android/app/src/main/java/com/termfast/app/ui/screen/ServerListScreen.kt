@@ -91,6 +91,9 @@ fun ServerListScreen(navController: NavController) {
     var proxyStartingIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showRemotePicker by remember { mutableStateOf(false) }
     var selectedPairing by remember { mutableStateOf<com.termfast.app.data.RemoteTunnelConfig?>(null) }
+    // SSH terminal picker dialog state
+    var showSshPicker by remember { mutableStateOf(false) }
+    var selectedSshServer by remember { mutableStateOf<Pair<String, String>?>(null) } // (serverId, serverName)
     var showLoginPrompt by remember { mutableStateOf(false) }
     var remoteVersion by remember { mutableStateOf(0) }
     // isOnline map: pairingId -> isOnline (from backend /devices)
@@ -771,7 +774,10 @@ fun ServerListScreen(navController: NavController) {
                                 if (draggedItemKey == null) navController.navigate("server_detail/${server.id}")
                             },
                             onTerminal = {
-                                if (draggedItemKey == null) navController.navigate("terminal/${server.id}")
+                                if (draggedItemKey == null) {
+                                    selectedSshServer = server.id to server.name.ifBlank { server.ssh.host }
+                                    showSshPicker = true
+                                }
                             },
                             onDelete = {
                                 scope.launch {
@@ -886,6 +892,20 @@ fun ServerListScreen(navController: NavController) {
                 selectedPairing = null
             },
         )
+
+        // SSH terminal picker dialog — shows existing sessions + new terminal button
+        selectedSshServer?.let { (sid, sname) ->
+            SshTerminalPickerDialog(
+                visible = showSshPicker,
+                serverId = sid,
+                serverName = sname,
+                navController = navController,
+                onDismiss = {
+                    showSshPicker = false
+                    selectedSshServer = null
+                },
+            )
+        }
 
         // Login dialog — shown when scanning without login
         if (showLoginPrompt) {
