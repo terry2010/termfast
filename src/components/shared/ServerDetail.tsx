@@ -1082,13 +1082,23 @@ export function ServerDetail() {
   };
 
   const commitRename = () => {
-    if (!renamingTabId || !server?.id) {
+    if (!renamingTabId) {
       setRenamingTabId(null);
       return;
     }
     const newLabel = renameText.trim();
     if (newLabel) {
-      renameTerminalTab(server.id, renamingTabId, newLabel);
+      const serverId = selectedId || "";
+      if (isRemote && renamingTabId.startsWith("remote_term:")) {
+        // Remote terminal: update name in local state
+        const termId = parseInt(renamingTabId.slice("remote_term:".length), 10);
+        setRemoteTerminals((prev) =>
+          prev.map((rt) => rt.terminal_id === termId ? { ...rt, name: newLabel } : rt),
+        );
+      } else {
+        // Local SSH or "My Computer": update in Zustand store
+        renameTerminalTab(serverId, renamingTabId, newLabel);
+      }
     }
     setRenamingTabId(null);
   };
@@ -1106,6 +1116,22 @@ export function ServerDetail() {
     }
     removeTerminalTab(serverId, tabId);
     maybeDisconnectIfIdle(serverId, currentTabs.length - 1);
+  };
+
+  // Close a remote terminal tab (sends CLOSE_TERMINAL to desktop)
+  const closeRemoteTab = (tabId: string) => {
+    if (!tabId.startsWith("remote_term:") || !remotePairingId) return;
+    const termId = parseInt(tabId.slice("remote_term:".length), 10);
+    ipcInvoke("ipc_remote_client_close_terminal", {
+      pairing_id: remotePairingId,
+      terminal_id: termId,
+    }).catch((err: any) => {
+      toast.error(`Close failed: ${err?.message || err}`);
+    });
+    setRemoteTerminals((prev) => prev.filter((t) => t.terminal_id !== termId));
+    if (remoteActiveTerminalRef.current === termId) {
+      updateRemoteActiveTerminal(null);
+    }
   };
 
   // Kill the tmux session on the server, then close the tab
@@ -1191,23 +1217,47 @@ export function ServerDetail() {
   // Overview tab is never part of the draggable set.
   const handleReorderTabs = (draggedId: string, targetId: string) => {
     if (draggedId === targetId) return;
-    const serverId = selectedId || "";
-    const currentTabs = terminalTabsByServer[serverId] || [];
-    const draggedIndex = currentTabs.findIndex((tt) => tt.id === draggedId);
-    const targetIndex = currentTabs.findIndex((tt) => tt.id === targetId);
-    if (draggedIndex === -1 || targetIndex === -1) return;
-    const next = [...currentTabs];
-    const [moved] = next.splice(draggedIndex, 1);
-    next.splice(targetIndex, 0, moved);
-    setTerminalTabsForServer(serverId, next);
+    if (isRemote) {
+      // Remote terminals: reorder in local state
+      const draggedTermId = parseInt(draggedId.slice("remote_term:".length), 10);
+      const targetTermId = parseInt(targetId.slice("remote_term:".length), 10);
+      setRemoteTerminals((prev) => {
+        const draggedIndex = prev.findIndex((rt) => rt.terminal_id === draggedTermId);
+        const targetIndex = prev.findIndex((rt) => rt.terminal_id === targetTermId);
+        if (draggedIndex === -1 || targetIndex === -1) return prev;
+        const next = [...prev];
+        const [moved] = next.splice(draggedIndex, 1);
+        next.splice(targetIndex, 0, moved);
+        return next;
+      });
+    } else {
+      // Local SSH or "My Computer": reorder in Zustand store
+      const serverId = selectedId || "";
+      const currentTabs = terminalTabsByServer[serverId] || [];
+      const draggedIndex = currentTabs.findIndex((tt) => tt.id === draggedId);
+      const targetIndex = currentTabs.findIndex((tt) => tt.id === targetId);
+      if (draggedIndex === -1 || targetIndex === -1) return;
+      const next = [...currentTabs];
+      const [moved] = next.splice(draggedIndex, 1);
+      next.splice(targetIndex, 0, moved);
+      setTerminalTabsForServer(serverId, next);
+    }
   };
 
   // Restore a tab's label to its default
   const restoreDefaultName = (tabId: string) => {
     const serverId = selectedId || "";
-    const tab = terminalTabsByServer[serverId]?.find((tt) => tt.id === tabId);
-    if (tab) {
-      renameTerminalTab(serverId, tabId, tab.defaultLabel);
+    if (isRemote && tabId.startsWith("remote_term:")) {
+      // Remote terminal: restore to "Terminal #N"
+      const termId = parseInt(tabId.slice("remote_term:".length), 10);
+      setRemoteTerminals((prev) =>
+        prev.map((rt) => rt.terminal_id === termId ? { ...rt, name: `Terminal #${termId}` } : rt),
+      );
+    } else {
+      const tab = terminalTabsByServer[serverId]?.find((tt) => tt.id === tabId);
+      if (tab) {
+        renameTerminalTab(serverId, tabId, tab.defaultLabel);
+      }
     }
   };
 
@@ -1282,9 +1332,36 @@ export function ServerDetail() {
   const handleTabContextMenu = (e: React.MouseEvent, tabId: string) => {
     const serverId = selectedId || "";
     const currentTabs = terminalTabsByServer[serverId] || [];
+    // For remote terminals, look up in remoteTerminals instead
+    const isRemoteTab = tabId.startsWith("remote_term:");
+    const remoteTab = isRemoteTab
+      ? remoteTerminals.find((rt) => `remote_term:${rt.terminal_id}` === tabId)
+      : null;
     const tab = currentTabs.find((tt) => tt.id === tabId);
-    if (!tab) return;
+    if (!tab && !remoteTab) return;
+    const tabLabel = tab?.label ?? remoteTab?.name ?? "";
     const hasDisconnected = currentTabs.some((tt) => tt.disconnected);
+
+    // Remote terminal tabs: only show rename + close (no SSH-specific actions)
+    if (isRemoteTab) {
+      const items: ContextMenuEntry[] = [
+        {
+          label: t("tab.rename"),
+          onClick: () => handleRenameTab(tabId, tabLabel),
+        },
+        {
+          label: t("tab.restore_default_name"),
+          onClick: () => restoreDefaultName(tabId),
+          disabled: remoteTab == null || remoteTab.name === `Terminal #${remoteTab.terminal_id}`,
+        },
+        { separator: true },
+        { label: t("tab.close_session"), onClick: () => closeRemoteTab(tabId) },
+      ];
+      showContextMenu(e, items);
+      return;
+    }
+    if (!tab) return;
+
     const items: ContextMenuEntry[] = [
       {
         label: t("tab.rename"),
