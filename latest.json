@@ -1,15 +1,15 @@
 {
-  "version": "0.2.6",
-  "notes": "See the assets below to download this version.",
-  "pub_date": "2026-08-08T06:33:44.134Z",
+  "version": "0.4.13",
+  "notes": "See the assets below to download this version.\n\n**Android APK SHA-256:** `7a6f270d1b5b9072660f3ee98afaeccc7db71b27d616e8f32b35f93fe1feb9ea`\n",
+  "pub_date": "2026-08-21T15:29:33.905Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "",
-      "url": "https://gh-proxy.com/https://github.com/terry2010/termfast/releases/download/v0.2.6/TermFast_aarch64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSZkdZaUk1UWpPbjEwZ1FhQzFuRGIzWU1HYnZ6NDliMUExSVRJcHV2SG9WQTFpRytUNW9FeDJHaWYrY01kZGdDZGVaYTlpQ0hSSmU5eEJTdVJEalRMWTEwMzZZYUZZQ1E4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MzI1NTM0CWZpbGU6VGVybUZhc3QuYXBwLnRhci5negplcFd1MXREZVZ0RDB4MnJUd0R2UXRZT1IrTDMrbU9LZEIrL0lYdkExcjlpTDZWYUtlTE5KSzc4eDZ3bCtqcTJQL1psVURQa2xkRDhBU0xaUk9RSkZDQT09Cg==",
+      "url": "https://github.com/terry2010/termfast/releases/download/v0.4.13/TermFast_0.4.13_aarch64.app.tar.gz"
     },
     "windows-x86_64": {
-      "signature": "",
-      "url": "https://gh-proxy.com/https://github.com/terry2010/termfast/releases/download/v0.2.6/TermFast_0.2.6_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSZkdZaUk1UWpPbi9WOFVhcFpGOXRxUVUxalRFVkFvMEVWSDBXKzY5SXM0MDJoV0loQXZWZ3lvZ0xDSm83ZW9PSGRDNCtUYndnY0JxRmR6aEE4UC9SZG9YbWg5dFRWZlE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MzI2MTEyCWZpbGU6VGVybUZhc3RfMC40LjEzX3g2NC1zZXR1cC5leGUKd3QvU1VxRnJIWlhMT0VybGFwV0lJOW1kc0xpVFkwZk84WWZMMmFlS0xRYVpEc1N3SmoyZ0F0K0gzTkRlZlNFQVdDc2tKMys4S0VWRFp4SXRDaFVGQ3c9PQo=",
+      "url": "https://github.com/terry2010/termfast/releases/download/v0.4.13/TermFast_0.4.13_x64-setup.exe"
     }
   }
 }
