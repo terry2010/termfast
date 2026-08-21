@@ -6,6 +6,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Terminal
@@ -13,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -24,6 +26,7 @@ import com.termfast.app.data.RustRepository
 import com.termfast.app.data.RemoteTunnelManager
 import com.termfast.app.data.TunnelState
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.net.URLEncoder
@@ -205,6 +208,7 @@ private fun TerminalListContent(
     val relayUrl = pairing.relayUrl
     val pairingJwt = pairing.pairingJwt
     val pairingRefreshToken = pairing.pairingRefreshToken
+    val context = LocalContext.current
 
     val pairingKey = remember(pairingKeyHex) {
         pairingKeyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
@@ -215,6 +219,7 @@ private fun TerminalListContent(
     var error by remember { mutableStateOf<String?>(null) }
     var transportState by remember { mutableStateOf<TunnelState>(TunnelState.Disconnected) }
     var protocolReady by remember { mutableStateOf(false) }
+    var creatingTerminal by remember { mutableStateOf(false) }
 
     val tunnelManager = remember(pairingId) {
         TerminalSessionManager.getOrCreateTunnelManager(pairingId, pairingKey, relayUrl, pairingJwt, pairingRefreshToken)
@@ -364,8 +369,79 @@ private fun TerminalListContent(
         if (terminals.isEmpty()) {
             Text("没有可用的远程终端", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
-            Text("请在桌面端打开终端", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
-            return@Column
+            Text("请在桌面端打开终端，或点击下方新建", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+        }
+
+        // "新建本地终端" button — sends NEW_TERMINAL frame to desktop,
+        // asking it to open a new local terminal. On OK response, navigates
+        // to the new terminal just like clicking an existing one.
+        if (protocolReady && !creatingTerminal) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, bottom = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+                tonalElevation = 1.dp,
+                onClick = {
+                    creatingTerminal = true
+                    scope.launch {
+                        val sent = tunnelManager.sendNewTerminal()
+                        if (!sent) {
+                            creatingTerminal = false
+                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                android.widget.Toast.makeText(context, "发送失败，请重试", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            return@launch
+                        }
+                        val result = awaitNewTerminalOk(pairingId)
+                        creatingTerminal = false
+                        if (result != null) {
+                            val (newTerminalId, termName) = result
+                            onTerminalClick(newTerminalId, termName.ifBlank { "Terminal" })
+                        } else {
+                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                android.widget.Toast.makeText(context, "新建超时，请重试", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                },
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "新建本地终端",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+
+        // Loading indicator while creating a new terminal
+        if (creatingTerminal) {
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("正在新建终端...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
 
         // Group terminals by serverName

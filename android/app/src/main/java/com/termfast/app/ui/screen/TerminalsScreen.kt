@@ -51,7 +51,7 @@ private suspend fun waitForProtocolReady(tm: RemoteTunnelManager, timeoutMs: Lon
  * Returns (terminal_id, name) from the OK payload, or null on timeout.
  * The caller is responsible for sending NEW_TERMINAL before calling this.
  */
-private suspend fun awaitNewTerminalOk(
+internal suspend fun awaitNewTerminalOk(
     pid: String,
     timeoutMs: Long = 10000,
 ): Pair<Int, String>? {
