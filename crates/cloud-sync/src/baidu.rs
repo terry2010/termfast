@@ -452,7 +452,7 @@ impl CloudProviderTrait for BaiduProvider {
 
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            tracing::warn!("baidu file_info: HTTP {} body={}", status, &body[..body.len().min(200)]);
+            tracing::warn!("baidu file_info: HTTP {} body={}", status, &body[..body.floor_char_boundary(200)]);
             return Err(http_error(
                 "查询文件信息失败",
                 status, body
@@ -460,7 +460,7 @@ impl CloudProviderTrait for BaiduProvider {
         }
 
         let body_text = resp.text().await.unwrap_or_default();
-        tracing::debug!("baidu file_info: response body={}", &body_text[..body_text.len().min(500)]);
+        tracing::debug!("baidu file_info: response body={}", &body_text[..body_text.floor_char_boundary(500)]);
 
         let meta: BaiduFileMeta = serde_json::from_str(&body_text)
             .map_err(|e| {

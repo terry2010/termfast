@@ -42,7 +42,9 @@ impl CallbackServer {
                 let n = stream.read(&mut buf).await.unwrap_or(0);
                 let request = String::from_utf8_lossy(&buf[..n]);
                 tracing::info!("OAuth callback received: {} bytes", n);
-                tracing::debug!("OAuth callback request: {}", request);
+                // Security: don't log the full request — it contains the
+                // authorization code in the URL query string.
+                tracing::debug!("OAuth callback request length: {} bytes", request.len());
 
                 // Parse the request line: GET /callback?code=xxx&state=yyy HTTP/1.1
                 let first_line = request.lines().next().unwrap_or("");
@@ -67,7 +69,9 @@ impl CallbackServer {
                         _ => {}
                     }
                 }
-                tracing::info!("OAuth callback parsed: code={}, state={}", code, state);
+                // Security: don't log the authorization code — it can be
+                // exchanged for tokens. Log only whether a code was received.
+                tracing::info!("OAuth callback parsed: code_len={}, state_len={}", code.len(), state.len());
 
                 // Send a response to the browser
                 let body = if code.is_empty() {

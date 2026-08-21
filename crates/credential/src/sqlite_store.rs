@@ -36,7 +36,21 @@ pub struct SqlCipherCredentialStore {
     dek: Mutex<Option<[u8; 32]>>,
     /// Master password held in memory for export_to (envelope encryption).
     /// None when locked or when unlock was via cached DEK (no password available).
-    master_password: Mutex<Option<String>>,
+    /// Uses Zeroizing<String> so the password is securely wiped from memory
+    /// when replaced or dropped.
+    master_password: Mutex<Option<zeroize::Zeroizing<String>>>,
+}
+
+impl Drop for SqlCipherCredentialStore {
+    fn drop(&mut self) {
+        // Zeroize sensitive data when the store is dropped.
+        let mut dek_guard = self.dek.lock().unwrap();
+        dek_guard.zeroize();
+        *dek_guard = None;
+        // Zeroizing<String> handles its own zeroization on drop,
+        // but we explicitly clear the Option to release it immediately.
+        *self.master_password.lock().unwrap() = None;
+    }
 }
 
 /// Derive a salt from a DB file path.
@@ -104,7 +118,7 @@ impl SqlCipherCredentialStore {
         let dek: [u8; 32] = derived.as_bytes().try_into().map_err(|_| anyhow!("invalid key length"))?;
         self.unlock(&dek)?;
         // Store master password for export_to
-        *self.master_password.lock().unwrap() = Some(master_password.to_string());
+        *self.master_password.lock().unwrap() = Some(zeroize::Zeroizing::new(master_password.to_string()));
         Ok(())
     }
 
@@ -121,7 +135,7 @@ impl SqlCipherCredentialStore {
         self.storage.rekey(&new_dek).map_err(|e| anyhow!(e))?;
         // Store the new DEK and master password
         *self.dek.lock().unwrap() = Some(new_dek);
-        *self.master_password.lock().unwrap() = Some(master_password.to_string());
+        *self.master_password.lock().unwrap() = Some(zeroize::Zeroizing::new(master_password.to_string()));
         Ok(())
     }
 
@@ -141,7 +155,7 @@ impl SqlCipherCredentialStore {
 
         // Update stored DEK and master password
         *self.dek.lock().unwrap() = Some(new_dek);
-        *self.master_password.lock().unwrap() = Some(new_password.to_string());
+        *self.master_password.lock().unwrap() = Some(zeroize::Zeroizing::new(new_password.to_string()));
         Ok(new_dek)
     }
 

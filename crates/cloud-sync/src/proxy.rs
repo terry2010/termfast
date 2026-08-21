@@ -209,9 +209,8 @@ mod windows_proxy {
                 Some(&mut len),
             );
 
-            let _ = RegCloseKey(hkey);
-
             if enabled == 0 {
+                let _ = RegCloseKey(hkey);
                 return None;
             }
 

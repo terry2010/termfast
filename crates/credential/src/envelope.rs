@@ -111,6 +111,43 @@ impl Argon2Params {
         let p_cost = u16::from_le_bytes([data[8], data[9]]);
         Self { m_cost, t_cost, p_cost }
     }
+
+    /// Validate that the params are within safe bounds.
+    /// Prevents DoS via crafted encrypted files with extremely high m_cost
+    /// or t_cost (which would cause Argon2 to allocate excessive memory
+    /// or run for a very long time before GCM authentication fails).
+    /// Limits are generous enough to allow future upgrades.
+    fn validate(&self) -> Result<(), EnvelopeError> {
+        // m_cost is in KiB. Max 256 MiB (262144 KiB) — well above current
+        // desktop default of 64 MiB, but prevents 4 TB allocations.
+        const MAX_M_COST: u32 = 256 * 1024;
+        // t_cost: max 100 iterations (current default is 3).
+        const MAX_T_COST: u32 = 100;
+        // p_cost: max 16 lanes (current default is 1).
+        const MAX_P_COST: u16 = 16;
+        // m_cost must be at least 8 KiB (Argon2 minimum).
+        const MIN_M_COST: u32 = 8;
+
+        if self.m_cost < MIN_M_COST || self.m_cost > MAX_M_COST {
+            return Err(EnvelopeError::Crypto(format!(
+                "invalid argon2 m_cost: {} (must be {}-{})",
+                self.m_cost, MIN_M_COST, MAX_M_COST
+            )));
+        }
+        if self.t_cost == 0 || self.t_cost > MAX_T_COST {
+            return Err(EnvelopeError::Crypto(format!(
+                "invalid argon2 t_cost: {} (must be 1-{})",
+                self.t_cost, MAX_T_COST
+            )));
+        }
+        if self.p_cost == 0 || self.p_cost > MAX_P_COST {
+            return Err(EnvelopeError::Crypto(format!(
+                "invalid argon2 p_cost: {} (must be 1-{})",
+                self.p_cost, MAX_P_COST
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Errors from envelope crypto operations.
@@ -270,6 +307,9 @@ pub fn decrypt(
 
     // Parse header
     let params = Argon2Params::from_bytes(&blob[5..5 + PARAMS_LEN]);
+    // Security: validate params before Argon2 derivation to prevent DoS
+    // via crafted files with extremely high m_cost/t_cost.
+    params.validate()?;
     let salt = &blob[5 + PARAMS_LEN..5 + PARAMS_LEN + SALT_LEN];
     let nonce_kek = &blob[5 + PARAMS_LEN + SALT_LEN..HEADER_LEN];
     let wrapped_dek = &blob[HEADER_LEN..HEADER_LEN + WRAPPED_DEK_LEN];
@@ -356,6 +396,8 @@ pub fn change_password(
 
     // Parse old header
     let old_params = Argon2Params::from_bytes(&blob[5..5 + PARAMS_LEN]);
+    // Security: validate params before Argon2 derivation to prevent DoS.
+    old_params.validate()?;
     let old_salt = &blob[5 + PARAMS_LEN..5 + PARAMS_LEN + SALT_LEN];
     let old_nonce_kek = &blob[5 + PARAMS_LEN + SALT_LEN..HEADER_LEN];
     let wrapped_dek = &blob[HEADER_LEN..HEADER_LEN + WRAPPED_DEK_LEN];
@@ -825,6 +867,38 @@ mod tests {
             parsed.wrapped_dek, parsed.nonce_data, parsed.ciphertext,
         );
         assert_eq!(reassembled, blob);
+    }
+
+    #[test]
+    fn test_argon2_params_validation_rejects_extreme_values() {
+        // m_cost too high (would cause OOM)
+        assert!(Argon2Params { m_cost: u32::MAX, t_cost: 3, p_cost: 1 }.validate().is_err());
+        // m_cost too low (below Argon2 minimum)
+        assert!(Argon2Params { m_cost: 1, t_cost: 3, p_cost: 1 }.validate().is_err());
+        // t_cost too high
+        assert!(Argon2Params { m_cost: 32768, t_cost: u32::MAX, p_cost: 1 }.validate().is_err());
+        // t_cost zero
+        assert!(Argon2Params { m_cost: 32768, t_cost: 0, p_cost: 1 }.validate().is_err());
+        // p_cost too high
+        assert!(Argon2Params { m_cost: 32768, t_cost: 3, p_cost: u16::MAX }.validate().is_err());
+        // p_cost zero
+        assert!(Argon2Params { m_cost: 32768, t_cost: 3, p_cost: 0 }.validate().is_err());
+        // Valid params should pass
+        assert!(Argon2Params::desktop().validate().is_ok());
+        assert!(Argon2Params::mobile().validate().is_ok());
+    }
+
+    #[test]
+    fn test_decrypt_rejects_extreme_argon2_params() {
+        let salt = make_salt();
+        let blob = encrypt(TEST_MAGIC, "pw", &salt, &[], Argon2Params::mobile(), b"data").unwrap();
+        // Tamper with m_cost in the header to an extreme value
+        let mut tampered = blob.clone();
+        // m_cost is at offset 5..9 (4 bytes, little-endian)
+        tampered[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+        // Decrypt should fail with Crypto error (params validation), not attempt Argon2
+        let result = decrypt(TEST_MAGIC, "pw", &[], &tampered);
+        assert!(matches!(result, Err(EnvelopeError::Crypto(_))));
     }
 }
 

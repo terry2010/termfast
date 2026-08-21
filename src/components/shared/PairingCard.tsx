@@ -553,7 +553,11 @@ function QRCodeDisplay({ content }: { content: string }) {
     import("qrcode")
       .then((QRCode) => {
         QRCode.toString(content, { type: "svg", margin: 1, width: 200 }, (err: any, s: string) => {
-          if (!err) setSvg(s);
+          if (!err) {
+            // Security: sanitize SVG to strip any potential script tags
+            // (defense-in-depth, qrcode lib shouldn't produce them)
+            setSvg(s.replace(/<script[\s\S]*?<\/script>/gi, ""));
+          }
         });
       })
       .catch(() => {
