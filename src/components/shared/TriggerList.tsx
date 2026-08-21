@@ -3,6 +3,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { listen } from "@tauri-apps/api/event";
 import { useTriggerStore } from "@/stores/triggerStore";
 import { useServerStore } from "@/stores/serverStore";
 import { useRemoteDesktopStore } from "@/stores/remoteDesktopStore";
@@ -120,6 +121,30 @@ export function TriggerList({
         console.warn(`[TriggerList] ${ipcName} failed:`, String(e)),
       );
   }, [serverId, setServerTriggers, isRemote]);
+
+  // Listen for "local_trigger_changed" event — emitted when a remote desktop
+  // modifies local triggers (add/update/remove via trigger_callback).
+  // Only relevant for the local (__local__) trigger list.
+  useEffect(() => {
+    if (isRemote || serverId !== "__local__") return;
+    let unlisten: (() => void) | undefined;
+    listen("local_trigger_changed", () => {
+      ipcInvoke<TriggerInstance[]>("ipc_list_local_triggers", {})
+        .then((triggers) => {
+          if (Array.isArray(triggers)) {
+            setServerTriggers("__local__", triggers);
+          }
+        })
+        .catch((e) =>
+          console.warn(`[TriggerList] local_trigger_changed refresh failed:`, String(e)),
+        );
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [serverId, isRemote, setServerTriggers]);
 
   // Refresh trigger list after an operation
   const refreshTriggers = () => {

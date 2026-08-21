@@ -684,6 +684,9 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
                         let resp = termfast_daemon::handler::handle_request(&proto_req, &ds).await;
                         match resp {
                             termfast_daemon::proto::Response::Ok { .. } => {
+                                // Notify frontend to refresh local trigger list
+                                use tauri::Emitter;
+                                let _ = handle.emit("local_trigger_changed", ());
                                 termfast_daemon::remote_server::TriggerResponse {
                                     success: true,
                                     data: serde_json::json!("ok"),
@@ -709,6 +712,9 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
                         let resp = termfast_daemon::handler::handle_request(&proto_req, &ds).await;
                         match resp {
                             termfast_daemon::proto::Response::Ok { .. } => {
+                                // Notify frontend to refresh local trigger list
+                                use tauri::Emitter;
+                                let _ = handle.emit("local_trigger_changed", ());
                                 termfast_daemon::remote_server::TriggerResponse {
                                     success: true,
                                     data: serde_json::json!("ok"),
