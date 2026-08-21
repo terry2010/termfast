@@ -351,7 +351,7 @@ fun TerminalsScreen(
                                 onDrag = { change, dragAmount ->
                                     change.consume()
                                     dragOffsetY += dragAmount.y
-                                    // Live reorder: swap when dragged center crosses another item's center
+                                    // Live reorder: swap when dragged center crosses target's midpoint
                                     val layoutInfo = listState.layoutInfo
                                     val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == session.sessionId }
                                     if (draggedInfo != null) {
@@ -359,10 +359,15 @@ fun TerminalsScreen(
                                         // Only target sessions in the same server group
                                         val groupSessionIds = serverSessions.map { it.sessionId }.toSet()
                                         val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
-                                            vi.key != session.sessionId &&
-                                            vi.key in groupSessionIds &&
-                                            draggedCenter >= vi.offset &&
-                                            draggedCenter < vi.offset + vi.size
+                                            if (vi.key !in groupSessionIds || vi.key == session.sessionId) return@firstOrNull false
+                                            val targetMid = vi.offset + vi.size / 2
+                                            if (draggedInfo.offset > vi.offset) {
+                                                // Dragging up: swap when center crosses target midpoint from below
+                                                draggedCenter < targetMid
+                                            } else {
+                                                // Dragging down: swap when center crosses target midpoint from above
+                                                draggedCenter > targetMid
+                                            }
                                         }
                                         if (target != null && target.key != session.sessionId) {
                                             // Swap in sessions state for live reorder

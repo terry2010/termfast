@@ -514,15 +514,21 @@ fun ServerListScreen(navController: NavController) {
                                 onDrag = { change, dragAmount ->
                                     change.consume()
                                     dragOffsetY += dragAmount.y
-                                    // Live reorder: swap when dragged center crosses another item's center
+                                    // Live reorder: swap when dragged center crosses target's midpoint
                                     val layoutInfo = lazyListState.layoutInfo
                                     val draggedInfo = layoutInfo.visibleItemsInfo.find { it.key == item.key }
                                     if (draggedInfo != null) {
                                         val draggedCenter = draggedInfo.offset + draggedInfo.size / 2 + dragOffsetY.toInt()
                                         val target = layoutInfo.visibleItemsInfo.firstOrNull { vi ->
-                                            vi.key != item.key &&
-                                            draggedCenter >= vi.offset &&
-                                            draggedCenter < vi.offset + vi.size
+                                            if (vi.key == item.key) return@firstOrNull false
+                                            val targetMid = vi.offset + vi.size / 2
+                                            if (draggedInfo.offset > vi.offset) {
+                                                // Dragging up: swap when center crosses target midpoint from below
+                                                draggedCenter < targetMid
+                                            } else {
+                                                // Dragging down: swap when center crosses target midpoint from above
+                                                draggedCenter > targetMid
+                                            }
                                         }
                                         if (target != null && target.key != item.key) {
                                             // Swap in displayItems
