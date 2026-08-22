@@ -58,8 +58,7 @@ fun PairingScreen(navController: NavController) {
                     // Don't filter by mobileDeviceId — the backend already filters
                     // by user ID (from JWT). Filtering by getDeviceName() caused
                     // devices to disappear when getprop returned inconsistent values.
-                    // Only show mobile pairings (phone↔desktop), not desktop↔desktop.
-                    devices = withContext(Dispatchers.IO) { PairingApi.listDevicesByType("mobile") }
+                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                     android.util.Log.d("PairingScreen", "Loaded ${devices.size} devices")
                     devices.forEach { d ->
                         android.util.Log.d("PairingScreen", "Device: ${d.desktopName}, isOnline=${d.isOnline}, type=${d.pairingType}")
@@ -180,7 +179,7 @@ fun PairingScreen(navController: NavController) {
                                     if (refreshToken.isNotEmpty()) {
                                         PairingStore.saveRefreshToken(refreshToken)
                                     }
-                                    devices = withContext(Dispatchers.IO) { PairingApi.listDevicesByType("mobile") }
+                                    devices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                                     Toast.makeText(context, "登录成功", Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "登录失败: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -245,6 +244,14 @@ fun PairingScreen(navController: NavController) {
                     Spacer(Modifier.height(8.dp))
                     Text("已配对设备", style = MaterialTheme.typography.titleMedium)
                     devices.forEach { d ->
+                        val isDesktopLink = d.pairingType == "desktop"
+                        val displayName = if (isDesktopLink) {
+                            // Desktop interconnect: show both desktop names
+                            val peerName = d.mobileName.ifEmpty { "另一台桌面端" }
+                            "${d.desktopName} ↔ $peerName"
+                        } else {
+                            d.desktopName.ifEmpty { d.deviceId }
+                        }
                         Card(
                             onClick = {
                                 scope.launch {
@@ -276,7 +283,24 @@ fun PairingScreen(navController: NavController) {
                                 )
                                 Spacer(Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(d.desktopName.ifEmpty { d.deviceId }, style = MaterialTheme.typography.bodyMedium)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(displayName, style = MaterialTheme.typography.bodyMedium)
+                                        if (isDesktopLink) {
+                                            Spacer(Modifier.width(6.dp))
+                                            Surface(
+                                                shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                                modifier = Modifier.padding(start = 0.dp),
+                                            ) {
+                                                Text(
+                                                    "桌面互联",
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                                )
+                                            }
+                                        }
+                                    }
                                     Text(
                                         if (d.isOnline) "在线" else "离线",
                                         style = MaterialTheme.typography.bodySmall,
@@ -377,7 +401,7 @@ fun PairingScreen(navController: NavController) {
                             if (status == "completed") {
                                 val jwt = result.optString("pairing_jwt")
                                 val pairingRefreshToken = result.optString("refresh_token", "")
-                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevicesByType("mobile") }
+                                val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                                 val desktopDeviceId = updatedDevices.find { it.pairingId == qr.pairingId }?.desktopDeviceId ?: ""
                                 if (jwt.isNotEmpty() && qr.pairingKey.isNotEmpty() && qr.relayUrl.isNotEmpty()) {
                                     PairingStore.savePairing(
