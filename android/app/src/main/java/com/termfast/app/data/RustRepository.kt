@@ -23,6 +23,13 @@ object RustRepository {
     private val _events = MutableSharedFlow<RustEvent>(extraBufferCapacity = 256)
     val events: SharedFlow<RustEvent> = _events.asSharedFlow()
 
+    /** Emit an event from Kotlin side (e.g. tunnel disconnect notification). */
+    fun emitEvent(event: RustEvent) {
+        if (!_events.tryEmit(event)) {
+            Log.w("RustRepository", "Event buffer full, dropped: ${event::class.simpleName}")
+        }
+    }
+
     /** In-memory log buffer, retained across screen navigations. */
     private val _logBuffer = MutableStateFlow<List<RustEvent.LogEntry>>(emptyList())
     val logBuffer: MutableStateFlow<List<RustEvent.LogEntry>> = _logBuffer
@@ -260,6 +267,24 @@ object RustRepository {
     /** Create + encrypt an INPUT frame with user keystrokes. Returns ciphertext to send. */
     fun remoteTunnelSendInput(pairingId: String, terminalId: Int, data: ByteArray): ByteArray? =
         RustBridge.nativeRemoteTunnelSendInput(pairingId, terminalId, data)
+
+    /** Create + encrypt an INPUT_ANSWER frame (agent popup answer). Returns ciphertext to send.
+     *  E2: Includes semantic metadata (cli, option_index, options, etc.) so desktop
+     *  frontend can use cliBehavior to generate correct keystrokes. */
+    fun remoteTunnelSendInputAnswer(
+        pairingId: String,
+        terminalId: Int,
+        questionId: String,
+        answer: String,
+        optionIndex: Int,
+        cli: String,
+        options: Array<String>,
+        isMultiSelect: Boolean,
+        isMultiQuestion: Boolean,
+    ): ByteArray? =
+        RustBridge.nativeRemoteTunnelSendInputAnswer(
+            pairingId, terminalId, questionId, answer, optionIndex, cli, options, isMultiSelect, isMultiQuestion,
+        )
 
     /** Create + encrypt a RESIZE frame. Returns ciphertext to send via WebSocket. */
     fun remoteTunnelSendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray? =

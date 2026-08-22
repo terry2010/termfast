@@ -34,6 +34,20 @@ interface RemoteTunnelFfi {
     /** Create + encrypt INPUT. Returns ciphertext or null on error. */
     fun sendInput(pairingId: String, terminalId: Int, data: ByteArray): ByteArray?
 
+    /** Create + encrypt INPUT_ANSWER (agent popup answer). Returns ciphertext or null on error.
+     *  E2: Includes semantic metadata for desktop cliBehavior. */
+    fun sendInputAnswer(
+        pairingId: String,
+        terminalId: Int,
+        questionId: String,
+        answer: String,
+        optionIndex: Int,
+        cli: String,
+        options: Array<String>,
+        isMultiSelect: Boolean,
+        isMultiQuestion: Boolean,
+    ): ByteArray?
+
     /** Create + encrypt RESIZE. Returns ciphertext or null on error. */
     fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray?
 
@@ -88,6 +102,21 @@ object DefaultRemoteTunnelFfi : RemoteTunnelFfi {
 
     override fun sendInput(pairingId: String, terminalId: Int, data: ByteArray): ByteArray? =
         RustRepository.remoteTunnelSendInput(pairingId, terminalId, data)
+
+    override fun sendInputAnswer(
+        pairingId: String,
+        terminalId: Int,
+        questionId: String,
+        answer: String,
+        optionIndex: Int,
+        cli: String,
+        options: Array<String>,
+        isMultiSelect: Boolean,
+        isMultiQuestion: Boolean,
+    ): ByteArray? =
+        RustRepository.remoteTunnelSendInputAnswer(
+            pairingId, terminalId, questionId, answer, optionIndex, cli, options, isMultiSelect, isMultiQuestion,
+        )
 
     override fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray? =
         RustRepository.remoteTunnelSendResize(pairingId, terminalId, cols, rows)
@@ -174,9 +203,16 @@ class RemoteTunnelManager(
             android.util.Log.i("RemoteTunnel", "onPeerDisconnected")
             _transportState.value = TunnelState.Disconnected
             _protocolReady.value = false
-            // Mark all remote sessions for this pairing as disconnected,
-            // so the terminal list shows them as offline.
+            // Remove all remote sessions for this pairing — old terminal_ids
+            // are stale after desktop restart/disconnect.
             TerminalSessionManager.markRemoteSessionsDisconnected(pairingId)
+            // Emit event so ServerListScreen can refresh badge counts.
+            com.termfast.app.data.RustRepository.emitEvent(
+                com.termfast.app.data.RustEvent.RemoteTerminalError(
+                    pairing_id = pairingId,
+                    error = "peer_disconnected",
+                )
+            )
         }
 
         override fun onPeerTimeout() {
@@ -348,6 +384,31 @@ class RemoteTunnelManager(
     fun sendInput(terminalId: Int, data: ByteArray): Boolean {
         if (!_protocolReady.value) return false
         val ct = ffi.sendInput(pairingId, terminalId, data) ?: return false
+        return sendRaw(ct)
+    }
+
+    /**
+     * Send an INPUT_ANSWER frame (agent popup answer) to the desktop.
+     * E2: Includes semantic metadata (cli, option_index, options) so desktop
+     * frontend can use cliBehavior to generate correct keystrokes.
+     * The desktop will emit agent_remote_answer event → frontend cliBehavior → PTY write,
+     * then broadcast QUESTION_RESOLVED.
+     * Returns true if the frame was sent successfully.
+     */
+    fun sendInputAnswer(
+        terminalId: Int,
+        questionId: String,
+        answer: String,
+        optionIndex: Int,
+        cli: String,
+        options: Array<String>,
+        isMultiSelect: Boolean,
+        isMultiQuestion: Boolean,
+    ): Boolean {
+        if (!_protocolReady.value) return false
+        val ct = ffi.sendInputAnswer(
+            pairingId, terminalId, questionId, answer, optionIndex, cli, options, isMultiSelect, isMultiQuestion,
+        ) ?: return false
         return sendRaw(ct)
     }
 

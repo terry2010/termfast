@@ -1,9 +1,11 @@
 package com.termfast.app.ui.screen
 
 import android.util.Base64
+import android.content.Context
 import androidx.compose.ui.graphics.Color
 import com.termfast.app.data.RustEvent
 import com.termfast.app.data.RustRepository
+import com.termfast.app.service.RemoteTunnelService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,6 +34,13 @@ object TerminalSessionManager {
     private var collectorStarted = false
     // Tunnel managers registered by pairingId — used for UNSUBSCRIBE on disconnect
     private val tunnelManagers = mutableMapOf<String, com.termfast.app.data.RemoteTunnelManager>()
+    // Pending RESIZE frames: "pairingId:terminalId" → (cols, rows).
+    // RESIZE frames can arrive before the session is created (e.g. SUBSCRIBE
+    // response sends RESIZE immediately, but session is created on user tap).
+    // getOrCreateRemoteSession checks this map and applies the pending size.
+    private val pendingResize = mutableMapOf<String, Pair<Int, Int>>()
+    // App context for starting/stopping RemoteTunnelService
+    private var appContext: Context? = null
     // Managed coroutine scope for global event collection and reconnection tasks.
     // Replaces GlobalScope usage to prevent unbounded coroutine leaks.
     private val managerScope = kotlinx.coroutines.CoroutineScope(
@@ -87,6 +96,11 @@ object TerminalSessionManager {
         val remoteServerId: String = "__local__",
         // Server display name on the desktop side: "桌面端" or SSH server name.
         val remoteServerName: String = "桌面端",
+        // Desktop PTY dimensions (cols, rows) — set from RESIZE frame.
+        // Used as forcedSize in the Terminal composable so the emulator
+        // matches the desktop PTY, with scrolling/scaling to fit the screen.
+        val remotePtyCols: Int = 0,
+        val remotePtyRows: Int = 0,
     )
 
     /** Whether this session is a remote terminal (vs. local SSH). */
@@ -140,6 +154,7 @@ object TerminalSessionManager {
         remoteServerId: String = "__local__",
         remoteServerName: String = "桌面端",
     ): String {
+        android.util.Log.d("termfast", "getOrCreateRemoteSession: pairingId=$pairingId terminalId=$terminalId")
         // Register tunnel manager for this pairing (used by disconnectSession)
         tunnelManagers[pairingId] = tunnelManager
         // Reuse existing session if same pairingId + terminalId
@@ -156,6 +171,12 @@ object TerminalSessionManager {
         }
 
         val sessionId = UUID.randomUUID().toString()
+        // Check for pending RESIZE frame (arrived before session was created)
+        val pendingKey = "$pairingId:$terminalId"
+        val pending = pendingResize.remove(pendingKey)
+        if (pending != null) {
+            android.util.Log.d("termfast", "getOrCreateRemoteSession: applying pending resize ${pending.first}x${pending.second} for $pendingKey")
+        }
         sessions[sessionId] = SessionState(
             sessionId = sessionId,
             serverId = "remote:$pairingId",  // synthetic serverId for remote
@@ -166,7 +187,13 @@ object TerminalSessionManager {
             remoteTerminalId = terminalId,
             remoteServerId = remoteServerId,
             remoteServerName = remoteServerName,
+            remotePtyCols = pending?.first ?: 0,
+            remotePtyRows = pending?.second ?: 0,
         )
+        // Apply pending resize to emulator if available
+        if (pending != null) {
+            sessions[sessionId]?.emulator?.resize(pending.second, pending.first)
+        }
         return sessionId
     }
 
@@ -174,6 +201,22 @@ object TerminalSessionManager {
     @Synchronized
     fun registerTunnelManager(pairingId: String, manager: com.termfast.app.data.RemoteTunnelManager) {
         tunnelManagers[pairingId] = manager
+    }
+
+    /** Initialize with app context for starting/stopping RemoteTunnelService. */
+    fun init(context: Context) {
+        appContext = context.applicationContext
+    }
+
+    /** Whether any tunnel managers are active (for RemoteTunnelService start/stop). */
+    @Synchronized
+    fun hasActiveTunnels(): Boolean = tunnelManagers.isNotEmpty()
+
+    /** Start or stop RemoteTunnelService based on tunnel count. */
+    private fun notifyTunnelServiceStateChanged(hasTunnels: Boolean) {
+        val ctx = appContext ?: return
+        if (hasTunnels) RemoteTunnelService.start(ctx)
+        else RemoteTunnelService.stop(ctx)
     }
 
     /** Get or create a shared RemoteTunnelManager for a pairing_id. */
@@ -192,6 +235,10 @@ object TerminalSessionManager {
             pairingRefreshToken = pairingRefreshToken,
         )
         tunnelManagers[pairingId] = manager
+        // Start RemoteTunnelService when first tunnel is created
+        if (tunnelManagers.size == 1) {
+            notifyTunnelServiceStateChanged(true)
+        }
         return manager
     }
 
@@ -217,6 +264,10 @@ object TerminalSessionManager {
         for (pid in toStop) {
             val tm = tunnelManagers.remove(pid)
             tm?.stopAndDestroy()
+        }
+        // Stop RemoteTunnelService when all tunnels are gone
+        if (tunnelManagers.isEmpty()) {
+            notifyTunnelServiceStateChanged(false)
         }
     }
 
@@ -319,6 +370,10 @@ object TerminalSessionManager {
     @Synchronized
     fun getEmulatorBySession(sessionId: String): TerminalEmulator? =
         sessions[sessionId]?.emulator
+
+    @Synchronized
+    fun getSessionState(sessionId: String): SessionState? =
+        sessions[sessionId]
 
     /** Get the preview text for TerminalsScreen card. */
     @Synchronized
@@ -626,6 +681,7 @@ object TerminalSessionManager {
         }
         if (session != null && event.encoding == "base64") {
             val bytes = decodeBase64(event.data)
+            android.util.Log.d("termfast", "handleRemoteOutput: ${bytes.size} bytes session=${session.sessionId} cols=${session.remotePtyCols} rows=${session.remotePtyRows}")
             session.emulator?.writeInput(bytes)
         }
     }
@@ -641,6 +697,7 @@ object TerminalSessionManager {
         }
         if (session != null && event.encoding == "base64") {
             val bytes = decodeBase64(event.data)
+            android.util.Log.d("termfast", "handleRemoteHistory: ${bytes.size} bytes seq=${event.seq} session=${session.sessionId} cols=${session.remotePtyCols} rows=${session.remotePtyRows}")
             // On first HISTORY chunk (seq=0), clear the emulator
             // to prepare for a fresh snapshot (e.g. after reconnect)
             if (event.seq == 0L) {
@@ -651,17 +708,32 @@ object TerminalSessionManager {
     }
 
     /**
-     * Handle RemoteTerminalResize: resize emulator to desktop PTY dimensions.
+     * Handle RemoteTerminalResize: store desktop PTY dimensions in SessionState.
+     * The Terminal composable uses these as forcedSize, so the emulator
+     * matches the desktop PTY and the composable doesn't resize it back
+     * to the mobile screen size. The emulator itself is also resized here
+     * to ensure it matches.
      */
     @Synchronized
     private fun handleRemoteResize(event: RustEvent.RemoteTerminalResize) {
-        android.util.Log.d("termfast", "handleRemoteResize: ${event.cols}x${event.rows} pairing=${event.pairing_id}")
+        android.util.Log.d("termfast", "handleRemoteResize: ${event.cols}x${event.rows} pairing=${event.pairing_id} terminal_id=${event.terminal_id}")
         val session = sessions.values.firstOrNull {
             it.remotePairingId == event.pairing_id &&
             it.remoteTerminalId == event.terminal_id.toInt()
         }
         if (session != null) {
-            session.emulator?.resize(event.cols, event.rows)
+            android.util.Log.d("termfast", "handleRemoteResize: found session=${session.sessionId} oldCols=${session.remotePtyCols} oldRows=${session.remotePtyRows}")
+            sessions[session.sessionId] = session.copy(
+                remotePtyCols = event.cols,
+                remotePtyRows = event.rows,
+            )
+            // termlib's resize(rows, cols) — first param is rows, second is cols
+            session.emulator?.resize(event.rows, event.cols)
+        } else {
+            android.util.Log.d("termfast", "handleRemoteResize: no session found for pairing=${event.pairing_id} terminal_id=${event.terminal_id}, storing as pending")
+            // Store as pending — getOrCreateRemoteSession will apply it when
+            // the session is created (RESIZE can arrive before session creation)
+            pendingResize["${event.pairing_id}:${event.terminal_id}"] = event.cols to event.rows
         }
     }
 
@@ -679,13 +751,16 @@ object TerminalSessionManager {
     }
 
     /**
-     * Mark all remote sessions for a pairing as disconnected.
-     * Called when the tunnel peer disconnects (desktop went offline).
+     * Remove all remote sessions for a pairing.
+     * Called when the tunnel peer disconnects (desktop went offline/restarted).
+     * Old terminal_ids are stale — the desktop will assign new ones on reconnect.
+     * The user can re-open terminals from the picker after reconnection.
      */
     @Synchronized
     fun markRemoteSessionsDisconnected(pairingId: String) {
-        sessions.values.filter { it.remotePairingId == pairingId }.forEach {
-            sessions[it.sessionId] = it.copy(connected = false)
+        val toRemove = sessions.values.filter { it.remotePairingId == pairingId }
+        for (s in toRemove) {
+            sessions.remove(s.sessionId)
         }
     }
 

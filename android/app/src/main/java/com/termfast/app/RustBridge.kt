@@ -137,6 +137,17 @@ object RustBridge {
     external fun nativeRemoteTunnelUnsubscribe(pairingId: String, terminalId: Int): ByteArray?
     external fun nativeRemoteTunnelSendInput(pairingId: String, terminalId: Int, data: ByteArray): ByteArray?
     external fun nativeRemoteTunnelSendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray?
+    external fun nativeRemoteTunnelSendInputAnswer(
+        pairingId: String,
+        terminalId: Int,
+        questionId: String,
+        answer: String,
+        optionIndex: Int,
+        cli: String,
+        options: Array<String>,
+        isMultiSelect: Boolean,
+        isMultiQuestion: Boolean,
+    ): ByteArray?
     external fun nativeRemoteTunnelClose(pairingId: String): ByteArray?
 
     // --- Desktop-to-desktop pairing (send DESKTOP_PAIR frame via existing tunnel) ---

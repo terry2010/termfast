@@ -106,6 +106,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_idlemonitor::init())
         .on_window_event(|window, event| {
             // All platforms: clicking the close button hides the window
             // instead of exiting. The app stays alive in the system tray /
@@ -349,6 +350,11 @@ pub fn run() {
             ipc_tunnel_stop,
             ipc_tunnel_stop_all,
             ipc_restore_tunnels,
+            // AI CLI remote approval (Step 3)
+            ipc_tunnel_notify_agent_blocked,
+            ipc_tunnel_notify_agent_resolved,
+            ipc_check_question_answered,
+            ipc_mark_question_answered,
             // Quit app from tray menu (forces exit even if minimize_to_tray is on)
             ipc_quit_app,
             // Developer options
@@ -456,6 +462,18 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
                 if let Ok(channels) = app_state.terminal_channels.lock() {
                     if let Some(channel) = channels.get(session_id) {
                         let _ = channel.send(InvokeResponseBody::Raw(data.to_vec()));
+                    } else {
+                        // Diagnostic: output arrived for a session with no registered Channel.
+                        // This happens if the terminal was opened but the Channel wasn't
+                        // registered yet (race), or if the terminal was closed and the Channel
+                        // was removed but PTY output is still draining.
+                        // If this repeats for the same session_id, output is being silently
+                        // dropped — the user will see "typing not appearing on screen".
+                        tracing::debug!(
+                            "binary_forwarder: no channel for session {} ({} bytes dropped)",
+                            session_id,
+                            data.len()
+                        );
                     }
                 }
             }
@@ -466,6 +484,21 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
     use tauri::Manager;
     if let Some(app_state) = handle.try_state::<AppState>() {
         *app_state.daemon.lock().await = Some(Arc::new(daemon));
+    }
+
+    // Set up on_remote_unsubscribed callback: when the last mobile subscriber
+    // leaves a terminal, emit an event so the desktop frontend can re-fit
+    // xterm.js and restore the PTY to desktop dimensions.
+    {
+        let handle_for_unsub = handle.clone();
+        let tm_for_cb = {
+            let app_state = handle.state::<AppState>();
+            let daemon_guard = app_state.daemon.lock().await;
+            daemon_guard.as_ref().expect("daemon should be ready").server.state().terminal_manager.clone()
+        };
+        tm_for_cb.set_on_remote_unsubscribed_callback(Box::new(move |session_id: &str| {
+            let _ = handle_for_unsub.emit("terminal:remote_unsubscribed", session_id);
+        }));
     }
 
     // Notify frontend that the daemon is ready
@@ -1776,7 +1809,10 @@ async fn ipc_terminal_open(
     let result = forward_to_daemon(&state, termfast_daemon::proto::Action::TerminalOpen, params).await?;
     // Register the channel for this session so the binary event forwarder can send raw bytes
     if let Some(session_id) = result.get("session_id").and_then(|v| v.as_str()) {
+        tracing::info!("ipc_terminal_open: registering channel for session {}", session_id);
         state.terminal_channels.lock().unwrap().insert(session_id.to_string(), on_output);
+    } else {
+        tracing::warn!("ipc_terminal_open: no session_id in result, channel not registered");
     }
     Ok(result)
 }
@@ -1790,6 +1826,7 @@ async fn ipc_terminal_attach(
     session_id: String,
     on_output: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<(), String> {
+    tracing::info!("ipc_terminal_attach: registering channel for session {}", session_id);
     state.terminal_channels.lock().unwrap().insert(session_id, on_output);
     Ok(())
 }
@@ -1849,6 +1886,7 @@ async fn ipc_terminal_close(
     session_id: String,
 ) -> Result<serde_json::Value, String> {
     // Remove the channel from the registry
+    tracing::info!("ipc_terminal_close: removing channel for session {}", session_id);
     state.terminal_channels.lock().unwrap().remove(&session_id);
     let params = serde_json::json!({
         "session_id": session_id,
@@ -2895,6 +2933,19 @@ async fn ipc_tunnel_start(
                         }));
                     },
                 ));
+                // E2: Register agent answer callback for forwarding mobile answers to frontend
+                // The frontend uses cliBehavior to generate keystrokes + write PTY,
+                // then calls ipc_tunnel_notify_agent_resolved.
+                let handle_for_answer = app.clone();
+                tm.remote_server().set_agent_answer_callback(Arc::new(
+                    move |question_id: &str, event_json: serde_json::Value| {
+                        use tauri::Emitter;
+                        let _ = handle_for_answer.emit("agent_remote_answer", serde_json::json!({
+                            "question_id": question_id,
+                            "payload": event_json,
+                        }));
+                    },
+                ));
                 // Set trigger callback (stored in AppState by init(), applied here
                 // because tunnel_manager is lazily initialized)
                 {
@@ -2907,6 +2958,22 @@ async fn ipc_tunnel_start(
                         }));
                         tracing::info!("trigger_callback set on RemoteServer (lazily initialized tunnel_manager)");
                     }
+                }
+                // Set remote resize callback: when mobile sends RESIZE, the desktop
+                // PTY is resized to mobile dimensions. Notify frontend so xterm.js
+                // can re-fit (avoiding stale TUI content in the background).
+                {
+                    let handle_for_resize = app.clone();
+                    tm.remote_server().set_remote_resize_callback(Box::new(
+                        move |session_id: &str, cols: u16, rows: u16| {
+                            use tauri::Emitter;
+                            let _ = handle_for_resize.emit("terminal:remote_resized", serde_json::json!({
+                                "sessionId": session_id,
+                                "cols": cols,
+                                "rows": rows,
+                            }));
+                        },
+                    ));
                 }
                 *tm_guard = Some(tm.clone());
                 tracing::info!("DesktopTunnelManager initialized");
@@ -2938,6 +3005,81 @@ async fn ipc_tunnel_start(
         peer_role,
     });
     Ok(())
+}
+
+/// Notify mobile that an agent is blocked (needs user input).
+/// Called by the frontend when agentStatus becomes "blocked" and user is idle.
+/// If no mobile is subscribed, the question is enqueued and flushed on next subscribe.
+#[tauri::command]
+async fn ipc_tunnel_notify_agent_blocked(
+    app: tauri::AppHandle,
+    session_id: String,
+    question_id: String,
+    cli: String,
+    question: String,
+    options: Vec<String>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let tm_guard = state.tunnel_manager.lock().await;
+    if let Some(tm) = tm_guard.as_ref() {
+        let rs = tm.remote_server();
+        rs.notify_agent_blocked(&session_id, &question_id, &cli, &question, &options).await;
+    }
+    Ok(())
+}
+
+/// Notify mobile that an agent question has been resolved (answered or dismissed).
+/// Called by the frontend after the desktop user answers locally, or after
+/// the agent_status transitions from blocked to working.
+#[tauri::command]
+async fn ipc_tunnel_notify_agent_resolved(
+    app: tauri::AppHandle,
+    session_id: String,
+    question_id: String,
+    answer: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let tm_guard = state.tunnel_manager.lock().await;
+    if let Some(tm) = tm_guard.as_ref() {
+        let rs = tm.remote_server();
+        rs.notify_agent_resolved(&session_id, &question_id, &answer).await;
+    }
+    Ok(())
+}
+
+/// Check if a question has already been answered (desktop-side guard).
+/// Returns the answer if answered, null if not.
+#[tauri::command]
+async fn ipc_check_question_answered(
+    app: tauri::AppHandle,
+    question_id: String,
+) -> Result<Option<String>, String> {
+    let state = app.state::<AppState>();
+    let tm_guard = state.tunnel_manager.lock().await;
+    if let Some(tm) = tm_guard.as_ref() {
+        let rs = tm.remote_server();
+        Ok(rs.check_question_answered(&question_id))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Mark a question as answered from the desktop side (local answer).
+/// Returns true if this is the first answer (accepted), false if already answered.
+#[tauri::command]
+async fn ipc_mark_question_answered(
+    app: tauri::AppHandle,
+    question_id: String,
+    answer: String,
+) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let tm_guard = state.tunnel_manager.lock().await;
+    if let Some(tm) = tm_guard.as_ref() {
+        let rs = tm.remote_server();
+        Ok(rs.mark_question_answered(&question_id, &answer))
+    } else {
+        Ok(false)
+    }
 }
 
 /// Stop the WebSocket tunnel for a specific pairing_id.

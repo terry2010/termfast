@@ -51,6 +51,7 @@
     "fs:allow-open",
     "fs:allow-mkdir",
     "updater:default",
+    "idlemonitor:default",
     {
       "identifier": "shell:allow-open",
       "allow": [

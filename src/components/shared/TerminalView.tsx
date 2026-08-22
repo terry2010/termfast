@@ -17,6 +17,7 @@ import { open, remove, copyFile, readFile, writeFile, BaseDirectory, type FileHa
 import { TrzszFilter } from "trzsz";
 import { ipcInvoke } from "@/hooks/useIpc";
 import { useAgentStatus, notifyAgentOutput, resetAgentStatus } from "@/hooks/useAgentStatus";
+import { useAgentRemoteAnswer } from "@/hooks/useAgentRemoteAnswer";
 import type { AgentStatus } from "@/hooks/agentStateMachine";
 import { shouldResetOverlay } from "@/hooks/overlayReset";
 import { getBehavior, executeSteps, type BehaviorContext } from "@/hooks/cliBehavior";
@@ -394,6 +395,32 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     }
   }, [agentStatus, tabId, serverId, setTerminalTabAgentStatus]);
 
+  // D2: Remote approval hook — pushes NOTIFY(agent_blocked) when user is idle,
+  // pushes NOTIFY(agent_resolved) when agent unblocks.
+  // clearPushedQuestionRef is called by the 4 submit handlers before local submit (T1/中-2).
+  // D3: sendToBackend wrapper includes logTerminalInput (existing handlers all log)
+  const remoteSendToBackend = useCallback((bytes: Uint8Array) => {
+    logTerminalInput(sessionIdRef.current, bytes);
+    sendToBackendRef.current(bytes);
+  }, []);
+  const {
+    clearPushedQuestionRef,
+    checkQuestionAnswered: remoteCheckAnswered,
+    markQuestionAnswered: remoteMarkAnswered,
+    currentQuestionId: remoteQuestionId,
+    notifyResolved: remoteNotifyResolved,
+  } = useAgentRemoteAnswer({
+    sessionId,
+    agentStatus,
+    agentCli,
+    agentQuestion,
+    agentOptions,
+    sendToBackend: remoteSendToBackend,
+  });
+  // Ref mirror of remoteQuestionId for use inside async callbacks
+  const remoteQuestionIdRef = useRef<string | null>(null);
+  useEffect(() => { remoteQuestionIdRef.current = remoteQuestionId; }, [remoteQuestionId]);
+
   // Reset overlay dismissed state when status changes from blocked to non-blocked,
   // OR when a new question appears while still blocked (multi-question dialogs:
   // OpenCode shows question 1, then question 2, etc. without leaving "blocked").
@@ -413,22 +440,51 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // question tab and the overlay should stay for the next question.
   const handleAgentAnswer = useCallback((option: string, index: number) => {
     if (!termRef.current || agentCli === "unknown") return;
-    const ctx: BehaviorContext = {
-      options: agentOptions,
-      isMultiSelect: agentIsMultiSelect,
-      isMultiQuestion: agentIsMultiQuestion,
-      activeTabIndex: agentActiveTabIndex,
-      totalTabs: agentTotalTabs,
-      cursorPos: devinCursorPosRef.current,
-      otherEditing: agentOtherEditing,
-    };
-    const result = getBehavior(agentCli).answer(option, index, ctx);
-    executeSteps(result.steps, (bytes) => {
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
-    });
-    if (result.dismiss) setAgentOverlayDismissed(true);
-  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
+    // D2/T1/中-2: Clear pushed question ref BEFORE local submit to prevent double broadcast
+    const qid = remoteQuestionIdRef.current;
+    clearPushedQuestionRef();
+    if (qid) {
+      // 中-2: Mark as answered (first-answer-wins). If mobile already answered,
+      // this returns false and we should NOT submit locally.
+      remoteMarkAnswered(qid, option).then((accepted) => {
+        if (!accepted) return; // Already answered by mobile — skip local submit
+        const ctx: BehaviorContext = {
+          options: agentOptions,
+          isMultiSelect: agentIsMultiSelect,
+          isMultiQuestion: agentIsMultiQuestion,
+          activeTabIndex: agentActiveTabIndex,
+          totalTabs: agentTotalTabs,
+          cursorPos: devinCursorPosRef.current,
+          otherEditing: agentOtherEditing,
+        };
+        const result = getBehavior(agentCli).answer(option, index, ctx);
+        executeSteps(result.steps, (bytes) => {
+          logTerminalInput(sessionIdRef.current, bytes);
+          sendToBackendRef.current(bytes);
+        });
+        if (result.dismiss) setAgentOverlayDismissed(true);
+        // §4.3.7 step 5: notify mobile resolved after local submit
+        remoteNotifyResolved(qid, option);
+      });
+    } else {
+      // No remote push happened — submit locally as usual
+      const ctx: BehaviorContext = {
+        options: agentOptions,
+        isMultiSelect: agentIsMultiSelect,
+        isMultiQuestion: agentIsMultiQuestion,
+        activeTabIndex: agentActiveTabIndex,
+        totalTabs: agentTotalTabs,
+        cursorPos: devinCursorPosRef.current,
+        otherEditing: agentOtherEditing,
+      };
+      const result = getBehavior(agentCli).answer(option, index, ctx);
+      executeSteps(result.steps, (bytes) => {
+        logTerminalInput(sessionIdRef.current, bytes);
+        sendToBackendRef.current(bytes);
+      });
+      if (result.dismiss) setAgentOverlayDismissed(true);
+    }
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing, clearPushedQuestionRef, remoteMarkAnswered, remoteNotifyResolved]);
 
   // Handle multi-select toggle — send toggle keystrokes but DON'T dismiss
   const handleAgentToggle = useCallback((option: string, index: number) => {
@@ -454,22 +510,37 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // Handle multi-select submit — send confirm keystrokes, then dismiss
   const handleAgentSubmitMultiSelect = useCallback(() => {
     if (!termRef.current || agentCli === "unknown") return;
-    const ctx: BehaviorContext = {
-      options: agentOptions,
-      isMultiSelect: agentIsMultiSelect,
-      isMultiQuestion: agentIsMultiQuestion,
-      activeTabIndex: agentActiveTabIndex,
-      totalTabs: agentTotalTabs,
-      cursorPos: devinCursorPosRef.current,
-      otherEditing: agentOtherEditing,
+    // D2/T1/中-2: Clear pushed question ref BEFORE local submit
+    const qid = remoteQuestionIdRef.current;
+    clearPushedQuestionRef();
+    const doSubmit = () => {
+      const ctx: BehaviorContext = {
+        options: agentOptions,
+        isMultiSelect: agentIsMultiSelect,
+        isMultiQuestion: agentIsMultiQuestion,
+        activeTabIndex: agentActiveTabIndex,
+        totalTabs: agentTotalTabs,
+        cursorPos: devinCursorPosRef.current,
+        otherEditing: agentOtherEditing,
+      };
+      const result = getBehavior(agentCli).submitMultiSelect(ctx);
+      executeSteps(result.steps, (bytes) => {
+        logTerminalInput(sessionIdRef.current, bytes);
+        sendToBackendRef.current(bytes);
+      });
+      setAgentOverlayDismissed(true);
+      // §4.3.7 step 5: notify mobile resolved after local submit
+      if (qid) remoteNotifyResolved(qid, "multi-select-submit");
     };
-    const result = getBehavior(agentCli).submitMultiSelect(ctx);
-    executeSteps(result.steps, (bytes) => {
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
-    });
-    setAgentOverlayDismissed(true);
-  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
+    if (qid) {
+      remoteMarkAnswered(qid, "multi-select-submit").then((accepted) => {
+        if (!accepted) return;
+        doSubmit();
+      });
+    } else {
+      doSubmit();
+    }
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing, clearPushedQuestionRef, remoteMarkAnswered, remoteNotifyResolved]);
 
   // Handle text answer (Type your own answer) — navigate + type + submit
   // Split into two sends: first navigate to option + Enter (enter text mode),
@@ -478,33 +549,48 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // after Enter — if we send text immediately, it gets lost.
   const handleAgentTextAnswer = useCallback((option: string, text: string, index: number, hasExistingText?: boolean) => {
     if (!termRef.current || agentCli === "unknown") return;
-    // For multi-select mode, devinCursorPosRef is unreliable (no ❭ marker).
-    // Use getCursorOptionIndex to find the actual cursor position from the
-    // terminal buffer, so arrow navigation in submitDevinTextAnswer computes
-    // the correct distance.
-    let cursorPos = devinCursorPosRef.current;
-    if (agentIsMultiSelect && termRef.current) {
-      const actualPos = getCursorOptionIndex(termRef.current);
-      if (actualPos !== null) cursorPos = actualPos;
-    }
-    const ctx: BehaviorContext = {
-      options: agentOptions,
-      isMultiSelect: agentIsMultiSelect,
-      isMultiQuestion: agentIsMultiQuestion,
-      activeTabIndex: agentActiveTabIndex,
-      totalTabs: agentTotalTabs,
-      cursorPos,
-      otherEditing: agentOtherEditing,
-      hasExistingText,
+    // D2/T1/中-2: Clear pushed question ref BEFORE local submit
+    const qid = remoteQuestionIdRef.current;
+    clearPushedQuestionRef();
+    const doSubmit = () => {
+      // For multi-select mode, devinCursorPosRef is unreliable (no ❭ marker).
+      // Use getCursorOptionIndex to find the actual cursor position from the
+      // terminal buffer, so arrow navigation in submitDevinTextAnswer computes
+      // the correct distance.
+      let cursorPos = devinCursorPosRef.current;
+      if (agentIsMultiSelect && termRef.current) {
+        const actualPos = getCursorOptionIndex(termRef.current);
+        if (actualPos !== null) cursorPos = actualPos;
+      }
+      const ctx: BehaviorContext = {
+        options: agentOptions,
+        isMultiSelect: agentIsMultiSelect,
+        isMultiQuestion: agentIsMultiQuestion,
+        activeTabIndex: agentActiveTabIndex,
+        totalTabs: agentTotalTabs,
+        cursorPos,
+        otherEditing: agentOtherEditing,
+        hasExistingText,
+      };
+      const result = getBehavior(agentCli).textAnswer(option, text, index, ctx);
+      executeSteps(result.steps, (bytes) => {
+        logTerminalInput(sessionIdRef.current, bytes);
+        sendToBackendRef.current(bytes);
+      });
+      if (result.newCursorPos !== undefined) devinCursorPosRef.current = result.newCursorPos;
+      if (result.dismiss) setAgentOverlayDismissed(true);
+      // §4.3.7 step 5: notify mobile resolved after local submit
+      if (qid) remoteNotifyResolved(qid, text);
     };
-    const result = getBehavior(agentCli).textAnswer(option, text, index, ctx);
-    executeSteps(result.steps, (bytes) => {
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
-    });
-    if (result.newCursorPos !== undefined) devinCursorPosRef.current = result.newCursorPos;
-    if (result.dismiss) setAgentOverlayDismissed(true);
-  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
+    if (qid) {
+      remoteMarkAnswered(qid, text).then((accepted) => {
+        if (!accepted) return;
+        doSubmit();
+      });
+    } else {
+      doSubmit();
+    }
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing, clearPushedQuestionRef, remoteMarkAnswered, remoteNotifyResolved]);
 
   // Handle text cancel — send Escape to exit CLI's text editing mode
   // (e.g. Devin's 'e' select+type mode). Without this, the CLI stays in
@@ -718,22 +804,37 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
   // Navigates to the last tab (submit/confirm), then Enter to submit.
   const handleAgentConfirm = useCallback((hasAnswers = false) => {
     if (!termRef.current || agentCli === "unknown") return;
-    const ctx: BehaviorContext = {
-      options: agentOptions,
-      isMultiSelect: agentIsMultiSelect,
-      isMultiQuestion: agentIsMultiQuestion,
-      activeTabIndex: agentActiveTabIndex,
-      totalTabs: agentTotalTabs,
-      cursorPos: devinCursorPosRef.current,
-      otherEditing: agentOtherEditing,
+    // D2/T1/中-2: Clear pushed question ref BEFORE local submit
+    const qid = remoteQuestionIdRef.current;
+    clearPushedQuestionRef();
+    const doConfirm = () => {
+      const ctx: BehaviorContext = {
+        options: agentOptions,
+        isMultiSelect: agentIsMultiSelect,
+        isMultiQuestion: agentIsMultiQuestion,
+        activeTabIndex: agentActiveTabIndex,
+        totalTabs: agentTotalTabs,
+        cursorPos: devinCursorPosRef.current,
+        otherEditing: agentOtherEditing,
+      };
+      const result = getBehavior(agentCli).confirm(hasAnswers, ctx);
+      executeSteps(result.steps, (bytes) => {
+        logTerminalInput(sessionIdRef.current, bytes);
+        sendToBackendRef.current(bytes);
+      });
+      setAgentOverlayDismissed(true);
+      // §4.3.7 step 5: notify mobile resolved after local submit
+      if (qid) remoteNotifyResolved(qid, "confirm");
     };
-    const result = getBehavior(agentCli).confirm(hasAnswers, ctx);
-    executeSteps(result.steps, (bytes) => {
-      logTerminalInput(sessionIdRef.current, bytes);
-      sendToBackendRef.current(bytes);
-    });
-    setAgentOverlayDismissed(true);
-  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing]);
+    if (qid) {
+      remoteMarkAnswered(qid, "confirm").then((accepted) => {
+        if (!accepted) return;
+        doConfirm();
+      });
+    } else {
+      doConfirm();
+    }
+  }, [agentCli, agentOptions, agentIsMultiSelect, agentIsMultiQuestion, agentActiveTabIndex, agentTotalTabs, agentOtherEditing, clearPushedQuestionRef, remoteMarkAnswered, remoteNotifyResolved]);
 
   // Terminal appearance from config
   const config = useConfigStore((s) => s.config);
@@ -880,12 +981,21 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       term.write(bytes);
     }
 
-    // Send initial resize to backend
-    ipcInvoke("ipc_terminal_resize", {
-      session_id: sessionIdRef.current,
-      cols: term.cols,
-      rows: term.rows,
-    }).catch(() => {});
+    // Send initial resize to backend — defer to next frame so container has
+    // correct dimensions after CSS layout completes. Synchronous fit() above
+    // may use stale dimensions if the container hasn't been laid out yet.
+    requestAnimationFrame(() => {
+      if (!containerRef.current || !fitRef.current || !termRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      try { fitRef.current.fit(); } catch { /* container not visible */ }
+      if (termRef.current.cols === 0 || termRef.current.rows === 0) return;
+      ipcInvoke("ipc_terminal_resize", {
+        session_id: sessionIdRef.current,
+        cols: termRef.current.cols,
+        rows: termRef.current.rows,
+      }).catch(() => {});
+    });
 
     // Helper: send raw bytes to backend (binary, no base64).
     // For ZMODEM uploads, wait_for_send=true provides backpressure by blocking
@@ -1793,6 +1903,31 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       }
     }).then((fn) => { unlistenClosed = fn; });
 
+    // Listen for remote resize event — when a mobile client sends RESIZE,
+    // the desktop PTY is resized to mobile dimensions. Re-fit xterm.js
+    // so the terminal view matches the new PTY size (avoids stale TUI
+    // content lingering in the background).
+    let unlistenRemoteResized: UnlistenFn | undefined;
+    listen<{ sessionId: string; cols: number; rows: number }>("terminal:remote_resized", (event) => {
+      if (event.payload.sessionId === sessionIdRef.current) {
+        const { cols, rows } = event.payload;
+        // Resize xterm.js to match the new PTY dimensions
+        try { term.resize(cols, rows); } catch { /* container not visible */ }
+      }
+    }).then((fn) => { unlistenRemoteResized = fn; });
+
+    // Listen for remote unsubscribed event — when the last mobile client
+    // disconnects, re-fit xterm.js to restore the PTY to desktop dimensions.
+    let unlistenRemoteUnsub: UnlistenFn | undefined;
+    listen<string>("terminal:remote_unsubscribed", (event) => {
+      if (event.payload === sessionIdRef.current) {
+        // Defer fit() to next tick — the PTY may still be at mobile dimensions
+        requestAnimationFrame(() => {
+          try { fitRef.current?.fit(); } catch { /* container not visible */ }
+        });
+      }
+    }).then((fn) => { unlistenRemoteUnsub = fn; });
+
     // Listen for file drag-drop events from Tauri
     // Use a cancelled flag to handle the async listen() Promise race:
     // in React StrictMode, cleanup may run before the Promise resolves,
@@ -1842,12 +1977,27 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
 
     // Window resize handler — skip when container is hidden (0 dimensions)
     const handleResize = () => {
-      if (!containerRef.current) return;
+      if (!containerRef.current || !termRef.current || !fitRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
-      try { fitAddon.fit(); } catch { /* container not visible */ }
+      const beforeCols = termRef.current.cols;
+      const beforeRows = termRef.current.rows;
+      try { fitRef.current.fit(); } catch { /* container not visible */ }
+      // Explicitly send resize to backend — don't rely solely on term.onResize
+      // because fit() may not trigger onResize if cols/rows happen to be unchanged.
+      const { cols, rows } = termRef.current;
+      if (cols > 0 && rows > 0 && (cols !== beforeCols || rows !== beforeRows)) {
+        ipcInvoke("ipc_terminal_resize", {
+          session_id: sessionIdRef.current,
+          cols,
+          rows,
+        }).catch(() => {});
+      }
     };
     window.addEventListener("resize", handleResize);
+    // ResizeObserver: fires when container dimensions change (CSS layout,
+    // tab switch, sidebar toggle, etc.). fit() + explicit resize keeps PTY
+    // winsize in sync with the actual rendered terminal size.
     const resizeObserver = new ResizeObserver(() => handleResize());
     resizeObserver.observe(containerRef.current);
 
@@ -1881,6 +2031,8 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
       for (const d of imeDisposers) { try { d(); } catch { /* ignore */ } }
       unregisterTerminalOutput(sessionId);
       if (unlistenClosed) unlistenClosed();
+      if (unlistenRemoteResized) unlistenRemoteResized();
+      if (unlistenRemoteUnsub) unlistenRemoteUnsub();
       dragCancelled = true;
       if (unlistenDragEnter) unlistenDragEnter();
       if (unlistenDragLeave) unlistenDragLeave();

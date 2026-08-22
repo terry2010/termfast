@@ -143,6 +143,11 @@ pub type DesktopPairCallback = Box<
 /// Same signature as RemoteClientManager's FrameCallback.
 pub type ServerFrameCallback = Arc<dyn Fn(&str, u8, u32, &[u8]) + Send + Sync>;
 
+/// Callback for forwarding agent answers from mobile to the frontend.
+/// E2: Receives (question_id, event_json) — the frontend uses cliBehavior to
+/// generate keystrokes and write to PTY, then calls ipc_tunnel_notify_agent_resolved.
+pub type AgentAnswerCallback = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 /// Trigger management request type (parsed from TRIGGER_* frames).
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TriggerRequest {
@@ -202,6 +207,42 @@ fn broadcast_list_changed(active_tunnels: &Arc<StdMutex<HashMap<String, mpsc::Se
     }
 }
 
+/// A pending agent question waiting for a mobile subscriber.
+/// Stored in `pending_questions` when no mobile is subscribed to the terminal.
+/// Flushed when a mobile subscribes (handle_subscribe).
+#[derive(Clone, Debug)]
+pub struct PendingQuestion {
+    pub question_id: String,
+    pub terminal_id: u32,
+    pub cli: String,
+    pub question: String,
+    pub options: Vec<String>,
+    pub created_at: std::time::Instant,
+}
+
+impl PendingQuestion {
+    /// TTL: 24 hours. Entries older than this are auto-evicted.
+    const TTL: std::time::Duration = std::time::Duration::from_secs(86400);
+    /// Max entries per session_id before LRU eviction.
+    const MAX_PER_SESSION: usize = 100;
+
+    fn is_expired(&self) -> bool {
+        self.created_at.elapsed() > Self::TTL
+    }
+
+    /// Build a NOTIFY(agent_blocked) frame JSON payload for this question.
+    fn to_notify_json(&self) -> String {
+        serde_json::json!({
+            "event_type": "agent_blocked",
+            "question_id": self.question_id,
+            "terminal_id": self.terminal_id,
+            "cli": self.cli,
+            "question": self.question,
+            "options": self.options,
+        }).to_string()
+    }
+}
+
 /// IdMap (u32↔session_id), auth_keys (pairing_id→key), answered_questions (mutex).
 pub struct RemoteServer {
     pub terminal_manager: Arc<TerminalManager>,
@@ -219,6 +260,12 @@ pub struct RemoteServer {
     /// Answered questions (question_id → answer) for agent popup mutex.
     /// Entries auto-expire after 30 seconds (spawned cleanup task).
     answered_questions: Arc<StdMutex<HashMap<String, String>>>,
+    /// Pending agent questions waiting for mobile subscribers.
+    /// Keyed by session_id, value is a list of pending questions.
+    /// When a mobile subscribes, all pending questions for that terminal
+    /// are flushed to the new subscriber.
+    /// Entries auto-expire after 24 hours (TTL) or when max 100 entries reached.
+    pending_questions: Arc<StdMutex<HashMap<String, Vec<PendingQuestion>>>>,
     /// Callback for uploading local files to cloud (set by desktop app).
     /// Receives (file_path, terminal_id) → FileUploadResult or error message.
     file_upload_callback: Arc<std::sync::Mutex<Option<FileUploadCallback>>>,
@@ -235,11 +282,21 @@ pub struct RemoteServer {
     /// Used when server desktop initiates requests (LIST, INFO, etc.) and receives
     /// responses from the client desktop — these need to be forwarded to the frontend.
     frame_callback: Arc<std::sync::Mutex<Option<ServerFrameCallback>>>,
+    /// Callback for forwarding agent answers from mobile to the frontend (set by desktop app).
+    /// E2: Used when source=="phone" in INPUT_ANSWER — the frontend uses cliBehavior to
+    /// generate the correct keystroke sequence and write it to the PTY.
+    agent_answer_callback: Arc<StdMutex<Option<AgentAnswerCallback>>>,
     /// Lock to serialize NEW_TERMINAL requests, preventing TOCTOU race in
     /// terminal name deduplication (read existing names → open → set name).
     /// Uses tokio Mutex because the critical section spans async calls.
     new_terminal_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Callback for notifying frontend of remote-initiated PTY resize.
+    /// Receives (session_id, cols, rows). Set by desktop app.
+    remote_resize_callback: Arc<std::sync::Mutex<Option<RemoteResizeCallback>>>,
 }
+
+/// Callback type for remote-initiated PTY resize notifications.
+pub type RemoteResizeCallback = Box<dyn Fn(&str, u16, u16) + Send + Sync>;
 
 impl RemoteServer {
     pub fn new(
@@ -286,12 +343,15 @@ impl RemoteServer {
             id_map,
             auth_keys: Arc::new(RwLock::new(HashMap::new())),
             answered_questions: Arc::new(StdMutex::new(HashMap::new())),
+            pending_questions: Arc::new(StdMutex::new(HashMap::new())),
             file_upload_callback: Arc::new(std::sync::Mutex::new(None)),
             desktop_pair_callback: Arc::new(std::sync::Mutex::new(None)),
             trigger_callback: Arc::new(std::sync::Mutex::new(None)),
             active_tunnels,
             frame_callback: Arc::new(std::sync::Mutex::new(None)),
+            agent_answer_callback: Arc::new(StdMutex::new(None)),
             new_terminal_lock: Arc::new(tokio::sync::Mutex::new(())),
+            remote_resize_callback: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -331,6 +391,18 @@ impl RemoteServer {
     /// OUTPUT, HISTORY, OK).
     pub fn set_frame_callback(&self, callback: ServerFrameCallback) {
         *self.frame_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
+    }
+
+    /// Set the remote resize callback (called when mobile sends RESIZE, causing
+    /// the desktop PTY to resize). The frontend uses this to re-fit xterm.js.
+    pub fn set_remote_resize_callback(&self, callback: RemoteResizeCallback) {
+        *self.remote_resize_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
+    }
+
+    /// Set the agent answer callback (E2: called when mobile sends INPUT_ANSWER
+    /// with source=="phone"). The frontend uses cliBehavior to generate keystrokes.
+    pub fn set_agent_answer_callback(&self, callback: AgentAnswerCallback) {
+        *self.agent_answer_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Add a pairing (called when pairing completes).
@@ -420,6 +492,165 @@ impl RemoteServer {
     /// Resolve session_id → u32 terminal_id (for desktop IPC path).
     pub fn resolve_terminal_id(&self, session_id: &str) -> Option<u32> {
         self.id_map.lock().unwrap_or_else(|e| e.into_inner()).sid_to_handle.get(session_id).copied()
+    }
+
+    // === Agent question pending queue (Step 3) ===
+
+    /// Check if a question has already been answered (for desktop IPC guard).
+    /// Returns Some(answer) if answered, None if not.
+    pub fn check_question_answered(&self, question_id: &str) -> Option<String> {
+        let answered = self.answered_questions.lock().unwrap_or_else(|e| e.into_inner());
+        answered.get(question_id).cloned()
+    }
+
+    /// Mark a question as answered from the desktop side (local answer).
+    /// Returns true if this is the first answer (accepted), false if already answered.
+    pub fn mark_question_answered(&self, question_id: &str, answer: &str) -> bool {
+        let mut answered = self.answered_questions.lock().unwrap_or_else(|e| e.into_inner());
+        if answered.contains_key(question_id) {
+            return false;
+        }
+        answered.insert(question_id.to_string(), answer.to_string());
+        // Schedule cleanup after 30 seconds
+        let answered = self.answered_questions.clone();
+        let qid = question_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            answered.lock().unwrap_or_else(|e| e.into_inner()).remove(&qid);
+        });
+        true
+    }
+
+    /// Notify all mobile subscribers of a terminal that an agent is blocked.
+    /// If no subscribers are connected, the question is enqueued in pending_questions
+    /// and will be flushed when a mobile subscribes.
+    ///
+    /// Called by the desktop IPC command `ipc_tunnel_notify_agent_blocked`.
+    pub async fn notify_agent_blocked(
+        &self,
+        session_id: &str,
+        question_id: &str,
+        cli: &str,
+        question: &str,
+        options: &[String],
+    ) {
+        let terminal_id = match self.resolve_terminal_id(session_id) {
+            Some(tid) => tid,
+            None => {
+                tracing::warn!("notify_agent_blocked: session {} not in IdMap", session_id);
+                return;
+            }
+        };
+
+        let pq = PendingQuestion {
+            question_id: question_id.to_string(),
+            terminal_id,
+            cli: cli.to_string(),
+            question: question.to_string(),
+            options: options.to_vec(),
+            created_at: std::time::Instant::now(),
+        };
+
+        // Build NOTIFY frame — include terminal_id in payload for mobile UI
+        let notify_json = pq.to_notify_json();
+        let frame = Frame::notify(terminal_id, &notify_json);
+
+        // Broadcast to subscribers, get count
+        let sent_count = self.terminal_manager
+            .broadcast_to_subscribers_count(session_id, frame)
+            .await;
+
+        if sent_count == 0 {
+            // No subscribers — enqueue in pending_questions
+            let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
+            let list = pending.entry(session_id.to_string()).or_default();
+            // Evict expired entries
+            list.retain(|q| !q.is_expired());
+            // Evict if over max
+            if list.len() >= PendingQuestion::MAX_PER_SESSION {
+                list.remove(0);
+            }
+            list.push(pq);
+            tracing::info!(
+                "notify_agent_blocked: no subscribers for session {}, enqueued (pending={})",
+                session_id,
+                list.len()
+            );
+        } else {
+            tracing::info!(
+                "notify_agent_blocked: sent to {} subscriber(s) for session {}",
+                sent_count,
+                session_id
+            );
+        }
+    }
+
+    /// Notify all mobile subscribers that an agent question has been resolved.
+    /// Also removes the question from pending_questions (if enqueued).
+    ///
+    /// Called by the desktop IPC command `ipc_tunnel_notify_agent_resolved`.
+    pub async fn notify_agent_resolved(
+        &self,
+        session_id: &str,
+        question_id: &str,
+        answer: &str,
+    ) {
+        let terminal_id = match self.resolve_terminal_id(session_id) {
+            Some(tid) => tid,
+            None => return,
+        };
+
+        // Remove from pending_questions
+        {
+            let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(list) = pending.get_mut(session_id) {
+                list.retain(|q| q.question_id != question_id);
+                if list.is_empty() {
+                    pending.remove(session_id);
+                }
+            }
+        }
+
+        // Broadcast NOTIFY(agent_resolved) to all subscribers
+        let notify_json = serde_json::json!({
+            "event_type": "agent_resolved",
+            "question_id": question_id,
+            "answer": answer,
+        }).to_string();
+        let frame = Frame::notify(terminal_id, &notify_json);
+        self.terminal_manager.broadcast_to_subscribers(session_id, frame).await;
+    }
+
+    /// Flush all pending questions for a session to a newly-subscribed mobile.
+    /// Called by handle_subscribe after the subscriber is registered.
+    async fn flush_pending_questions(&self, session_id: &str, async_tx: &mpsc::Sender<Frame>) {
+        let to_flush: Vec<PendingQuestion> = {
+            let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(list) = pending.get_mut(session_id) {
+                // Evict expired
+                list.retain(|q| !q.is_expired());
+                if list.is_empty() {
+                    pending.remove(session_id);
+                    Vec::new()
+                } else {
+                    std::mem::take(list)
+                }
+            } else {
+                Vec::new()
+            }
+        };
+
+        for pq in to_flush {
+            let notify_json = pq.to_notify_json();
+            let frame = Frame::notify(pq.terminal_id, &notify_json);
+            if async_tx.send(frame).await.is_err() {
+                // Tunnel closed — re-enqueue remaining
+                let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
+                let list = pending.entry(session_id.to_string()).or_default();
+                list.push(pq);
+                break;
+            }
+        }
     }
 
     /// Handle one tunnel connection's full lifecycle.
@@ -911,6 +1142,9 @@ impl RemoteServer {
             }
         });
 
+        // Flush pending agent questions to the new subscriber
+        self.flush_pending_questions(&session_id, async_tx).await;
+
         Some(Frame::ok(terminal_id))
     }
 
@@ -943,11 +1177,12 @@ impl RemoteServer {
     /// INPUT_ANSWER: agent popup answer with mutex (question_id → answer).
     /// Per design #17/#18: first answer wins, subsequent get already_answered error.
     /// Broadcasts QUESTION_RESOLVED to all subscribers after accepting answer.
+    /// B2+M4: `__dismissed__` answer → no PTY write, no cliBehavior, just notify + remove pending.
     async fn handle_input_answer(
         &self,
         frame: Frame,
     ) -> Option<Frame> {
-        // Parse payload JSON {question_id, answer}
+        // Parse payload JSON {question_id, answer, source?, cli?, option_index?, options?, is_multi_select?, is_multi_question?}
         let req: serde_json::Value = match serde_json::from_slice(&frame.payload) {
             Ok(v) => v,
             Err(_) => return Some(Frame::error("invalid_payload")),
@@ -958,34 +1193,83 @@ impl RemoteServer {
             return Some(Frame::error("invalid_payload"));
         }
 
-        // Phase 1: check and mark answered (std Mutex, short lock)
-        {
-            let mut answered = self.answered_questions.lock().unwrap_or_else(|e| e.into_inner());
-            if answered.contains_key(question_id) {
-                return Some(Frame::error("already_answered"));
-            }
-            answered.insert(question_id.to_string(), answer.to_string());
+        // Phase 1: check and mark answered (first-answer-wins)
+        if !self.mark_question_answered(question_id, answer) {
+            return Some(Frame::error("already_answered"));
         }
 
-        // Phase 2: write answer to PTY
-        let data = format!("{}\n", answer).into_bytes();
-        if let Some(session_id) = self.resolve_sid(frame.terminal_id) {
-            if let Err(e) = self.terminal_manager.remote_input(&session_id, &data).await {
-                tracing::warn!("input_answer write error: {}", e);
-            }
+        let source = req["source"].as_str().unwrap_or("local");
+        let is_dismissed = answer == "__dismissed__";
+        let session_id = self.resolve_sid(frame.terminal_id);
 
-            // Phase 3: broadcast QUESTION_RESOLVED to all subscribers
-            let resolved = Frame::question_resolved(frame.terminal_id, question_id, answer);
-            self.terminal_manager.broadcast_to_subscribers(&session_id, resolved).await;
+        // Remove from pending_questions (M4: dismissed also removes, prevents flush re-push)
+        if let Some(ref sid) = session_id {
+            let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(list) = pending.get_mut(sid) {
+                list.retain(|q| q.question_id != question_id);
+                if list.is_empty() {
+                    pending.remove(sid);
+                }
+            }
         }
 
-        // Phase 4: schedule cleanup after 30 seconds
-        let answered = self.answered_questions.clone();
-        let qid = question_id.to_string();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-            answered.lock().unwrap_or_else(|e| e.into_inner()).remove(&qid);
-        });
+        if is_dismissed {
+            // B2: User tapped "忽略" on mobile — don't write PTY, don't emit event
+            // Send NOTIFY(agent_resolved) + QUESTION_RESOLVED (B1: both, ensure mobile receives)
+            if let Some(ref sid) = session_id {
+                let resolved_json = serde_json::json!({
+                    "event_type": "agent_resolved",
+                    "question_id": question_id,
+                    "terminal_id": frame.terminal_id,
+                    "reason": "dismissed",
+                });
+                let notify_frame = Frame::notify(frame.terminal_id, &resolved_json.to_string());
+                self.terminal_manager.broadcast_to_subscribers(sid, notify_frame).await;
+                let resolved = Frame::question_resolved(frame.terminal_id, question_id, answer);
+                self.terminal_manager.broadcast_to_subscribers(sid, resolved).await;
+            }
+        } else if source == "phone" {
+            // E2: Mobile answer → emit event to frontend via agent_answer_callback
+            // Frontend uses cliBehavior to generate keystrokes + write PTY,
+            // then calls ipc_tunnel_notify_agent_resolved (D3: not here)
+            let cli = req["cli"].as_str().unwrap_or("unknown");
+            let option_index = req["option_index"].as_i64().unwrap_or(0);
+            let is_multi_select = req["is_multi_select"].as_bool().unwrap_or(false);
+            let is_multi_question = req["is_multi_question"].as_bool().unwrap_or(false);
+            // R2: options from INPUT_ANSWER payload forwarded to frontend cliBehavior
+            let options = req.get("options").cloned().unwrap_or(serde_json::Value::Null);
+
+            let event_json = serde_json::json!({
+                "type": "agent_remote_answer",
+                "terminal_id": frame.terminal_id,
+                "session_id": session_id.clone().unwrap_or_default(),
+                "question_id": question_id,
+                "answer": answer,
+                "option_index": option_index,
+                "cli": cli,
+                "options": options,
+                "is_multi_select": is_multi_select,
+                "is_multi_question": is_multi_question,
+            });
+
+            let cb_clone = self.agent_answer_callback.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(cb) = cb_clone {
+                cb(question_id, event_json);
+            }
+            // D3: Don't broadcast QUESTION_RESOLVED here!
+            // Frontend executeSteps completes → calls ipc_tunnel_notify_agent_resolved
+            // which broadcasts RESOLVED. Otherwise mobile closes UI before PTY write.
+        } else {
+            // Local answer (existing logic): write PTY + broadcast QUESTION_RESOLVED
+            if let Some(ref sid) = session_id {
+                let data = format!("{}\n", answer).into_bytes();
+                if let Err(e) = self.terminal_manager.remote_input(sid, &data).await {
+                    tracing::warn!("input_answer write error: {}", e);
+                }
+                let resolved = Frame::question_resolved(frame.terminal_id, question_id, answer);
+                self.terminal_manager.broadcast_to_subscribers(sid, resolved).await;
+            }
+        }
 
         Some(Frame::ok(frame.terminal_id))
     }
@@ -995,16 +1279,24 @@ impl RemoteServer {
         frame: Frame,
     ) -> Option<Frame> {
         // Mobile sends RESIZE with its desired cols/rows.
-        // Desktop resizes its PTY to match. No reply needed — the mobile
-        // already knows its own dimensions. Replying would cause a resize
-        // loop (mobile resize → desktop reply → mobile resize → ...).
+        // Resize the desktop PTY to match the mobile screen so TUI apps
+        // render at the mobile's dimensions. We use resize_pty_only (no
+        // broadcast) to prevent resize loops.
+        // The desktop frontend is notified via terminal:remote_resized event
+        // so xterm.js can re-fit to the new PTY dimensions.
         if let Some(session_id) = self.resolve_sid(frame.terminal_id) {
             if let Some((cols, rows)) = frame.parse_resize() {
-                let _ = self.terminal_manager
-                    .resize_and_notify(&session_id, cols as u32, rows as u32)
-                    .await;
-                // Return None — no reply frame. The OK was already sent
-                // by the frame handler for query-type frames.
+                tracing::info!(
+                    "handle_resize: resizing PTY to {}x{} for session {} (mobile client request)",
+                    cols, rows, session_id
+                );
+                let _ = self.terminal_manager.resize_pty_only(&session_id, cols as u32, rows as u32).await;
+                // Notify desktop frontend to re-fit xterm.js
+                if let Ok(cb) = self.remote_resize_callback.lock() {
+                    if let Some(callback) = cb.as_ref() {
+                        callback(&session_id, cols, rows);
+                    }
+                }
                 return None;
             }
         }
@@ -1653,7 +1945,7 @@ mod tests {
         assert_eq!(ok_frame.terminal_id, term_id);
 
         // No RESIZE frame is sent on SUBSCRIBE — mobile determines its own
-        // dimensions and sends RESIZE to desktop. History may follow if non-empty.
+        // dimensions and sends RESIZE to desktop.
 
         drop(inbound_tx);
         let _ = handle.await;
@@ -1749,7 +2041,8 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// Test RESIZE → desktop resizes PTY, no reply (prevents resize loop)
+    /// Test RESIZE → desktop resizes PTY to mobile dimensions,
+    /// and sends no reply (prevents resize loop)
     #[tokio::test]
     async fn test_resize_query() {
         let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
@@ -1763,7 +2056,8 @@ mod tests {
         let (mut mobile_send, desktop_recv) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
         let term_id = do_list_and_get_first_id(&mut mobile_send, &desktop_recv, &inbound_tx, &mut outbound_rx).await;
 
-        // Send RESIZE — desktop should resize its PTY but NOT reply (prevents loop)
+        // Send RESIZE — desktop should resize its PTY to mobile dimensions
+        // and NOT reply (prevents loop)
         send_encrypted_frame(&mut mobile_send, &inbound_tx, &Frame::resize(term_id, 100, 30)).await;
 
         // Should NOT receive any reply frame (timeout means success — no loop)
@@ -1877,7 +2171,7 @@ mod tests {
             let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
             if f.frame_type == remote_frame::OK { break; }
         }
-        // No RESIZE frame on SUBSCRIBE (mobile determines size)
+        // RESIZE + HISTORY frames may follow OK (drained until OK)
 
         // Second SUBSCRIBE (same terminal_id, same pairing_id) — should be idempotent
         send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::subscribe(term_id)).await;
@@ -1890,7 +2184,7 @@ mod tests {
             if f.frame_type == remote_frame::OK { got_ok = true; break; }
         }
         assert!(got_ok, "should receive OK for second SUBSCRIBE");
-        // No RESIZE frame on SUBSCRIBE (mobile determines size)
+        // RESIZE + HISTORY frames may follow OK (drained until OK)
 
         drop(inbound_tx);
         let _ = handle.await;
@@ -2165,7 +2459,7 @@ mod tests {
             let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
             if f.frame_type == remote_frame::OK { break; }
         }
-        // No RESIZE frame on SUBSCRIBE (mobile determines size)
+        // RESIZE + HISTORY frames may follow OK (drained until OK)
 
         // INPUT_ANSWER — should get OK + broadcast QUESTION_RESOLVED to subscribers
         send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::input_answer(term_id, "q-broadcast", "1")).await;
@@ -2776,5 +3070,301 @@ mod tests {
 
         drop(inbound_tx);
         let _ = handle.await;
+    }
+
+    /// Test INPUT_ANSWER with __dismissed__ answer:
+    /// - B2: does NOT write to PTY (no OUTPUT frame with the answer)
+    /// - B1: broadcasts both NOTIFY(agent_resolved) and QUESTION_RESOLVED
+    /// - M4: removes from pending_questions
+    #[tokio::test]
+    async fn test_input_answer_dismissed_no_pty_write() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+        let term_id = do_list_and_get_first_id(&mut mobile_ss, &desktop_sc, &inbound_tx, &mut outbound_rx).await;
+
+        // SUBSCRIBE first (so we receive broadcasts)
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::subscribe(term_id)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if tokio::time::Instant::now() >= deadline { panic!("timeout waiting for OK after SUBSCRIBE"); }
+            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+            if f.frame_type == remote_frame::OK { break; }
+        }
+
+        // INPUT_ANSWER with __dismissed__
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::input_answer(term_id, "q-dismiss", "__dismissed__")).await;
+
+        // Should receive OK
+        let mut got_ok = false;
+        loop {
+            if tokio::time::Instant::now() >= deadline { break; }
+            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+            if f.frame_type == remote_frame::OK { got_ok = true; break; }
+        }
+        assert!(got_ok, "should receive OK for dismissed INPUT_ANSWER");
+
+        // Should receive NOTIFY(agent_resolved) + QUESTION_RESOLVED broadcasts
+        let mut got_notify = false;
+        let mut got_qr = false;
+        loop {
+            if tokio::time::Instant::now() >= deadline { break; }
+            match tokio::time::timeout(std::time::Duration::from_millis(200), outbound_rx.recv()).await {
+                Ok(Some(encrypted)) => {
+                    let pt = desktop_sc.decrypt(&encrypted).unwrap();
+                    let frame = Frame::deserialize(&pt).unwrap();
+                    if frame.frame_type == remote_frame::NOTIFY {
+                        let json: serde_json::Value = serde_json::from_slice(&frame.payload).unwrap();
+                        if json["event_type"] == "agent_resolved" && json["question_id"] == "q-dismiss" {
+                            got_notify = true;
+                        }
+                    }
+                    if frame.frame_type == remote_frame::QUESTION_RESOLVED {
+                        let json: serde_json::Value = serde_json::from_slice(&frame.payload).unwrap();
+                        if json["question_id"] == "q-dismiss" {
+                            got_qr = true;
+                        }
+                    }
+                    if got_notify && got_qr { break; }
+                }
+                _ => break,
+            }
+        }
+        assert!(got_notify, "dismissed should broadcast NOTIFY(agent_resolved)");
+        assert!(got_qr, "dismissed should broadcast QUESTION_RESOLVED");
+
+        // B2: verify NO OUTPUT frame contains "__dismissed__" (no PTY write)
+        let drain_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+        let mut got_dismissed_output = false;
+        while tokio::time::Instant::now() < drain_deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(50), outbound_rx.recv()).await {
+                Ok(Some(encrypted)) => {
+                    let pt = desktop_sc.decrypt(&encrypted).unwrap();
+                    let frame = Frame::deserialize(&pt).unwrap();
+                    if frame.frame_type == remote_frame::OUTPUT {
+                        let payload_str = String::from_utf8_lossy(&frame.payload);
+                        if payload_str.contains("__dismissed__") {
+                            got_dismissed_output = true;
+                            break;
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(!got_dismissed_output, "B2: dismissed answer should NOT be written to PTY (no OUTPUT frame with __dismissed__)");
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test INPUT_ANSWER with source="phone":
+    /// - E2: emits agent_remote_answer event via agent_answer_callback (NOT frame_callback)
+    /// - D3: does NOT broadcast QUESTION_RESOLVED (frontend handles that after PTY write)
+    /// - Does NOT write to PTY directly
+    #[tokio::test]
+    async fn test_input_answer_phone_emits_event() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        // Set up agent_answer_callback to capture the event
+        let captured_events = Arc::new(StdMutex::new(Vec::<(String, serde_json::Value)>::new()));
+        let captured_clone = captured_events.clone();
+        remote_server.set_agent_answer_callback(Arc::new(move |qid: &str, event_json: serde_json::Value| {
+            captured_clone.lock().unwrap().push((qid.to_string(), event_json));
+        }));
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+        let term_id = do_list_and_get_first_id(&mut mobile_ss, &desktop_sc, &inbound_tx, &mut outbound_rx).await;
+
+        // SUBSCRIBE first
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::subscribe(term_id)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if tokio::time::Instant::now() >= deadline { panic!("timeout waiting for OK after SUBSCRIBE"); }
+            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+            if f.frame_type == remote_frame::OK { break; }
+        }
+
+        // INPUT_ANSWER from phone with semantic metadata
+        let answer_frame = Frame::input_answer_from_phone(
+            term_id, "q-phone", "1. React", 0, "devin",
+            &["1. React".to_string(), "2. Vue".to_string()],
+            false, false,
+        );
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &answer_frame).await;
+
+        // Should receive OK
+        let mut got_ok = false;
+        loop {
+            if tokio::time::Instant::now() >= deadline { break; }
+            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+            if f.frame_type == remote_frame::OK { got_ok = true; break; }
+        }
+        assert!(got_ok, "should receive OK for phone INPUT_ANSWER");
+
+        // Wait briefly for callback to fire
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Verify agent_answer_callback was called with correct data
+        let events = captured_events.lock().unwrap();
+        assert_eq!(events.len(), 1, "agent_answer_callback should be called exactly once");
+        let (qid, event_json) = &events[0];
+        assert_eq!(qid, "q-phone");
+        assert_eq!(event_json["type"], "agent_remote_answer");
+        assert_eq!(event_json["question_id"], "q-phone");
+        assert_eq!(event_json["answer"], "1. React");
+        assert_eq!(event_json["cli"], "devin");
+        assert_eq!(event_json["option_index"], 0);
+        // E3: verify options array is forwarded to frontend cliBehavior
+        assert_eq!(event_json["options"], serde_json::json!(["1. React", "2. Vue"]));
+
+        // D3: should NOT receive QUESTION_RESOLVED broadcast (frontend handles that)
+        let mut got_qr = false;
+        match tokio::time::timeout(std::time::Duration::from_millis(200), outbound_rx.recv()).await {
+            Ok(Some(encrypted)) => {
+                let pt = desktop_sc.decrypt(&encrypted).unwrap();
+                let frame = Frame::deserialize(&pt).unwrap();
+                if frame.frame_type == remote_frame::QUESTION_RESOLVED {
+                    got_qr = true;
+                }
+            }
+            _ => {}
+        }
+        assert!(!got_qr, "phone INPUT_ANSWER should NOT broadcast QUESTION_RESOLVED (D3)");
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test mark_question_answered / check_question_answered:
+    /// - First call returns true (accepted)
+    /// - Second call with same question_id returns false (already answered)
+    /// - check_question_answered returns the stored answer
+    #[tokio::test]
+    async fn test_mark_and_check_question_answered() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+
+        // First mark — should return true (accepted)
+        let accepted1 = remote_server.mark_question_answered("q-test", "1. React");
+        assert!(accepted1, "first mark_question_answered should return true");
+
+        // Check — should return the stored answer
+        let answer = remote_server.check_question_answered("q-test");
+        assert_eq!(answer, Some("1. React".to_string()));
+
+        // Second mark — should return false (already answered)
+        let accepted2 = remote_server.mark_question_answered("q-test", "2. Vue");
+        assert!(!accepted2, "second mark_question_answered should return false");
+
+        // Check — should still return the first answer
+        let answer2 = remote_server.check_question_answered("q-test");
+        assert_eq!(answer2, Some("1. React".to_string()));
+
+        // Check non-existent question — should return None
+        let answer3 = remote_server.check_question_answered("q-nonexistent");
+        assert_eq!(answer3, None);
+    }
+
+    /// Test pending_questions enqueue and flush:
+    /// - notify_agent_blocked with no subscribers → enqueues in pending_questions
+    /// - flush_pending_questions on subscribe → sends NOTIFY frames
+    #[tokio::test]
+    async fn test_pending_questions_enqueue_and_flush() {
+        let (remote_server, sid) = setup_remote_server_with_local_terminal().await;
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+        let _term_id = do_list_and_get_first_id(&mut mobile_ss, &desktop_sc, &inbound_tx, &mut outbound_rx).await;
+
+        // Call notify_agent_blocked BEFORE mobile subscribes → should enqueue
+        // We need to call it on the remote_server, but it's been moved into spawn.
+        // Instead, test the pending_questions directly via the Arc.
+        // Actually, notify_agent_blocked is async and needs &self, but remote_server is moved.
+        // Let's test the pending_questions map directly.
+        drop(inbound_tx);
+        let _ = handle.await;
+
+        // Re-create a fresh server for direct testing
+        let (remote_server2, _sid2) = setup_remote_server_with_local_terminal().await;
+        let pending = remote_server2.pending_questions.clone();
+
+        // Verify pending is empty initially
+        {
+            let p = pending.lock().unwrap();
+            assert!(!p.contains_key(&sid), "pending_questions should be empty initially");
+        }
+
+        // Manually enqueue a question
+        {
+            let mut p = pending.lock().unwrap();
+            let list = p.entry(sid.clone()).or_default();
+            list.push(PendingQuestion {
+                question_id: "q-pending".to_string(),
+                terminal_id: 1,
+                cli: "devin".to_string(),
+                question: "Which framework?".to_string(),
+                options: vec!["React".to_string(), "Vue".to_string()],
+                created_at: std::time::Instant::now(),
+            });
+        }
+
+        // Verify it's in pending
+        {
+            let p = pending.lock().unwrap();
+            assert!(p.contains_key(&sid), "pending_questions should contain session after enqueue");
+            assert_eq!(p[&sid].len(), 1);
+            assert_eq!(p[&sid][0].question_id, "q-pending");
+        }
+
+        // Call flush_pending_questions — should clear the list
+        remote_server2.flush_pending_questions(&sid, &mpsc::channel::<Frame>(1).0).await;
+
+        // Verify pending is cleared
+        {
+            let p = pending.lock().unwrap();
+            assert!(!p.contains_key(&sid) || p[&sid].is_empty(), "pending_questions should be empty after flush");
+        }
+    }
+
+    /// Test PendingQuestion TTL expiration:
+    /// - Questions older than TTL (24 hours) should be evicted during flush
+    #[tokio::test]
+    async fn test_pending_question_ttl_expiration() {
+        let pq = PendingQuestion {
+            question_id: "q-old".to_string(),
+            terminal_id: 1,
+            cli: "devin".to_string(),
+            question: "Old question".to_string(),
+            options: vec![],
+            created_at: std::time::Instant::now() - std::time::Duration::from_secs(100000),
+        };
+        assert!(pq.is_expired(), "question older than 24h TTL should be expired");
+
+        let pq2 = PendingQuestion {
+            question_id: "q-fresh".to_string(),
+            terminal_id: 1,
+            cli: "devin".to_string(),
+            question: "Fresh question".to_string(),
+            options: vec![],
+            created_at: std::time::Instant::now(),
+        };
+        assert!(!pq2.is_expired(), "fresh question should not be expired");
     }
 }

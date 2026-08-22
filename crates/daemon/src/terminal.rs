@@ -91,6 +91,11 @@ pub type OnClosedCallback = Box<dyn Fn(&str) + Send + Sync>;
 /// Type alias for the on_opened callback function.
 pub type OnOpenedCallback = Box<dyn Fn() + Send + Sync>;
 
+/// Type alias for the on_remote_unsubscribed callback.
+/// Called when a mobile client unsubscribes from a terminal, so the desktop
+/// can restore the PTY to the desktop's xterm.js dimensions.
+pub type OnRemoteUnsubscribedCallback = Box<dyn Fn(&str) + Send + Sync>;
+
 /// Manages all active terminal sessions
 pub struct TerminalManager {
     sessions: Mutex<HashMap<String, TerminalSession>>,
@@ -110,6 +115,9 @@ pub struct TerminalManager {
     on_closed_callback: Arc<std::sync::Mutex<Option<OnClosedCallback>>>,
     /// Callback invoked when a terminal is opened (for RemoteServer to broadcast LIST_CHANGED).
     on_opened_callback: Arc<std::sync::Mutex<Option<OnOpenedCallback>>>,
+    /// Callback invoked when a mobile client unsubscribes from a terminal.
+    /// The desktop frontend uses this to re-fit xterm.js (restore PTY size).
+    on_remote_unsubscribed_callback: Arc<std::sync::Mutex<Option<OnRemoteUnsubscribedCallback>>>,
 }
 
 impl TerminalManager {
@@ -126,6 +134,7 @@ impl TerminalManager {
             trigger_overrides: Arc::new(Mutex::new(HashMap::new())),
             on_closed_callback: Arc::new(std::sync::Mutex::new(None)),
             on_opened_callback: Arc::new(std::sync::Mutex::new(None)),
+            on_remote_unsubscribed_callback: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -137,6 +146,12 @@ impl TerminalManager {
     /// Set a callback invoked when a terminal is opened (for broadcasting LIST_CHANGED).
     pub fn set_on_opened_callback(&self, callback: OnOpenedCallback) {
         *self.on_opened_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
+    }
+
+    /// Set a callback invoked when a mobile client unsubscribes from a terminal.
+    /// The desktop frontend uses this to re-fit xterm.js (restore PTY size).
+    pub fn set_on_remote_unsubscribed_callback(&self, callback: OnRemoteUnsubscribedCallback) {
+        *self.on_remote_unsubscribed_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Invoke the on_opened callback (if set).
@@ -792,6 +807,41 @@ impl TerminalManager {
         cols: u32,
         rows: u32,
     ) -> Result<(), String> {
+        self.resize_pty_only(session_id, cols, rows).await?;
+
+        // Broadcast RESIZE to all remote subscribers (mobile clients) so they
+        // can resize their emulators to match the desktop PTY dimensions.
+        // This is only called from desktop-side resize (xterm.js fit), NOT
+        // from mobile-initiated resize (handle_resize uses resize_pty_only
+        // directly to avoid a resize loop).
+        {
+            let sessions = self.sessions.lock().await;
+            if let Some(session) = sessions.get(session_id) {
+                let subs = session.remote_subscribers.lock().unwrap_or_else(|e| e.into_inner());
+                if !subs.is_empty() {
+                    for sub in subs.iter() {
+                        let resize_frame = crate::remote_frame::Frame::resize(sub.terminal_id, cols as u16, rows as u16);
+                        let _ = sub.sender.try_send(resize_frame);
+                    }
+                    tracing::debug!(
+                        "resize_and_notify: broadcast RESIZE {}x{} to {} subscriber(s) for session {}",
+                        cols, rows, subs.len(), session_id
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resize PTY + update pty_size + update tmux @termfast_size, but do NOT
+    /// broadcast RESIZE to remote subscribers. Used by handle_resize (mobile
+    /// client initiated) to avoid resize loops.
+    pub async fn resize_pty_only(
+        &self,
+        session_id: &str,
+        cols: u32,
+        rows: u32,
+    ) -> Result<(), String> {
         let (tmux_name, ssh_handle) = {
             let sessions = self.sessions.lock().await;
             let session = match sessions.get(session_id) {
@@ -801,6 +851,8 @@ impl TerminalManager {
             // Send resize command to PTY
             let cmd = TerminalCmd::Resize(cols, rows);
             let _ = session.cmd_tx.send(cmd);
+            // Update pty_size
+            *session.pty_size.lock().unwrap_or_else(|e| e.into_inner()) = (cols as u16, rows as u16);
             // Get tmux info for exec channel update
             (session.tmux_session_name.clone(), session.ssh_handle.clone())
         };
@@ -808,7 +860,6 @@ impl TerminalManager {
         // If SSH + tmux terminal, update @termfast_size via exec channel
         if let (Some(name), Some(handle)) = (tmux_name, ssh_handle) {
             let cmd = termfast_core::ssh::tmux::build_update_size_command(&name, cols as u16, rows as u16);
-            // Spawn async exec — don't block PTY resize on network round-trip
             tokio::spawn(async move {
                 if let Err(e) = termfast_core::ssh::exec::exec(&handle, &cmd, 5).await {
                     tracing::warn!("failed to update @termfast_size: {}", e);
@@ -1191,8 +1242,8 @@ impl TerminalManager {
 
         // 3. RESIZE frame is NOT pushed here — the mobile client determines
         // its own dimensions based on screen size and sends RESIZE to us.
-        // Pushing our PTY size would overwrite the mobile's chosen dimensions
-        // and cause a resize loop.
+        // We resize the desktop PTY to match the mobile's dimensions when
+        // we receive the mobile's RESIZE frame (see handle_resize).
 
         // 4. Push HISTORY frames (chunked by MAX_HISTORY_DATA) into subscriber channel
         if !history_bytes.is_empty() {
@@ -1219,10 +1270,25 @@ impl TerminalManager {
 
     /// Unsubscribe a remote client from a terminal session.
     pub async fn unsubscribe_remote(&self, session_id: &str, pairing_id: &str) {
-        let sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get(session_id) {
-            let mut subs = session.remote_subscribers.lock().unwrap_or_else(|e| e.into_inner());
-            subs.retain(|s| s.pairing_id != pairing_id);
+        let was_last_subscriber = {
+            let sessions = self.sessions.lock().await;
+            if let Some(session) = sessions.get(session_id) {
+                let mut subs = session.remote_subscribers.lock().unwrap_or_else(|e| e.into_inner());
+                subs.retain(|s| s.pairing_id != pairing_id);
+                subs.is_empty()
+            } else {
+                false
+            }
+        };
+        // If the last mobile subscriber left, notify the desktop so it can
+        // re-fit xterm.js and restore the PTY to desktop dimensions.
+        if was_last_subscriber {
+            if let Ok(cb) = self.on_remote_unsubscribed_callback.lock() {
+                if let Some(ref f) = *cb {
+                    tracing::info!("[TerminalManager] last remote subscriber left session {}, notifying desktop to re-fit", session_id);
+                    f(session_id);
+                }
+            }
         }
     }
 
@@ -1240,6 +1306,30 @@ impl TerminalManager {
             for sub in subs.iter() {
                 let _ = sub.sender.try_send(frame.clone());
             }
+        }
+    }
+
+    /// Broadcast a frame to all remote subscribers of a terminal session,
+    /// returning the number of subscribers the frame was actually sent to.
+    /// Used by RemoteServer to decide whether to enqueue a pending question
+    /// (sent_count == 0 → enqueue for later flush on subscribe).
+    pub async fn broadcast_to_subscribers_count(
+        &self,
+        session_id: &str,
+        frame: crate::remote_frame::Frame,
+    ) -> usize {
+        let sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get(session_id) {
+            let subs = session.remote_subscribers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut count = 0;
+            for sub in subs.iter() {
+                if sub.sender.try_send(frame.clone()).is_ok() {
+                    count += 1;
+                }
+            }
+            count
+        } else {
+            0
         }
     }
 

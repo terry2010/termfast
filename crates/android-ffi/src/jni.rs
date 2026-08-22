@@ -6,8 +6,8 @@
 #![cfg(target_os = "android")]
 
 use crate::runtime::runtime;
-use ::jni::objects::{JClass, JObject, JString, GlobalRef};
-use ::jni::sys::{jboolean, jint, jstring, JNI_FALSE, JNI_TRUE};
+use ::jni::objects::{JClass, JObject, JString, GlobalRef, JObjectArray};
+use ::jni::sys::{jboolean, jint, jstring, jobjectArray, JNI_FALSE, JNI_TRUE};
 use ::jni::JNIEnv;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -2491,6 +2491,55 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSend
         Ok(ct) => vec_to_jbytearray(&mut env, &ct),
         Err(e) => {
             log_to_kotlin("error", &format!("nativeRemoteTunnelSendResize: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSendInputAnswer(
+    mut env: JNIEnv,
+    _class: JClass,
+    pairing_id: JString,
+    terminal_id: jint,
+    question_id: JString,
+    answer: JString,
+    option_index: jint,
+    cli: JString,
+    options: jobjectArray,
+    is_multi_select: jboolean,
+    is_multi_question: jboolean,
+) -> ::jni::sys::jbyteArray {
+    let pid = jstring_to_string(&mut env, &pairing_id);
+    let qid = jstring_to_string(&mut env, &question_id);
+    let ans = jstring_to_string(&mut env, &answer);
+    let cli_str = jstring_to_string(&mut env, &cli);
+    // Convert jobjectArray to Vec<String>
+    let opts_vec: Vec<String> = if options.is_null() {
+        Vec::new()
+    } else {
+        let arr = unsafe { JObjectArray::from_raw(options) };
+        let len = env.get_array_length(&arr).unwrap_or(0);
+        (0..len).map(|i| {
+            match env.get_object_array_element(&arr, i) {
+                Ok(obj) => {
+                    // Cast JObject to JString
+                    let s = unsafe { JString::from_raw(obj.into_raw()) };
+                    jstring_to_string(&mut env, &s)
+                }
+                Err(_) => String::new(),
+            }
+        }).collect()
+    };
+    match crate::remote_terminal::send_input_answer(
+        &pid, terminal_id as u32, &qid, &ans,
+        option_index as i64, &cli_str, &opts_vec,
+        is_multi_select != 0, is_multi_question != 0,
+    ) {
+        Ok(ct) => vec_to_jbytearray(&mut env, &ct),
+        Err(e) => {
+            log_to_kotlin("error", &format!("nativeRemoteTunnelSendInputAnswer: {}", e));
             std::ptr::null_mut()
         }
     }

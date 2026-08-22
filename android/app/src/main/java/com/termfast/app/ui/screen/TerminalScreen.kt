@@ -128,6 +128,17 @@ fun TerminalScreen(
     // Get the termlib emulator for this session
     val emulator = remember(sessionId) { TerminalSessionManager.getEmulatorBySession(sessionId) }
 
+    // For remote sessions: track desktop PTY dimensions for forcedSize.
+    // When non-zero, the Terminal composable uses these as forcedSize,
+    // preventing it from resizing the emulator to the mobile screen size.
+    var remotePtySize by remember(sessionId) {
+        val s = TerminalSessionManager.getSessionState(sessionId)
+        android.util.Log.d("termfast", "TerminalScreen init: sessionId=$sessionId remotePtyCols=${s?.remotePtyCols} remotePtyRows=${s?.remotePtyRows}")
+        mutableStateOf(s?.let {
+            if (it.remotePtyCols > 0 && it.remotePtyRows > 0) it.remotePtyRows to it.remotePtyCols else null
+        })
+    }
+
     var connected by remember(sessionId) {
         if (isRemote) {
             // Remote sessions are created already connected
@@ -150,7 +161,33 @@ fun TerminalScreen(
     // Collect terminal events — only for connection state, not rendering.
     // In remote mode, connection state is managed by RemoteTunnelManager.
     LaunchedEffect(sessionId) {
-        if (isRemote) return@LaunchedEffect
+        if (isRemote) {
+            // Remote mode: listen for RESIZE events to update forcedSize
+            RustRepository.events.collect { event ->
+                when (event) {
+                    is RustEvent.RemoteTerminalResize -> {
+                        val s = TerminalSessionManager.getSessionState(sessionId)
+                        if (s != null && s.remotePairingId == event.pairing_id &&
+                            s.remoteTerminalId == event.terminal_id.toInt()) {
+                            remotePtySize = event.rows to event.cols
+                            android.util.Log.d("termfast", "TerminalScreen: updated forcedSize to rows=${event.rows} cols=${event.cols}")
+                        }
+                    }
+                    is RustEvent.RemoteTunnelReady -> {
+                        // Tunnel ready — re-read PTY size from SessionState in case
+                        // RESIZE arrived before TerminalScreen started listening
+                        val s = TerminalSessionManager.getSessionState(sessionId)
+                        if (s != null && s.remotePtyCols > 0 && s.remotePtyRows > 0) {
+                            remotePtySize = s.remotePtyRows to s.remotePtyCols
+                            android.util.Log.d("termfast", "TerminalScreen: recovered forcedSize from SessionState rows=${s.remotePtyRows} cols=${s.remotePtyCols}")
+                        }
+                    }
+                    else -> {}
+                }
+            }
+            return@LaunchedEffect
+        }
+        // Local SSH mode: listen for closed/error events
         RustRepository.events.collect { event ->
             when (event) {
                 is RustEvent.TerminalClosed -> {
@@ -171,6 +208,20 @@ fun TerminalScreen(
                     }
                 }
                 else -> {}
+            }
+        }
+    }
+
+    // Remote mode: delayed check for PTY size — handles the case where
+    // RESIZE frame arrived before TerminalScreen started listening.
+    LaunchedEffect(sessionId, isRemote) {
+        if (!isRemote) return@LaunchedEffect
+        kotlinx.coroutines.delay(1000)
+        if (remotePtySize == null) {
+            val s = TerminalSessionManager.getSessionState(sessionId)
+            if (s != null && s.remotePtyCols > 0 && s.remotePtyRows > 0) {
+                remotePtySize = s.remotePtyRows to s.remotePtyCols
+                android.util.Log.d("termfast", "TerminalScreen: delayed recovery forcedSize rows=${s.remotePtyRows} cols=${s.remotePtyCols}")
             }
         }
     }
@@ -503,6 +554,7 @@ fun TerminalScreen(
                             }
                         },
                 ) {
+                    android.util.Log.d("termfast", "Terminal composable: isRemote=$isRemote baseFontSize=$baseFontSize")
                     Terminal(
                         terminalEmulator = emulator,
                         modifier = Modifier.fillMaxSize(),
@@ -742,6 +794,7 @@ fun TerminalScreen(
                             }
                         },
                 ) {
+                    android.util.Log.d("termfast", "Terminal composable: isRemote=$isRemote baseFontSize=$baseFontSize")
                     Terminal(
                         terminalEmulator = emulator,
                         modifier = Modifier.fillMaxSize(),

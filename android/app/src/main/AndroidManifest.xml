@@ -82,6 +82,16 @@
                 android:value="true" />
         </service>
 
+        <!-- RemoteTunnelService: foreground service to keep tunnel alive in background -->
+        <service
+            android:name=".service.RemoteTunnelService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Remote terminal tunnel connection" />
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

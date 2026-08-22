@@ -58,6 +58,7 @@ import androidx.navigation.NavController
 import com.termfast.app.data.PairingApi
 import com.termfast.app.data.PairingStore
 import com.termfast.app.data.RustRepository
+import com.termfast.app.data.RustEvent
 import com.termfast.app.data.ServerConfig
 import com.termfast.app.data.ServerStatus
 import com.termfast.app.data.SettingsRepository
@@ -438,6 +439,32 @@ fun ServerListScreen(navController: NavController) {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Listen for remote terminal events so the badge (terminal session count)
+    // updates when terminals are opened/closed on the desktop or when the
+    // desktop restarts and sessions are cleared.
+    LaunchedEffect(Unit) {
+        RustRepository.events.collect { event ->
+            when (event) {
+                is RustEvent.RemoteTerminalList -> {
+                    // syncRemoteSessionsWithList already ran in the global collector.
+                    // Trigger recomposition so badge counts update.
+                    refresh()
+                }
+                is RustEvent.RemoteTerminalError -> {
+                    // Desktop went offline / tunnel error — sessions may have been
+                    // marked disconnected. Refresh to update badge.
+                    refresh()
+                }
+                is RustEvent.RemoteTunnelReady -> {
+                    // Tunnel reconnected — desktop may have restarted.
+                    // Refresh to reflect current session counts.
+                    refresh()
+                }
+                else -> {}
+            }
+        }
     }
 
     Scaffold(

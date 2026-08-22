@@ -62,6 +62,8 @@ class MainActivity : ComponentActivity() {
         RustRepository.initOrdering(this)
         PairingStore.init(this)
         CloudSyncManager.appContext = applicationContext
+        // Initialize TerminalSessionManager with app context (for RemoteTunnelService start/stop)
+        com.termfast.app.ui.screen.TerminalSessionManager.init(this)
         // Start global terminal session event collector
         com.termfast.app.ui.screen.TerminalSessionManager.startGlobalCollector()
         // Try auto-unlock with cached derived key (no user prompt).
@@ -75,6 +77,7 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
         handleStartVpnIntent(intent)
         handleOAuthDeepLink(intent)
+        handleAgentApprovalIntent(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(
                 android.graphics.Color.TRANSPARENT,
@@ -220,6 +223,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         handleStartVpnIntent(intent)
         handleOAuthDeepLink(intent)
+        handleAgentApprovalIntent(intent)
     }
 
     private fun handleStartVpnIntent(intent: android.content.Intent) {
@@ -257,5 +261,33 @@ class MainActivity : ComponentActivity() {
         CoroutineScope(Dispatchers.IO).launch {
             CloudSyncManager.handleDeepLink(uri)
         }
+    }
+
+    /**
+     * Handle "AI needs input" notification tap — navigate to AgentApprovalScreen.
+     * The notification Intent carries:
+     * - navigate_to: "agentApproval/{questionId}"
+     * - cli: CLI type (for fallback rendering if cache is lost)
+     * - question: question text (for fallback rendering)
+     */
+    private fun handleAgentApprovalIntent(intent: android.content.Intent) {
+        val navigateTo = intent.getStringExtra("navigate_to") ?: return
+        if (!navigateTo.startsWith("agentApproval/")) return
+        // Route format: agentApproval/{questionId}/{cli}/{question}
+        val parts = navigateTo.removePrefix("agentApproval/").split("/", limit = 3)
+        if (parts.isEmpty() || parts[0].isEmpty()) return
+        val questionId = parts[0]
+        val cli = if (parts.size > 1) java.net.URLDecoder.decode(parts[1], "UTF-8") else ""
+        val question = if (parts.size > 2) java.net.URLDecoder.decode(parts[2], "UTF-8") else ""
+        // Store for TermFastApp to pick up and navigate
+        pendingAgentApproval = Triple(questionId, cli, question)
+        // Clear the extra so it doesn't re-trigger on config change
+        intent.removeExtra("navigate_to")
+    }
+
+    companion object {
+        /** Pending agent approval navigation (questionId, cli, question). Read by TermFastApp. */
+        @Volatile
+        var pendingAgentApproval: Triple<String, String, String>? = null
     }
 }

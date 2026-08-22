@@ -13,6 +13,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
@@ -47,6 +48,17 @@ fun TermFastApp() {
     val current = backStack?.destination
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+
+    // Handle pending agent approval navigation from notification tap
+    LaunchedEffect(Unit) {
+        com.termfast.app.MainActivity.pendingAgentApproval?.let { (questionId, cli, question) ->
+            com.termfast.app.MainActivity.pendingAgentApproval = null
+            // Encode cli + question as URL-encoded route parameters
+            val encodedCli = java.net.URLEncoder.encode(cli, "UTF-8")
+            val encodedQuestion = java.net.URLEncoder.encode(question, "UTF-8")
+            navController.navigate("agentApproval/$questionId/$encodedCli/$encodedQuestion")
+        }
+    }
 
     // Hide bottom nav on terminal screens (immersive mode).
     //   Note: "terminals" and "terminals_by_server" routes should KEEP the
@@ -205,6 +217,18 @@ fun TermFastApp() {
             composable("remote_detail/{pairingId}") { backStack ->
                 val pairingId = backStack.arguments?.getString("pairingId") ?: ""
                 com.termfast.app.ui.screen.RemoteDetailScreen(navController, pairingId)
+            }
+            // Agent approval — opened from "AI needs input" notification
+            composable("agentApproval/{questionId}/{cli}/{question}") { backStack ->
+                val questionId = backStack.arguments?.getString("questionId") ?: ""
+                val cli = backStack.arguments?.getString("cli") ?: ""
+                val question = backStack.arguments?.getString("question") ?: ""
+                com.termfast.app.ui.screen.AgentApprovalScreen(
+                    navController = navController,
+                    questionId = questionId,
+                    fallbackCli = java.net.URLDecoder.decode(cli, "UTF-8"),
+                    fallbackQuestion = java.net.URLDecoder.decode(question, "UTF-8"),
+                )
             }
         }
     }

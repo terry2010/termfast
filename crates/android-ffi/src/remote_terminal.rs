@@ -330,6 +330,25 @@ pub fn send_input(pairing_id: &str, terminal_id: u32, data: &[u8]) -> Result<Vec
     encrypt_outgoing(pairing_id, Frame::input(terminal_id, data))
 }
 
+/// Create and encrypt an INPUT_ANSWER frame (agent popup answer).
+/// payload = JSON {question_id, answer, source, cli, option_index, options, is_multi_select, is_multi_question}
+/// E2: source="phone" tells desktop Rust to emit event to frontend (not write PTY directly)
+pub fn send_input_answer(
+    pairing_id: &str,
+    terminal_id: u32,
+    question_id: &str,
+    answer: &str,
+    option_index: i64,
+    cli: &str,
+    options: &[String],
+    is_multi_select: bool,
+    is_multi_question: bool,
+) -> Result<Vec<u8>, String> {
+    encrypt_outgoing(pairing_id, Frame::input_answer_from_phone(
+        terminal_id, question_id, answer, option_index, cli, options, is_multi_select, is_multi_question,
+    ))
+}
+
 /// Create and encrypt a RESIZE frame.
 pub fn send_resize(
     pairing_id: &str,

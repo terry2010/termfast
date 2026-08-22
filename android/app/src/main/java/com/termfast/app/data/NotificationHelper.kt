@@ -10,7 +10,8 @@ import androidx.core.app.NotificationManagerCompat
  * Helper to display system notifications from NOTIFY frames.
  */
 object NotificationHelper {
-    private const val CHANNEL_ID = "termfast_events"
+    // D5: channel id 从 termfast_events 改名为 termfast_data_events（避免与 service/ 的重名）
+    private const val CHANNEL_ID = "termfast_data_events"
     private const val CHANNEL_NAME = "TermFast Events"
 
     fun createChannel(context: Context) {

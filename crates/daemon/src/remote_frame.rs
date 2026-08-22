@@ -216,6 +216,33 @@ impl Frame {
         Self::new(INPUT_ANSWER, terminal_id, json.to_string().into_bytes())
     }
 
+    /// Construct an INPUT_ANSWER frame from mobile (with semantic answer metadata).
+    /// payload = JSON {question_id, answer, source, cli, option_index, options, is_multi_select, is_multi_question}
+    /// E2/R2: source="phone" tells desktop Rust to emit event to frontend (not write PTY directly)
+    #[allow(clippy::too_many_arguments)]
+    pub fn input_answer_from_phone(
+        terminal_id: u32,
+        question_id: &str,
+        answer: &str,
+        option_index: i64,
+        cli: &str,
+        options: &[String],
+        is_multi_select: bool,
+        is_multi_question: bool,
+    ) -> Self {
+        let json = serde_json::json!({
+            "question_id": question_id,
+            "answer": answer,
+            "source": "phone",
+            "option_index": option_index,
+            "cli": cli,
+            "options": options,
+            "is_multi_select": is_multi_select,
+            "is_multi_question": is_multi_question,
+        });
+        Self::new(INPUT_ANSWER, terminal_id, json.to_string().into_bytes())
+    }
+
     /// Construct a QUESTION_RESOLVED frame.
     /// payload = JSON {question_id, answer}
     pub fn question_resolved(terminal_id: u32, question_id: &str, answer: &str) -> Self {
