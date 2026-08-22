@@ -246,6 +246,16 @@ async fn run_client_loop(
                     connected_set.lock().await.remove(&config.pairing_id);
                     return;
                 }
+                // FATAL errors (e.g. pairing revoked/not found) — do not retry
+                if e.starts_with("FATAL:") {
+                    tracing::error!(
+                        "remote_client_loop: fatal error for pairing {}: {} — NOT retrying",
+                        config.pairing_id,
+                        e
+                    );
+                    connected_set.lock().await.remove(&config.pairing_id);
+                    return;
+                }
                 tracing::warn!(
                     "remote_client_loop: error for pairing {}: {} — reconnecting in {:?}",
                     config.pairing_id,
@@ -316,6 +326,15 @@ async fn run_client_once(
                     }
                     crate::tunnel_client::ControlMessage::PeerTimeout => {
                         return Err("peer timeout".to_string());
+                    }
+                    crate::tunnel_client::ControlMessage::Error(msg) => {
+                        // Relay rejected the connect (e.g. pairing revoked or not found).
+                        tracing::error!(
+                            "remote_client: connect rejected for pairing {}: {} — NOT retrying",
+                            config.pairing_id,
+                            msg
+                        );
+                        return Err(format!("FATAL: connect rejected: {}", msg));
                     }
                     _ => {}
                 }

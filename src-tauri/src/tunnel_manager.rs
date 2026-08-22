@@ -89,6 +89,11 @@ impl DesktopTunnelManager {
             // Clean up: remove pairing key and tunnel handle when tunnel exits
             remote_server.remove_pairing(&pairing_id_clone);
             tunnels.lock().await.remove(&pairing_id_clone);
+            // Also remove from pairing_store so it won't be restored on next startup.
+            // This handles the case where the pairing was revoked on the backend
+            // but still exists locally — the tunnel client exits with FATAL error
+            // and we don't want to keep retrying on every app restart.
+            crate::pairing_store::remove(&pairing_id_clone);
             tracing::info!("Tunnel client exited for pairing {}", pairing_id_clone);
         });
 

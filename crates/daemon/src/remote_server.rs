@@ -1551,7 +1551,7 @@ mod tests {
         let list_resp = recv_decrypted_frame(desktop_recv, outbound_rx).await;
         assert_eq!(list_resp.frame_type, remote_frame::LIST_RESPONSE);
         let json: serde_json::Value = serde_json::from_slice(&list_resp.payload).unwrap();
-        json[0]["id"].as_u64().unwrap() as u32
+        json["terminals"][0]["id"].as_u64().unwrap() as u32
     }
 
     /// Test HELLO exchange: mobile sends HELLO with K, desktop replies with HELLO + server_random
@@ -2448,7 +2448,7 @@ mod tests {
         assert_eq!(list_resp.frame_type, remote_frame::LIST_RESPONSE);
         // Find the SSH terminal's id from the list (it's the one with terminal_type="ssh")
         let json: serde_json::Value = serde_json::from_slice(&list_resp.payload).unwrap();
-        let ssh_term_id = json.as_array().unwrap().iter()
+        let ssh_term_id = json["terminals"].as_array().unwrap().iter()
             .find(|v| v["terminal_type"] == "ssh")
             .map(|v| v["id"].as_u64().unwrap() as u32)
             .expect("should have an SSH terminal in list");

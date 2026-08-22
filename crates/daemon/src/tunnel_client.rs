@@ -26,6 +26,8 @@ pub enum ControlMessage {
     PeerDisconnected,
     /// peer_timeout — mobile did not connect in time
     PeerTimeout,
+    /// error — relay rejected the register (e.g. pairing revoked)
+    Error(String),
     /// Unknown control message type
     Unknown(String),
 }
@@ -50,6 +52,10 @@ pub fn parse_control_message(text: &str) -> ControlMessage {
                 "peer_connected" => ControlMessage::PeerConnected,
                 "peer_disconnected" => ControlMessage::PeerDisconnected,
                 "peer_timeout" => ControlMessage::PeerTimeout,
+                "error" => {
+                    let message = v.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                    ControlMessage::Error(message)
+                }
                 other => ControlMessage::Unknown(other.to_string()),
             }
         }
@@ -124,6 +130,15 @@ impl TunnelClient {
                         );
                         return;
                     }
+                    // FATAL errors (e.g. pairing revoked/not found) — do not retry
+                    if e.starts_with("FATAL:") {
+                        tracing::error!(
+                            "tunnel fatal error for pairing {}: {} — NOT retrying",
+                            self.config.pairing_id,
+                            e
+                        );
+                        return;
+                    }
                     tracing::warn!(
                         "tunnel error for pairing {}: {} — reconnecting in {:?}",
                         self.config.pairing_id,
@@ -172,6 +187,16 @@ impl TunnelClient {
                         }
                         ControlMessage::PeerTimeout => {
                             return Err("peer timeout — mobile did not connect".to_string());
+                        }
+                        ControlMessage::Error(msg) => {
+                            // Relay rejected the register (e.g. pairing revoked or not found).
+                            // Return a fatal error so run() does NOT retry.
+                            tracing::error!(
+                                "tunnel register rejected for pairing {}: {} — NOT retrying",
+                                self.config.pairing_id,
+                                msg
+                            );
+                            return Err(format!("FATAL: register rejected: {}", msg));
                         }
                         _ => {} // ignore other control messages
                     }
