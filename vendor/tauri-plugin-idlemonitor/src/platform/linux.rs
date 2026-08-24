@@ -40,20 +40,24 @@ async fn listen_dbus<R: Runtime>(
 
     // Add match rules via raw method call (AddMatch is a standard DBus method).
     // zbus 5.x removed the public add_match API, so we call AddMatch directly.
-    let add_match = |rule: String| async move {
-        let _ = conn
-            .call_method(
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                Some("org.freedesktop.DBus"),
-                "AddMatch",
-                &(rule,),
-            )
-            .await;
-    };
-
-    add_match("type='signal',interface='org.freedesktop.ScreenSaver',member='ActiveChanged'".to_string()).await;
-    add_match("type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'".to_string()).await;
+    let _ = conn
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "AddMatch",
+            &("type='signal',interface='org.freedesktop.ScreenSaver',member='ActiveChanged'",),
+        )
+        .await;
+    let _ = conn
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "AddMatch",
+            &("type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'",),
+        )
+        .await;
 
     let mut stream = zbus::MessageStream::from(&conn);
 
