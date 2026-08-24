@@ -1,0 +1,24 @@
+{
+  "name": "tauri-plugin-idlemonitor-api",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "description": "TypeScript API for tauri-plugin-idlemonitor",
+  "type": "module",
+  "main": "./index.ts",
+  "module": "./index.ts",
+  "exports": {
+    "types": "./index.ts",
+    "import": "./index.ts",
+    "require": "./index.ts"
+  },
+  "scripts": {
+    "build": "rollup -c"
+  },
+  "files": [
+    "dist-js",
+    "README.md"
+  ],
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1"
+  }
+}

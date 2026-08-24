@@ -88,3 +88,9 @@ rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"]
 
 # Test dependencies
 tempfile = "3"
+
+# Patch: tauri-plugin-idlemonitor 0.2.3 is incompatible with zbus 5.x
+# (uses private add_match API and generic body() method).
+# Vendored copy with zbus 5.x compatibility fix.
+[patch.crates-io]
+tauri-plugin-idlemonitor = { path = "vendor/tauri-plugin-idlemonitor" }
