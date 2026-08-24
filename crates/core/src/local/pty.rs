@@ -130,7 +130,10 @@ mod tests {
 
     #[test]
     fn test_open_local_pty() {
-        let mut pty = open_local_pty(80, 24, None).unwrap();
+        // Use a wide terminal (200 cols) to avoid line-wrapping of the echo
+        // command, which can split "echo hello_termfast" across lines and
+        // cause the assertion to fail on narrow CI runners.
+        let mut pty = open_local_pty(200, 24, None).unwrap();
 
         // Phase 1: Wait for the shell to finish starting up.
         // Shells emit a prompt (PS> on PowerShell, $/# on Unix) before they
@@ -182,9 +185,12 @@ mod tests {
         // This verifies the first character 'e' was NOT consumed by the
         // preemptive CPR response (if it were, the echo would show
         // "cho hello_termfast" instead).
+        // We also check a whitespace-normalized version in case the terminal
+        // wrapped the command across lines (e.g. "echo hel \n lo_termfast").
+        let plain_no_ws: String = plain.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
-            plain.contains("echo hello_termfast"),
-            "expected 'echo hello_termfast' in stripped output (first char not eaten), got: {}",
+            plain_no_ws.contains("echohello_termfast"),
+            "expected 'echohello_termfast' in whitespace-stripped output (first char not eaten), got: {}",
             plain
         );
         let _ = pty.child.kill();
