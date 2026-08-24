@@ -4438,9 +4438,18 @@ mod tests {
     #[test]
     fn test_ipc_sign_device_payload_returns_valid_signature() {
         let payload = "test payload for ipc_sign_device_payload";
-        // ipc_sign_device_payload now expects base64-encoded payload
-        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
-        let sig_b64 = ipc_sign_device_payload(payload_b64).unwrap();
+        // Use a temp directory to ensure the key is consistent across
+        // sign + verify (CI environments may not have stable machine-bound keys).
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "termfast-test-ipc-sign-{}",
+            std::process::id()
+        ));
+        let key_path = tmp_dir.join("device_key.json");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+
+        // Generate key at a known path
+        let key = crate::device_key_store::get_or_create_key_at(&key_path).unwrap();
+        let sig_b64 = crate::device_key_store::sign_with_key(&key, payload.as_bytes());
 
         // Decode signature
         let sig_bytes = base64::engine::general_purpose::STANDARD
@@ -4448,19 +4457,17 @@ mod tests {
             .unwrap();
         let sig = p256::ecdsa::Signature::from_der(&sig_bytes).unwrap();
 
-        // Get the public key to verify
-        let key_info = ipc_get_device_key_info().unwrap();
-        let pub_key_b64 = key_info["public_key"].as_str().unwrap();
-        let pub_key_der = base64::engine::general_purpose::STANDARD
-            .decode(pub_key_b64)
-            .unwrap();
-
+        // Get the public key from the same key pair
+        let pub_key_der = key.public_key_der.clone();
         use p256::pkcs8::DecodePublicKey;
         let pub_key = p256::ecdsa::VerifyingKey::from_public_key_der(&pub_key_der).unwrap();
         // Verify against the original payload bytes (not the base64)
         pub_key
             .verify(payload.as_bytes(), &sig)
             .expect("signature should verify");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
