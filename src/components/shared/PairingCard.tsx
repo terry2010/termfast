@@ -264,22 +264,17 @@ export function PairingCard() {
       }
       attempts++;
       try {
-        const result = await ipcInvoke<any>("ipc_pairing_status", { token, pairing_id: pairingId });
+        const result = await ipcInvoke<any>("ipc_pairing_status", {
+          token,
+          pairing_id: pairingId,
+          pairing_key_hex: pairingKey,
+          relay_url: "ws://sh.zimufan.com:39527/tunnel",
+        });
         if (result.status === "completed") {
           setPolling(false);
           toast.success(t("pairing.completed"));
-          if (pairingKey) {
-            try {
-              await ipcInvoke("ipc_tunnel_start", {
-                pairing_id: pairingId,
-                pairing_key_hex: pairingKey,
-                relay_url: "ws://sh.zimufan.com:39527/tunnel",
-                jwt: token,
-              });
-            } catch (e: any) {
-              toast.error("隧道启动失败", { description: String(e) });
-            }
-          }
+          // ipc_pairing_status already saved the pairing and started the
+          // tunnel on the Rust side (when pairing_key_hex is provided).
           const devs = await fetchPairedDevices(token!);
           setDevices(devs);
           setPairingId(null);
@@ -319,7 +314,26 @@ export function PairingCard() {
     localStorage.removeItem("pairing_refresh_token");
   };
 
-  const handleCancelPairing = () => {
+  const handleCancelPairing = async () => {
+    // Before cancelling, do one final status check with the pairing key.
+    // If the pairing already completed on the backend, ipc_pairing_status
+    // will save it and start the tunnel (Rust-side), so the phone can still
+    // connect even after the user closes the dialog.
+    if (pairingId && pairingKey && token) {
+      try {
+        const result = await ipcInvoke<any>("ipc_pairing_status", {
+          token,
+          pairing_id: pairingId,
+          pairing_key_hex: pairingKey,
+          relay_url: "ws://sh.zimufan.com:39527/tunnel",
+        });
+        if (result.status === "completed") {
+          toast.success(t("pairing.completed"));
+          const devs = await fetchPairedDevices(token!);
+          setDevices(devs);
+        }
+      } catch { /* ignore — proceed with cancel */ }
+    }
     setPolling(false);
     setPairingId(null);
     setPairingKey(null);
@@ -457,6 +471,9 @@ export function PairingCard() {
             <div className="mt-3 text-xs text-gray-400 text-center font-mono break-all">
               {pairingId}
             </div>
+            <p className="mt-2 text-xs text-gray-400 text-center">
+              {t("pairing.auto_close_hint", "配对完成后将自动关闭，请勿提前关闭")}
+            </p>
             <button
               onClick={handleCancelPairing}
               className="mt-4 px-4 py-2 rounded-lg bg-gray-100 dark:bg-[#2C2C2E] text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-[#3A3A3C] text-sm transition-colors flex items-center gap-1.5"

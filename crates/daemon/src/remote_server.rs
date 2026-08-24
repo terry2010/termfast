@@ -217,6 +217,9 @@ pub struct PendingQuestion {
     pub cli: String,
     pub question: String,
     pub options: Vec<String>,
+    pub is_multi_question: bool,
+    pub active_tab_index: i32,
+    pub total_tabs: i32,
     pub created_at: std::time::Instant,
 }
 
@@ -239,11 +242,15 @@ impl PendingQuestion {
             "cli": self.cli,
             "question": self.question,
             "options": self.options,
+            "is_multi_question": self.is_multi_question,
+            "active_tab_index": self.active_tab_index,
+            "total_tabs": self.total_tabs,
         }).to_string()
     }
 }
 
 /// IdMap (u32↔session_id), auth_keys (pairing_id→key), answered_questions (mutex).
+#[derive(Clone)]
 pub struct RemoteServer {
     pub terminal_manager: Arc<TerminalManager>,
     /// ConfigManager for resolving server_name in LIST_RESPONSE.
@@ -293,10 +300,34 @@ pub struct RemoteServer {
     /// Callback for notifying frontend of remote-initiated PTY resize.
     /// Receives (session_id, cols, rows). Set by desktop app.
     remote_resize_callback: Arc<std::sync::Mutex<Option<RemoteResizeCallback>>>,
+    /// Callback for checking whether a local terminal session still has a
+    /// live frontend consumer (output Channel registered). Used by
+    /// `handle_list_request` to reap zombie sessions whose frontend tab was
+    /// lost (e.g. HMR refresh, app restart) but whose PTY is still alive.
+    /// If None (Android / tests), all sessions are considered alive.
+    session_alive_check_callback: Arc<std::sync::Mutex<Option<SessionAliveCheckCallback>>>,
+    /// Session IDs of terminals opened by mobile via NEW_TERMINAL.
+    /// These are exempt from zombie reaping — the desktop frontend has no tab
+    /// for them, so `alive_session_ids` doesn't include them, but they should
+    /// persist across mobile disconnects so mobile can re-attach on reconnect.
+    remote_opened_sessions: Arc<StdMutex<std::collections::HashSet<String>>>,
 }
 
 /// Callback type for remote-initiated PTY resize notifications.
 pub type RemoteResizeCallback = Box<dyn Fn(&str, u16, u16) + Send + Sync>;
+
+/// Callback type for checking whether a local terminal session still has
+/// a live frontend consumer (i.e. an attached output Channel).
+///
+/// Called by `handle_list_request` for every local (`server_id == "__local__"`)
+/// session before building the terminal list. If the callback returns false,
+/// the session is treated as a zombie (frontend tab lost due to HMR refresh,
+/// app restart, etc.) and is closed + excluded from the list.
+///
+/// Returns `true` if the session is alive (has a registered Channel), `false`
+/// if it should be reaped. If no callback is registered, all sessions are
+/// considered alive (preserves existing behavior for Android / tests).
+pub type SessionAliveCheckCallback = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
 impl RemoteServer {
     pub fn new(
@@ -352,6 +383,8 @@ impl RemoteServer {
             agent_answer_callback: Arc::new(StdMutex::new(None)),
             new_terminal_lock: Arc::new(tokio::sync::Mutex::new(())),
             remote_resize_callback: Arc::new(std::sync::Mutex::new(None)),
+            session_alive_check_callback: Arc::new(std::sync::Mutex::new(None)),
+            remote_opened_sessions: Arc::new(StdMutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -397,6 +430,14 @@ impl RemoteServer {
     /// the desktop PTY to resize). The frontend uses this to re-fit xterm.js.
     pub fn set_remote_resize_callback(&self, callback: RemoteResizeCallback) {
         *self.remote_resize_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
+    }
+
+    /// Set the session-alive check callback (called by `handle_list_request`
+    /// for every local session). The desktop app registers this to check
+    /// `terminal_channels` — sessions without a registered output Channel are
+    /// treated as zombies (frontend tab lost) and reaped.
+    pub fn set_session_alive_check_callback(&self, callback: SessionAliveCheckCallback) {
+        *self.session_alive_check_callback.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
     }
 
     /// Set the agent answer callback (E2: called when mobile sends INPUT_ANSWER
@@ -526,6 +567,11 @@ impl RemoteServer {
     /// and will be flushed when a mobile subscribes.
     ///
     /// Called by the desktop IPC command `ipc_tunnel_notify_agent_blocked`.
+    /// Returns the number of subscribers that received the NOTIFY frame.
+    /// When 0, the caller should send an APNs/FCM push notification so the
+    /// mobile user (who may be on the terminal list screen or app in background)
+    /// gets notified to open the terminal.
+    #[allow(clippy::too_many_arguments)]
     pub async fn notify_agent_blocked(
         &self,
         session_id: &str,
@@ -533,12 +579,15 @@ impl RemoteServer {
         cli: &str,
         question: &str,
         options: &[String],
-    ) {
+        is_multi_question: bool,
+        active_tab_index: i32,
+        total_tabs: i32,
+    ) -> usize {
         let terminal_id = match self.resolve_terminal_id(session_id) {
             Some(tid) => tid,
             None => {
                 tracing::warn!("notify_agent_blocked: session {} not in IdMap", session_id);
-                return;
+                return 0;
             }
         };
 
@@ -548,6 +597,9 @@ impl RemoteServer {
             cli: cli.to_string(),
             question: question.to_string(),
             options: options.to_vec(),
+            is_multi_question,
+            active_tab_index,
+            total_tabs,
             created_at: std::time::Instant::now(),
         };
 
@@ -557,32 +609,42 @@ impl RemoteServer {
 
         // Broadcast to subscribers, get count
         let sent_count = self.terminal_manager
-            .broadcast_to_subscribers_count(session_id, frame)
+            .broadcast_to_subscribers_count(session_id, frame.clone())
             .await;
 
-        if sent_count == 0 {
-            // No subscribers — enqueue in pending_questions
+        // Always enqueue in pending_questions — this ensures the question is
+        // flushed on reconnect via flush_all_pending_for_pairing, even if the
+        // subscriber channel was open but the phone was actually offline (relay
+        // hadn't detected the disconnection yet). The mobile app deduplicates
+        // by question_id, so a duplicate NOTIFY (real-time + flush) is harmless.
+        {
             let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
             let list = pending.entry(session_id.to_string()).or_default();
             // Evict expired entries
             list.retain(|q| !q.is_expired());
+            // Remove existing entry with same question_id (avoid true duplicates)
+            list.retain(|q| q.question_id != question_id);
             // Evict if over max
             if list.len() >= PendingQuestion::MAX_PER_SESSION {
                 list.remove(0);
             }
             list.push(pq);
             tracing::info!(
-                "notify_agent_blocked: no subscribers for session {}, enqueued (pending={})",
+                "notify_agent_blocked: enqueued for session {} (sent_count={}, pending={})",
                 session_id,
+                sent_count,
                 list.len()
             );
-        } else {
+        }
+
+        if sent_count > 0 {
             tracing::info!(
                 "notify_agent_blocked: sent to {} subscriber(s) for session {}",
                 sent_count,
                 session_id
             );
         }
+        sent_count
     }
 
     /// Notify all mobile subscribers that an agent question has been resolved.
@@ -653,6 +715,50 @@ impl RemoteServer {
         }
     }
 
+    /// Flush all pending questions for all sessions to a newly-reconnected
+    /// mobile (identified by pairing_id). Called by `handle_tunnel` after the
+    /// HELLO exchange completes and the tunnel is registered in `active_tunnels`.
+    ///
+    /// This ensures that agent_blocked notifications that were enqueued while
+    /// the mobile was offline (no subscribers) are delivered when the mobile
+    /// reconnects — even if the mobile hasn't subscribed to any terminal yet
+    /// (e.g. the user is on the terminal list screen).
+    async fn flush_all_pending_for_pairing(&self, async_tx: &mpsc::Sender<Frame>) {
+        // Collect all pending questions across all sessions, keyed by session_id
+        let mut to_flush: Vec<(String, Vec<PendingQuestion>)> = {
+            let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut result = Vec::new();
+            let mut empty_keys = Vec::new();
+            for (session_id, list) in pending.iter_mut() {
+                // Evict expired
+                list.retain(|q| !q.is_expired());
+                if list.is_empty() {
+                    empty_keys.push(session_id.clone());
+                } else {
+                    result.push((session_id.clone(), std::mem::take(list)));
+                }
+            }
+            for key in empty_keys {
+                pending.remove(&key);
+            }
+            result
+        };
+
+        for (session_id, questions) in to_flush.drain(..) {
+            for pq in questions {
+                let notify_json = pq.to_notify_json();
+                let frame = Frame::notify(pq.terminal_id, &notify_json);
+                if async_tx.send(frame).await.is_err() {
+                    // Tunnel closed — re-enqueue remaining for this session
+                    let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
+                    let list = pending.entry(session_id).or_default();
+                    list.push(pq);
+                    return; // tunnel is gone, no point continuing
+                }
+            }
+        }
+    }
+
     /// Handle one tunnel connection's full lifecycle.
     ///
     /// This is a long-running async fn — should be spawned, not awaited.
@@ -703,6 +809,12 @@ impl RemoteServer {
             let mut tunnels = self.active_tunnels.lock().unwrap_or_else(|e| e.into_inner());
             tunnels.insert(pairing_id.clone(), async_tx.clone());
         }
+
+        // Flush all pending agent questions to the reconnected mobile.
+        // This delivers agent_blocked notifications that were enqueued while
+        // the mobile was offline — even if the mobile hasn't subscribed to
+        // any terminal yet (e.g. user is on the terminal list screen).
+        self.flush_all_pending_for_pairing(&async_tx).await;
 
         // Phase 2: Main loop — process frames
         // terminal_id → session_id resolution uses the persistent IdMap (self.id_map),
@@ -1052,6 +1164,38 @@ impl RemoteServer {
         async_tx: &mpsc::Sender<Frame>,
     ) {
         let mut infos = self.terminal_manager.list_session_infos().await;
+        // Detect zombie local sessions: if a session-alive check callback is
+        // registered, local sessions without a live frontend consumer (output
+        // Channel) are excluded from the list. This happens when the frontend
+        // tab was lost (HMR refresh, app restart) but the PTY process is still
+        // alive — without this, the mobile terminal picker would show ghost
+        // terminals that can never be re-attached.
+        //
+        // The actual close() is deferred until AFTER the LIST_RESPONSE is sent,
+        // because close() triggers the on_closed callback → broadcast_list_changed
+        // → NOTIFY frame, which would otherwise arrive before LIST_RESPONSE and
+        // confuse the mobile client.
+        let zombies: Vec<String> = {
+            let guard = self.session_alive_check_callback.lock().unwrap_or_else(|e| e.into_inner());
+            let remote_opened = self.remote_opened_sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(check) = guard.as_ref() {
+                infos.iter()
+                    // Only reap local sessions NOT opened by mobile.
+                    // Sessions opened by mobile via NEW_TERMINAL are tracked in
+                    // remote_opened_sessions and must survive mobile disconnects
+                    // so mobile can re-attach on reconnect.
+                    .filter(|info| info.is_local
+                        && !remote_opened.contains(&info.session_id)
+                        && !check(&info.session_id))
+                    .map(|info| info.session_id.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }; // locks released here
+        if !zombies.is_empty() {
+            infos.retain(|info| !zombies.iter().any(|z| z == &info.session_id));
+        }
         // Fill server_name from ConfigManager (real-time, user may have renamed servers)
         let config = {
             let mgr = self.config_manager.lock().await;
@@ -1103,6 +1247,20 @@ impl RemoteServer {
         let json = serde_json::json!({ "terminals": terminals, "servers": servers }).to_string();
         let frame = Frame::list_response(0, &json);
         let _ = async_tx.send(frame).await;
+
+        // Now that LIST_RESPONSE has been sent, close zombie sessions.
+        // close() triggers on_closed → broadcast_list_changed → NOTIFY, which
+        // will cause the mobile to re-send LIST_REQUEST and get a clean list.
+        // Doing this after the response avoids the NOTIFY arriving before
+        // LIST_RESPONSE (which would confuse the mobile client).
+        for sid in &zombies {
+            tracing::info!(
+                "[RemoteServer] handle_list_request: reaping zombie local session {} \
+                 (no frontend Channel, likely lost to HMR/app restart)",
+                sid
+            );
+            let _ = self.terminal_manager.close(sid).await;
+        }
     }
 
     async fn handle_subscribe(
@@ -1193,22 +1351,34 @@ impl RemoteServer {
             return Some(Frame::error("invalid_payload"));
         }
 
+        // Special navigation/confirm answers for multi-question mode:
+        // these don't "answer" the question — they navigate tabs or submit
+        // all answers. Skip the first-answer-wins guard and pending removal.
+        let is_nav = answer == "__nav_prev__" || answer == "__nav_next__";
+        let is_confirm = answer == "__confirm__";
+        let is_special = is_nav || is_confirm;
+
         // Phase 1: check and mark answered (first-answer-wins)
-        if !self.mark_question_answered(question_id, answer) {
+        // Skip for navigation answers — they don't resolve the question
+        if !is_special && !self.mark_question_answered(question_id, answer) {
             return Some(Frame::error("already_answered"));
         }
 
         let source = req["source"].as_str().unwrap_or("local");
         let is_dismissed = answer == "__dismissed__";
+        let is_answered = answer == "__answered__";
         let session_id = self.resolve_sid(frame.terminal_id);
 
         // Remove from pending_questions (M4: dismissed also removes, prevents flush re-push)
-        if let Some(ref sid) = session_id {
-            let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(list) = pending.get_mut(sid) {
-                list.retain(|q| q.question_id != question_id);
-                if list.is_empty() {
-                    pending.remove(sid);
+        // Skip for navigation answers — question is still pending
+        if !is_nav {
+            if let Some(ref sid) = session_id {
+                let mut pending = self.pending_questions.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(list) = pending.get_mut(sid) {
+                    list.retain(|q| q.question_id != question_id);
+                    if list.is_empty() {
+                        pending.remove(sid);
+                    }
                 }
             }
         }
@@ -1228,6 +1398,42 @@ impl RemoteServer {
                 let resolved = Frame::question_resolved(frame.terminal_id, question_id, answer);
                 self.terminal_manager.broadcast_to_subscribers(sid, resolved).await;
             }
+        } else if is_answered {
+            // FP9: Mobile autonomously answered (wrote PTY directly via snapshot parsing).
+            // Don't write PTY (mobile already did). Call agent_answer_callback with
+            // __answered__ so the desktop frontend can close the overlay (no cliBehavior,
+            // no PTY write — just overlay dismissal).
+            if let Some(ref sid) = session_id {
+                let resolved_json = serde_json::json!({
+                    "event_type": "agent_resolved",
+                    "question_id": question_id,
+                    "terminal_id": frame.terminal_id,
+                    "reason": "answered_remotely",
+                });
+                let notify_frame = Frame::notify(frame.terminal_id, &resolved_json.to_string());
+                self.terminal_manager.broadcast_to_subscribers(sid, notify_frame).await;
+                let resolved = Frame::question_resolved(frame.terminal_id, question_id, answer);
+                self.terminal_manager.broadcast_to_subscribers(sid, resolved).await;
+            }
+            // Emit event to desktop frontend so it closes the overlay
+            let event_json = serde_json::json!({
+                "type": "agent_remote_answer",
+                "terminal_id": frame.terminal_id,
+                "session_id": session_id.clone().unwrap_or_default(),
+                "question_id": question_id,
+                "answer": "__answered__",
+                "option_index": 0,
+                "cli": "unknown",
+                "options": serde_json::Value::Null,
+                "is_multi_select": false,
+                "is_multi_question": false,
+                "active_tab_index": -1,
+                "total_tabs": 0,
+            });
+            let cb_clone = self.agent_answer_callback.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(cb) = cb_clone {
+                cb(question_id, event_json);
+            }
         } else if source == "phone" {
             // E2: Mobile answer → emit event to frontend via agent_answer_callback
             // Frontend uses cliBehavior to generate keystrokes + write PTY,
@@ -1236,6 +1442,8 @@ impl RemoteServer {
             let option_index = req["option_index"].as_i64().unwrap_or(0);
             let is_multi_select = req["is_multi_select"].as_bool().unwrap_or(false);
             let is_multi_question = req["is_multi_question"].as_bool().unwrap_or(false);
+            let active_tab_index = req["active_tab_index"].as_i64().unwrap_or(-1);
+            let total_tabs = req["total_tabs"].as_i64().unwrap_or(0);
             // R2: options from INPUT_ANSWER payload forwarded to frontend cliBehavior
             let options = req.get("options").cloned().unwrap_or(serde_json::Value::Null);
 
@@ -1250,6 +1458,8 @@ impl RemoteServer {
                 "options": options,
                 "is_multi_select": is_multi_select,
                 "is_multi_question": is_multi_question,
+                "active_tab_index": active_tab_index,
+                "total_tabs": total_tabs,
             });
 
             let cb_clone = self.agent_answer_callback.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1284,8 +1494,28 @@ impl RemoteServer {
         // broadcast) to prevent resize loops.
         // The desktop frontend is notified via terminal:remote_resized event
         // so xterm.js can re-fit to the new PTY dimensions.
+        //
+        // Special case: RESIZE(0, 0) means the mobile client is leaving the
+        // terminal screen (back to list). We do NOT resize the PTY; instead
+        // we emit terminal:remote_unsubscribed so the desktop xterm.js can
+        // re-fit to its own container dimensions. The subscription stays
+        // active so NOTIFY frames (agent_blocked) still reach the phone.
         if let Some(session_id) = self.resolve_sid(frame.terminal_id) {
             if let Some((cols, rows)) = frame.parse_resize() {
+                if cols == 0 && rows == 0 {
+                    tracing::info!(
+                        "handle_resize: RESIZE(0,0) — mobile leaving terminal screen, session {} \
+                         emitting remote_unsubscribed (subscription kept)",
+                        session_id
+                    );
+                    if let Ok(cb) = self.remote_resize_callback.lock() {
+                        if let Some(callback) = cb.as_ref() {
+                            // Use cols=0 rows=0 as a signal for "restore desktop size"
+                            callback(&session_id, 0, 0);
+                        }
+                    }
+                    return None;
+                }
                 tracing::info!(
                     "handle_resize: resizing PTY to {}x{} for session {} (mobile client request)",
                     cols, rows, session_id
@@ -1716,6 +1946,9 @@ impl RemoteServer {
                 // Forward terminal:opened to the local GUI so it creates a tab.
                 // Pass the name so the frontend uses the daemon-assigned name.
                 self.terminal_manager.forward_opened(&session_id, Some(&effective_name));
+                // Mark as remote-opened so zombie reaping doesn't kill it
+                // (the desktop frontend may not have a tab for this session).
+                self.remote_opened_sessions.lock().unwrap().insert(session_id.clone());
                 // Assign u32 handle and return it
                 let handle = {
                     let mut id_map = self.id_map.lock().unwrap_or_else(|e| e.into_inner());
@@ -1745,11 +1978,12 @@ impl RemoteServer {
         };
         match self.terminal_manager.close_remote(&session_id).await {
             Ok(()) => {
-                // Remove from id_map
+                // Remove from id_map and remote_opened_sessions
                 {
                     let mut id_map = self.id_map.lock().unwrap_or_else(|e| e.into_inner());
                     id_map.remove(&session_id);
                 }
+                self.remote_opened_sessions.lock().unwrap().remove(&session_id);
                 Some(Frame::ok(terminal_id))
             }
             Err(e) => Some(Frame::error_with_terminal(terminal_id, &format!("close_failed: {}", e))),
@@ -3164,6 +3398,115 @@ mod tests {
         let _ = handle.await;
     }
 
+    /// Test INPUT_ANSWER with __answered__ answer (FP9):
+    /// - Does NOT write to PTY (mobile already wrote directly)
+    /// - DOES call agent_answer_callback with answer="__answered__" (for desktop overlay dismissal)
+    /// - Broadcasts both NOTIFY(agent_resolved, reason=answered_remotely) and QUESTION_RESOLVED
+    /// - Removes from pending_questions
+    #[tokio::test]
+    async fn test_input_answer_answered_no_pty_write() {
+        let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        // Set up agent_answer_callback to capture events (FP9: __answered__ now calls
+        // callback with answer="__answered__" so desktop frontend can close overlay)
+        let captured_events = Arc::new(StdMutex::new(Vec::<(String, serde_json::Value)>::new()));
+        let captured_clone = captured_events.clone();
+        remote_server.set_agent_answer_callback(Arc::new(move |qid: &str, event_json: serde_json::Value| {
+            captured_clone.lock().unwrap().push((qid.to_string(), event_json));
+        }));
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+        let term_id = do_list_and_get_first_id(&mut mobile_ss, &desktop_sc, &inbound_tx, &mut outbound_rx).await;
+
+        // SUBSCRIBE first (so we receive broadcasts)
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::subscribe(term_id)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if tokio::time::Instant::now() >= deadline { panic!("timeout waiting for OK after SUBSCRIBE"); }
+            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+            if f.frame_type == remote_frame::OK { break; }
+        }
+
+        // INPUT_ANSWER with __answered__ (source=phone)
+        send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::input_answer(term_id, "q-answered", "__answered__")).await;
+
+        // Should receive OK
+        let mut got_ok = false;
+        loop {
+            if tokio::time::Instant::now() >= deadline { break; }
+            let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+            if f.frame_type == remote_frame::OK { got_ok = true; break; }
+        }
+        assert!(got_ok, "should receive OK for __answered__ INPUT_ANSWER");
+
+        // Should receive NOTIFY(agent_resolved, reason=answered_remotely) + QUESTION_RESOLVED
+        let mut got_notify = false;
+        let mut got_qr = false;
+        loop {
+            if tokio::time::Instant::now() >= deadline { break; }
+            match tokio::time::timeout(std::time::Duration::from_millis(200), outbound_rx.recv()).await {
+                Ok(Some(encrypted)) => {
+                    let pt = desktop_sc.decrypt(&encrypted).unwrap();
+                    let frame = Frame::deserialize(&pt).unwrap();
+                    if frame.frame_type == remote_frame::NOTIFY {
+                        let json: serde_json::Value = serde_json::from_slice(&frame.payload).unwrap();
+                        if json["event_type"] == "agent_resolved" && json["question_id"] == "q-answered" &&
+                           json["reason"] == "answered_remotely" {
+                            got_notify = true;
+                        }
+                    }
+                    if frame.frame_type == remote_frame::QUESTION_RESOLVED {
+                        let json: serde_json::Value = serde_json::from_slice(&frame.payload).unwrap();
+                        if json["question_id"] == "q-answered" {
+                            got_qr = true;
+                        }
+                    }
+                    if got_notify && got_qr { break; }
+                }
+                _ => break,
+            }
+        }
+        assert!(got_notify, "__answered__ should broadcast NOTIFY(agent_resolved, reason=answered_remotely)");
+        assert!(got_qr, "__answered__ should broadcast QUESTION_RESOLVED");
+
+        // Verify NO OUTPUT frame contains "__answered__" (no PTY write)
+        let drain_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+        let mut got_answered_output = false;
+        while tokio::time::Instant::now() < drain_deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(50), outbound_rx.recv()).await {
+                Ok(Some(encrypted)) => {
+                    let pt = desktop_sc.decrypt(&encrypted).unwrap();
+                    let frame = Frame::deserialize(&pt).unwrap();
+                    if frame.frame_type == remote_frame::OUTPUT {
+                        let payload_str = String::from_utf8_lossy(&frame.payload);
+                        if payload_str.contains("__answered__") {
+                            got_answered_output = true;
+                            break;
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(!got_answered_output, "__answered__ should NOT be written to PTY (no OUTPUT frame)");
+
+        // Verify agent_answer_callback WAS called with answer="__answered__" (for overlay dismissal)
+        // but the answer value is "__answered__" so the frontend knows to skip cliBehavior/PTY write
+        let events = captured_events.lock().unwrap();
+        assert_eq!(events.len(), 1, "__answered__ should call agent_answer_callback exactly once (for overlay dismissal)");
+        assert_eq!(events[0].0, "q-answered", "callback question_id should match");
+        assert_eq!(events[0].1["answer"], "__answered__", "callback answer should be __answered__");
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
     /// Test INPUT_ANSWER with source="phone":
     /// - E2: emits agent_remote_answer event via agent_answer_callback (NOT frame_callback)
     /// - D3: does NOT broadcast QUESTION_RESOLVED (frontend handles that after PTY write)
@@ -3201,7 +3544,7 @@ mod tests {
         let answer_frame = Frame::input_answer_from_phone(
             term_id, "q-phone", "1. React", 0, "devin",
             &["1. React".to_string(), "2. Vue".to_string()],
-            false, false,
+            false, false, -1, 0,
         );
         send_encrypted_frame(&mut mobile_ss, &inbound_tx, &answer_frame).await;
 
@@ -3321,6 +3664,9 @@ mod tests {
                 cli: "devin".to_string(),
                 question: "Which framework?".to_string(),
                 options: vec!["React".to_string(), "Vue".to_string()],
+                is_multi_question: false,
+                active_tab_index: -1,
+                total_tabs: 0,
                 created_at: std::time::Instant::now(),
             });
         }
@@ -3353,6 +3699,9 @@ mod tests {
             cli: "devin".to_string(),
             question: "Old question".to_string(),
             options: vec![],
+            is_multi_question: false,
+            active_tab_index: -1,
+            total_tabs: 0,
             created_at: std::time::Instant::now() - std::time::Duration::from_secs(100000),
         };
         assert!(pq.is_expired(), "question older than 24h TTL should be expired");
@@ -3363,8 +3712,262 @@ mod tests {
             cli: "devin".to_string(),
             question: "Fresh question".to_string(),
             options: vec![],
+            is_multi_question: false,
+            active_tab_index: -1,
+            total_tabs: 0,
             created_at: std::time::Instant::now(),
         };
         assert!(!pq2.is_expired(), "fresh question should not be expired");
+    }
+
+    /// Test notify_agent_blocked return value:
+    /// - With no subscribers → returns 0 and enqueues in pending_questions
+    /// - With a subscriber → returns >0 and ALSO enqueues (always enqueue for reconnect safety)
+    /// - With session not in IdMap → returns 0 and does NOT enqueue
+    #[tokio::test]
+    async fn test_notify_agent_blocked_return_value() {
+        // Case 1: no subscribers → returns 0, enqueues
+        {
+            let (remote_server, sid) = setup_remote_server_with_local_terminal().await;
+            // Populate IdMap (normally done by handle_list_request)
+            remote_server.id_map.lock().unwrap().get_or_assign(&sid);
+            let sent = remote_server
+                .notify_agent_blocked(&sid, "q1", "devin", "Which framework?", &["React".into(), "Vue".into()], false, -1, 0)
+                .await;
+            assert_eq!(sent, 0, "no subscribers → should return 0");
+            // Verify enqueued
+            let pending = remote_server.pending_questions.lock().unwrap();
+            assert!(pending.contains_key(&sid), "should be enqueued in pending_questions");
+            assert_eq!(pending[&sid].len(), 1);
+            assert_eq!(pending[&sid][0].question_id, "q1");
+        }
+
+        // Case 2: session not in IdMap → returns 0, does NOT enqueue
+        {
+            let (remote_server, _sid) = setup_remote_server_with_local_terminal().await;
+            let sent = remote_server
+                .notify_agent_blocked("nonexistent-session", "q2", "devin", "Question?", &[], false, -1, 0)
+                .await;
+            assert_eq!(sent, 0, "session not in IdMap → should return 0");
+            // Verify NOT enqueued (session_id doesn't match any entry)
+            let pending = remote_server.pending_questions.lock().unwrap();
+            assert!(!pending.contains_key("nonexistent-session"), "should NOT be enqueued for unknown session");
+        }
+
+        // Case 3: with subscriber → returns >0, also enqueued (always enqueue for reconnect safety)
+        {
+            let (remote_server, sid) = setup_remote_server_with_local_terminal().await;
+            let pairing_key = [0x42u8; 32];
+            let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+            let rs_clone = remote_server.clone();
+            let handle = tokio::spawn(async move {
+                rs_clone.handle_tunnel(session).await;
+            });
+
+            let (mut mobile_ss, desktop_sc) = do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+            let term_id = do_list_and_get_first_id(&mut mobile_ss, &desktop_sc, &inbound_tx, &mut outbound_rx).await;
+
+            // Subscribe to the terminal — now there IS a subscriber
+            send_encrypted_frame(&mut mobile_ss, &inbound_tx, &Frame::subscribe(term_id)).await;
+            // Drain until OK (may have OUTPUT from echo)
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                if tokio::time::Instant::now() >= deadline { panic!("timeout waiting for OK after SUBSCRIBE"); }
+                let f = recv_decrypted_frame(&desktop_sc, &mut outbound_rx).await;
+                if f.frame_type == remote_frame::OK { break; }
+            }
+
+            // Call notify_agent_blocked — should return >0 (one subscriber)
+            let sent = remote_server
+                .notify_agent_blocked(&sid, "q3", "devin", "Which language?", &["Rust".into(), "Go".into()], false, -1, 0)
+                .await;
+            assert!(sent > 0, "with subscriber → should return >0, got {}", sent);
+
+            // Verify ALSO enqueued (always enqueue for reconnect safety — mobile deduplicates by question_id)
+            let pending = remote_server.pending_questions.lock().unwrap();
+            assert!(pending.contains_key(&sid), "should be enqueued even with subscriber (for reconnect safety)");
+            assert_eq!(pending[&sid].len(), 1);
+            assert_eq!(pending[&sid][0].question_id, "q3");
+
+            drop(inbound_tx);
+            let _ = handle.await;
+        }
+    }
+
+    /// Test zombie session reaping: when a session-alive check callback is
+    /// registered, local sessions that the callback reports as dead (no
+    /// frontend Channel) are closed and excluded from LIST_RESPONSE.
+    /// This simulates the HMR-refresh scenario where the frontend tab is
+    /// lost but the PTY process is still alive.
+    #[tokio::test]
+    async fn test_list_request_reaps_zombie_sessions() {
+        let (remote_server, alive_sid) = setup_remote_server_with_local_terminal().await;
+
+        // Open a second local terminal — this one will be marked as "zombie"
+        // (no frontend Channel) by the callback.
+        let _zombie_sid = remote_server
+            .terminal_manager
+            .open_local(80, 24, None, None)
+            .await
+            .unwrap();
+
+        // Register a session-alive callback that considers `alive_sid` alive
+        // and `zombie_sid` dead (simulating a lost frontend tab).
+        let alive_sid_clone = alive_sid.clone();
+        remote_server.set_session_alive_check_callback(Box::new(
+            move |sid: &str| -> bool { sid == alive_sid_clone },
+        ));
+
+        // Clone the terminal_manager Arc so we can inspect sessions after
+        // remote_server is moved into the handle_tunnel spawn.
+        let tm_clone = remote_server.terminal_manager.clone();
+
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        // HELLO exchange
+        let (mut mobile_send, desktop_recv) =
+            do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        // Send LIST_REQUEST
+        send_encrypted_frame(&mut mobile_send, &inbound_tx, &Frame::list_request()).await;
+
+        // Receive LIST_RESPONSE
+        let list_resp = recv_decrypted_frame(&desktop_recv, &mut outbound_rx).await;
+        assert_eq!(list_resp.frame_type, remote_frame::LIST_RESPONSE);
+
+        let json: serde_json::Value = serde_json::from_slice(&list_resp.payload).unwrap();
+        let terminals = json["terminals"].as_array().unwrap();
+        // Only the alive session should be in the list — zombie should be reaped
+        assert_eq!(
+            terminals.len(),
+            1,
+            "zombie session should be reaped from LIST_RESPONSE"
+        );
+        // The remaining terminal should be the alive one (id=1, first opened)
+        assert_eq!(terminals[0]["id"].as_u64().unwrap(), 1);
+
+        // Verify the zombie session was actually closed in TerminalManager
+        let infos = tm_clone.list_session_infos().await;
+        assert_eq!(
+            infos.len(),
+            1,
+            "zombie session should be closed in TerminalManager"
+        );
+        assert_eq!(infos[0].session_id, alive_sid);
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test that sessions opened by mobile (via NEW_TERMINAL) are NOT reaped
+    /// as zombies, even when the session_alive_check_callback returns false.
+    /// This prevents mobile-opened terminals from disappearing when mobile
+    /// disconnects and reconnects.
+    #[tokio::test]
+    async fn test_list_request_preserves_remote_opened_sessions() {
+        let (remote_server, _desktop_sid) = setup_remote_server_with_local_terminal().await;
+
+        // Open a second local terminal — simulate mobile opening it
+        let mobile_sid = remote_server
+            .terminal_manager
+            .open_local(80, 24, None, None)
+            .await
+            .unwrap()
+            .0;
+
+        // Mark it as remote-opened (as handle_new_terminal would)
+        remote_server.remote_opened_sessions.lock().unwrap().insert(mobile_sid.clone());
+
+        // Register a callback that considers ALL sessions dead
+        // (simulates HMR: desktop frontend lost all tabs)
+        remote_server.set_session_alive_check_callback(Box::new(
+            move |_sid: &str| -> bool { false },
+        ));
+
+        let tm_clone = remote_server.terminal_manager.clone();
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        let (mut mobile_send, desktop_recv) =
+            do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        // Send LIST_REQUEST
+        send_encrypted_frame(&mut mobile_send, &inbound_tx, &Frame::list_request()).await;
+
+        // Receive LIST_RESPONSE
+        let list_resp = recv_decrypted_frame(&desktop_recv, &mut outbound_rx).await;
+        assert_eq!(list_resp.frame_type, remote_frame::LIST_RESPONSE);
+
+        let json: serde_json::Value = serde_json::from_slice(&list_resp.payload).unwrap();
+        let terminals = json["terminals"].as_array().unwrap();
+        // The desktop session should be reaped (callback says dead, not remote-opened).
+        // The mobile-opened session should survive (remote_opened_sessions exempts it).
+        assert_eq!(
+            terminals.len(),
+            1,
+            "only remote-opened session should survive, desktop session should be reaped"
+        );
+
+        // Verify the surviving terminal is the mobile-opened one
+        let infos = tm_clone.list_session_infos().await;
+        assert_eq!(infos.len(), 1, "only mobile-opened session should remain");
+        assert_eq!(infos[0].session_id, mobile_sid);
+
+        drop(inbound_tx);
+        let _ = handle.await;
+    }
+
+    /// Test that without a session-alive check callback, all sessions are
+    /// listed (preserves existing behavior for Android / tests).
+    #[tokio::test]
+    async fn test_list_request_no_callback_lists_all() {
+        let (remote_server, _alive_sid) = setup_remote_server_with_local_terminal().await;
+
+        // Open a second local terminal — no callback registered, so both
+        // should appear in the list.
+        let _zombie_sid = remote_server
+            .terminal_manager
+            .open_local(80, 24, None, None)
+            .await
+            .unwrap();
+
+        let pairing_key = [0x42u8; 32];
+        let (session, inbound_tx, mut outbound_rx) = make_tunnel_session("pair1");
+
+        let handle = tokio::spawn(async move {
+            remote_server.handle_tunnel(session).await;
+        });
+
+        // HELLO exchange
+        let (mut mobile_send, desktop_recv) =
+            do_hello_exchange(&pairing_key, &inbound_tx, &mut outbound_rx).await;
+
+        // Send LIST_REQUEST
+        send_encrypted_frame(&mut mobile_send, &inbound_tx, &Frame::list_request()).await;
+
+        // Receive LIST_RESPONSE
+        let list_resp = recv_decrypted_frame(&desktop_recv, &mut outbound_rx).await;
+        assert_eq!(list_resp.frame_type, remote_frame::LIST_RESPONSE);
+
+        let json: serde_json::Value = serde_json::from_slice(&list_resp.payload).unwrap();
+        let terminals = json["terminals"].as_array().unwrap();
+        // Both sessions should be listed (no callback = no reaping)
+        assert_eq!(
+            terminals.len(),
+            2,
+            "both sessions should be listed when no alive-check callback is set"
+        );
+
+        drop(inbound_tx);
+        let _ = handle.await;
     }
 }

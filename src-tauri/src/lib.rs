@@ -27,6 +27,19 @@ pub struct AppState {
     /// Terminal output channels — key = session_id, value = Channel for raw bytes.
     /// Set by ipc_terminal_open, consumed by the binary event forwarder.
     pub terminal_channels: std::sync::Mutex<std::collections::HashMap<String, tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>>>,
+    /// Set of session_ids that the frontend considers "alive" (has a tab open).
+    /// Reported by the frontend via ipc_set_alive_sessions on mount and when
+    /// tabs change. Used by session_alive_check_callback to reap zombie local
+    /// sessions whose frontend tab was lost (HMR refresh, app restart) but
+    /// whose PTY is still alive. terminal_channels alone is NOT sufficient
+    /// because HMR doesn't clear Rust-side state.
+    pub alive_session_ids: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// True after the frontend has reported alive sessions at least once.
+    /// Before the first report, session_alive_check_callback assumes all
+    /// sessions are alive (avoid killing sessions during startup). After the
+    /// first report, an empty set means HMR reset the store → reap all
+    /// unreported sessions.
+    pub alive_sessions_reported: std::sync::atomic::AtomicBool,
     /// Desktop tunnel manager — manages WebSocket tunnels to relay for paired phones.
     /// Initialized after daemon starts (needs TerminalManager from DaemonState).
     pub tunnel_manager: tokio::sync::Mutex<Option<Arc<tunnel_manager::DesktopTunnelManager>>>,
@@ -38,6 +51,21 @@ pub struct AppState {
     /// the tunnel_manager's RemoteServer when it is lazily initialized
     /// (in ipc_tunnel_start), since init() runs before tunnel_manager exists.
     pub trigger_callback: std::sync::OnceLock<termfast_daemon::remote_client::ClientTriggerCallback>,
+}
+
+/// Pure function: check if a session is alive based on AppState's
+/// alive_sessions_reported flag and alive_session_ids set.
+///
+/// - If `reported` is false (frontend hasn't mounted yet), returns true
+///   (startup safety — avoid killing sessions before frontend reports).
+/// - If `reported` is true, returns `alive_session_ids.contains(session_id)`.
+///   An empty set after the first report means HMR reset the store →
+///   all unreported sessions are zombies.
+fn is_session_alive(reported: bool, alive_ids: &std::collections::HashSet<String>, session_id: &str) -> bool {
+    if !reported {
+        return true;
+    }
+    alive_ids.contains(session_id)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -228,6 +256,8 @@ pub fn run() {
                 daemon: tokio::sync::Mutex::new(None),
                 is_quitting: std::sync::atomic::AtomicBool::new(false),
                 terminal_channels: std::sync::Mutex::new(std::collections::HashMap::new()),
+                alive_session_ids: std::sync::Mutex::new(std::collections::HashSet::new()),
+                alive_sessions_reported: std::sync::atomic::AtomicBool::new(false),
                 tunnel_manager: tokio::sync::Mutex::new(None),
                 remote_client_manager: tokio::sync::Mutex::new(None),
                 trigger_callback: std::sync::OnceLock::new(),
@@ -321,6 +351,7 @@ pub fn run() {
             ipc_terminal_get_history,
             ipc_terminal_input,
             ipc_terminal_close,
+            ipc_set_alive_sessions,
             ipc_terminal_resize,
             ipc_tmux_list_sessions,
             ipc_tmux_new_session,
@@ -862,6 +893,7 @@ async fn ipc_update_general_config(
     custom_variables: Option<Vec<serde_json::Value>>,
     dev_terminal_log: Option<bool>,
     dev_devtools: Option<bool>,
+    dev_idle_threshold_secs: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     let mut params = serde_json::json!({});
     if let Some(v) = theme {
@@ -896,6 +928,9 @@ async fn ipc_update_general_config(
     }
     if let Some(v) = dev_devtools {
         params["dev_devtools"] = serde_json::json!(v);
+    }
+    if let Some(v) = dev_idle_threshold_secs {
+        params["dev_idle_threshold_secs"] = serde_json::json!(v);
     }
     forward_to_daemon(
         &state,
@@ -1899,6 +1934,32 @@ async fn ipc_terminal_close(
     .await
 }
 
+/// Report the set of session_ids that the frontend currently has tabs open for.
+/// Used by session_alive_check_callback to detect zombie local sessions
+/// whose frontend tab was lost (HMR refresh, app restart) but whose PTY
+/// process is still alive. Should be called on App mount and whenever the
+/// tab list changes.
+#[tauri::command]
+async fn ipc_set_alive_sessions(
+    state: tauri::State<'_, AppState>,
+    session_ids: Vec<String>,
+) -> Result<(), String> {
+    let new_set: std::collections::HashSet<String> = session_ids.into_iter().collect();
+    let mut guard = state.alive_session_ids.lock().unwrap();
+    tracing::info!(
+        "ipc_set_alive_sessions: {} session(s) {:?}",
+        new_set.len(),
+        new_set
+    );
+    *guard = new_set;
+    drop(guard);
+    // Mark that the frontend has reported at least once. Before this, the
+    // callback assumes all sessions alive (startup safety). After this, an
+    // empty set means HMR reset → reap all unreported sessions.
+    state.alive_sessions_reported.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
 #[tauri::command]
 async fn ipc_terminal_resize(
     state: tauri::State<'_, AppState>,
@@ -2616,8 +2677,43 @@ async fn ipc_compute_ecdh_shared_secret(peer_public_key_b64: String) -> Result<S
 }
 
 #[tauri::command]
-async fn ipc_pairing_status(token: String, pairing_id: String) -> Result<serde_json::Value, String> {
-    pairing::pair_status(&token, &pairing_id).await
+async fn ipc_pairing_status(
+    app: tauri::AppHandle,
+    token: String,
+    pairing_id: String,
+    pairing_key_hex: Option<String>,
+    relay_url: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let result = pairing::pair_status(&token, &pairing_id).await?;
+    // If pairing is completed and caller provided the pairing key, save the
+    // pairing and start the tunnel immediately (server-side). This ensures
+    // the pairing is persisted even if the frontend polling loop is stopped
+    // (e.g. user closes the QR dialog before polling detects completion).
+    if result.get("status").and_then(|v| v.as_str()) == Some("completed") {
+        if let Some(key_hex) = pairing_key_hex {
+            // Check if we already have this pairing saved — avoid duplicate work
+            let already_saved = pairing_store::load()
+                .iter()
+                .any(|p| p.pairing_id == pairing_id);
+            if !already_saved {
+                let relay = relay_url.unwrap_or_else(|| "ws://sh.zimufan.com:39527/tunnel".to_string());
+                tracing::info!(
+                    "ipc_pairing_status: pairing {} completed, auto-saving and starting tunnel",
+                    pairing_id
+                );
+                if let Err(e) = ipc_tunnel_start(
+                    app.clone(),
+                    pairing_id.clone(),
+                    key_hex,
+                    relay,
+                    token.clone(),
+                ).await {
+                    tracing::warn!("ipc_pairing_status: auto tunnel start failed for {}: {}", pairing_id, e);
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2975,6 +3071,33 @@ async fn ipc_tunnel_start(
                         },
                     ));
                 }
+                // Set session-alive check callback: used by handle_list_request to
+                // reap zombie local sessions whose frontend tab was lost (HMR
+                // refresh, app restart) but whose PTY is still alive. Checks
+                // alive_session_ids — a set reported by the frontend via
+                // ipc_set_alive_sessions. terminal_channels is NOT sufficient
+                // because HMR doesn't clear Rust-side channel registrations.
+                //
+                // Before the frontend's first report (alive_sessions_reported =
+                // false), assume all sessions alive to avoid killing sessions
+                // during startup. After the first report, an empty set means
+                // HMR reset the store → all unreported sessions are zombies.
+                {
+                    let handle_for_check = app.clone();
+                    tm.remote_server().set_session_alive_check_callback(Box::new(
+                        move |session_id: &str| -> bool {
+                            use tauri::Manager;
+                            if let Some(app_state) = handle_for_check.try_state::<AppState>() {
+                                let reported = app_state.alive_sessions_reported.load(std::sync::atomic::Ordering::Relaxed);
+                                let guard = app_state.alive_session_ids.lock().unwrap_or_else(|e| e.into_inner());
+                                is_session_alive(reported, &guard, session_id)
+                            } else {
+                                // App state not available — assume alive (safe default)
+                                true
+                            }
+                        },
+                    ));
+                }
                 *tm_guard = Some(tm.clone());
                 tracing::info!("DesktopTunnelManager initialized");
                 tm
@@ -3009,8 +3132,12 @@ async fn ipc_tunnel_start(
 
 /// Notify mobile that an agent is blocked (needs user input).
 /// Called by the frontend when agentStatus becomes "blocked" and user is idle.
-/// If no mobile is subscribed, the question is enqueued and flushed on next subscribe.
+/// The question is always enqueued in pending_questions (flushed on reconnect)
+/// AND an APNs/FCM push notification is always sent so the mobile user knows
+/// to open the app — even if the mobile is online, the push is harmless (the
+/// mobile app deduplicates by question_id).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn ipc_tunnel_notify_agent_blocked(
     app: tauri::AppHandle,
     session_id: String,
@@ -3018,12 +3145,64 @@ async fn ipc_tunnel_notify_agent_blocked(
     cli: String,
     question: String,
     options: Vec<String>,
+    is_multi_question: Option<bool>,
+    active_tab_index: Option<i32>,
+    total_tabs: Option<i32>,
 ) -> Result<(), String> {
+    let is_multi_question = is_multi_question.unwrap_or(false);
+    let active_tab_index = active_tab_index.unwrap_or(-1);
+    let total_tabs = total_tabs.unwrap_or(0);
     let state = app.state::<AppState>();
     let tm_guard = state.tunnel_manager.lock().await;
     if let Some(tm) = tm_guard.as_ref() {
         let rs = tm.remote_server();
-        rs.notify_agent_blocked(&session_id, &question_id, &cli, &question, &options).await;
+        let sent_count = rs.notify_agent_blocked(
+            &session_id, &question_id, &cli, &question, &options,
+            is_multi_question, active_tab_index, total_tabs,
+        ).await;
+
+        // Always send APNs/FCM push notification — even if sent_count > 0,
+        // the mobile might actually be offline (relay hasn't detected the
+        // disconnection yet). The mobile app deduplicates by question_id.
+        tracing::info!(
+            "ipc_tunnel_notify_agent_blocked: sent_count={}, sending push for session {}",
+            sent_count,
+            session_id
+        );
+        let pairings = crate::pairing_store::load();
+        let terminal_id_str = rs.resolve_terminal_id(&session_id)
+            .map(|id| id.to_string());
+        for p in &pairings {
+            if p.pairing_type != "mobile" || p.jwt.is_empty() {
+                continue;
+            }
+            let title = "AI CLI needs your input".to_string();
+            let body = if question.is_empty() {
+                format!("{} is asking a question", cli)
+            } else {
+                // Truncate to 100 chars (by char, not byte — safe for UTF-8)
+                let q: String = question.chars().take(100).collect();
+                format!("{}: {}", cli, q)
+            };
+            match crate::pairing::send_push(
+                &p.jwt,
+                &p.pairing_id,
+                "agent_blocked",
+                &title,
+                &body,
+                terminal_id_str.as_deref(),
+            ).await {
+                Ok(_) => tracing::info!(
+                    "ipc_tunnel_notify_agent_blocked: push sent to pairing {}",
+                    p.pairing_id
+                ),
+                Err(e) => tracing::warn!(
+                    "ipc_tunnel_notify_agent_blocked: push failed for pairing {}: {}",
+                    p.pairing_id,
+                    e
+                ),
+            }
+        }
     }
     Ok(())
 }
@@ -4282,5 +4461,41 @@ mod tests {
         pub_key
             .verify(payload.as_bytes(), &sig)
             .expect("signature should verify");
+    }
+
+    #[test]
+    fn test_is_session_alive_not_reported_returns_true() {
+        // Before frontend's first report, all sessions are assumed alive
+        let alive_ids = std::collections::HashSet::new();
+        assert!(is_session_alive(false, &alive_ids, "session-1"));
+        assert!(is_session_alive(false, &alive_ids, "any-session"));
+    }
+
+    #[test]
+    fn test_is_session_alive_reported_and_contains_returns_true() {
+        // After report, session in the set is alive
+        let mut alive_ids = std::collections::HashSet::new();
+        alive_ids.insert("session-1".to_string());
+        alive_ids.insert("session-2".to_string());
+        assert!(is_session_alive(true, &alive_ids, "session-1"));
+        assert!(is_session_alive(true, &alive_ids, "session-2"));
+    }
+
+    #[test]
+    fn test_is_session_alive_reported_and_not_contains_returns_false() {
+        // After report, session NOT in the set is zombie
+        let mut alive_ids = std::collections::HashSet::new();
+        alive_ids.insert("session-1".to_string());
+        assert!(!is_session_alive(true, &alive_ids, "session-2"));
+        assert!(!is_session_alive(true, &alive_ids, "zombie-session"));
+    }
+
+    #[test]
+    fn test_is_session_alive_hmr_empty_set_reaps_all() {
+        // HMR scenario: frontend reported (reported=true), but store reset
+        // to empty → all sessions are zombies
+        let alive_ids = std::collections::HashSet::new();
+        assert!(!is_session_alive(true, &alive_ids, "old-session-1"));
+        assert!(!is_session_alive(true, &alive_ids, "old-session-2"));
     }
 }
