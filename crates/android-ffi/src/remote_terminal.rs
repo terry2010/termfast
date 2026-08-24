@@ -333,6 +333,7 @@ pub fn send_input(pairing_id: &str, terminal_id: u32, data: &[u8]) -> Result<Vec
 /// Create and encrypt an INPUT_ANSWER frame (agent popup answer).
 /// payload = JSON {question_id, answer, source, cli, option_index, options, is_multi_select, is_multi_question, active_tab_index, total_tabs}
 /// E2: source="phone" tells desktop Rust to emit event to frontend (not write PTY directly)
+#[allow(clippy::too_many_arguments)]
 pub fn send_input_answer(
     pairing_id: &str,
     terminal_id: u32,

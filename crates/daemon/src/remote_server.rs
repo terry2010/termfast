@@ -1994,6 +1994,7 @@ impl RemoteServer {
 // === SECTION 1 END ===
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock, clippy::single_match)]
 mod tests {
     use super::*;
     use crate::server::{BinaryEventForwarder, EventForwarder};
