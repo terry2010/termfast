@@ -59,11 +59,11 @@ export const PortForwardPanel = forwardRef<PortForwardPanelHandle, PortForwardPa
 
   const loadRules = useCallback(async () => {
     try {
-      const data = await ipcInvoke<{ rules: PortForwardRuleWithStatus[] }>(
+      const data = await ipcInvoke<{ rules: PortForwardRuleWithStatus[] } | null>(
         "ipc_list_port_forwards",
         { server_id: serverId },
       );
-      const r = data.rules || [];
+      const r = data?.rules || [];
       setRules(r);
       onRulesChange?.(r);
     } catch (e) {

@@ -105,6 +105,7 @@ export interface MockConfig {
     proxy_test_url: string;
     crash_reporting: boolean;
     suppress_firewall_badge: boolean;
+    dev_proxy_enabled: boolean;
   };
   trigger_templates: MockTemplate[];
   servers: MockServer[];
@@ -248,6 +249,7 @@ export function defaultConfig(): MockConfig {
       proxy_test_url: "https://example.com",
       crash_reporting: false,
       suppress_firewall_badge: false,
+      dev_proxy_enabled: true,
     },
     trigger_templates: defaultTemplates(),
     servers: defaultServers(),
