@@ -326,8 +326,12 @@ export function useAgentStatus(
           // CLI override: if the screen content strongly indicates a DIFFERENT CLI
           // than the one currently detected (e.g. user exited claude-code and launched
           // codex in the same terminal tab), override the sticky CLI type.
+          // But don't override Devin — its CLI type is set by OSC signals which
+          // are authoritative, and screen scrape patterns (like "esc interrupt")
+          // can false-match OpenCode patterns when Devin's screen happens to
+          // show similar footer text.
           const screenCli = detectCliFromScreen(screenText);
-          if (screenCli !== "unknown" && screenCli !== state.cli) {
+          if (screenCli !== "unknown" && screenCli !== state.cli && state.cli !== "devin") {
             setCliType(state, screenCli);
           }
           // Debug: log screen content every 10 ticks (~5s) for diagnosis
