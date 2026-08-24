@@ -5,12 +5,14 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ipcInvoke } from "@/hooks/useIpc";
+import { useConfigStore } from "@/stores/configStore";
 
 type Mode = "quick" | "advanced";
 type AuthMethod = "password" | "key" | "agent";
 
 export function Onboarding({ onComplete }: { onComplete: () => void }) {
   const { t } = useTranslation();
+  const proxyFeaturesEnabled = useConfigStore((s) => s.config?.general?.dev_proxy_enabled ?? true);
   const [mode, setMode] = useState<Mode | null>(null);
   const [step, setStep] = useState(0);
   const [vpsHost, setVpsHost] = useState("");
@@ -40,7 +42,9 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
     return <ModeSelection t={t} onSelect={setMode} onSkip={onComplete} />;
   }
 
-  const totalSteps = mode === "quick" ? 3 : 7;
+  // Advanced mode: skip proxy config step if proxy features disabled
+  const advancedSteps = proxyFeaturesEnabled ? 7 : 6;
+  const totalSteps = mode === "quick" ? 3 : advancedSteps;
   const titles =
     mode === "quick"
       ? [
@@ -48,15 +52,24 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
           t("onboarding.test_connection"),
           t("onboarding.firewall_whitelist"),
         ]
-      : [
-          t("onboarding.welcome"),
-          t("onboarding.vps_info"),
-          t("onboarding.auth_method"),
-          t("onboarding.test_connection"),
-          t("onboarding.proxy_config"),
-          t("onboarding.select_templates"),
-          t("onboarding.complete"),
-        ];
+      : proxyFeaturesEnabled
+        ? [
+            t("onboarding.welcome"),
+            t("onboarding.vps_info"),
+            t("onboarding.auth_method"),
+            t("onboarding.test_connection"),
+            t("onboarding.proxy_config"),
+            t("onboarding.select_templates"),
+            t("onboarding.complete"),
+          ]
+        : [
+            t("onboarding.welcome"),
+            t("onboarding.vps_info"),
+            t("onboarding.auth_method"),
+            t("onboarding.test_connection"),
+            t("onboarding.select_templates"),
+            t("onboarding.complete"),
+          ];
 
   const handleTestConnection = async () => {
     setConnecting(true);
@@ -78,7 +91,7 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
             skip_hostkey_verify: false,
           },
           proxy: {
-            enabled: true,
+            enabled: proxyFeaturesEnabled,
             socks5_port: parseInt(proxySocksPort) || 1080,
             http_port: parseInt(proxyHttpPort) || 8080,
             max_channels: 100,
@@ -290,23 +303,34 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
             onTest={handleTestConnection}
           />
         );
-      if (step === 4)
-        return (
-          <ProxyConfigStep
-            socksPort={proxySocksPort}
-            setSocksPort={setProxySocksPort}
-            httpPort={proxyHttpPort}
-            setHttpPort={setProxyHttpPort}
-          />
-        );
-      if (step === 5)
-        return (
-          <TemplateSelectionStep
-            selected={selectedTemplates}
-            setSelected={setSelectedTemplates}
-          />
-        );
-      if (step === 6) return <CompleteStep onConfirm={handleComplete} />;
+      if (proxyFeaturesEnabled) {
+        if (step === 4)
+          return (
+            <ProxyConfigStep
+              socksPort={proxySocksPort}
+              setSocksPort={setProxySocksPort}
+              httpPort={proxyHttpPort}
+              setHttpPort={setProxyHttpPort}
+            />
+          );
+        if (step === 5)
+          return (
+            <TemplateSelectionStep
+              selected={selectedTemplates}
+              setSelected={setSelectedTemplates}
+            />
+          );
+        if (step === 6) return <CompleteStep onConfirm={handleComplete} />;
+      } else {
+        if (step === 4)
+          return (
+            <TemplateSelectionStep
+              selected={selectedTemplates}
+              setSelected={setSelectedTemplates}
+            />
+          );
+        if (step === 5) return <CompleteStep onConfirm={handleComplete} />;
+      }
     }
     return null;
   };

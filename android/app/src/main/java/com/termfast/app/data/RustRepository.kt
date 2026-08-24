@@ -281,9 +281,12 @@ object RustRepository {
         options: Array<String>,
         isMultiSelect: Boolean,
         isMultiQuestion: Boolean,
+        activeTabIndex: Int = -1,
+        totalTabs: Int = 0,
     ): ByteArray? =
         RustBridge.nativeRemoteTunnelSendInputAnswer(
             pairingId, terminalId, questionId, answer, optionIndex, cli, options, isMultiSelect, isMultiQuestion,
+            activeTabIndex, totalTabs,
         )
 
     /** Create + encrypt a RESIZE frame. Returns ciphertext to send via WebSocket. */

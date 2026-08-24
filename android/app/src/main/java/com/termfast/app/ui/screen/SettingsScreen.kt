@@ -45,6 +45,7 @@ import kotlinx.coroutines.withContext
 fun SettingsScreen(navController: NavController) {
     val context = LocalContext.current
     val repo = remember { SettingsRepository(context) }
+    val proxyFeaturesEnabled = remember { com.termfast.app.data.RustRepository.getConfig()?.general?.dev_proxy_enabled ?: true }
     var settings by remember { mutableStateOf(repo.load()) }
 
     fun update(block: AppSettings.() -> AppSettings) {
@@ -71,7 +72,8 @@ fun SettingsScreen(navController: NavController) {
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // VPN section
+            // VPN section — hidden when proxy features disabled
+            if (proxyFeaturesEnabled) {
             SettingsSectionCard(title = "VPN", icon = Icons.Filled.VpnKey) {
                 OutlinedTextField(
                     value = settings.vpnMtu.toString(),
@@ -120,6 +122,7 @@ fun SettingsScreen(navController: NavController) {
                 subtitle = "配置哪些 App 走代理",
                 onClick = { navController.navigate("per_app_proxy") },
             )
+            }
 
             // Credential security section
             CredentialSection()
@@ -155,8 +158,10 @@ fun SettingsScreen(navController: NavController) {
                 NotificationSwitch("重连成功", settings.notify_reconnect_success) { update { copy(notify_reconnect_success = it) } }
                 NotificationSwitch("断开连接", settings.notify_disconnect) { update { copy(notify_disconnect = it) } }
                 NotificationSwitch("认证失败", settings.notify_auth_fail) { update { copy(notify_auth_fail = it) } }
-                NotificationSwitch("代理状态变化", settings.notify_proxy_toggle) { update { copy(notify_proxy_toggle = it) } }
-                NotificationSwitch("代理端口冲突", settings.notify_proxy_port_conflict) { update { copy(notify_proxy_port_conflict = it) } }
+                if (proxyFeaturesEnabled) {
+                    NotificationSwitch("代理状态变化", settings.notify_proxy_toggle) { update { copy(notify_proxy_toggle = it) } }
+                    NotificationSwitch("代理端口冲突", settings.notify_proxy_port_conflict) { update { copy(notify_proxy_port_conflict = it) } }
+                }
                 NotificationSwitch("触发器成功", settings.notify_trigger_success) { update { copy(notify_trigger_success = it) } }
                 NotificationSwitch("触发器失败", settings.notify_trigger_fail) { update { copy(notify_trigger_fail = it) } }
                 NotificationSwitch("IP 变化", settings.notify_ip_change) { update { copy(notify_ip_change = it) } }

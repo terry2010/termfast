@@ -1344,32 +1344,34 @@ export function ServerDetail() {
         disabled: currentTabs.length === 0,
       },
       { separator: true },
-      ...(!isLocal && displayServer.proxy_running
-        ? [
-            {
-              label: t("tab.stop_proxy", { port: proxyPort }),
-              onClick: () => handleToggleProxy(),
-            } as ContextMenuEntry,
-            ...(systemProxyEnabled
-              ? [
-                  {
-                    label: t("tab.unset_system_proxy"),
-                    onClick: () => handleClearSystemProxy(),
-                  } as ContextMenuEntry,
-                ]
-              : [
-                  {
-                    label: t("tab.set_system_proxy"),
-                    onClick: () => handleSetSystemProxy(),
-                  } as ContextMenuEntry,
-                ]),
-          ]
-        : [
-            {
-              label: t("tab.start_proxy", { port: proxyPort }),
-              onClick: () => handleToggleProxy(),
-            } as ContextMenuEntry,
-          ]),
+      ...((!isLocal && config?.general?.dev_proxy_enabled)
+        ? (displayServer.proxy_running
+          ? [
+              {
+                label: t("tab.stop_proxy", { port: proxyPort }),
+                onClick: () => handleToggleProxy(),
+              } as ContextMenuEntry,
+              ...(systemProxyEnabled
+                ? [
+                    {
+                      label: t("tab.unset_system_proxy"),
+                      onClick: () => handleClearSystemProxy(),
+                    } as ContextMenuEntry,
+                  ]
+                : [
+                    {
+                      label: t("tab.set_system_proxy"),
+                      onClick: () => handleSetSystemProxy(),
+                    } as ContextMenuEntry,
+                  ]),
+            ]
+          : [
+              {
+                label: t("tab.start_proxy", { port: proxyPort }),
+                onClick: () => handleToggleProxy(),
+              } as ContextMenuEntry,
+            ])
+        : []),
     ];
     showContextMenu(e, items);
   };
@@ -2348,8 +2350,8 @@ export function ServerDetail() {
                 {/* Device pairing card — shown for local terminal (right side of grid) */}
                 {isLocal && <PairingCard />}
 
-                {/* Proxy card — macOS Settings style grouped list (hidden for local terminal and remote) */}
-                {!isLocal && !isRemote && (
+                {/* Proxy card — macOS Settings style grouped list (hidden for local terminal, remote, or when proxy features disabled) */}
+                {!isLocal && !isRemote && config?.general?.dev_proxy_enabled && (
                 <div className="bg-[#FBFBFB] dark:bg-[#1E1E1E] rounded-[16px] overflow-hidden border border-gray-200/80 dark:border-white/[0.06] flex flex-col">
                   {/* Header */}
                   <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100 dark:border-white/[0.06]">

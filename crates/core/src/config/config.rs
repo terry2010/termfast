@@ -133,6 +133,14 @@ pub struct GeneralConfig {
     /// Developer option: open DevTools
     #[serde(default)]
     pub dev_devtools: bool,
+    /// Developer option: idle threshold in seconds for remote agent approval.
+    /// Default 60s. Only effective in dev mode.
+    #[serde(default = "default_dev_idle_threshold_secs")]
+    pub dev_idle_threshold_secs: u32,
+    /// Developer option: enable SSH proxy (SOCKS5/HTTP) features.
+    /// When false, proxy UI is hidden and proxy IPC calls are rejected.
+    #[serde(default = "default_dev_proxy_enabled")]
+    pub dev_proxy_enabled: bool,
 }
 
 /// User-defined custom variable for trigger templates
@@ -180,6 +188,12 @@ fn default_terminal_font_size() -> u16 {
 }
 fn default_terminal_font_family() -> String {
     "'Menlo', 'Monaco', 'Courier New', monospace".into()
+}
+fn default_dev_idle_threshold_secs() -> u32 {
+    60
+}
+fn default_dev_proxy_enabled() -> bool {
+    true
 }
 fn default_socks5_port() -> u16 {
     1080
@@ -232,6 +246,8 @@ impl Default for GeneralConfig {
             terminal_font_family: default_terminal_font_family(),
             dev_terminal_log: false,
             dev_devtools: false,
+            dev_idle_threshold_secs: 60,
+            dev_proxy_enabled: true,
         }
     }
 }

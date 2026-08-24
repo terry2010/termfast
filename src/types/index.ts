@@ -207,6 +207,10 @@ export interface GeneralConfig {
   dev_terminal_log: boolean;
   /// Developer option: open DevTools
   dev_devtools: boolean;
+  /// Developer option: idle threshold in seconds (0 = default 60s)
+  dev_idle_threshold_secs: number;
+  /// Developer option: enable SSH proxy (SOCKS5/HTTP) features
+  dev_proxy_enabled: boolean;
 }
 
 /// User-defined custom variable for trigger templates

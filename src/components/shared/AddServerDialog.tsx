@@ -7,6 +7,7 @@ import { ipcInvoke, formatIpcError, IpcErrorImpl } from "@/hooks/useIpc";
 import { toast } from "sonner";
 import { Modal } from "@/components/ui/Modal";
 import { useServerStore } from "@/stores/serverStore";
+import { useConfigStore } from "@/stores/configStore";
 
 interface AddServerDialogProps {
   onAdd: () => void;
@@ -53,6 +54,7 @@ export function AddServerDialog({
     return { nextSocks5: socks5, nextHttp: http };
   }, [existingServers]);
 
+  const proxyFeaturesEnabled = useConfigStore((s) => s.config?.general?.dev_proxy_enabled ?? true);
   const [name, setName] = useState(editServer?.name || "");
   const [host, setHost] = useState(editServer?.host || "");
   const [port, setPort] = useState(String(editServer?.port || 22));
@@ -357,7 +359,8 @@ export function AddServerDialog({
           )}
         </SettingGroup>
 
-        {/* Proxy settings */}
+        {/* Proxy settings — hidden when proxy features disabled */}
+        {proxyFeaturesEnabled && (
         <SettingGroup title={t("server.proxy_settings")}>
           <SettingRow label={t("server.mixed_port")}>
             <Toggle
@@ -411,6 +414,7 @@ export function AddServerDialog({
             />
           </SettingRow>
         </SettingGroup>
+        )}
       </div>
       {error && (
         <div className="mt-4 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">

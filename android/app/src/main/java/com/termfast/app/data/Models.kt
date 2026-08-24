@@ -41,6 +41,7 @@ data class GeneralConfig(
     val http_proxy_url: String = "",
     val terminal_theme: String = "catppuccin-mocha",
     val terminal_font_size: Int = 10,
+    val dev_proxy_enabled: Boolean = true,
 )
 
 @Serializable

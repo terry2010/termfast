@@ -71,6 +71,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
     var hostKeyMismatch by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(0) }
     var serverConfig by remember { mutableStateOf<ServerConfig?>(null) }
+    val proxyFeaturesEnabled = remember { repo.getConfig()?.general?.dev_proxy_enabled ?: true }
 
     fun doStartVpn() {
         val settings = settingsRepo.load()
@@ -248,9 +249,14 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                 containerColor = MaterialTheme.colorScheme.surface,
             ) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("概览") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("代理") })
-                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("触发器") })
-                Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text(stringResource(R.string.pf_title)) })
+                if (proxyFeaturesEnabled) {
+                    Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("代理") })
+                    Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("触发器") })
+                    Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text(stringResource(R.string.pf_title)) })
+                } else {
+                    Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("触发器") })
+                    Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text(stringResource(R.string.pf_title)) })
+                }
             }
             when (tab) {
                 0 -> OverviewTab(
@@ -262,6 +268,7 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                     vpnStarting = vpnStarting,
                     vpnFailed = vpnFailed,
                     vpnError = vpnError,
+                    proxyFeaturesEnabled = proxyFeaturesEnabled,
                     onVpnToggle = { toggleVpn() },
                     onTerminal = { navController.navigate("terminal/$serverId") },
                     onOpenSession = { sid -> navController.navigate("terminal/$serverId/$sid") },
@@ -299,12 +306,58 @@ fun ServerDetailScreen(navController: NavController, serverId: String) {
                         }
                     }
                 )
-                2 -> TriggerTab(
-                    serverId = serverId,
-                    onEdit = { t ->
-                        navController.navigate("trigger_edit/${serverId}/${t.id}")
-                    }
-                )
+                1 -> if (proxyFeaturesEnabled) {
+                    ProxyTab(
+                        serverId = serverId,
+                        serverConfig = serverConfig,
+                        proxyRunning = proxyRunning,
+                        vpnRunning = vpnRunning,
+                        vpnStarting = vpnStarting,
+                        vpnFailed = vpnFailed,
+                        vpnError = vpnError,
+                        onVpnToggle = { toggleVpn() },
+                        onToggle = { run ->
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    if (run) {
+                                        repo.startProxy(serverId, serverConfig?.proxy?.socks5_port ?: 1080, 0, 0)
+                                    } else {
+                                        repo.stopProxy(serverId)
+                                    }
+                                }
+                                withContext(Dispatchers.Main) {
+                                    proxyRunning = run
+                                }
+                            }
+                        },
+                        onSaveTestUrl = { url ->
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    serverConfig?.let { cfg ->
+                                        repo.saveServer(cfg.copy(test_url = url))
+                                    }
+                                }
+                            }
+                        }
+                    )
+                } else {
+                    TriggerTab(
+                        serverId = serverId,
+                        onEdit = { t ->
+                            navController.navigate("trigger_edit/${serverId}/${t.id}")
+                        }
+                    )
+                }
+                2 -> if (proxyFeaturesEnabled) {
+                    TriggerTab(
+                        serverId = serverId,
+                        onEdit = { t ->
+                            navController.navigate("trigger_edit/${serverId}/${t.id}")
+                        }
+                    )
+                } else {
+                    PortForwardTab(serverId = serverId)
+                }
                 3 -> PortForwardTab(serverId = serverId)
             }
         }
@@ -339,6 +392,7 @@ private fun OverviewTab(
     onVpnToggle: () -> Unit,
     onTerminal: () -> Unit,
     onOpenSession: (String) -> Unit = {},
+    proxyFeaturesEnabled: Boolean = true,
 ) {
     // Refresh terminal sessions list on each composition + lifecycle resume
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -397,14 +451,16 @@ private fun OverviewTab(
                     StatusRow(label = "出口 IP", value = exitIp)
                 }
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                StatusRow(label = "代理", value = if (proxyRunning) "运行中" else "已停止", positive = proxyRunning)
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                StatusRow(label = "VPN", value = when {
-                    vpnRunning -> "运行中"
-                    vpnStarting -> "连接中..."
-                    vpnFailed -> "连接失败"
-                    else -> "已停止"
-                }, positive = vpnRunning)
+                if (proxyFeaturesEnabled) {
+                    StatusRow(label = "代理", value = if (proxyRunning) "运行中" else "已停止", positive = proxyRunning)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                    StatusRow(label = "VPN", value = when {
+                        vpnRunning -> "运行中"
+                        vpnStarting -> "连接中..."
+                        vpnFailed -> "连接失败"
+                        else -> "已停止"
+                    }, positive = vpnRunning)
+                }
             }
         }
     }

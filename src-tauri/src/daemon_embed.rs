@@ -2,25 +2,24 @@
 //!
 //! Embeds the daemon inside the Tauri process for GUI mode.
 //! Starts the daemon socket server and provides IPC bridge to frontend.
-//! Loads config from file (FileConfigStorage) and uses keychain for credentials.
+//! Loads config from SQLCipher DB and uses keychain for credentials.
 //! Starts NetworkMonitor for offline detection (FP-6.9).
 //!
 //! ## SQLCipher migration (§4.2)
 //!
-//! The new `start_with_sqlcipher()` method implements the DEK resolution flow:
+//! The `start_with_sqlcipher()` method implements the DEK resolution flow:
 //! 1. DB file doesn't exist → create with DEFAULT_DEK
 //! 2. Try DEFAULT_DEK → success (no master password set)
 //! 3. Try keychain cached DEK → success (returning user)
 //! 4. All fail → return `NeedUnlock` (frontend shows CredentialGate)
 
 use std::sync::Arc;
-use termfast_core::config::migration::load_config_with_migration_fallback;
 use termfast_core::config::{
-    open_or_recover, Config, ConfigManager, FileConfigStorage, OpenResult, SqlCipherConfigStorage,
+    open_or_recover, ConfigManager, OpenResult, SqlCipherConfigStorage,
     SqlCipherStorage, DEFAULT_DEK,
 };
 use termfast_core::platform::{SetProxyResult, SystemProxyAdapter, SystemProxyConfig};
-use termfast_credential::{CredentialStore, EncryptedFileCredentialStore, SqlCipherCredentialStore};
+use termfast_credential::{CredentialStore, SqlCipherCredentialStore};
 use termfast_daemon::{DaemonServer, DaemonState};
 
 /// Error indicating the DB needs a master password to unlock.
@@ -45,83 +44,6 @@ pub struct EmbeddedDaemon {
 }
 
 impl EmbeddedDaemon {
-    /// Start the embedded daemon.
-    /// Loads config from the platform default path (FileConfigStorage).
-    /// Uses KeychainCredentialStore for credential persistence.
-    /// Starts NetworkMonitor for offline/online detection (FP-6.9).
-    pub async fn start() -> anyhow::Result<Self> {
-        let storage = match FileConfigStorage::with_default_path() {
-            Ok(s) => {
-                tracing::info!("config path: {}", s.path().display());
-                s
-            }
-            Err(e) => {
-                tracing::warn!("failed to determine config path, using default: {}", e);
-                FileConfigStorage::new("config.json")
-            }
-        };
-
-        // Use load_config_with_migration_fallback so that we know whether
-        // the config was loaded from a valid file or fell back to defaults
-        // (corrupt JSON, missing file, migration failure). The is_fallback
-        // flag is passed to ConfigManager to prevent an empty config from
-        // overwriting the backed-up original until the user explicitly
-        // adds data.
-        let (config, is_fallback) = load_config_with_migration_fallback(storage.path());
-        if is_fallback {
-            tracing::warn!(
-                "config loaded as fallback (empty or corrupt) from {} — \
-                 corrupt_load flag set, will not overwrite file until user adds data",
-                storage.path().display()
-            );
-        }
-
-        Self::start_with_config_and_storage_fallback(config, storage, is_fallback).await
-    }
-
-    /// Start with a specific config (uses FileConfigStorage for persistence)
-    pub async fn start_with_config(config: Config) -> anyhow::Result<Self> {
-        let storage = FileConfigStorage::with_default_path()
-            .unwrap_or_else(|_| FileConfigStorage::new("config.json"));
-        Self::start_with_config_and_storage(config, storage).await
-    }
-
-    /// Start with a shared encrypted credential store (used by Tauri GUI).
-    /// The store starts locked; the frontend unlocks it via IPC before any
-    /// credential access. Until then, credential load/save returns errors
-    /// which the daemon handles gracefully (e.g. auto-connect is skipped).
-    pub async fn start_with_credential_store(
-        cred_store: Arc<EncryptedFileCredentialStore>,
-    ) -> anyhow::Result<Self> {
-        let storage = match FileConfigStorage::with_default_path() {
-            Ok(s) => {
-                tracing::info!("config path: {}", s.path().display());
-                s
-            }
-            Err(e) => {
-                tracing::warn!("failed to determine config path, using default: {}", e);
-                FileConfigStorage::new("config.json")
-            }
-        };
-        let (config, is_fallback) = load_config_with_migration_fallback(storage.path());
-        if is_fallback {
-            tracing::warn!(
-                "config loaded as fallback (empty or corrupt) from {} — \
-                 corrupt_load flag set",
-                storage.path().display()
-            );
-        }
-        Self::start_with_config_storage_credential_and_fallback(config, storage, cred_store, is_fallback).await
-    }
-
-    /// Start with a specific config and storage (ensures read/write path consistency)
-    pub async fn start_with_config_and_storage(
-        config: Config,
-        storage: FileConfigStorage,
-    ) -> anyhow::Result<Self> {
-        Self::start_with_config_and_storage_fallback(config, storage, false).await
-    }
-
     // === SQLCipher startup flow (§4.2) ===
 
     /// Start with SQLCipher as the unified storage backend.
@@ -311,197 +233,6 @@ impl EmbeddedDaemon {
         })
     }
 
-    /// Start with a specific config, storage, and corrupt_load flag.
-    /// When is_fallback=true, the ConfigManager will refuse to save an empty
-    /// config over the (backed-up) original until the user explicitly adds data.
-    pub async fn start_with_config_and_storage_fallback(
-        config: Config,
-        storage: FileConfigStorage,
-        is_fallback: bool,
-    ) -> anyhow::Result<Self> {
-        // Load servers from config into server_manager before starting daemon
-        let servers_from_config = config.servers.clone();
-        let mgr = ConfigManager::with_storage_and_corrupt(
-            config,
-            Arc::new(storage),
-            is_fallback,
-        );
-        let cred_store: Arc<dyn CredentialStore> =
-            Arc::new(termfast_credential::KeychainCredentialStore::new());
-        let proxy_adapter: Arc<dyn SystemProxyAdapter> = Arc::new(DesktopProxyAdapter);
-        let state = DaemonState::with_adapter(mgr, cred_store, proxy_adapter);
-
-        // Populate server_manager with servers from the config file
-        for srv_config in servers_from_config {
-            if let Err(e) = state.server_manager.add_server(srv_config).await {
-                tracing::warn!("failed to load server from config: {}", e);
-            }
-        }
-
-        let server = DaemonServer::start(state).await?;
-        tracing::info!(
-            "embedded daemon started on {}",
-            server.socket_path().display()
-        );
-
-        // Set runtime_state on all existing servers and load persisted IPs (FP-1.3b)
-        {
-            let state = server.state();
-            // Runtime state is now backed by SQLCipher — no explicit load needed.
-            // Set runtime_state on all existing server instances
-            let servers = state.server_manager.list_servers().await;
-            for s in &servers {
-                s.set_runtime_state(state.runtime_state.clone()).await;
-            }
-        }
-
-        // Start network monitor for offline detection (FP-6.9)
-        let monitor = Arc::new(termfast_desktop::network::NetworkMonitor::new());
-        let state_clone = server.state().clone();
-        let monitor_task = monitor.start_monitoring(5, move |new_state, servers_to_reconnect| {
-            let state = state_clone.clone();
-            tokio::spawn(async move {
-                match new_state {
-                    termfast_desktop::network::NetworkState::Offline => {
-                        tracing::warn!("network offline — pausing reconnection");
-                        let servers = state.server_manager.list_servers().await;
-                        let mut connected = Vec::new();
-                        for s in &servers {
-                            if s.is_connected().await {
-                                connected.push(s.id().to_string());
-                            }
-                        }
-                        // Broadcast offline event with connected server list
-                        state
-                            .broadcast(
-                                "network:offline",
-                                serde_json::json!({
-                                    "connected_servers": connected,
-                                }),
-                            )
-                            .await;
-                    }
-                    termfast_desktop::network::NetworkState::Online => {
-                        tracing::info!(
-                            "network online — {} servers should reconnect",
-                            servers_to_reconnect.len()
-                        );
-                        // Broadcast online event — frontend/ServerInstance will handle reconnection
-                        state
-                            .broadcast(
-                                "network:online",
-                                serde_json::json!({
-                                    "servers_to_reconnect": servers_to_reconnect,
-                                }),
-                            )
-                            .await;
-                    }
-                }
-            });
-        });
-
-        Ok(Self {
-            server,
-            _network_monitor_task: Some(monitor_task),
-            cred_store: None,
-        })
-    }
-
-    /// Start with a specific config, storage, and a pre-created encrypted
-    /// credential store (shared with Tauri IPC for unlock/migration).
-    pub async fn start_with_config_storage_and_credential_store(
-        config: Config,
-        storage: FileConfigStorage,
-        cred_store: Arc<EncryptedFileCredentialStore>,
-    ) -> anyhow::Result<Self> {
-        Self::start_with_config_storage_credential_and_fallback(config, storage, cred_store, false).await
-    }
-
-    /// Start with config, storage, credential store, and corrupt_load flag.
-    pub async fn start_with_config_storage_credential_and_fallback(
-        config: Config,
-        storage: FileConfigStorage,
-        cred_store: Arc<EncryptedFileCredentialStore>,
-        is_fallback: bool,
-    ) -> anyhow::Result<Self> {
-        let servers_from_config = config.servers.clone();
-        let mgr = ConfigManager::with_storage_and_corrupt(
-            config,
-            Arc::new(storage),
-            is_fallback,
-        );
-        let cred_store_dyn: Arc<dyn CredentialStore> = cred_store;
-        let proxy_adapter: Arc<dyn SystemProxyAdapter> = Arc::new(DesktopProxyAdapter);
-        let state = DaemonState::with_adapter(mgr, cred_store_dyn, proxy_adapter);
-
-        for srv_config in servers_from_config {
-            if let Err(e) = state.server_manager.add_server(srv_config).await {
-                tracing::warn!("failed to load server from config: {}", e);
-            }
-        }
-
-        let server = DaemonServer::start(state).await?;
-        tracing::info!(
-            "embedded daemon started on {}",
-            server.socket_path().display()
-        );
-
-        {
-            let state = server.state();
-            // Runtime state is now backed by SQLCipher — no explicit load needed.
-            let servers = state.server_manager.list_servers().await;
-            for s in &servers {
-                s.set_runtime_state(state.runtime_state.clone()).await;
-            }
-        }
-
-        let monitor = Arc::new(termfast_desktop::network::NetworkMonitor::new());
-        let state_clone = server.state().clone();
-        let monitor_task = monitor.start_monitoring(5, move |new_state, servers_to_reconnect| {
-            let state = state_clone.clone();
-            tokio::spawn(async move {
-                match new_state {
-                    termfast_desktop::network::NetworkState::Offline => {
-                        tracing::warn!("network offline — pausing reconnection");
-                        let servers = state.server_manager.list_servers().await;
-                        let mut connected = Vec::new();
-                        for s in &servers {
-                            if s.is_connected().await {
-                                connected.push(s.id().to_string());
-                            }
-                        }
-                        state
-                            .broadcast(
-                                "network:offline",
-                                serde_json::json!({ "connected_servers": connected }),
-                            )
-                            .await;
-                    }
-                    termfast_desktop::network::NetworkState::Online => {
-                        tracing::info!(
-                            "network online — {} servers should reconnect",
-                            servers_to_reconnect.len()
-                        );
-                        state
-                            .broadcast(
-                                "network:online",
-                                serde_json::json!({
-                                    "servers_to_reconnect": servers_to_reconnect,
-                                }),
-                            )
-                            .await;
-                    }
-                }
-            });
-        });
-
-        Ok(Self {
-            server,
-            _network_monitor_task: Some(monitor_task),
-            cred_store: None,
-        })
-    }
-
     pub fn socket_path(&self) -> &std::path::Path {
         self.server.socket_path()
     }
@@ -624,14 +355,13 @@ pub fn save_dek_to_keychain(_dek: &[u8; 32]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Determine the DB path (next to config.json / credentials.enc).
+/// Determine the DB path in the platform data directory.
+/// Uses the same directory that config.json used to live in
+/// (directories::ProjectDirs data_dir), but no longer depends
+/// on config.json existing.
 pub fn sqlcipher_db_path() -> std::path::PathBuf {
-    match termfast_core::config::FileConfigStorage::with_default_path() {
-        Ok(s) => s
-            .path()
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("termfast.db"),
-        Err(_) => std::path::PathBuf::from("termfast.db"),
+    match directories::ProjectDirs::from("", "", "termfast") {
+        Some(d) => d.data_dir().join("termfast.db"),
+        None => std::path::PathBuf::from("termfast.db"),
     }
 }

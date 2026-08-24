@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import { useServerStore } from "@/stores/serverStore";
+import { useConfigStore } from "@/stores/configStore";
 
 interface TitleBarProps {
   onOpenSettings?: () => void;
@@ -46,6 +47,7 @@ export function TitleBar(props: TitleBarProps) {
 function ConnectionSummary() {
   const { t } = useTranslation();
   const servers = useServerStore((s) => s.servers);
+  const proxyFeaturesEnabled = useConfigStore((s) => s.config?.general?.dev_proxy_enabled ?? true);
   const connected = servers.filter((s) => s.current_status === "connected");
   const abnormal = servers.filter(
     (s) => s.current_status === "auth_failed" || s.current_status === "reconnecting" || s.current_status === "offline"
@@ -109,7 +111,7 @@ function ConnectionSummary() {
           {abnormal.length} {t("server.connected_count")}
         </span>
       )}
-      {activeClients > 0 && (speedRef.current.speedIn > 0 || speedRef.current.speedOut > 0) && (
+      {proxyFeaturesEnabled && activeClients > 0 && (speedRef.current.speedIn > 0 || speedRef.current.speedOut > 0) && (
         <span className="text-blue-500" data-tauri-drag-region>
           ↑ {fmtSpeed(speedRef.current.speedIn)} ↓ {fmtSpeed(speedRef.current.speedOut)}
         </span>

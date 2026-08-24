@@ -50,6 +50,7 @@ uuid = { workspace = true }
 hex = { workspace = true }
 termfast-cloud-sync = { workspace = true }
 getrandom = "0.4.3"
+directories = { workspace = true }
 p256 = { workspace = true }
 x25519-dalek = { workspace = true }
 rand = { workspace = true }

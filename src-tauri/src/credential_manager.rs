@@ -104,15 +104,15 @@ pub enum CredentialStatus {
     Unlocked,
 }
 
-/// Determine the credential file path from the config storage path.
-/// The credential file sits next to config.json as `credentials.enc`.
+/// Determine the credential file path in the platform data directory.
+/// The credential file sits next to termfast.db as `credentials.enc`.
 /// Deprecated: SQLCipher mode uses the DB path instead, but this is still
 /// used by clear_sync_password_hash for legacy file cleanup.
 #[allow(dead_code)]
 pub fn credential_file_path() -> PathBuf {
-    match termfast_core::config::FileConfigStorage::with_default_path() {
-        Ok(s) => s.path().parent().unwrap_or_else(|| std::path::Path::new(".")).join("credentials.enc"),
-        Err(_) => PathBuf::from("credentials.enc"),
+    match directories::ProjectDirs::from("", "", "termfast") {
+        Some(d) => d.data_dir().join("credentials.enc"),
+        None => PathBuf::from("credentials.enc"),
     }
 }
 

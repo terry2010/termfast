@@ -42,7 +42,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     { id: "general", label: t("settings.general.title") },
     { id: "logs", label: t("settings.logs.title") },
     { id: "terminal", label: t("settings.terminal.title") },
-    { id: "proxy", label: t("settings.proxy.title") },
+    ...(config?.general?.dev_proxy_enabled ? [{ id: "proxy" as TabId, label: t("settings.proxy.title") }] : []),
     { id: "trigger", label: t("settings.trigger.title") },
     { id: "notification", label: t("settings.notification.title") },
     { id: "credentials", label: t("credentials.settings_section") },
@@ -148,6 +148,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
             >
               <TerminalSection />
             </div>
+            {config?.general?.dev_proxy_enabled && (
             <div
               ref={(el) => {
                 sectionRefs.current.proxy = el;
@@ -155,6 +156,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
             >
               <ProxyDefaultsSection />
             </div>
+            )}
             <div
               ref={(el) => {
                 sectionRefs.current.trigger = el;
@@ -647,14 +649,16 @@ function NotificationSection() {
       label: t("settings.notification.reconnect_success"),
     },
     { key: "notify_auth_fail", label: t("settings.notification.auth_fail") },
-    {
-      key: "notify_proxy_toggle",
-      label: t("settings.notification.proxy_toggle"),
-    },
-    {
-      key: "notify_proxy_port_conflict",
-      label: t("settings.notification.proxy_port_conflict"),
-    },
+    ...(config.general.dev_proxy_enabled ? [
+      {
+        key: "notify_proxy_toggle" as keyof typeof config.general,
+        label: t("settings.notification.proxy_toggle"),
+      },
+      {
+        key: "notify_proxy_port_conflict" as keyof typeof config.general,
+        label: t("settings.notification.proxy_port_conflict"),
+      },
+    ] : []),
     {
       key: "notify_trigger_fail",
       label: t("settings.notification.trigger_fail"),
@@ -857,6 +861,30 @@ function DeveloperSection() {
               console.error("toggle devtools failed:", e),
             );
           }}
+        />
+      </SettingItem>
+      <SettingItem
+        label={t("settings.developer.idle_threshold")}
+        hint={t("settings.developer.idle_threshold_hint")}
+      >
+        <input
+          type="number"
+          min={5}
+          max={3600}
+          value={config.general.dev_idle_threshold_secs || 60}
+          onChange={(e) =>
+            updateAndSave({ dev_idle_threshold_secs: parseInt(e.target.value) || 60 })
+          }
+          className="input w-24"
+        />
+      </SettingItem>
+      <SettingItem
+        label={t("settings.developer.proxy_enabled")}
+        hint={t("settings.developer.proxy_enabled_hint")}
+      >
+        <Toggle
+          checked={config.general.dev_proxy_enabled ?? true}
+          onChange={(v) => updateAndSave({ dev_proxy_enabled: v })}
         />
       </SettingItem>
     </SettingGroup>
@@ -1915,23 +1943,17 @@ function PairingSection() {
       }
       attempts++;
       try {
-        const result = await ipcInvoke<any>("ipc_pairing_status", { token, pairing_id: pairingId });
+        const result = await ipcInvoke<any>("ipc_pairing_status", {
+          token,
+          pairing_id: pairingId,
+          pairing_key_hex: pairingKey,
+          relay_url: "ws://sh.zimufan.com:39527/tunnel",
+        });
         if (result.status === "completed") {
           setPolling(false);
           toast.success(t("pairing.completed"));
-          // Start tunnel for this pairing
-          if (pairingKey) {
-            try {
-              await ipcInvoke("ipc_tunnel_start", {
-                pairing_id: pairingId,
-                pairing_key_hex: pairingKey,
-                relay_url: "ws://sh.zimufan.com:39527/tunnel",
-                jwt: token,
-              });
-            } catch (e: any) {
-              toast.error("隧道启动失败", { description: String(e) });
-            }
-          }
+          // ipc_pairing_status already saved the pairing and started the
+          // tunnel on the Rust side (when pairing_key_hex is provided).
           const devs = await fetchPairedDevices(token);
           setDevices(devs);
           return;

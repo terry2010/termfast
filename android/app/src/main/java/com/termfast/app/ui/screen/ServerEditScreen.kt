@@ -30,6 +30,7 @@ import java.util.UUID
 @Composable
 fun ServerEditScreen(navController: NavController, serverId: String?) {
     val repo = remember { RustRepository }
+    val proxyFeaturesEnabled = remember { repo.getConfig()?.general?.dev_proxy_enabled ?: true }
     var name by remember { mutableStateOf("") }
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("22") }
@@ -271,7 +272,8 @@ fun ServerEditScreen(navController: NavController, serverId: String?) {
                     }
                 }
 
-                // Proxy section
+                // Proxy section — hidden when proxy features disabled
+                if (proxyFeaturesEnabled) {
                 EditSectionCard(title = "代理设置") {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -305,6 +307,7 @@ fun ServerEditScreen(navController: NavController, serverId: String?) {
                         shape = RoundedCornerShape(12.dp),
                         singleLine = true,
                     )
+                }
                 }
 
                 EditSectionCard(title = "tmux 会话管理") {

@@ -46,7 +46,7 @@ struct PairingsFile {
 }
 
 /// Returns the platform-appropriate data directory for termfast.
-/// Matches the path used by `FileConfigStorage::default_path` in core.
+/// Matches the path used by `directories::ProjectDirs` data_dir.
 fn data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {

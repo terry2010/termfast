@@ -19,6 +19,7 @@ import {
   type ContextMenuEntry,
 } from "@/components/ui/ContextMenu";
 import { toast } from "@/components/ui/toast";
+import { useConfigStore } from "@/stores/configStore";
 import type { ServerStatus } from "@/types";
 import type { ServerState } from "@/stores/serverStore";
 
@@ -95,6 +96,7 @@ export function ServerList({
   const servers = useServerStore((s) => s.servers);
   const selectedId = useServerStore((s) => s.selected_server_id);
   const selectServer = useServerStore((s) => s.selectServer);
+  const proxyFeaturesEnabled = useConfigStore((s) => s.config?.general?.dev_proxy_enabled ?? true);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [loading, setLoading] = useState(servers.length === 0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -365,74 +367,78 @@ export function ServerList({
             openTerminal();
           },
         },
-        {
-          label: proxyEnabled
-            ? t("server.stop_proxy")
-            : t("server.start_proxy"),
-          icon: proxyEnabled ? "■" : "▶",
-          onClick: async () => {
-            try {
-              await ipcInvoke("ipc_toggle_proxy", {
-                server_id: server.id,
-                enabled: !proxyEnabled,
-              });
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              toast.error(t("server.proxy_toggle_failed"), {
-                description: msg,
-              });
-            }
-          },
-          disabled: !isConnected,
-        },
-        {
-          label: t("server.set_system_proxy"),
-          icon: "🌐",
-          onClick: async () => {
-            try {
-              await ipcInvoke("ipc_set_system_proxy", { server_id: server.id });
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              toast.error(t("server.set_system_proxy_failed"), {
-                description: msg,
-              });
-            }
-          },
-          disabled: !isConnected || !proxyEnabled,
-        },
-        { separator: true },
-        ...(mixedPort > 0
-          ? [
+        ...(proxyFeaturesEnabled
+          ? ([
               {
-                label: t("server.copy_mixed", { port: mixedPort }),
-                icon: "📋",
-                onClick: () => {
-                  navigator.clipboard
-                    .writeText(`127.0.0.1:${mixedPort}`)
-                    .catch(() => {});
+                label: proxyEnabled
+                  ? t("server.stop_proxy")
+                  : t("server.start_proxy"),
+                icon: proxyEnabled ? "■" : "▶",
+                onClick: async () => {
+                  try {
+                    await ipcInvoke("ipc_toggle_proxy", {
+                      server_id: server.id,
+                      enabled: !proxyEnabled,
+                    });
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    toast.error(t("server.proxy_toggle_failed"), {
+                      description: msg,
+                    });
+                  }
                 },
-              },
-            ]
-          : [
-              {
-                label: t("server.copy_socks5", { port: socks5Port }),
-                icon: "📋",
-                onClick: () => {
-                  navigator.clipboard
-                    .writeText(`127.0.0.1:${socks5Port}`)
-                    .catch(() => {});
-                },
+                disabled: !isConnected,
               },
               {
-                label: t("server.copy_http", { port: httpPort }),
-                icon: "📋",
-                onClick: () => {
-                  navigator.clipboard
-                    .writeText(`127.0.0.1:${httpPort}`)
-                    .catch(() => {});
+                label: t("server.set_system_proxy"),
+                icon: "🌐",
+                onClick: async () => {
+                  try {
+                    await ipcInvoke("ipc_set_system_proxy", { server_id: server.id });
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    toast.error(t("server.set_system_proxy_failed"), {
+                      description: msg,
+                    });
+                  }
                 },
+                disabled: !isConnected || !proxyEnabled,
               },
-            ]),
+              { separator: true as const },
+              ...(mixedPort > 0
+                ? [
+                    {
+                      label: t("server.copy_mixed", { port: mixedPort }),
+                      icon: "📋",
+                      onClick: () => {
+                        navigator.clipboard
+                          .writeText(`127.0.0.1:${mixedPort}`)
+                          .catch(() => {});
+                      },
+                    },
+                  ]
+                : [
+                    {
+                      label: t("server.copy_socks5", { port: socks5Port }),
+                      icon: "📋",
+                      onClick: () => {
+                        navigator.clipboard
+                          .writeText(`127.0.0.1:${socks5Port}`)
+                          .catch(() => {});
+                      },
+                    },
+                    {
+                      label: t("server.copy_http", { port: httpPort }),
+                      icon: "📋",
+                      onClick: () => {
+                        navigator.clipboard
+                          .writeText(`127.0.0.1:${httpPort}`)
+                          .catch(() => {});
+                      },
+                    },
+                  ]),
+            ] as ContextMenuEntry[])
+          : []),
         { separator: true },
         {
           label: t("server.edit"),
@@ -798,6 +804,7 @@ export function ServerList({
                 collapsed={!showFullContent}
                 onSelect={() => selectServer(server.id)}
                 onContextMenu={(e) => handleContextMenu(e, server)}
+                proxyFeaturesEnabled={proxyFeaturesEnabled}
                 draggable
                 isDragged={draggedId === server.id}
                 isDragOver={dragOverId === server.id}
@@ -885,6 +892,7 @@ function ServerListItem({
   isDragged,
   isDragOver,
   dragOverPos,
+  proxyFeaturesEnabled,
 }: {
   server: ServerState;
   selected: boolean;
@@ -900,8 +908,10 @@ function ServerListItem({
   isDragged?: boolean;
   isDragOver?: boolean;
   dragOverPos?: "before" | "after";
+  proxyFeaturesEnabled?: boolean;
 }) {
   const { t } = useTranslation();
+  const proxyOn = proxyFeaturesEnabled ?? true;
 
   return (
     <div
@@ -954,8 +964,8 @@ function ServerListItem({
             </div>
           </div>
 
-          {/* Proxy port badge — only shown when proxy is running */}
-          {server.proxy_running && (
+          {/* Proxy port badge — only shown when proxy is running and proxy features enabled */}
+          {proxyOn && server.proxy_running && (
             <span
               className={`text-[10px] px-1.5 py-0.5 rounded font-mono flex-shrink-0 ${selected ? "bg-white/20 text-white" : "bg-black/5 dark:bg-white/10 text-gray-500 dark:text-gray-400"}`}
             >

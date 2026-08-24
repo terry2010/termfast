@@ -1154,6 +1154,9 @@ async fn handle_update_general_config(
         if let Some(v) = params["dev_devtools"].as_bool() {
             config.general.dev_devtools = v;
         }
+        if let Some(v) = params["dev_idle_threshold_secs"].as_u64() {
+            config.general.dev_idle_threshold_secs = v as u32;
+        }
     })
     .await
     .map_err(|e| IpcError::new(ErrorCode::Internal, e.to_string()))?;
@@ -4016,8 +4019,8 @@ mod tests {
         assert!(!is_no_update(&remote_with_hash, None, Some("1000"), Some("1000")));
     }
 
-    /// is_no_update — hash 匹配但本地 mtime 变了（本地有修改）→ 返回 false
-    /// 这是核心修复：用户新建节点后本地 config.json mtime 变了，
+    /// is_no_update — hash 匹配但本地 version 变了（本地有修改）→ 返回 false
+    /// 这是核心修复：用户新建节点后本地 DB version 变了，
     /// 即使云端 hash 没变也不应阻止下载。
     #[test]
     fn test_is_no_update_local_mtime_changed() {
@@ -4538,33 +4541,11 @@ fn sync_hash_path(_state: &DaemonState) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("sync_hash.dat"))
 }
 
-/// Path to the local config.json file.
-fn local_config_path(_state: &DaemonState) -> std::path::PathBuf {
-    // Must match the path used by FileConfigStorage::default_path()
-    // (directories::ProjectDirs, NOT BaseDirs) — otherwise mtime checks
-    // read the wrong file and no_update logic breaks.
-    directories::ProjectDirs::from("", "", "termfast")
-        .map(|d| d.data_dir().join("config.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("config.json"))
-}
-
-/// Get the mtime (unix epoch seconds) of the local config.json file.
-/// Returns None if the file doesn't exist or mtime can't be read.
+/// Get the local config version from the SQLCipher sync_meta table.
+/// This replaces the old config.json file mtime check.
+/// Returns None if the DB is not available or the version is not set.
 fn local_config_mtime(state: &DaemonState) -> Option<String> {
-    // SQLCipher migration: use version number from sync_meta table instead of file mtime.
-    // Falls back to file mtime if DB is not available (legacy mode).
-    if let Some(version) = local_config_version(state) {
-        return Some(version);
-    }
-    // Fallback: file mtime (legacy mode, for backward compatibility)
-    let path = local_config_path(state);
-    let meta = std::fs::metadata(&path).ok()?;
-    let mtime = meta.modified().ok()?;
-    let secs = mtime
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    Some(secs.to_string())
+    local_config_version(state)
 }
 
 /// Get the local config version from the SQLCipher sync_meta table.
@@ -5451,7 +5432,7 @@ fn encrypt_key_if_needed(content: &str, passphrase: Option<&str>) -> String {
 /// Extracted from handle_import_full for reuse by cloud sync download.
 ///
 /// Crash safety + write order strategy (H4):
-///   1. Write config.json (atomic) — FIRST, so user sees new node list
+///   1. Write config to SQLCipher DB — FIRST, so user sees new node list
 ///   2. Write key files (atomic per-file, encrypted with passphrase)
 ///   3. Write credentials (atomic per-key) — LAST
 ///   4. Sync ServerManager (in-memory)
@@ -5464,16 +5445,15 @@ fn encrypt_key_if_needed(content: &str, passphrase: Option<&str>) -> String {
 /// where user sees stale nodes and doesn't know to re-download.
 /// Missing passwords → user can re-enter; stale node list → silent data loss.
 ///
-/// If step 1 fails, no changes were made (config.json write is atomic).
+/// If step 1 fails, no changes were made (DB write is atomic via transaction).
 /// If steps 2-3 fail, config is already updated; user sees new nodes
 /// and can re-enter missing passwords. This is the intended degradation.
 async fn apply_full_export(
     state: &DaemonState,
     export_data: &termfast_core::migration::FullExportData,
 ) -> Result<(), IpcError> {
-    // 1. Apply config — FIRST, so config.json updates before credentials.
-    //    mgr.modify() updates in-memory config AND atomically writes
-    //    config.json (tmp + rename).
+    // 1. Apply config — FIRST, so DB updates before credentials.
+    //    mgr.modify() updates in-memory config AND writes to SQLCipher DB.
     {
         let mgr = state.config_manager.lock().await;
         if let Err(e) = mgr
@@ -5534,7 +5514,7 @@ async fn apply_full_export(
         }
     }
 
-    // 3. Restore credentials — LAST, so config.json is already updated.
+    // 3. Restore credentials — LAST, so DB is already updated.
     //    If this fails or is killed mid-way, user sees new node list
     //    but some passwords may be missing — they can re-enter them.
     //    (Better than stale node list + new passwords that can't be used.)

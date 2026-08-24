@@ -27,6 +27,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ipcInvoke, formatIpcError } from "@/hooks/useIpc";
 import { openTerminalWithChannel } from "@/lib/terminal";
 import { useServerStore } from "@/stores/serverStore";
+import { useConfigStore } from "@/stores/configStore";
 import type { ServerState } from "@/stores/serverStore";
 import i18n from "@/i18n/config";
 
@@ -47,6 +48,7 @@ export function useTrayMenu() {
   const servers = useServerStore((s) => s.servers);
   const selectServer = useServerStore((s) => s.selectServer);
   const addTerminalTab = useServerStore((s) => s.addTerminalTab);
+  const proxyFeaturesEnabled = useConfigStore((s) => s.config?.general?.dev_proxy_enabled ?? true);
   const setActiveTerminalTab = useServerStore((s) => s.setActiveTerminalTab);
   const rebuildRef = useRef<(() => void) | null>(null);
 
@@ -101,73 +103,75 @@ export function useTrayMenu() {
         }),
       );
 
-      // Start/Stop Proxy
-      items.push(
-        await MenuItem.new({
-          text: proxyEnabled ? t("server.stop_proxy") : t("server.start_proxy"),
-          enabled: isConnected,
-          action: async () => {
-            try {
-              await ipcInvoke("ipc_toggle_proxy", {
-                server_id: server.id,
-                enabled: !proxyEnabled,
-              });
-            } catch (err) {
-              console.error("tray toggle proxy failed:", err);
-            }
-          },
-        }),
-      );
-
-      // Set as System Proxy
-      items.push(
-        await MenuItem.new({
-          text: t("server.set_system_proxy"),
-          enabled: isConnected && proxyEnabled,
-          action: async () => {
-            try {
-              await ipcInvoke("ipc_set_system_proxy", { server_id: server.id });
-            } catch (err) {
-              console.error("tray set system proxy failed:", err);
-            }
-          },
-        }),
-      );
-
-      // Separator
-      items.push(await PredefinedMenuItem.new({ item: "Separator" }));
-
-      // Copy proxy addresses
-      if (mixedPort > 0) {
+      // Start/Stop Proxy (only when proxy features enabled)
+      if (proxyFeaturesEnabled) {
         items.push(
           await MenuItem.new({
-            text: t("server.copy_mixed", { port: mixedPort }),
-            action: () => {
-              navigator.clipboard.writeText(`127.0.0.1:${mixedPort}`).catch(() => {});
+            text: proxyEnabled ? t("server.stop_proxy") : t("server.start_proxy"),
+            enabled: isConnected,
+            action: async () => {
+              try {
+                await ipcInvoke("ipc_toggle_proxy", {
+                  server_id: server.id,
+                  enabled: !proxyEnabled,
+                });
+              } catch (err) {
+                console.error("tray toggle proxy failed:", err);
+              }
             },
           }),
         );
-      } else {
+
+        // Set as System Proxy
         items.push(
           await MenuItem.new({
-            text: t("server.copy_socks5", { port: socks5Port }),
-            action: () => {
-              navigator.clipboard.writeText(`127.0.0.1:${socks5Port}`).catch(() => {});
+            text: t("server.set_system_proxy"),
+            enabled: isConnected && proxyEnabled,
+            action: async () => {
+              try {
+                await ipcInvoke("ipc_set_system_proxy", { server_id: server.id });
+              } catch (err) {
+                console.error("tray set system proxy failed:", err);
+              }
             },
           }),
         );
-        items.push(
-          await MenuItem.new({
-            text: t("server.copy_http", { port: httpPort }),
-            action: () => {
-              navigator.clipboard.writeText(`127.0.0.1:${httpPort}`).catch(() => {});
-            },
-          }),
-        );
+
+        // Separator
+        items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+
+        // Copy proxy addresses
+        if (mixedPort > 0) {
+          items.push(
+            await MenuItem.new({
+              text: t("server.copy_mixed", { port: mixedPort }),
+              action: () => {
+                navigator.clipboard.writeText(`127.0.0.1:${mixedPort}`).catch(() => {});
+              },
+            }),
+          );
+        } else {
+          items.push(
+            await MenuItem.new({
+              text: t("server.copy_socks5", { port: socks5Port }),
+              action: () => {
+                navigator.clipboard.writeText(`127.0.0.1:${socks5Port}`).catch(() => {});
+              },
+            }),
+          );
+          items.push(
+            await MenuItem.new({
+              text: t("server.copy_http", { port: httpPort }),
+              action: () => {
+                navigator.clipboard.writeText(`127.0.0.1:${httpPort}`).catch(() => {});
+              },
+            }),
+          );
+        }
+
+        // Separator
+        items.push(await PredefinedMenuItem.new({ item: "Separator" }));
       }
-
-      // Separator
-      items.push(await PredefinedMenuItem.new({ item: "Separator" }));
 
       // Edit
       items.push(
