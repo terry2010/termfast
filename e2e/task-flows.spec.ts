@@ -127,7 +127,7 @@ test.describe("FP-9.2: Server Status Display", () => {
 test.describe("FP-9.3: Trigger Tab", () => {
   test("triggers tab shows empty state when no triggers", async ({ page }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     // Should show the "Add Trigger" button
     await expect(page.locator("button:has-text('Add Trigger')")).toBeVisible({ timeout: 3000 });

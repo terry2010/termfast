@@ -269,6 +269,8 @@ export async function mockTauri(
   options: {
     servers?: MockServer[];
     config?: MockConfig;
+    /** Local triggers (for __local__ server) */
+    localTriggers?: any[];
     /** Override specific IPC responses */
     overrides?: Record<string, (args: any) => any>;
     /** Commands that should reject */
@@ -277,13 +279,15 @@ export async function mockTauri(
 ): Promise<void> {
   const servers = options.servers ?? defaultServers();
   const config = options.config ?? defaultConfig();
+  const localTriggers = options.localTriggers ?? [];
 
   await page.addInitScript(
-    ({ servers, config }) => {
+    ({ servers, config, localTriggers }) => {
       // Deep clone so the page owns its copy
       const store = {
         servers: JSON.parse(JSON.stringify(servers)) as any[],
         config: JSON.parse(JSON.stringify(config)) as any,
+        localTriggers: JSON.parse(JSON.stringify(localTriggers)) as any[],
       };
       const calls: { cmd: string; args: any; result: any; error?: string }[] =
         [];
@@ -483,6 +487,38 @@ export async function mockTauri(
                   status: "fired",
                 };
                 break;
+              case "ipc_list_local_triggers":
+                result = store.localTriggers;
+                break;
+              case "ipc_save_local_trigger": {
+                const trig = args?.trigger;
+                if (trig) {
+                  const idx = store.localTriggers.findIndex(
+                    (t) => t.id === trig.id,
+                  );
+                  if (idx >= 0) {
+                    store.localTriggers[idx] = { ...trig };
+                  } else {
+                    store.localTriggers.push({ ...trig });
+                  }
+                }
+                result = trig?.id || "trig_local_new";
+                break;
+              }
+              case "ipc_remove_local_trigger": {
+                const tid = args?.trigger_id;
+                store.localTriggers = store.localTriggers.filter(
+                  (t) => t.id !== tid,
+                );
+                result = null;
+                break;
+              }
+              case "ipc_manual_fire_local_trigger":
+                result = {
+                  trigger_id: args?.triggerId,
+                  status: "fired",
+                };
+                break;
               case "ipc_pause_all_triggers":
                 result = null;
                 break;
@@ -588,7 +624,7 @@ export async function mockTauri(
         convertFileSrc: (path: string) => path,
       };
     },
-    { servers, config },
+    { servers, config, localTriggers },
   );
 }
 

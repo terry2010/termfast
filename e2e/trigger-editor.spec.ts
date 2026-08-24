@@ -8,38 +8,32 @@ import {
   waitForAppReady,
   dismissModal,
   getCallsFor,
-  defaultServers,
-  defaultTemplates,
 } from "./fixtures";
 
 // === SECTION 1 END ===
 
-/** Server with a pre-existing trigger for edit/delete tests */
-function serverWithTrigger() {
-  const servers = defaultServers();
-  servers[0].triggers = [
-    {
-      id: "trig_1",
-      template_id: "tpl_firewalld",
-      name: "Firewalld IP Update",
-      enabled: true,
-      trigger_type: "OnIpChange",
-      parameters: {},
-      commands: ["firewall-cmd --add-source={{.NewIP}}"],
-      timeout_secs: 30,
-      cooldown_secs: 60,
-      continue_on_error: false,
-      notify_on_success: false,
-      notify_on_failure: true,
-      last_fired_at: null,
-      template_hash_at_addition: "abc123",
-    },
-  ];
-  return servers;
-}
+/** Local triggers for "My Computer" (__local__) — triggers panel only shows for local/remote */
+const localTriggers = [
+  {
+    id: "trig_1",
+    template_id: "tpl_firewalld",
+    name: "Firewalld IP Update",
+    enabled: true,
+    trigger_type: "OnIpChange",
+    parameters: {},
+    commands: ["firewall-cmd --add-source={{.NewIP}}"],
+    timeout_secs: 30,
+    cooldown_secs: 60,
+    continue_on_error: false,
+    notify_on_success: false,
+    notify_on_failure: true,
+    last_fired_at: null,
+    template_hash_at_addition: "abc123",
+  },
+];
 
 test.beforeEach(async ({ page }) => {
-  await mockTauri(page, { servers: serverWithTrigger() });
+  await mockTauri(page, { localTriggers });
 });
 
 test.describe("Trigger list rendering", () => {
@@ -47,7 +41,7 @@ test.describe("Trigger list rendering", () => {
     page,
   }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await expect(page.locator("text=Firewalld IP Update")).toBeVisible({
       timeout: 3000,
@@ -58,7 +52,7 @@ test.describe("Trigger list rendering", () => {
     page,
   }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     // Event type tag: "On IP Change"
     await expect(page.locator("text=On IP Change")).toBeVisible({
@@ -72,7 +66,7 @@ test.describe("Trigger list rendering", () => {
 
   test("trigger card has Fire, Edit, Delete buttons", async ({ page }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await expect(page.locator("button:has-text('Fire Trigger')")).toBeVisible({
       timeout: 3000,
@@ -89,36 +83,22 @@ test.describe("Trigger list rendering", () => {
 // === SECTION 2 END ===
 
 test.describe("Manual fire trigger (U5)", () => {
-  test("clicking Fire button calls ipc_manual_fire_trigger", async ({
+  test("clicking Fire button calls ipc_manual_fire_local_trigger", async ({
     page,
   }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
-    // Connect first — Fire button is disabled when not connected
-    await page.locator("button:has-text('Connect Terminal')").click();
-    await expect
-      .poll(
-        async () => (await getCallsFor(page, "ipc_connect_server")).length,
-        { timeout: 5000 },
-      )
-      .toBeGreaterThanOrEqual(1);
-    await page.waitForTimeout(1000);
-    // Dismiss any modal that may have appeared (e.g. connection dialog)
-    await dismissModal(page);
-    // Click the Overview tab to return to the overview view (where triggers are visible)
-    await page.locator("text=Overview").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(500);
-    // Now the Fire Trigger button should be visible and enabled
+    // For local (__local__), Fire button is always enabled (no need to connect)
     await expect(page.locator("button:has-text('Fire Trigger')")).toBeEnabled({ timeout: 5000 });
     await page.locator("button:has-text('Fire Trigger')").first().click();
     await expect
       .poll(
-        async () => (await getCallsFor(page, "ipc_manual_fire_trigger")).length,
+        async () => (await getCallsFor(page, "ipc_manual_fire_local_trigger")).length,
         { timeout: 5000 },
       )
       .toBe(1);
-    const calls = await getCallsFor(page, "ipc_manual_fire_trigger");
-    expect(calls[0].args.serverId).toBe("srv_1");
+    const calls = await getCallsFor(page, "ipc_manual_fire_local_trigger");
     expect(calls[0].args.triggerId).toBe("trig_1");
   });
 });
@@ -126,7 +106,7 @@ test.describe("Manual fire trigger (U5)", () => {
 test.describe("Add new trigger via editor (U11)", () => {
   test("clicking Add Trigger opens editor dialog", async ({ page }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Add Trigger')").first().click();
     await page.waitForTimeout(300);
@@ -138,11 +118,11 @@ test.describe("Add new trigger via editor (U11)", () => {
     });
   });
 
-  test("filling trigger form and saving calls ipc_add_trigger", async ({
+  test("filling trigger form and saving calls ipc_save_local_trigger", async ({
     page,
   }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Add Trigger')").first().click();
     await page.waitForTimeout(300);
@@ -150,8 +130,8 @@ test.describe("Add new trigger via editor (U11)", () => {
     await page
       .locator("[data-testid='trigger-name-input']")
       .fill("My Custom Trigger");
-    // Select event type (OnConnect) — it's the second select (first is timeout/interval)
-    await page.locator("select").nth(1).selectOption("OnConnect");
+    // Select event type — the only select in the form
+    await page.locator("select").first().selectOption("OnTerminalOpen");
     // Type into CodeMirror editor — click the editor area and type
     const editor = page.locator(".cm-editor .cm-content").first();
     await editor.click();
@@ -159,20 +139,20 @@ test.describe("Add new trigger via editor (U11)", () => {
     // Click Save
     await page.locator("button:has-text('Save')").last().click();
     await expect
-      .poll(async () => (await getCallsFor(page, "ipc_add_trigger")).length, {
+      .poll(async () => (await getCallsFor(page, "ipc_save_local_trigger")).length, {
         timeout: 5000,
       })
       .toBe(1);
-    const calls = await getCallsFor(page, "ipc_add_trigger");
+    const calls = await getCallsFor(page, "ipc_save_local_trigger");
     expect(calls[0].args.trigger.name).toBe("My Custom Trigger");
-    expect(calls[0].args.trigger.trigger_type).toBe("OnConnect");
+    expect(calls[0].args.trigger.trigger_type).toBe("OnTerminalOpen");
   });
 
-  test("save button does not call ipc_add_trigger when name is empty", async ({
+  test("save button does not call ipc_save_local_trigger when name is empty", async ({
     page,
   }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Add Trigger')").first().click();
     await page.waitForTimeout(300);
@@ -183,7 +163,7 @@ test.describe("Add new trigger via editor (U11)", () => {
     await expect(page.locator("text=Trigger name is required")).toBeVisible({
       timeout: 3000,
     });
-    const calls = await getCallsFor(page, "ipc_add_trigger");
+    const calls = await getCallsFor(page, "ipc_save_local_trigger");
     expect(calls.length).toBe(0);
   });
 });
@@ -193,7 +173,7 @@ test.describe("Edit existing trigger", () => {
     page,
   }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Edit')").first().click();
     await page.waitForTimeout(300);
@@ -208,11 +188,11 @@ test.describe("Edit existing trigger", () => {
     });
   });
 
-  test("editing trigger name and saving calls ipc_update_trigger", async ({
+  test("editing trigger name and saving calls ipc_save_local_trigger", async ({
     page,
   }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Edit')").first().click();
     await page.waitForTimeout(300);
@@ -223,21 +203,20 @@ test.describe("Edit existing trigger", () => {
     await page.locator("button:has-text('Save')").last().click();
     await expect
       .poll(
-        async () => (await getCallsFor(page, "ipc_update_trigger")).length,
+        async () => (await getCallsFor(page, "ipc_save_local_trigger")).length,
         { timeout: 5000 },
       )
       .toBe(1);
-    const calls = await getCallsFor(page, "ipc_update_trigger");
-    const params = calls[0].args.params || calls[0].args;
-    expect(params.name).toBe("Updated Trigger Name");
-    expect(params.triggerId || params.trigger_id).toBe("trig_1");
+    const calls = await getCallsFor(page, "ipc_save_local_trigger");
+    expect(calls[0].args.trigger.name).toBe("Updated Trigger Name");
+    expect(calls[0].args.trigger.id).toBe("trig_1");
   });
 });
 
 test.describe("Delete trigger with confirmation", () => {
   test("clicking Delete opens confirm dialog", async ({ page }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Delete')").first().click();
     await page.waitForTimeout(300);
@@ -247,9 +226,9 @@ test.describe("Delete trigger with confirmation", () => {
     });
   });
 
-  test("confirming delete calls ipc_remove_trigger", async ({ page }) => {
+  test("confirming delete calls ipc_remove_local_trigger", async ({ page }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Delete')").first().click();
     await page.waitForTimeout(300);
@@ -257,25 +236,25 @@ test.describe("Delete trigger with confirmation", () => {
     await page.locator("button:has-text('OK')").last().click();
     await expect
       .poll(
-        async () => (await getCallsFor(page, "ipc_remove_trigger")).length,
+        async () => (await getCallsFor(page, "ipc_remove_local_trigger")).length,
         { timeout: 5000 },
       )
       .toBe(1);
-    const calls = await getCallsFor(page, "ipc_remove_trigger");
-    expect(calls[0].args.params?.trigger_id).toBe("trig_1");
+    const calls = await getCallsFor(page, "ipc_remove_local_trigger");
+    expect(calls[0].args.triggerId).toBe("trig_1");
   });
 
-  test("canceling delete does not call ipc_remove_trigger", async ({
+  test("canceling delete does not call ipc_remove_local_trigger", async ({
     page,
   }) => {
     await waitForAppReady(page);
-    await page.locator("text=Tokyo VPS").first().click();
+    await page.locator("text=My Computer").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Delete')").first().click();
     await page.waitForTimeout(300);
     await page.locator("button:has-text('Cancel')").first().click();
     await page.waitForTimeout(500);
-    const calls = await getCallsFor(page, "ipc_remove_trigger");
+    const calls = await getCallsFor(page, "ipc_remove_local_trigger");
     expect(calls.length).toBe(0);
   });
 });
