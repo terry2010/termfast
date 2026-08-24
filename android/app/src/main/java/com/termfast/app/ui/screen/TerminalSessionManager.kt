@@ -11,6 +11,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import org.connectbot.terminal.TerminalEmulator
 import org.connectbot.terminal.TerminalEmulatorFactory
 import java.util.UUID
@@ -229,12 +235,16 @@ object TerminalSessionManager {
         pairingRefreshToken: String = "",
     ): com.termfast.app.data.RemoteTunnelManager {
         val existing = tunnelManagers[pairingId]
-        if (existing != null) return existing
+        if (existing != null) {
+            android.util.Log.i("termfast", "getOrCreateTunnelManager: reuse existing for $pairingId, total=${tunnelManagers.size}")
+            return existing
+        }
         val manager = com.termfast.app.data.RemoteTunnelManager(
             pairingId, pairingKey, relayUrl, pairingJwt,
             pairingRefreshToken = pairingRefreshToken,
         )
         tunnelManagers[pairingId] = manager
+        android.util.Log.i("termfast", "getOrCreateTunnelManager: created new for $pairingId, total=${tunnelManagers.size}")
         // Start RemoteTunnelService when first tunnel is created
         if (tunnelManagers.size == 1) {
             notifyTunnelServiceStateChanged(true)
@@ -254,6 +264,25 @@ object TerminalSessionManager {
         tunnelManagers[pairingId]
 
     /**
+     * Get any active tunnel manager (for debug text injection).
+     * Returns the first tunnel manager that has an active protocol connection.
+     */
+    @Synchronized
+    fun getActiveTunnelManager(): com.termfast.app.data.RemoteTunnelManager? {
+        return tunnelManagers.values.firstOrNull()
+    }
+
+    /**
+     * Get the terminalId of the most recent remote session (for debug text injection).
+     * If no session is registered, returns 0 (first terminal).
+     */
+    @Synchronized
+    fun getActiveRemoteTerminalId(): Int {
+        val remoteSession = sessions.values.firstOrNull { it.remotePairingId != null }
+        return remoteSession?.remoteTerminalId ?: 0
+    }
+
+    /**
      * Stop and remove tunnel managers whose pairingId is NOT in [activePids].
      * Called by TerminalsScreen when remote sessions are closed, to free
      * WebSocket connections and FFI resources for pairings with no sessions.
@@ -263,6 +292,7 @@ object TerminalSessionManager {
         val toStop = tunnelManagers.keys.filter { it !in activePids }
         for (pid in toStop) {
             val tm = tunnelManagers.remove(pid)
+            android.util.Log.d("termfast", "stopTunnelsNotIn: removing tunnel for $pid, remaining=${tunnelManagers.size}")
             tm?.stopAndDestroy()
         }
         // Stop RemoteTunnelService when all tunnels are gone
@@ -402,6 +432,59 @@ object TerminalSessionManager {
     */
     // === End legacy ANSI parser ===
 
+    // === Agent autonomous parsing: snapshot access + OSC interception ===
+
+    /**
+     * Get the termlib snapshot StateFlow for a session.
+     *
+     * ⚠️ Uses reflection to access termlib's internal `getSnapshot$lib()` method.
+     * TerminalSnapshot/TerminalEmulatorImpl are `internal` in termlib and cannot
+     * be accessed directly from Kotlin. All reflection is encapsulated in
+     * TermlibAccess — this function returns the raw StateFlow as `Any?`.
+     *
+     * TerminalScreen collects this flow and calls TermlibAccess.toScrapedSnapshot()
+     * to convert each emission to a plain ScrapedSnapshot for AgentStatusMonitor.
+     *
+     * @return StateFlow<TerminalSnapshot> as Any?, or null if session not found
+     */
+    fun snapshotFlow(sessionId: String): Any? {
+        val session = sessions[sessionId] ?: return null
+        val emulator = session.emulator ?: return null
+        return com.termfast.app.agent.TermlibAccess.getSnapshotFlow(emulator)
+    }
+
+    /**
+     * Unified entry point for feeding raw bytes to the emulator.
+     *
+     * Replaces the 3 direct `emulator.writeInput()` call sites with a single
+     * function that:
+     * 1. Intercepts OSC sequences from raw bytes (for AgentStatusMonitor)
+     * 2. Feeds the complete bytes to termlib (read-only interception —
+     *    raw bytes are NOT consumed, termlib gets the full sequence)
+     *
+     * @param sessionId target session
+     * @param bytes raw PTY bytes to feed
+     * @param isHistoryReplay true for history replay (skip OSC interception —
+     *        stale blocked notifications would cause false BLOCKED state)
+     */
+    @Synchronized
+    fun feedEmulator(sessionId: String, bytes: ByteArray, isHistoryReplay: Boolean) {
+        val session = sessions[sessionId] ?: return
+        val emulator = session.emulator ?: return
+
+        // Intercept OSC for agent status (skip during history replay)
+        if (!isHistoryReplay) {
+            com.termfast.app.agent.OscInterceptor.scan(sessionId, bytes)?.let { signal ->
+                com.termfast.app.agent.AgentStatusMonitor.onOscSignal(sessionId, signal)
+            }
+            // Notify state machine of PTY output (for working state detection)
+            com.termfast.app.agent.AgentStatusMonitor.onOutput(sessionId)
+        }
+
+        // Feed complete bytes to termlib (always, regardless of interception)
+        emulator.writeInput(bytes)
+    }
+
 
 
     @Synchronized
@@ -441,6 +524,8 @@ object TerminalSessionManager {
     fun closeSessionBySessionId(sessionId: String) {
         sessions.remove(sessionId)
         sessionOrder.remove(sessionId)
+        com.termfast.app.agent.AgentStatusMonitor.resetSession(sessionId)
+        com.termfast.app.agent.OscInterceptor.clearBuffer(sessionId)
     }
 
     @Synchronized
@@ -609,9 +694,8 @@ object TerminalSessionManager {
                 }
                 val session = sessions[event.session_id]
                 if (session != null) {
-                    // Feed raw bytes to termlib — libvterm handles
-                    // UTF-8 + ANSI parsing internally.
-                    session.emulator?.writeInput(bytes)
+                    // Feed raw bytes to termlib via unified entry (OSC interception)
+                    feedEmulator(event.session_id, bytes, isHistoryReplay = false)
                     // Update preview cache for TerminalsScreen card
                     val rawText = String(bytes, Charsets.UTF_8)
                     val previewText = stripAnsi(rawText).replace("\r", "").trim()
@@ -682,7 +766,7 @@ object TerminalSessionManager {
         if (session != null && event.encoding == "base64") {
             val bytes = decodeBase64(event.data)
             android.util.Log.d("termfast", "handleRemoteOutput: ${bytes.size} bytes session=${session.sessionId} cols=${session.remotePtyCols} rows=${session.remotePtyRows}")
-            session.emulator?.writeInput(bytes)
+            feedEmulator(session.sessionId, bytes, isHistoryReplay = false)
         }
     }
 
@@ -703,7 +787,7 @@ object TerminalSessionManager {
             if (event.seq == 0L) {
                 session.emulator?.clearScreen()
             }
-            session.emulator?.writeInput(bytes, 0, bytes.size)
+            feedEmulator(session.sessionId, bytes, isHistoryReplay = true)
         }
     }
 
@@ -751,16 +835,18 @@ object TerminalSessionManager {
     }
 
     /**
-     * Remove all remote sessions for a pairing.
-     * Called when the tunnel peer disconnects (desktop went offline/restarted).
-     * Old terminal_ids are stale — the desktop will assign new ones on reconnect.
-     * The user can re-open terminals from the picker after reconnection.
+     * Mark all remote sessions for a pairing as disconnected (not deleted).
+     * Called when the tunnel peer disconnects (network loss, desktop offline).
+     * Sessions are preserved so the user can re-attach after reconnection.
+     * The desktop's terminal_id mapping is persistent (IdMap), so the same
+     * terminal_id will be valid after reconnect — no need to delete sessions.
+     * Truly stale sessions (closed on desktop while offline) are removed by
+     * [syncRemoteSessionsWithList] after the next LIST_RESPONSE.
      */
     @Synchronized
     fun markRemoteSessionsDisconnected(pairingId: String) {
-        val toRemove = sessions.values.filter { it.remotePairingId == pairingId }
-        for (s in toRemove) {
-            sessions.remove(s.sessionId)
+        sessions.values.filter { it.remotePairingId == pairingId }.forEach {
+            sessions[it.sessionId] = it.copy(connected = false)
         }
     }
 
@@ -784,10 +870,16 @@ object TerminalSessionManager {
     @Synchronized
     fun syncRemoteSessionsWithList(pairingId: String, terminalsJson: String): List<String> {
         val aliveIds = try {
-            val arr = org.json.JSONArray(terminalsJson)
-            (0 until arr.length()).mapNotNull { i ->
-                arr.getJSONObject(i).optInt("id", -1).takeIf { it >= 0 }
-            }.toSet()
+            // LIST_RESPONSE payload is {"terminals": [...], "servers": [...]} (JSON object).
+            // Extract the "terminals" array and collect terminal IDs.
+            // Use kotlinx.serialization (not org.json) for unit test compatibility.
+            val obj = kotlinx.serialization.json.Json.parseToJsonElement(terminalsJson) as kotlinx.serialization.json.JsonObject
+            val terminalsArray = obj["terminals"]?.let {
+                (it as? kotlinx.serialization.json.JsonArray) ?: return emptyList()
+            } ?: return emptyList()
+            terminalsArray.mapNotNull { item ->
+                (item as? kotlinx.serialization.json.JsonObject)?.get("id")?.jsonPrimitive?.intOrNull
+            }.filter { it >= 0 }.toSet()
         } catch (_: Exception) {
             return emptyList()
         }

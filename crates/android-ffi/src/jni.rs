@@ -2510,6 +2510,8 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSend
     options: jobjectArray,
     is_multi_select: jboolean,
     is_multi_question: jboolean,
+    active_tab_index: jint,
+    total_tabs: jint,
 ) -> ::jni::sys::jbyteArray {
     let pid = jstring_to_string(&mut env, &pairing_id);
     let qid = jstring_to_string(&mut env, &question_id);
@@ -2536,6 +2538,7 @@ pub unsafe extern "C" fn Java_com_termfast_app_RustBridge_nativeRemoteTunnelSend
         &pid, terminal_id as u32, &qid, &ans,
         option_index as i64, &cli_str, &opts_vec,
         is_multi_select != 0, is_multi_question != 0,
+        active_tab_index as i32, total_tabs as i32,
     ) {
         Ok(ct) => vec_to_jbytearray(&mut env, &ct),
         Err(e) => {

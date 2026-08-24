@@ -104,6 +104,7 @@ class RemoteTunnelService : Service() {
         eventCollectorJob = serviceScope.launch {
             RustRepository.events.collect { event ->
                 if (event is RustEvent.RemoteTerminalNotify) {
+                    android.util.Log.d("termfast", "RemoteTunnelService received RemoteTerminalNotify: ${event.message}")
                     handleNotify(event)
                 }
             }
@@ -116,6 +117,7 @@ class RemoteTunnelService : Service() {
             // D6: list_changed 用 {"type":"list_changed"}，agent_* 用 event_type。
             // 本 Service 只处理 event_type。
             val eventType = json.optString("event_type")
+            android.util.Log.d("termfast", "handleNotify: event_type=$eventType message=${event.message}")
             if (eventType == "agent_blocked") {
                 val cli = json.optString("cli", "AI")
                 val question = json.optString("question", "需要你的输入")
@@ -138,7 +140,9 @@ class RemoteTunnelService : Service() {
                     removePayload(questionId)
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("termfast", "handleNotify exception: ${e.message}", e)
+        }
     }
 
     // C1: agent_blocked 高优先级通知
@@ -150,10 +154,15 @@ class RemoteTunnelService : Service() {
         cli: String,
         question: String,
     ) {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(
-            notifId,
-            NotificationHelper.buildAgentNotification(this, notifId, text, questionId, cli, question)
-        )
+        android.util.Log.d("termfast", "showAgentNotification: notifId=$notifId text=$text")
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.notify(
+                notifId,
+                NotificationHelper.buildAgentNotification(this, notifId, text, questionId, cli, question)
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("termfast", "showAgentNotification failed", e)
+        }
     }
 }

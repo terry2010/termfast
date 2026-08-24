@@ -1126,8 +1126,8 @@ impl DaemonServer {
                             if disk_has_servers {
                                 tracing::error!(
                                     "[7/7] shutdown save: refusing to write empty servers \
-                                     config — disk config.json has {} servers. Skipping save \
-                                     to preserve existing config.json.",
+                                     config — DB has {} servers. Skipping save \
+                                     to preserve existing DB data.",
                                     disk_config.servers.len()
                                 );
                                 true

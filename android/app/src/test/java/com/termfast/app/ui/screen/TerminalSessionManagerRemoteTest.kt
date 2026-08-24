@@ -300,5 +300,89 @@ class TerminalSessionManagerRemoteTest {
         TerminalSessionManager.closeSessionBySessionId(sid)
         assertFalse(TerminalSessionManager.isRemoteSession(sid))
     }
+
+    @Test
+    fun testMarkRemoteSessionsDisconnectedPreservesSessions() {
+        // Regression test: markRemoteSessionsDisconnected should NOT delete
+        // sessions — it should only mark them as disconnected. This prevents
+        // terminals from disappearing when the phone briefly loses network
+        // and reconnects (desktop terminal_id mapping is persistent).
+        val sid = createRemoteSession(pairingId = "disconnect-test", terminalId = 10)
+        assertTrue(TerminalSessionManager.isConnectedBySession(sid))
+
+        TerminalSessionManager.markRemoteSessionsDisconnected("disconnect-test")
+
+        // Session should still exist (NOT deleted)
+        assertTrue(TerminalSessionManager.isRemoteSession(sid),
+            "session should still exist after disconnect — only marked disconnected")
+        // But should be marked as disconnected
+        assertFalse(TerminalSessionManager.isConnectedBySession(sid),
+            "session should be marked disconnected")
+    }
+
+    @Test
+    fun testMarkRemoteSessionsConnectedRestoresConnection() {
+        // After disconnect + reconnect, markRemoteSessionsConnected should
+        // restore the connected flag so the user can continue using the terminal.
+        val sid = createRemoteSession(pairingId = "reconnect-test", terminalId = 11)
+        TerminalSessionManager.markRemoteSessionsDisconnected("reconnect-test")
+        assertFalse(TerminalSessionManager.isConnectedBySession(sid))
+
+        TerminalSessionManager.markRemoteSessionsConnected("reconnect-test")
+
+        assertTrue(TerminalSessionManager.isConnectedBySession(sid),
+            "session should be marked connected after reconnect")
+        assertTrue(TerminalSessionManager.isRemoteSession(sid),
+            "session should still exist after reconnect")
+    }
+
+    @Test
+    fun testSyncRemoteSessionsWithListRemovesStaleSessions() {
+        // After reconnect, LIST_RESPONSE should clean up sessions whose
+        // terminal_id is no longer on the desktop (closed while offline).
+        val aliveSid = createRemoteSession(pairingId = "sync-test", terminalId = 20)
+        val staleSid = createRemoteSession(pairingId = "sync-test", terminalId = 21)
+
+        // LIST_RESPONSE payload: {"terminals": [{"id": 20}], "servers": []}
+        // Only terminalId=20 is alive; terminalId=21 was closed on desktop.
+        val payload = """{"terminals":[{"id":20,"name":"alive","status":"running","preview":"","server_id":"__local__","server_name":"桌面端","terminal_type":"local","tmux_session_name":""}],"servers":[]}"""
+        TerminalSessionManager.syncRemoteSessionsWithList("sync-test", payload)
+
+        assertTrue(TerminalSessionManager.isRemoteSession(aliveSid),
+            "alive session (terminalId=20) should still exist")
+        assertFalse(TerminalSessionManager.isRemoteSession(staleSid),
+            "stale session (terminalId=21) should be removed")
+    }
+
+    @Test
+    fun testSyncRemoteSessionsWithListParsesObjectPayload() {
+        // Regression: LIST_RESPONSE payload is {"terminals":[...], "servers":[...]}
+        // (JSON object), not a bare JSON array. Verify parsing doesn't throw
+        // and correctly identifies alive terminals.
+        val sid = createRemoteSession(pairingId = "parse-test", terminalId = 30)
+
+        val payload = """{"terminals":[{"id":30,"name":"test","status":"running","preview":"","server_id":"__local__","server_name":"桌面端","terminal_type":"local","tmux_session_name":""}],"servers":[{"server_id":"__local__","server_name":"桌面端","is_local":true}]}"""
+        val removed = TerminalSessionManager.syncRemoteSessionsWithList("parse-test", payload)
+
+        assertTrue(removed.isEmpty(), "no sessions should be removed — terminalId=30 is alive")
+        assertTrue(TerminalSessionManager.isRemoteSession(sid),
+            "session should still exist after sync")
+    }
+
+    @Test
+    fun testSyncRemoteSessionsWithListEmptyTerminalsRemovesAll() {
+        // If desktop has no terminals (e.g. restarted), all remote sessions
+        // for that pairing should be removed.
+        val sid1 = createRemoteSession(pairingId = "empty-test", terminalId = 40)
+        val sid2 = createRemoteSession(pairingId = "empty-test", terminalId = 41)
+
+        val payload = """{"terminals":[],"servers":[]}"""
+        TerminalSessionManager.syncRemoteSessionsWithList("empty-test", payload)
+
+        assertFalse(TerminalSessionManager.isRemoteSession(sid1),
+            "session 40 should be removed — not in list")
+        assertFalse(TerminalSessionManager.isRemoteSession(sid2),
+            "session 41 should be removed — not in list")
+    }
 }
 

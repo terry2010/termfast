@@ -147,6 +147,8 @@ object RustBridge {
         options: Array<String>,
         isMultiSelect: Boolean,
         isMultiQuestion: Boolean,
+        activeTabIndex: Int,
+        totalTabs: Int,
     ): ByteArray?
     external fun nativeRemoteTunnelClose(pairingId: String): ByteArray?
 

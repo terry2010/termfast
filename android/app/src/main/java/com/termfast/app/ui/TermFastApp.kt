@@ -49,8 +49,10 @@ fun TermFastApp() {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    // Handle pending agent approval navigation from notification tap
-    LaunchedEffect(Unit) {
+    // Handle pending agent approval navigation from notification tap.
+    // Key on pendingAgentApprovalTick so this re-runs when a new notification is tapped
+    // while the app is already in composition (onNewIntent path).
+    LaunchedEffect(com.termfast.app.MainActivity.pendingAgentApprovalTick.intValue) {
         com.termfast.app.MainActivity.pendingAgentApproval?.let { (questionId, cli, question) ->
             com.termfast.app.MainActivity.pendingAgentApproval = null
             // Encode cli + question as URL-encoded route parameters

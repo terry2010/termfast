@@ -49,6 +49,27 @@ export default function App() {
   const setConfig = useConfigStore((s) => s.setConfig);
   const loadTemplates = useTriggerStore((s) => s.loadTemplates);
   const didRestoreTunnels = useRef(false);
+  // Collect all session_ids from all servers' terminal tabs — used to report
+  // alive sessions to the Rust backend so zombie sessions can be reaped.
+  const terminalTabsByServer = useServerStore((s) => s.terminal_tabs_by_server);
+
+  // Report alive session_ids to Rust backend whenever the tab list changes.
+  // This lets session_alive_check_callback detect zombie local sessions whose
+  // frontend tab was lost (HMR refresh, app restart) but whose PTY is alive.
+  // On HMR, the store resets to {} so all sessions are reported as dead.
+  useEffect(() => {
+    const sessionIds: string[] = [];
+    for (const tabs of Object.values(terminalTabsByServer)) {
+      for (const tab of tabs) {
+        if (tab.sessionId && !tab.disconnected) {
+          sessionIds.push(tab.sessionId);
+        }
+      }
+    }
+    ipcInvoke("ipc_set_alive_sessions", { session_ids: sessionIds }).catch((e) => {
+      console.warn("[App] ipc_set_alive_sessions failed:", String(e));
+    });
+  }, [terminalTabsByServer]);
 
   // Load config and server list from daemon on mount
   useEffect(() => {
@@ -351,6 +372,7 @@ export default function App() {
       searchInput?.focus();
     },
     onToggleProxy: () => {
+      if (!config?.general?.dev_proxy_enabled) return;
       const selected = servers.find(
         (s) => s.id === useServerStore.getState().selected_server_id,
       );

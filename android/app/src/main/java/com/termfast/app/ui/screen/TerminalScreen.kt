@@ -103,6 +103,46 @@ fun TerminalScreen(
     var renameText by remember { mutableStateOf(sessionState?.name ?: "") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
+    // Agent question sheet — production: auto-show when agent is BLOCKED
+    var showAgentSheet by remember(sessionId) { mutableStateOf(false) }
+    // Track whether the sheet was shown by user (manual) vs auto-detected
+    var agentSheetUserToggled by remember(sessionId) { mutableStateOf(false) }
+    // Hoisted sheet state — persists across show/hide cycles
+    val agentActiveTab = remember(sessionId) { mutableIntStateOf(0) }
+    val agentSelectedOptions = remember(sessionId) { mutableStateMapOf<Int, Int>() }
+    val agentCheckedMap = remember(sessionId) { mutableStateMapOf<Int, Boolean>() }
+    val agentTextAnswers = remember(sessionId) { mutableStateMapOf<Int, String>() }
+    val agentTextExpanded = remember(sessionId) { mutableStateMapOf<Int, Boolean>() }
+
+    // Collect snapshotFlow and feed to AgentStatusMonitor for autonomous parsing
+    LaunchedEffect(sessionId) {
+        val flow = TerminalSessionManager.snapshotFlow(sessionId) ?: return@LaunchedEffect
+        @Suppress("UNCHECKED_CAST")
+        val stateFlow = flow as? kotlinx.coroutines.flow.StateFlow<Any?> ?: return@LaunchedEffect
+        stateFlow.collect { snapshot ->
+            if (snapshot != null) {
+                // Process on Dispatchers.Default to avoid blocking the main thread
+                // (regex matching on full screen text is CPU-intensive)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    val scraped = com.termfast.app.agent.TermlibAccess.toScrapedSnapshot(snapshot)
+                    if (scraped != null) {
+                        com.termfast.app.agent.AgentStatusMonitor.processSnapshot(sessionId, scraped)
+                    }
+                }
+                // Auto-show/hide on main thread (UI state update)
+                // Don't override user manual toggle (agentSheetUserToggled)
+                if (!agentSheetUserToggled) {
+                    val status = com.termfast.app.agent.AgentStatusMonitor.getStatusState(sessionId)
+                    if (status.status == com.termfast.app.agent.AgentStatus.BLOCKED) {
+                        showAgentSheet = true
+                    } else if (status.status != com.termfast.app.agent.AgentStatus.BLOCKED) {
+                        showAgentSheet = false
+                    }
+                }
+            }
+        }
+    }
+
     // "New terminal created" hint — shown for 3s when this server has >1
     //   active terminal sessions. Tapping it opens the terminals list.
     val snackbarHostState = remember { SnackbarHostState() }
@@ -569,6 +609,19 @@ fun TerminalScreen(
                 }
             }
 
+            // Agent question button — glassmorphism chip left of session name
+            GlassChip(
+                text = "AI",
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 4.dp, end = 72.dp)
+                    .clickable {
+                        agentSheetUserToggled = true
+                        showAgentSheet = true
+                    },
+                textColor = terminalFg,
+            )
+
             // Session name — glassmorphism card top-right, click for actions
             GlassChip(
                 text = title,
@@ -808,6 +861,19 @@ fun TerminalScreen(
                     )
                 }
             }
+
+            // Agent question button — glassmorphism chip left of session name
+            GlassChip(
+                text = "AI",
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 4.dp, end = 72.dp)
+                    .clickable {
+                        agentSheetUserToggled = true
+                        showAgentSheet = true
+                    },
+                textColor = terminalFg,
+            )
 
             // Session name — glassmorphism card top-right, click for actions
             GlassChip(
@@ -1175,6 +1241,58 @@ fun TerminalScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // === Agent question bottom sheet (production — driven by AgentStatusMonitor) ===
+    if (showAgentSheet) {
+        AgentQuestionSheet(
+            sessionId = sessionId,
+            onDismiss = {
+                showAgentSheet = false
+                agentSheetUserToggled = false
+            },
+            activeTabIndex = agentActiveTab,
+            selectedOptions = agentSelectedOptions,
+            checkedMap = agentCheckedMap,
+            textAnswers = agentTextAnswers,
+            textExpanded = agentTextExpanded,
+            sendKeystrokes = { data ->
+                // Send keystrokes to the PTY via the appropriate input path
+                val bytes = data.toByteArray(Charsets.UTF_8)
+                val ss = sessionState
+                if (ss?.remotePairingId != null) {
+                    // Remote terminal: send via tunnel manager
+                    val tm = TerminalSessionManager.getTunnelManager(ss.remotePairingId)
+                    tm?.sendInput(ss.remoteTerminalId, bytes)
+                } else {
+                    // Local terminal: send via RustRepository
+                    RustRepository.writeTerminalBytes(sessionId, bytes)
+                }
+            },
+            // FP9: notify desktop of autonomous answer (remote mode only)
+            onAnsweredRemotely = {
+                val ss = sessionState
+                if (ss?.remotePairingId != null) {
+                    val tm = TerminalSessionManager.getTunnelManager(ss.remotePairingId)
+                    if (tm != null && ss.remoteTerminalId >= 0) {
+                        // Generate a synthetic questionId for mobile autonomous mode.
+                        // Desktop uses this to remove from pending_questions + close overlay.
+                        // The metadata (cli, options, etc.) is ignored by Rust __answered__ branch.
+                        val questionId = "mobile-auto-$sessionId-${System.currentTimeMillis()}"
+                        tm.sendInputAnswer(
+                            terminalId = ss.remoteTerminalId,
+                            questionId = questionId,
+                            answer = "__answered__",
+                            optionIndex = 0,
+                            cli = "unknown",
+                            options = emptyArray(),
+                            isMultiSelect = false,
+                            isMultiQuestion = false,
+                        )
+                    }
+                }
             },
         )
     }

@@ -18,6 +18,8 @@ import com.termfast.app.data.RustRepository
 import com.termfast.app.data.RemoteTunnelManager
 import com.termfast.app.data.TunnelState
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Remote terminal screen — thin wrapper that establishes the relay tunnel,
@@ -176,12 +178,17 @@ fun RemoteTerminalScreen(
                 }
                 is RustEvent.RemoteTerminalList -> {
                     if (event.pairing_id == pairingId && sessionId != null) {
-                        // Check if our terminalId is still in the list
+                        // Check if our terminalId is still in the list.
+                        // LIST_RESPONSE payload is {"terminals": [...], "servers": [...]}.
+                        // Use kotlinx.serialization for unit test compatibility.
                         try {
-                            val arr = org.json.JSONArray(event.terminals)
-                            val found = (0 until arr.length()).any { i ->
-                                arr.getJSONObject(i).optInt("id", -1) == terminalId
-                            }
+                            val obj = kotlinx.serialization.json.Json.parseToJsonElement(event.terminals)
+                                as kotlinx.serialization.json.JsonObject
+                            val arr = obj["terminals"] as? kotlinx.serialization.json.JsonArray
+                            val found = arr?.any { item ->
+                                (item as? kotlinx.serialization.json.JsonObject)
+                                    ?.get("id")?.jsonPrimitive?.intOrNull == terminalId
+                            } ?: false
                             if (!found) {
                                 android.util.Log.i("RemoteTerminalScreen", "terminal $terminalId no longer in list — closed by desktop")
                                 errorMsg = "终端已在桌面端关闭"
@@ -222,12 +229,15 @@ fun RemoteTerminalScreen(
         }
     }
 
-    // On screen exit: send UNSUBSCRIBE to stop receiving OUTPUT for this terminal.
-    // Do NOT stop the tunnel here — TerminalsScreen manages tunnel lifecycle via
-    // stopTunnelsNotIn(). Stopping here would race with TerminalsScreen's start().
+    // On screen exit: send RESIZE(0, 0) to signal the desktop to restore
+    // its terminal dimensions (re-fit xterm.js to desktop container).
+    // Do NOT send UNSUBSCRIBE — the subscription stays active so the desktop
+    // can still push agent_blocked notifications to this phone.
+    // UNSUBSCRIBE is only sent when the user explicitly disconnects
+    // (TerminalSessionManager.disconnectSession / removeSession / closeTerminalSession).
     DisposableEffect(tunnelManager) {
         onDispose {
-            tunnelManager.sendUnsubscribe(terminalId)
+            tunnelManager.sendResize(terminalId, 0, 0)
         }
     }
 

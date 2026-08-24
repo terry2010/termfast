@@ -31,7 +31,7 @@ import {
   BLOCKED_MISS_THRESHOLD,
 } from "./agentStateMachine";
 import { scrapeScreen, joinLines, extractTabInfo } from "./screenScraper";
-import { detectCli, detectStatus, prepareScreenText } from "./cliDetector";
+import { detectCli, detectCliFromScreen, detectStatus, prepareScreenText } from "./cliDetector";
 import { extractQuestion, extractOptions, detectMultiSelect, detectMultiQuestion, extractReviewAnswers, extractCursorIndex } from "./agentPatterns";
 import { getBehavior } from "./cliBehavior";
 import { logTerminalDebug } from "./terminalLogger";
@@ -194,7 +194,7 @@ export function useAgentStatus(
           state.isMultiSelect = isMultiSelect;
           // Debug: log extraction results for blocked state diagnosis
           const extractMsg = `blocked extraction: cli=${state.cli} question=${JSON.stringify(question)} options=${JSON.stringify(options)} multiSelect=${isMultiSelect} multiQuestion=${isMultiQuestion} activeTab=${activeTabIndex} totalTabs=${totalTabs} reviewAnswers=${JSON.stringify(reviewAnswers)}`;
-          console.log(`[agentStatus] ${extractMsg}`);
+          // console.log(`[agentStatus] ${extractMsg}`);  // too noisy — use logTerminalDebug only
           logTerminalDebug(sessionId, extractMsg);
           // Debug: log raw screen lines for option extraction diagnosis
           if (behavior.cacheOptionsOnOther && isMultiSelect && options && options.length > 3) {
@@ -231,10 +231,14 @@ export function useAgentStatus(
     const osc0 = term.parser.registerOscHandler(0, (data) => {
       const signal = parseOsc(0, data);
       if (signal && signal.kind === "title") {
-        console.log(`[agentStatus] OSC 0: title="${signal.title}" cli=${signal.cli} currentCli=${state.cli} currentStatus=${state.status}`);
+        // console.log(`[agentStatus] OSC 0: title="${signal.title}" cli=${signal.cli} currentCli=${state.cli} currentStatus=${state.status}`);  // too noisy
         let changed = false;
-        // Update CLI type if not already detected
-        if (state.cli === "unknown" && signal.cli !== "unknown") {
+        // Update CLI type if not already detected, OR if the title indicates
+        // a DIFFERENT CLI than the one currently detected (e.g. user exited
+        // opencode and launched claude-code in the same terminal tab — the
+        // CLI type is sticky but a clear OSC 0 title from another CLI should
+        // override it).
+        if (signal.cli !== "unknown" && state.cli !== signal.cli) {
           setCliType(state, signal.cli);
           changed = true;
         }
@@ -254,7 +258,7 @@ export function useAgentStatus(
     const osc777 = term.parser.registerOscHandler(777, (data) => {
       const signal = parseOsc(777, data);
       if (signal) {
-        console.log(`[agentStatus] OSC 777: kind=${signal.kind} cli=${"cli" in signal ? signal.cli : "?"} message="${"message" in signal ? signal.message : ""}" done=${"done" in signal ? signal.done : "?"} currentStatus=${state.status}`);
+        //         console.log(`[agentStatus] OSC 777: kind=${signal.kind} cli=${"cli" in signal ? signal.cli : "?"} message="${"message" in signal ? signal.message : ""}" done=${"done" in signal ? signal.done : "?"} currentStatus=${state.status}`);
         applySignal(state, signal, performance.now());
         syncToReact();
       }
@@ -266,7 +270,7 @@ export function useAgentStatus(
     const osc9 = term.parser.registerOscHandler(9, (data) => {
       const signal = parseOsc(9, data);
       if (signal) {
-        console.log(`[agentStatus] OSC 9: kind=${signal.kind} message="${"message" in signal ? signal.message : ""}" done=${"done" in signal ? signal.done : "?"} currentStatus=${state.status}`);
+        //         console.log(`[agentStatus] OSC 9: kind=${signal.kind} message="${"message" in signal ? signal.message : ""}" done=${"done" in signal ? signal.done : "?"} currentStatus=${state.status}`);
         applySignal(state, signal, performance.now());
         syncToReact();
       }
@@ -277,7 +281,7 @@ export function useAgentStatus(
     const osc1337 = term.parser.registerOscHandler(1337, (data) => {
       const signal = parseOsc(1337, data);
       if (signal) {
-        console.log(`[agentStatus] OSC 1337: kind=${signal.kind} currentStatus=${state.status}`);
+        //         console.log(`[agentStatus] OSC 1337: kind=${signal.kind} currentStatus=${state.status}`);
         applySignal(state, signal, performance.now());
         syncToReact();
       }
@@ -290,7 +294,7 @@ export function useAgentStatus(
     // suppressed by notify=smart mode with focused terminal).
     const bellHandler = term.onBell(() => {
       if (state.cli !== "unknown" && state.status === "working") {
-        console.log(`[agentStatus] BEL received: cli=${state.cli} status=${state.status} — triggering screen check`);
+        //         console.log(`[agentStatus] BEL received: cli=${state.cli} status=${state.status} — triggering screen check`);
         // The tick timer will scrape the screen on the next interval.
         // Force an immediate screen check by resetting lastOutputAt so
         // the working-idle timeout doesn't fire prematurely, and let
@@ -319,30 +323,37 @@ export function useAgentStatus(
         try {
           const lines = scrapeScreen(term);
           const screenText = prepareScreenText(joinLines(lines));
+          // CLI override: if the screen content strongly indicates a DIFFERENT CLI
+          // than the one currently detected (e.g. user exited claude-code and launched
+          // codex in the same terminal tab), override the sticky CLI type.
+          const screenCli = detectCliFromScreen(screenText);
+          if (screenCli !== "unknown" && screenCli !== state.cli) {
+            setCliType(state, screenCli);
+          }
           // Debug: log screen content every 10 ticks (~5s) for diagnosis
           if (tickCount % 10 === 0) {
             const nonEmpty = lines.filter((l) => l.trim().length > 0);
             const screenDump = nonEmpty.map((l, i) => `  [${i}] ${JSON.stringify(l)}`).join("\n");
             const msg = `tick#${tickCount} cli=${state.cli} status=${state.status} screen (${nonEmpty.length} non-empty lines):\n${screenDump}`;
-            console.log(`[agentStatus] ${msg}`);
+            // console.log(`[agentStatus] ${msg}`);  // too noisy — use logTerminalDebug only
             logTerminalDebug(sessionId, msg);
           }
           const screenStatus = detectStatus(state.cli, screenText);
           if (tickCount % 10 === 0) {
             const msg2 = `tick#${tickCount} detectStatus=${screenStatus} prevStatus=${prevStatus}`;
-            console.log(`[agentStatus] ${msg2}`);
+            // console.log(`[agentStatus] ${msg2}`);  // too noisy — use logTerminalDebug only
             logTerminalDebug(sessionId, msg2);
           }
           if (screenStatus === "blocked") {
             // Blocked pattern detected — apply immediately, reset miss count
             state.blockedMissCount = 0;
-            console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=blocked → applying (miss count reset)`);
+            //             console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=blocked → applying (miss count reset)`);
             applyScreenStatus(state, "blocked", null, performance.now());
           } else if ((screenStatus === "working" || screenStatus === "done") &&
                      state.status === "blocked" && !state.blockedFromOsc) {
             // Definitive non-blocked signal (spinner or completion marker).
             // The CLI has clearly resumed — apply immediately, no miss count.
-            console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=${screenStatus} while blocked → applying (definitive signal)`);
+            //             console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=${screenStatus} while blocked → applying (definitive signal)`);
             applyScreenStatus(state, screenStatus, null, performance.now());
             state.blockedMissCount = 0;
           } else if (screenStatus === "idle" && state.status === "blocked" && !state.blockedFromOsc) {
@@ -354,15 +365,15 @@ export function useAgentStatus(
             // Use blockedMissCount: require N consecutive idle detections.
             state.blockedMissCount++;
             if (state.blockedMissCount >= BLOCKED_MISS_THRESHOLD) {
-              console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} ≥ ${BLOCKED_MISS_THRESHOLD} → applying idle`);
+              //               console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} ≥ ${BLOCKED_MISS_THRESHOLD} → applying idle`);
               clearScreenBlocked(state, "idle", performance.now());
             } else {
-              console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} < ${BLOCKED_MISS_THRESHOLD} → staying blocked (redraw gap?)`);
+              //               console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} < ${BLOCKED_MISS_THRESHOLD} → staying blocked (redraw gap?)`);
             }
           } else if (screenStatus) {
             // Normal case: not blocked, apply status change if different
             if (screenStatus !== prevStatus) {
-              console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=${screenStatus} prevStatus=${prevStatus} → applying`);
+              //               console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: screenStatus=${screenStatus} prevStatus=${prevStatus} → applying`);
               applyScreenStatus(state, screenStatus, null, performance.now());
             }
           } else {
@@ -373,11 +384,11 @@ export function useAgentStatus(
               // Same redraw-gap logic: use miss count before clearing.
               state.blockedMissCount++;
               if (state.blockedMissCount >= BLOCKED_MISS_THRESHOLD) {
-                console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} ≥ ${BLOCKED_MISS_THRESHOLD} → working (dialog dismissed)`);
+                //                 console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} ≥ ${BLOCKED_MISS_THRESHOLD} → working (dialog dismissed)`);
                 clearScreenBlocked(state, "working", performance.now());
                 correctedFromBlocked = true;
               } else {
-                console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} < ${BLOCKED_MISS_THRESHOLD} → staying blocked (redraw gap?)`);
+                //                 console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: blocked miss count=${state.blockedMissCount} < ${BLOCKED_MISS_THRESHOLD} → staying blocked (redraw gap?)`);
               }
             }
             // Correct false "working" from user-input echo.
@@ -403,7 +414,7 @@ export function useAgentStatus(
             const hasScreenContent = screenText.trim().length > 0;
             if (!correctedFromBlocked && hasScreenContent &&
                 state.status === "working") {
-              console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: working but no spinner on screen → idle (echo correction)`);
+              //               console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: working but no spinner on screen → idle (echo correction)`);
               applyScreenStatus(state, "idle", null, performance.now());
               // Cancel any pending "working" debounce from recent echo
               state.pendingStatus = null;
@@ -420,7 +431,7 @@ export function useAgentStatus(
               const allLines = screenText.split("\n").filter((l) => l.trim().length > 0);
               const lastLine = allLines.length > 0 ? allLines[allLines.length - 1] : "";
               if (isShellPrompt(lastLine)) {
-                console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: shell prompt on last line, resetting to unknown`);
+                //                 console.log(`[agentStatus] tick#${tickCount} cli=${state.cli}: shell prompt on last line, resetting to unknown`);
                 setCliType(state, "unknown");
                 state.status = "unknown";
                 state.pendingStatus = null;
@@ -442,12 +453,12 @@ export function useAgentStatus(
             const nonEmpty = lines.filter((l) => l.trim().length > 0);
             const screenDump = nonEmpty.map((l, i) => `  [${i}] ${JSON.stringify(l)}`).join("\n");
             const msg = `tick#${tickCount} cli=unknown — screen (${nonEmpty.length} non-empty lines):\n${screenDump}`;
-            console.log(`[agentStatus] ${msg}`);
+            // console.log(`[agentStatus] ${msg}`);  // too noisy — use logTerminalDebug only
             logTerminalDebug(sessionId, msg);
           }
           const detected = detectCli("", screenText);
           if (detected !== "unknown") {
-            console.log(`[agentStatus] tick#${tickCount}: detected CLI=${detected} from screen`);
+            //             console.log(`[agentStatus] tick#${tickCount}: detected CLI=${detected} from screen`);
             setCliType(state, detected);
             // Immediately detect status on same tick
             const screenStatus = detectStatus(detected, screenText);
@@ -461,7 +472,7 @@ export function useAgentStatus(
       }
 
       if (state.status !== prevStatus || state.status !== lastSyncedStatus || state.cli !== prevCli || state.cli !== lastSyncedCli) {
-        console.log(`[agentStatus] tick#${tickCount}: syncing React — status ${lastSyncedStatus}→${state.status} cli ${lastSyncedCli}→${state.cli}`);
+        // console.log(`[agentStatus] tick#${tickCount}: syncing React — status ${lastSyncedStatus}→${state.status} cli ${lastSyncedCli}→${state.cli}`);  // too noisy
         lastSyncedStatus = state.status;
         lastSyncedCli = state.cli;
         syncToReact();
@@ -539,7 +550,7 @@ export function notifyAgentOutput(sessionId: string): void {
     notifyOutput(entry.state, performance.now());
     // If status changed (e.g. blocked → working), trigger listener to sync React
     if (entry.state.status !== prevStatus && entry.listener) {
-      console.log(`[agentStatus] notifyAgentOutput: status ${prevStatus}→${entry.state.status} cli=${entry.state.cli}`);
+      //       console.log(`[agentStatus] notifyAgentOutput: status ${prevStatus}→${entry.state.status} cli=${entry.state.cli}`);
       entry.listener();
     }
   }
@@ -556,7 +567,7 @@ export function resetAgentStatus(sessionId: string): void {
     const prevStatus = entry.state.status;
     resetAgentState(entry.state, performance.now());
     if (entry.state.status !== prevStatus && entry.listener) {
-      console.log(`[agentStatus] resetAgentStatus: status ${prevStatus}→${entry.state.status}`);
+      //       console.log(`[agentStatus] resetAgentStatus: status ${prevStatus}→${entry.state.status}`);
       entry.listener();
     }
   }

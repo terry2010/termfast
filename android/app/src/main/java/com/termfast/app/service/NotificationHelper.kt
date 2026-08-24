@@ -12,11 +12,14 @@ import com.termfast.app.R
 
 object NotificationHelper {
 
-    private const val CHANNEL_EVENTS = "termfast_events"
-    private const val CHANNEL_TRIGGERS = "termfast_triggers"
+    // v2: 换新 channel ID 以支持 IMPORTANCE_HIGH（Android channel importance 创建后不可修改）
+    private const val CHANNEL_EVENTS = "termfast_events_v2"
+    private const val CHANNEL_TRIGGERS = "termfast_triggers_v2"
     // D5: tunnel 保活 + agent blocked channels (C1)
     private const val CHANNEL_TUNNEL = "termfast_tunnel"
-    private const val CHANNEL_AGENT = "termfast_agent"
+    // v3: 换新 channel ID 以支持 IMPORTANCE_HIGH + sound + vibration
+    // (Android channel importance 创建后不可修改)
+    private const val CHANNEL_AGENT = "termfast_agent_v3"
 
     const val NOTIF_CONNECT_SUCCESS = 1001
     const val NOTIF_DISCONNECT = 1002
@@ -33,9 +36,11 @@ object NotificationHelper {
             val channel = NotificationChannel(
                 CHANNEL_EVENTS,
                 "事件通知",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "连接状态、IP 变化等事件通知"
+                enableVibration(true)
+                enableLights(true)
             }
             nm.createNotificationChannel(channel)
         }
@@ -43,9 +48,11 @@ object NotificationHelper {
             val channel = NotificationChannel(
                 CHANNEL_TRIGGERS,
                 "触发器通知",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "触发器执行成功/失败通知"
+                enableVibration(true)
+                enableLights(true)
             }
             nm.createNotificationChannel(channel)
         }
@@ -69,6 +76,11 @@ object NotificationHelper {
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "AI CLI 需要你的输入时的高优先级通知"
+                enableVibration(true)
+                enableLights(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                // Allow bypass of Do Not Disturb
+                setBypassDnd(true)
             }
             nm.createNotificationChannel(channel)
         }
@@ -113,20 +125,29 @@ object NotificationHelper {
         val encodedQuestion = java.net.URLEncoder.encode(question, "UTF-8")
         val intent = Intent(context, MainActivity::class.java).apply {
             putExtra("navigate_to", "agentApproval/$questionId/$encodedCli/$encodedQuestion")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pi = PendingIntent.getActivity(
             context, notifId, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         return NotificationCompat.Builder(context, CHANNEL_AGENT)
-            .setContentTitle("TermFast")
-            .setContentText(text)
+            .setContentTitle("$cli 需要你的输入")
+            .setContentText(question)
             .setSmallIcon(R.drawable.ic_agent_blocked)
             .setContentIntent(pi)
-            .setOngoing(true)  // MP1: 不可滑动消除，等 agent_resolved 到达后 nm.cancel()
+            .setFullScreenIntent(pi, true)
+            // 不设 ongoing — MIUI 不会对 ongoing 通知弹 heads-up 横幅。
+            // agent_resolved 到达后 nm.cancel() 主动清除。
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(question))
+            // Prevent auto-grouping which suppresses heads-up on MIUI
+            .setGroup(null)
+            // Heads-up notification defaults
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
             .build()
     }
 
@@ -149,6 +170,8 @@ object NotificationHelper {
             .setContentIntent(pi)
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .build()
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.notify(id, notification)
@@ -175,6 +198,8 @@ object NotificationHelper {
             .setContentIntent(pi)
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .build()
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.notify(id, notification)

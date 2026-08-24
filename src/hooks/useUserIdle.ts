@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-const IDLE_THRESHOLD_MS = 60_000; // 60 秒，硬编码
+const DEFAULT_IDLE_THRESHOLD_MS = 60_000; // 60 秒，默认值
 
 export interface IdleState {
   idle: boolean;       // 用户是否空闲（超过阈值）
@@ -9,94 +9,128 @@ export interface IdleState {
   locked: boolean;     // 屏幕是否锁定
 }
 
-/**
- * 桌面端系统空闲检测 hook。
- *
- * 使用 tauri-plugin-idlemonitor 的事件驱动 API：
- * - `system:idle` 事件：用户空闲超过阈值 / 从空闲恢复
- * - `system:lock` 事件：屏幕锁定 / 解锁
- *
- * 阈值固定 60 秒（IDLE_THRESHOLD_MS），在插件 start() 时传入。
- *
- * 注意：插件需要在 Rust 端注册（lib.rs 的 tauri::Builder::plugin()），
- * 并且 capabilities/default.json 需要包含 "idlemonitor:default" 权限。
- */
-export function useUserIdle(): IdleState {
-  const [state, setState] = useState<IdleState>({
-    idle: false,
-    idleSeconds: 0,
-    locked: false,
-  });
+// === 全局单例：所有 useUserIdle 实例共享同一个 idle 状态 ===
+// 避免多个 TerminalView tab 各自 start/stop 插件导致冲突。
+let globalState: IdleState = { idle: false, idleSeconds: 0, locked: false };
+let globalThresholdMs = DEFAULT_IDLE_THRESHOLD_MS;
+let refCount = 0;
+let unlistenIdle: (() => void) | null = null;
+let unlistenLock: (() => void) | null = null;
+let started = false;
+const subscribers = new Set<(s: IdleState) => void>();
 
-  // Track whether monitoring has been started
-  const startedRef = useRef(false);
+function notifyAll() {
+  for (const fn of subscribers) fn(globalState);
+}
+
+async function startMonitor(thresholdMs: number) {
+  if (started) return;
+  started = true;
+  globalThresholdMs = thresholdMs;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try { await invoke("plugin:idlemonitor|stop"); } catch {}
+    console.log(`%c[useUserIdle] starting idlemonitor with threshold=${Math.floor(thresholdMs / 1000)}s`, "color:red;font-weight:bold");
+    await invoke("plugin:idlemonitor|start", {
+      options: { idleThresholdSecs: Math.floor(thresholdMs / 1000) },
+    });
+    console.log(`%c[useUserIdle] idlemonitor started successfully`, "color:red;font-weight:bold");
+  } catch (e) {
+    console.error("useUserIdle: failed to start idlemonitor", e);
+    started = false;
+    return;
+  }
+
+  unlistenIdle = await listen<{ idle: boolean; seconds?: number }>(
+    "system:idle",
+    (event) => {
+      const { idle, seconds } = event.payload;
+      const prevIdle = globalState.idle;
+      globalState = {
+        ...globalState,
+        idle,
+        idleSeconds: seconds ?? (idle ? Math.floor(globalThresholdMs / 1000) : 0),
+      };
+      if (prevIdle !== idle) {
+        console.log(`%c[useUserIdle] idle: ${prevIdle}→${idle} (threshold=${Math.floor(globalThresholdMs / 1000)}s)`, "color:red;font-weight:bold");
+      }
+      notifyAll();
+    }
+  );
+
+  unlistenLock = await listen<{ locked: boolean }>(
+    "system:lock",
+    (event) => {
+      const { locked } = event.payload;
+      const prevLocked = globalState.locked;
+      globalState = {
+        ...globalState,
+        locked,
+        idle: locked ? true : globalState.idle,
+      };
+      if (prevLocked !== locked) {
+        console.log(`%c[useUserIdle] locked: ${prevLocked}→${locked}`, "color:red;font-weight:bold");
+      }
+      notifyAll();
+    }
+  );
+}
+
+async function stopMonitor() {
+  unlistenIdle?.();
+  unlistenLock?.();
+  unlistenIdle = null;
+  unlistenLock = null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("plugin:idlemonitor|stop");
+  } catch {}
+  started = false;
+}
+
+async function restartWithThreshold(thresholdMs: number) {
+  globalThresholdMs = thresholdMs;
+  await stopMonitor();
+  await startMonitor(thresholdMs);
+}
+
+/**
+ * 桌面端系统空闲检测 hook（全局单例）。
+ *
+ * 多个组件调用时共享同一个 idlemonitor 插件实例，
+ * 用引用计数管理生命周期，避免 start/stop 冲突。
+ *
+ * @param thresholdSecs 空闲阈值秒数，0 或 undefined 时用默认 60 秒
+ */
+export function useUserIdle(thresholdSecs?: number): IdleState {
+  const idleThresholdMs = thresholdSecs && thresholdSecs > 0
+    ? thresholdSecs * 1000
+    : DEFAULT_IDLE_THRESHOLD_MS;
+  const [state, setState] = useState<IdleState>(globalState);
+  const thresholdRef = useRef(idleThresholdMs);
+  thresholdRef.current = idleThresholdMs;
 
   useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
+    // 订阅全局状态
+    subscribers.add(setState);
 
-    let unlistenIdle: (() => void) | null = null;
-    let unlistenLock: (() => void) | null = null;
-
-    (async () => {
-      // Start monitoring with 60-second idle threshold
-      // The plugin emits `system:idle` and `system:lock` events
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        // 先 stop 之前可能用错误阈值启动的 monitor
-        try { await invoke("plugin:idlemonitor|stop"); } catch {}
-        // Start the idle monitor plugin with our threshold
-        await invoke("plugin:idlemonitor|start", {
-          options: { idleThresholdSecs: Math.floor(IDLE_THRESHOLD_MS / 1000) },
-        });
-      } catch (e) {
-        console.error("useUserIdle: failed to start idlemonitor", e);
-        return;
-      }
-
-      // Listen for idle state changes
-      unlistenIdle = await listen<{ idle: boolean; seconds?: number }>(
-        "system:idle",
-        (event) => {
-          const { idle, seconds } = event.payload;
-          setState((prev) => ({
-            ...prev,
-            idle,
-            idleSeconds: seconds ?? (idle ? Math.floor(IDLE_THRESHOLD_MS / 1000) : 0),
-          }));
-        }
-      );
-
-      // Listen for screen lock/unlock
-      unlistenLock = await listen<{ locked: boolean }>(
-        "system:lock",
-        (event) => {
-          const { locked } = event.payload;
-          setState((prev) => ({
-            ...prev,
-            locked,
-            // When screen locks, consider user as idle
-            idle: locked ? true : prev.idle,
-          }));
-        }
-      );
-    })();
+    // 首个消费者启动插件
+    refCount++;
+    if (refCount === 1) {
+      startMonitor(idleThresholdMs);
+    } else if (idleThresholdMs !== globalThresholdMs) {
+      // 阈值变了，重启插件
+      restartWithThreshold(idleThresholdMs);
+    }
 
     return () => {
-      unlistenIdle?.();
-      unlistenLock?.();
-      // Stop monitoring when no more consumers
-      (async () => {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("plugin:idlemonitor|stop");
-        } catch {
-          // ignore — app may be shutting down
-        }
-      })();
-      startedRef.current = false;
+      subscribers.delete(setState);
+      refCount--;
+      if (refCount === 0) {
+        stopMonitor();
+      }
     };
-  }, []);
+  }, [idleThresholdMs]);
 
   return state;
 }

@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
         handleStartVpnIntent(intent)
         handleOAuthDeepLink(intent)
         handleAgentApprovalIntent(intent)
+        handleInjectTextIntent(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(
                 android.graphics.Color.TRANSPARENT,
@@ -224,6 +225,95 @@ class MainActivity : ComponentActivity() {
         handleStartVpnIntent(intent)
         handleOAuthDeepLink(intent)
         handleAgentApprovalIntent(intent)
+        handleInjectTextIntent(intent)
+    }
+
+    /**
+     * Debug-only: handle text injection from ADB.
+     * Usage: adb shell am start -n com.termfast.app/.MainActivity --es inject_text "echo hi" --ez enter true
+     *
+     * In release builds, BuildConfig.DEBUG is always false, so this is a no-op.
+     * R8 with isMinifyEnabled=true will strip the entire branch as dead code.
+     */
+    private fun handleInjectTextIntent(intent: android.content.Intent) {
+        if (!BuildConfig.DEBUG) return
+        val text = intent.getStringExtra("inject_text")
+        android.util.Log.i("MainActivity", "INJECT_TEXT: checking intent, inject_text=$text, extras=${intent.extras}")
+        if (text.isNullOrEmpty()) return
+        val appendEnter = intent.getBooleanExtra("enter", false)
+        val targetSessionId = intent.getStringExtra("session")
+        // Decode escape sequences: \n \r \t \xNN \e (ESC) \a (BEL)
+        val decoded = decodeEscapes(text)
+        val payload = if (appendEnter) "$decoded\r" else decoded
+
+        val sessions = com.termfast.app.ui.screen.TerminalSessionManager.getAllSessions()
+        android.util.Log.i("MainActivity", "INJECT_TEXT: found ${sessions.size} sessions: ${sessions.map { it.sessionId to it.connected }}")
+
+        // Try via TerminalSessionManager first (works for SSH + remote with registered sessions)
+        if (sessions.isNotEmpty()) {
+            val sessionId = if (targetSessionId != null) {
+                sessions.find { it.sessionId == targetSessionId }?.sessionId
+            } else {
+                val connected = sessions.filter { it.connected }
+                (if (connected.isNotEmpty()) connected.last() else sessions.last()).sessionId
+            }
+            if (sessionId != null) {
+                android.util.Log.i("MainActivity", "INJECT_TEXT: ${payload.length} chars → session $sessionId")
+                com.termfast.app.ui.screen.TerminalSessionManager.writeToSession(sessionId, payload)
+                return
+            }
+        }
+
+        // Fallback: find any active tunnel manager and send directly
+        val tunnelManager = com.termfast.app.ui.screen.TerminalSessionManager.getActiveTunnelManager()
+        if (tunnelManager != null) {
+            val terminalId = com.termfast.app.ui.screen.TerminalSessionManager.getActiveRemoteTerminalId()
+            android.util.Log.i("MainActivity", "INJECT_TEXT: fallback via tunnel manager, terminalId=$terminalId")
+            val sent = tunnelManager.sendInput(terminalId, payload.toByteArray())
+            android.util.Log.i("MainActivity", "INJECT_TEXT: tunnel sendInput result=$sent")
+            return
+        }
+
+        android.util.Log.w("MainActivity", "INJECT_TEXT: no active session or tunnel manager")
+    }
+
+    /**
+     * Decode escape sequences in the injected text.
+     * Supported: \n \r \t \e (ESC) \a (BEL) \xNN (hex byte) \\ (literal backslash)
+     */
+    private fun decodeEscapes(s: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && i + 1 < s.length) {
+                when (s[i + 1]) {
+                    'n' -> { sb.append('\n'); i += 2 }
+                    'r' -> { sb.append('\r'); i += 2 }
+                    't' -> { sb.append('\t'); i += 2 }
+                    'e' -> { sb.append(0x1B.toChar()); i += 2 }
+                    'a' -> { sb.append(0x07.toChar()); i += 2 }
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    'x' -> {
+                        if (i + 3 < s.length) {
+                            val hex = s.substring(i + 2, i + 4)
+                            try {
+                                sb.append(hex.toInt(16).toChar())
+                                i += 4
+                            } catch (e: NumberFormatException) {
+                                sb.append(c); i++
+                            }
+                        } else {
+                            sb.append(c); i++
+                        }
+                    }
+                    else -> { sb.append(c); i++ }
+                }
+            } else {
+                sb.append(c); i++
+            }
+        }
+        return sb.toString()
     }
 
     private fun handleStartVpnIntent(intent: android.content.Intent) {
@@ -281,6 +371,8 @@ class MainActivity : ComponentActivity() {
         val question = if (parts.size > 2) java.net.URLDecoder.decode(parts[2], "UTF-8") else ""
         // Store for TermFastApp to pick up and navigate
         pendingAgentApproval = Triple(questionId, cli, question)
+        pendingAgentApprovalTick.value++
+        android.util.Log.i("MainActivity", "handleAgentApprovalIntent: set pendingAgentApproval questionId=$questionId cli=$cli tick=${pendingAgentApprovalTick.value}")
         // Clear the extra so it doesn't re-trigger on config change
         intent.removeExtra("navigate_to")
     }
@@ -289,5 +381,9 @@ class MainActivity : ComponentActivity() {
         /** Pending agent approval navigation (questionId, cli, question). Read by TermFastApp. */
         @Volatile
         var pendingAgentApproval: Triple<String, String, String>? = null
+        /** Compose-observable counter that increments each time pendingAgentApproval is set.
+         *  TermFastApp uses this as a LaunchedEffect key so it re-runs even when the
+         *  composable is already in composition (e.g. app already running, notification tap). */
+        val pendingAgentApprovalTick = androidx.compose.runtime.mutableIntStateOf(0)
     }
 }

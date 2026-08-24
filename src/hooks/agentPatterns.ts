@@ -154,6 +154,15 @@ const devinPatterns: CliPatterns = {
         return "Approve command execution?";
       }
     }
+    // Fallback: extract the action from "⏺ <action>" line (e.g. "⏺ Writing /tmp/test.txt")
+    // This is Devin's file edit/write permission dialog format.
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const match = trimmed.match(/^[⏺●]\s+(.+)/);
+      if (match) {
+        return `Approve: ${match[1]}?`;
+      }
+    }
     return null;
   },
   optionsExtractor: (text) => {
@@ -302,8 +311,12 @@ const devinPatterns: CliPatterns = {
 
 const opencodePatterns: CliPatterns = {
   statusPatterns: [
-    // Permission dialog — highest priority
-    { status: "blocked", pattern: /△\s+(?:Permission required|Always allow)\b/, priority: 10 },
+    // Permission dialog and sub-states — highest priority.
+    // Main: "△ Permission required" (with tool description)
+    // Always-allow confirmation: "△ Always allow" (with patterns list)
+    // Reject with message: "△ Reject permission" (with textarea)
+    // All three are blocked states where the agent waits for user input.
+    { status: "blocked", pattern: /△\s+(?:Permission required|Always allow|Reject permission)\b/, priority: 10 },
     // Question/selector dialog: "↑↓ select  enter <verb>  esc dismiss" footer.
     // This appears when OpenCode asks the user a question with numbered options.
     // The verb after "enter" varies: "confirm" (single-select), "toggle"
@@ -333,46 +346,67 @@ const opencodePatterns: CliPatterns = {
   ],
   questionExtractor: (text) => {
     const lines = text.split("\n");
-    // Permission dialog: "△ Permission required" followed by tool description
+    // Permission dialog and sub-states: "△ Permission required", "△ Always allow",
+    // "△ Reject permission" — all followed by a description line.
     for (let i = 0; i < lines.length; i++) {
-      if (/△\s+Permission required/.test(lines[i])) {
+      if (/△\s+(?:Permission required|Always allow|Reject permission)/.test(lines[i])) {
+        const title = lines[i].match(/△\s+(.+)/)?.[1]?.trim() ?? "Permission required";
         // The next non-empty line is usually the tool/command description
         for (let j = i + 1; j < lines.length && j < i + 5; j++) {
           const trimmed = lines[j].trim();
           if (trimmed && !/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(trimmed)) {
-            return `Permission required: ${trimmed}`;
+            return `${title}: ${trimmed}`;
           }
         }
-        return "Permission required";
+        return title;
       }
     }
     // Question/selector dialog: find the question text above the numbered options.
     // The selector footer "↑↓ select ... esc dismiss" identifies the dialog.
     // The question is the first non-empty, non-box-drawing line above the
-    // first numbered option (1. 2. 3. ...).
+    // first numbered option (1. 2. 3. ...) of the CURRENT question.
     const selectorIdx = lines.findIndex((l) => /↑↓\s+select.*esc\s+dismiss/.test(l));
     if (selectorIdx >= 0) {
-      // Find ALL numbered option lines above the footer.
-      // Format: "  ┃  1. Rust" (box-drawing char + spaces + number + text)
-      const optionIdxs: number[] = [];
-      for (let i = 0; i < selectorIdx; i++) {
+      // Scan upward from selectorIdx to find the first (top-most) option of
+      // the current question's option block. Skip secondary lines (paths,
+      // descriptions, version info) that appear between the footer and options.
+      let firstOptionIdx = -1;
+      for (let i = selectorIdx - 1; i >= 0; i--) {
         if (/^\s*[┃│║]?\s*\d+\.\s+\S/.test(lines[i])) {
-          optionIdxs.push(i);
+          firstOptionIdx = i;
+        } else {
+          const trimmed = lines[i].trim();
+          if (!trimmed) continue; // skip empty lines
+          if (/^[┃│║┌┐└┘├┤┬┴┼─━]+$/.test(trimmed)) continue; // box-only
+          // Secondary lines (path/description/version starting with ┃) — skip
+          if (/^[┃│║]/.test(trimmed)) {
+            const content = trimmed.replace(/^[┃│║]\s*/, "").trim();
+            const isTabRow = /\bConfirm\b/.test(content) && /\s{2,}/.test(content);
+            if (isTabRow) break; // tab row = boundary
+            continue; // path/description/version — skip
+          }
+          break; // non-box content = boundary
         }
       }
-      if (optionIdxs.length > 0) {
-        const firstOptionIdx = optionIdxs[0];
-        // Walk upward from firstOptionIdx-1 to find the question text
+      if (firstOptionIdx >= 0) {
+        // Walk upward from firstOptionIdx-1 to find the question text.
+        // Skip box-only lines and empty lines. The first content line
+        // (starting with ┃) that isn't a tab row is the question text.
+        // Description lines (e.g. "  ┃     后端") only appear BETWEEN
+        // options, never above the first option, so any ┃ content line
+        // above the first option is the question.
         for (let i = firstOptionIdx - 1; i >= 0; i--) {
           const trimmed = lines[i].trim();
-          // Strip leading box-drawing chars for content check
+          if (!trimmed) continue; // skip empty
+          if (/^[┃│║┌┐└┘├┤┬┴┼─━]+$/.test(trimmed)) continue; // box-only
+          // Strip leading box-drawing chars for content
           const content = trimmed.replace(/^[┃│║]\s*/, "").trim();
-          // Skip empty lines, box-drawing-only lines, and tab-label lines
-          if (content &&
-              !/^[┃│║┌┐└┘├┤┬┴┼─━]+$/.test(trimmed) &&
-              !/^\s*$/.test(content)) {
-            return content;
-          }
+          if (!content) continue;
+          // Check if it's a tab row (boundary — no question text above)
+          const isTabRow = /\bConfirm\b/.test(content) && /\s{2,}/.test(content);
+          if (isTabRow) break;
+          // Any other content line (┃-prefixed or not) is the question text
+          return content;
         }
       }
       return "OpenCode is asking a question";
@@ -397,18 +431,64 @@ const opencodePatterns: CliPatterns = {
         return ["Allow once", "Allow always", "Reject"];
       }
     }
+    // "Always allow" sub-state: Confirm/Cancel buttons (not numbered options).
+    // Triggered when user clicks "Allow always" on the main permission dialog.
+    for (const line of lines) {
+      if (/△\s+Always allow/.test(line)) {
+        return ["Confirm", "Cancel"];
+      }
+    }
+    // "Reject permission" sub-state: textarea for rejection message, no
+    // selectable options. Return null — the overlay shows the question text
+    // only, and the user interacts with the terminal directly.
+    for (const line of lines) {
+      if (/△\s+Reject permission/.test(line)) {
+        return null;
+      }
+    }
     // Question/selector dialog: extract numbered options (1. Rust  2. Python  ...)
     // Format: "  ┃  1. Rust" (single-select) or "  ┃  1. [ ] 单选" (multi-select)
     // Allow box-drawing chars before the number, strip [ ]/[✓] checkbox prefix
     const selectorIdx = lines.findIndex((l) => /↑↓\s+select.*esc\s+dismiss/.test(l));
     if (selectorIdx >= 0) {
       const options: string[] = [];
-      for (let i = 0; i < selectorIdx; i++) {
+      // Scan upward from selectorIdx-1 to only capture the current question's
+      // options. This prevents stale options from a previous (esc-dismissed)
+      // question being mixed in — esc doesn't clear the screen, so old
+      // numbered lines may still be visible above the current dialog.
+      //
+      // Skip "secondary" lines that appear between/after options:
+      //  - Path line: "  ┃   /Volumes/2t/code/..." (working dir shown in footer area)
+      //  - Description line: "  ┃     后端" (indented sub-description under an option)
+      //  - Version line: "  ┃   • OpenCode 1.18.21"
+      // These lines start with box-drawing char (┃) but aren't options, question
+      // text, or tab rows. We only break on "boundary" lines: question text,
+      // tab row, or non-box-drawing content.
+      for (let i = selectorIdx - 1; i >= 0; i--) {
         const m = lines[i].match(/^\s*[┃│║]?\s*(\d+)\.\s+(.+)$/);
         if (m) {
           // Strip [ ] or [✓] checkbox prefix from multi-select options
           const label = m[2].replace(/^\[[\s✓]\]\s*/, "").trim();
-          options.push(`${m[1]}. ${label}`);
+          options.unshift(`${m[1]}. ${label}`);
+        } else {
+          const trimmed = lines[i].trim();
+          if (!trimmed) continue; // skip empty lines
+          // Box-drawing-only lines (┃ borders) — skip
+          if (/^[┃│║┌┐└┘├┤┬┴┼─━]+$/.test(trimmed)) continue;
+          // Secondary lines: start with ┃ but are paths, descriptions, or
+          // version info (not options, not question text, not tab row).
+          // These appear between the footer and the options, and between
+          // options (as sub-descriptions). Skip them to reach the options.
+          if (/^[┃│║]/.test(trimmed)) {
+            // Check if it's a tab row (contains "Confirm" with multiple labels)
+            const content = trimmed.replace(/^[┃│║]\s*/, "").trim();
+            const isTabRow = /\bConfirm\b/.test(content) && /\s{2,}/.test(content);
+            if (isTabRow) break; // tab row = boundary above options
+            // Otherwise it's a path/description/version line — skip it
+            continue;
+          }
+          // Non-box-drawing content line (question text or stale content)
+          break;
         }
       }
       if (options.length > 0) return options;
@@ -474,7 +554,10 @@ const claudeCodePatterns: CliPatterns = {
     // This appears when Claude Code asks for permission to run a command.
     // No "Enter to select" or "↑/↓ to navigate" — just Esc/Tab/ctrl+e.
     // Screen scrape may eat spaces, so use \s* (not \s+).
-    { status: "blocked", pattern: /Esc\s*to\s*cancel.*Tab\s*to\s*amend.*ctrl\+e\s*to\s*explain/i, priority: 10 },
+    // Note: "ctrl+e to explain" may be absent in some dialog variants
+    // (e.g. Write/Create file dialog only has "Esc to cancel · Tab to amend").
+    // Match the shorter form as well to avoid missing blocked state.
+    { status: "blocked", pattern: /Esc\s*to\s*cancel.*Tab\s*to\s*amend/i, priority: 10 },
     // Multi-question Submit tab: tab row "←  ☐ label  ...  ✔ Submit  →"
     // On the Submit tab, the footer may not include "Enter to select"
     // (there are no options to select). Match the tab row itself as a
@@ -516,11 +599,12 @@ const claudeCodePatterns: CliPatterns = {
       return "Would you like to proceed?";
     }
     // Permission dialog (Claude Code v2.1+):
-    // "Do you want to proceed?" (screen scrape may eat spaces: "Doyouwanttoproceed?")
-    // Footer: "Esc to cancel · Tab to amend · ctrl+e to explain"
+    // "Do you want to proceed?" or "Do you want to create <file>?" etc.
+    // Screen scrape may eat spaces: "Doyouwanttoproceed?"
+    // Footer: "Esc to cancel · Tab to amend" (with or without "ctrl+e to explain")
     for (const line of lines) {
-      if (/Do\s*you\s*want\s*to\s*proceed\?/i.test(line)) {
-        return "Do you want to proceed?";
+      if (/Do\s*you\s*want\s*to\s+\S.*\?/i.test(line)) {
+        return line.trim();
       }
     }
     // Trust dialog
@@ -634,10 +718,11 @@ const claudeCodePatterns: CliPatterns = {
     }
     // Permission dialog (Claude Code v2.1+):
     // Footer: "Esc to cancel · Tab to amend · ctrl+e to explain"
+    // Shorter form: "Esc to cancel · Tab to amend" (Write/Create file dialog)
     // Options: "❯ 1. Yes", "2. Yes, and always allow...", "3. No"
     // Screen scrape may eat spaces (e.g. "Doyouwanttoproceed?", "❯1.Yes")
     const permFooterIdx = lines.findIndex((l) =>
-      /Esc\s*to\s*cancel.*Tab\s*to\s*amend.*ctrl\+e\s*to\s*explain/i.test(l));
+      /Esc\s*to\s*cancel.*Tab\s*to\s*amend/i.test(l));
     if (permFooterIdx >= 0) {
       const options: string[] = [];
       const optionPattern = /^\s*[❯>]?\s*(\d+)\.\s*(.+)/;
@@ -797,8 +882,12 @@ const codexPatterns: CliPatterns = {
     { status: "blocked", pattern: /Do you trust the contents of this directory\?/i, priority: 10 },
     // TUI progress spinner: "• Working (0s • esc to interrupt)"
     { status: "working", pattern: /•.*\(\d+s\s*•\s*esc\s+to\s+interrupt\)/, priority: 8 },
+    // TUI working spinner: "• Working" or "• Thinking" (without timer — new TUI)
+    { status: "working", pattern: /^•\s+(?:Working|Thinking)\b/im, priority: 7 },
     // Idle prompt: "❯" or "›" or "codex>" (empty prompt only)
     { status: "idle", pattern: /^\s*(?:❯|›|codex>)\s*$/m, priority: 5 },
+    // Codex idle prompt: "› Ask Codex to do anything"
+    { status: "idle", pattern: /›\s*Ask\s+Codex\s+to\s+do\s+anything/i, priority: 5 },
   ],
   questionExtractor: (text) => {
     const lines = text.split("\n");

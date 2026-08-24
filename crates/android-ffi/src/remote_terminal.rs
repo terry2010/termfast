@@ -331,7 +331,7 @@ pub fn send_input(pairing_id: &str, terminal_id: u32, data: &[u8]) -> Result<Vec
 }
 
 /// Create and encrypt an INPUT_ANSWER frame (agent popup answer).
-/// payload = JSON {question_id, answer, source, cli, option_index, options, is_multi_select, is_multi_question}
+/// payload = JSON {question_id, answer, source, cli, option_index, options, is_multi_select, is_multi_question, active_tab_index, total_tabs}
 /// E2: source="phone" tells desktop Rust to emit event to frontend (not write PTY directly)
 pub fn send_input_answer(
     pairing_id: &str,
@@ -343,9 +343,12 @@ pub fn send_input_answer(
     options: &[String],
     is_multi_select: bool,
     is_multi_question: bool,
+    active_tab_index: i32,
+    total_tabs: i32,
 ) -> Result<Vec<u8>, String> {
     encrypt_outgoing(pairing_id, Frame::input_answer_from_phone(
         terminal_id, question_id, answer, option_index, cli, options, is_multi_select, is_multi_question,
+        active_tab_index, total_tabs,
     ))
 }
 

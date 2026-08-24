@@ -3,11 +3,12 @@ package com.termfast.app.data
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.*
 import okio.ByteString
-import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
@@ -198,7 +199,12 @@ class TunnelConnection(
         updateState(TunnelState.Connecting)
 
         val wsUrl = if (config.relayUrl.startsWith("ws://") || config.relayUrl.startsWith("wss://")) {
-            config.relayUrl
+            // Already a WebSocket URL — ensure it has the /tunnel path
+            if (config.relayUrl.contains("/tunnel")) {
+                config.relayUrl
+            } else {
+                config.relayUrl + "/tunnel"
+            }
         } else {
             config.relayUrl.replace("http", "ws") + "/tunnel"
         }
@@ -213,14 +219,16 @@ class TunnelConnection(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (myGen != generation) return
                 // Send connect control message.
-                // Security: build JSON with JSONObject to ensure pairingId is
-                // properly escaped (defense-in-depth; pairingId is normally a
-                // UUID, but be safe against injection).
-                val connectMsg = JSONObject()
-                    .put("type", "connect")
-                    .put("pairing_id", config.pairingId)
-                    .put("role", "mobile")
-                    .toString()
+                // Security: build JSON with kotlinx.serialization to ensure
+                // pairingId is properly escaped (defense-in-depth; pairingId
+                // is normally a UUID, but be safe against injection).
+                // Note: avoid org.json.JSONObject — its put() returns null in
+                // unit tests (stub), causing NPE on chained calls.
+                val connectMsg = buildJsonObject {
+                    put("type", "connect")
+                    put("pairing_id", config.pairingId)
+                    put("role", "mobile")
+                }.toString()
                 webSocket.send(connectMsg)
                 updateState(TunnelState.WaitingForPeer)
                 connected.complete(true)

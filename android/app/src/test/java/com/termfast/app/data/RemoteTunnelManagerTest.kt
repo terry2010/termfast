@@ -90,10 +90,24 @@ class MockRemoteTunnelFfi : RemoteTunnelFfi {
         return desktopPairResult
     }
 
-    override fun sendNewTerminal(pairingId: String, shell: String, name: String): ByteArray? {
+    override fun sendNewTerminal(pairingId: String, shell: String, name: String, serverId: String): ByteArray? {
         newTerminalCalls.add(Triple(pairingId, shell, name))
         return newTerminalResult
     }
+
+    override fun sendInputAnswer(
+        pairingId: String,
+        terminalId: Int,
+        questionId: String,
+        answer: String,
+        optionIndex: Int,
+        cli: String,
+        options: Array<String>,
+        isMultiSelect: Boolean,
+        isMultiQuestion: Boolean,
+        activeTabIndex: Int,
+        totalTabs: Int,
+    ): ByteArray? = null
 
     override fun sendCloseTerminal(pairingId: String, terminalId: Int): ByteArray? {
         closeTerminalCalls.add(pairingId to terminalId)
@@ -358,7 +372,20 @@ class RemoteTunnelManagerTest {
             override fun sendInput(pairingId: String, terminalId: Int, data: ByteArray) = null
             override fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int) = null
             override fun sendDesktopPair(pairingId: String, payloadJson: String): ByteArray? = null
-            override fun sendNewTerminal(pairingId: String, shell: String, name: String): ByteArray? = null
+            override fun sendNewTerminal(pairingId: String, shell: String, name: String, serverId: String): ByteArray? = null
+            override fun sendInputAnswer(
+                pairingId: String,
+                terminalId: Int,
+                questionId: String,
+                answer: String,
+                optionIndex: Int,
+                cli: String,
+                options: Array<String>,
+                isMultiSelect: Boolean,
+                isMultiQuestion: Boolean,
+                activeTabIndex: Int,
+                totalTabs: Int,
+            ): ByteArray? = null
             override fun sendCloseTerminal(pairingId: String, terminalId: Int): ByteArray? = null
             override fun sendTriggerListRequest(pairingId: String): ByteArray? = null
             override fun sendTriggerExec(pairingId: String, triggerJson: String): ByteArray? = null

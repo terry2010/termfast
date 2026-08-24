@@ -26,6 +26,20 @@ describe("extractQuestion — Devin", () => {
     expect(extractQuestion("devin", screen)).toBe("Do you want to continue?");
   });
 
+  it("extracts action from ⏺ line in file-write permission dialog", () => {
+    const screen = [
+      "❭ create a test file in /tmp",
+      " ⏺ Writing /tmp/test.txt",
+      " └ 1 +  This is a test file.",
+      "❭ 1 Yes  (Approve once)",
+      "· 2 Yes, allow edits in /private/tmp",
+      "· 3 Yes, always allow edits in /private/tmp",
+      "· 4 No",
+      "↑↓ select · ↵ confirm · esc cancel",
+    ].join("\n");
+    expect(extractQuestion("devin", screen)).toBe("Approve: Writing /tmp/test.txt?");
+  });
+
   it("returns null when no question found", () => {
     expect(extractQuestion("devin", "just some output")).toBeNull();
   });
@@ -76,6 +90,53 @@ describe("extractQuestion — OpenCode", () => {
     const screen = "△ Permission required\n\n";
     expect(extractQuestion("opencode", screen)).toBe("Permission required");
   });
+
+  it("extracts question text from multi-question dialog with path and description lines", () => {
+    // Real screen capture: multi-question dialog with working-dir path line
+    // and option description lines (后端/前端/脚本) between options and footer.
+    const screen = [
+      "  ┃",
+      "  ┃   多选   Confirm",
+      "  ┃",
+      "  ┃  选择你喜欢的语言（可多选） (select all that apply)",
+      "  ┃",
+      "  ┃  1. [ ] Go",
+      "  ┃     后端",
+      "  ┃  2. [ ] TypeScript",
+      "  ┃     前端",
+      "  ┃  3. [ ] Python",
+      "  ┃     脚本/后端",
+      "  ┃  4. [ ] Type your own answer",
+      "  ┃                                                                                              /Volumes/2t/code/termfast-all",
+      "  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss",
+      "  ┃                                                                                              • OpenCode 1.18.21",
+    ].join("\n");
+    expect(extractQuestion("opencode", screen)).toBe("选择你喜欢的语言（可多选） (select all that apply)");
+  });
+
+  it("extracts Always allow sub-state with patterns description", () => {
+    // Sub-state after user clicks "Allow always" — shows patterns to confirm.
+    const screen = [
+      "  △ Always allow",
+      "  This will allow the following patterns until OpenCode is restarted",
+      "  - bash npm *",
+      "  - bash npx *",
+      "    Confirm   Cancel",
+      "  ⇆ select  enter confirm",
+    ].join("\n");
+    expect(extractQuestion("opencode", screen)).toBe("Always allow: This will allow the following patterns until OpenCode is restarted");
+  });
+
+  it("extracts Reject permission sub-state with description", () => {
+    // Sub-state after user clicks "Reject" (session has parentID).
+    const screen = [
+      "  △ Reject permission",
+      "  Tell OpenCode what to do differently",
+      "  [textarea]",
+      "  enter confirm  esc cancel",
+    ].join("\n");
+    expect(extractQuestion("opencode", screen)).toBe("Reject permission: Tell OpenCode what to do differently");
+  });
 });
 
 describe("extractOptions — OpenCode", () => {
@@ -92,9 +153,81 @@ describe("extractOptions — OpenCode", () => {
   it("returns null when no permission dialog", () => {
     expect(extractOptions("opencode", "just working")).toBeNull();
   });
+
+  it("returns Confirm/Cancel for Always allow sub-state", () => {
+    const screen = [
+      "  △ Always allow",
+      "  This will allow the following patterns until OpenCode is restarted",
+      "  - bash npm *",
+      "    Confirm   Cancel",
+      "  ⇆ select  enter confirm",
+    ].join("\n");
+    expect(extractOptions("opencode", screen)).toEqual(["Confirm", "Cancel"]);
+  });
+
+  it("returns null for Reject permission sub-state (textarea, no options)", () => {
+    const screen = [
+      "  △ Reject permission",
+      "  Tell OpenCode what to do differently",
+      "  [textarea]",
+      "  enter confirm  esc cancel",
+    ].join("\n");
+    expect(extractOptions("opencode", screen)).toBeNull();
+  });
+
+  it("extracts numbered options from multi-question dialog with path and description lines", () => {
+    // Real screen capture: path line and description lines between options
+    // and footer must not break the upward scan.
+    const screen = [
+      "  ┃",
+      "  ┃   多选   Confirm",
+      "  ┃",
+      "  ┃  选择你喜欢的语言（可多选） (select all that apply)",
+      "  ┃",
+      "  ┃  1. [ ] Go",
+      "  ┃     后端",
+      "  ┃  2. [ ] TypeScript",
+      "  ┃     前端",
+      "  ┃  3. [ ] Python",
+      "  ┃     脚本/后端",
+      "  ┃  4. [ ] Type your own answer",
+      "  ┃                                                                                              /Volumes/2t/code/termfast-all",
+      "  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss",
+      "  ┃                                                                                              • OpenCode 1.18.21",
+    ].join("\n");
+    expect(extractOptions("opencode", screen)).toEqual([
+      "1. Go",
+      "2. TypeScript",
+      "3. Python",
+      "4. Type your own answer",
+    ]);
+  });
 });
 
 // ── OpenCode question/selector dialog tests ──────────────────────────────────
+
+describe("detectStatusFromScreen — OpenCode permission sub-states", () => {
+  it("detects blocked for Always allow sub-state", () => {
+    const screen = [
+      "  △ Always allow",
+      "  This will allow the following patterns until OpenCode is restarted",
+      "  - bash npm *",
+      "    Confirm   Cancel",
+      "  ⇆ select  enter confirm",
+    ].join("\n");
+    expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
+  });
+
+  it("detects blocked for Reject permission sub-state", () => {
+    const screen = [
+      "  △ Reject permission",
+      "  Tell OpenCode what to do differently",
+      "  [textarea]",
+      "  enter confirm  esc cancel",
+    ].join("\n");
+    expect(detectStatusFromScreen("opencode", screen)).toBe("blocked");
+  });
+});
 
 describe("detectStatusFromScreen — OpenCode selector dialog", () => {
   it("detects blocked for single-select footer (enter confirm)", () => {
@@ -756,6 +889,54 @@ describe("Claude Code — permission dialog (v2.1+)", () => {
 
   it("is not multi-question", () => {
     expect(detectMultiQuestion("claude-code", permScreen)).toBe(false);
+  });
+});
+
+describe("Claude Code — Create file dialog (short footer)", () => {
+  // Create file / Write dialog has a shorter footer:
+  // "Esc to cancel · Tab to amend" (no "ctrl+e to explain")
+  // Question: "Do you want to create test-file.txt?"
+  const createScreen = [
+    "⏺ Write(/tmp/test-file.txt)",
+    "───────────────────────────────────────────────────────────",
+    " Create file",
+    " ../../../../tmp/test-file.txt",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    "  1 # Test File",
+    "  2",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " Do you want to create test-file.txt?",
+    " ❯ 1. Yes",
+    "   2. Yes, allow all edits in tmp/ during this session (shift+tab)",
+    "   3. No",
+    " Esc to cancel · Tab to amend",
+  ].join("\n");
+
+  it("detects blocked status from short permission footer", () => {
+    const status = detectStatusFromScreen("claude-code", createScreen);
+    expect(status).toBe("blocked");
+  });
+
+  it("extracts question from Create file dialog", () => {
+    const q = extractQuestion("claude-code", createScreen);
+    expect(q).toBe("Do you want to create test-file.txt?");
+  });
+
+  it("extracts all 3 options from Create file dialog", () => {
+    const opts = extractOptions("claude-code", createScreen);
+    expect(opts).toEqual([
+      "1. Yes",
+      "2. Yes, allow all edits in tmp/ during this session (shift+tab)",
+      "3. No",
+    ]);
+  });
+
+  it("is not multi-select", () => {
+    expect(detectMultiSelect("claude-code", createScreen)).toBe(false);
+  });
+
+  it("is not multi-question", () => {
+    expect(detectMultiQuestion("claude-code", createScreen)).toBe(false);
   });
 });
 

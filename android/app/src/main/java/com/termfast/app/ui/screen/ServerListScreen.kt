@@ -81,6 +81,7 @@ fun ServerListScreen(navController: NavController) {
     var servers by remember { mutableStateOf<List<ServerConfig>>(emptyList()) }
     var statuses by remember { mutableStateOf<Map<String, ServerStatus>>(emptyMap()) }
     var loading by remember { mutableStateOf(true) }
+    val proxyFeaturesEnabled = remember { com.termfast.app.data.RustRepository.getConfig()?.general?.dev_proxy_enabled ?: true }
     var vpnRunning by remember { mutableStateOf(SshVpnService.isRunning(context)) }
     var vpnStarting by remember { mutableStateOf(SshVpnService.isStarting(context)) }
     var vpnFailed by remember { mutableStateOf(SshVpnService.isFailed(context)) }
@@ -101,7 +102,9 @@ fun ServerListScreen(navController: NavController) {
     var onlineStatus by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     val isLoggedIn = remember(remoteVersion) { PairingStore.getToken() != null }
     val remotePairings = remember(remoteVersion) {
-        if (isLoggedIn) PairingStore.getAllPairings() else emptyList()
+        val pairings = if (isLoggedIn) PairingStore.getAllPairings() else emptyList()
+        android.util.Log.i("ServerList", "remotePairings recomputed: version=$remoteVersion, isLoggedIn=$isLoggedIn, count=${pairings.size}")
+        pairings
     }
     val hasRemoteConfig = remotePairings.isNotEmpty()
 
@@ -334,6 +337,7 @@ fun ServerListScreen(navController: NavController) {
             if (content != null) {
                 savedStateHandle.remove<String>("qr_result")
                 val token = PairingStore.getToken()
+                android.util.Log.i("ServerList", "QR result received, token=${token != null}, content=${content.take(80)}")
                 if (token == null) {
                     Toast.makeText(context, "请先在设备配对页面登录", Toast.LENGTH_SHORT).show()
                     return@collect
@@ -344,6 +348,7 @@ fun ServerListScreen(navController: NavController) {
                     val pairingKey = json.optString("pairing_key", "")
                     val relayUrl = json.optString("relay_url", "")
                     val desktopName = json.optString("desktop_name", "")
+                    android.util.Log.i("ServerList", "QR parsed: pairingId=$pairingId, key=${pairingKey.length}, relayUrl=$relayUrl, desktopName=$desktopName")
                     scope.launch {
                         try {
                             val result = withContext(Dispatchers.IO) {
@@ -351,12 +356,14 @@ fun ServerListScreen(navController: NavController) {
                                 PairingApi.completePairing(pairingId, "phone-pubkey", deviceName, deviceName, token)
                             }
                             val status = result.optString("status")
+                            val jwt = result.optString("pairing_jwt")
+                            val pairingRefreshToken = result.optString("refresh_token", "")
+                            android.util.Log.i("ServerList", "completePairing result: status=$status, jwt=${jwt.length}, key=${pairingKey.length}, relayUrl=$relayUrl")
                             if (status == "completed") {
-                                val jwt = result.optString("pairing_jwt")
-                                val pairingRefreshToken = result.optString("refresh_token", "")
                                 val updatedDevices = withContext(Dispatchers.IO) { PairingApi.listDevices() }
                                 val matchedDev = updatedDevices.find { it.pairingId == pairingId }
                                 val desktopDeviceId = matchedDev?.desktopDeviceId ?: ""
+                                android.util.Log.i("ServerList", "Saving pairing: jwt=${jwt.isNotEmpty()}, key=${pairingKey.isNotEmpty()}, relay=${relayUrl.isNotEmpty()}")
                                 if (jwt.isNotEmpty() && pairingKey.isNotEmpty() && relayUrl.isNotEmpty()) {
                                     PairingStore.savePairing(
                                         com.termfast.app.data.RemoteTunnelConfig(
@@ -481,7 +488,7 @@ fun ServerListScreen(navController: NavController) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-        } else if (servers.isEmpty()) {
+        } else if (servers.isEmpty() && remotePairings.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding)) {
                 EmptyServerState(modifier = Modifier.fillMaxSize())
                 // Floating buttons — left: interconnect + scan, right: add server
@@ -712,6 +719,7 @@ fun ServerListScreen(navController: NavController) {
                             isDragging = isDragging,
                             server = server,
                             status = statuses[server.id],
+                            proxyFeaturesEnabled = proxyFeaturesEnabled,
                             vpnRunning = cardVpnRunning,
                             vpnStarting = cardVpnStarting,
                             vpnFailed = cardVpnFailed,
@@ -1223,6 +1231,7 @@ private fun ServerCard(
     isDragging: Boolean = false,
     server: ServerConfig,
     status: ServerStatus?,
+    proxyFeaturesEnabled: Boolean = true,
     vpnRunning: Boolean,
     vpnStarting: Boolean,
     vpnFailed: Boolean = false,

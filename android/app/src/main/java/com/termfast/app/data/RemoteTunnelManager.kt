@@ -46,6 +46,8 @@ interface RemoteTunnelFfi {
         options: Array<String>,
         isMultiSelect: Boolean,
         isMultiQuestion: Boolean,
+        activeTabIndex: Int = -1,
+        totalTabs: Int = 0,
     ): ByteArray?
 
     /** Create + encrypt RESIZE. Returns ciphertext or null on error. */
@@ -113,9 +115,12 @@ object DefaultRemoteTunnelFfi : RemoteTunnelFfi {
         options: Array<String>,
         isMultiSelect: Boolean,
         isMultiQuestion: Boolean,
+        activeTabIndex: Int,
+        totalTabs: Int,
     ): ByteArray? =
         RustRepository.remoteTunnelSendInputAnswer(
             pairingId, terminalId, questionId, answer, optionIndex, cli, options, isMultiSelect, isMultiQuestion,
+            activeTabIndex, totalTabs,
         )
 
     override fun sendResize(pairingId: String, terminalId: Int, cols: Int, rows: Int): ByteArray? =
@@ -203,8 +208,9 @@ class RemoteTunnelManager(
             android.util.Log.i("RemoteTunnel", "onPeerDisconnected")
             _transportState.value = TunnelState.Disconnected
             _protocolReady.value = false
-            // Remove all remote sessions for this pairing — old terminal_ids
-            // are stale after desktop restart/disconnect.
+            // Mark all remote sessions for this pairing as disconnected (preserved
+            // for re-attach). The desktop's terminal_id mapping is persistent
+            // (IdMap), so the same terminal_id will be valid after reconnect.
             TerminalSessionManager.markRemoteSessionsDisconnected(pairingId)
             // Emit event so ServerListScreen can refresh badge counts.
             com.termfast.app.data.RustRepository.emitEvent(
@@ -404,10 +410,13 @@ class RemoteTunnelManager(
         options: Array<String>,
         isMultiSelect: Boolean,
         isMultiQuestion: Boolean,
+        activeTabIndex: Int = -1,
+        totalTabs: Int = 0,
     ): Boolean {
         if (!_protocolReady.value) return false
         val ct = ffi.sendInputAnswer(
             pairingId, terminalId, questionId, answer, optionIndex, cli, options, isMultiSelect, isMultiQuestion,
+            activeTabIndex, totalTabs,
         ) ?: return false
         return sendRaw(ct)
     }

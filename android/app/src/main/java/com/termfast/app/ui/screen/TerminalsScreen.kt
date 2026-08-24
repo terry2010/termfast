@@ -166,6 +166,11 @@ fun TerminalsScreen(
                     // Refresh the UI snapshot to reflect the changes.
                     refresh()
                 }
+                is RustEvent.RemoteTerminalError -> {
+                    // Tunnel error / peer disconnected — sessions may have been
+                    // marked as disconnected. Refresh to update the UI.
+                    refresh()
+                }
                 else -> {}
             }
         }

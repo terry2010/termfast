@@ -98,7 +98,8 @@ export function detectCliFromScreen(screenText: string): CliType {
   }
   // Claude Code: permission dialog footer (v2.1+)
   // "Esc to cancel · Tab to amend · ctrl+e to explain"
-  if (/Esc\s*to\s*cancel.*Tab\s*to\s*amend.*ctrl\+e\s*to\s*explain/i.test(screenText)) {
+  // Shorter form "Esc to cancel · Tab to amend" also valid (Write/Create dialog).
+  if (/Esc\s*to\s*cancel.*Tab\s*to\s*amend/i.test(screenText)) {
     return "claude-code";
   }
   // Claude Code: multi-question tab row (v2.1+)
@@ -120,6 +121,14 @@ export function detectCliFromScreen(screenText: string): CliType {
 
   // Codex: "❯" or "›" prompt + "esc to interrupt" in progress
   if (/•.*\(\d+s\s*•\s*esc\s+to\s+interrupt\)/.test(screenText)) {
+    return "codex";
+  }
+  // Codex: startup banner ">_ OpenAI Codex (vX.Y.Z)"
+  if (/>_\s+OpenAI\s+Codex/i.test(screenText)) {
+    return "codex";
+  }
+  // Codex: idle prompt "› Ask Codex to do anything"
+  if (/›\s*Ask\s+Codex\s+to\s+do\s+anything/i.test(screenText)) {
     return "codex";
   }
   // Codex: "codex>" prompt

@@ -415,6 +415,9 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     agentCli,
     agentQuestion,
     agentOptions,
+    isMultiQuestion: agentIsMultiQuestion,
+    activeTabIndex: agentActiveTabIndex,
+    totalTabs: agentTotalTabs,
     sendToBackend: remoteSendToBackend,
   });
   // Ref mirror of remoteQuestionId for use inside async callbacks
@@ -1907,12 +1910,21 @@ export function TerminalView({ sessionId, serverId, active, initialOutput, rzAva
     // the desktop PTY is resized to mobile dimensions. Re-fit xterm.js
     // so the terminal view matches the new PTY size (avoids stale TUI
     // content lingering in the background).
+    // Special case: cols=0 rows=0 means the mobile client left the terminal
+    // screen — re-fit to desktop container dimensions (restore original size).
     let unlistenRemoteResized: UnlistenFn | undefined;
     listen<{ sessionId: string; cols: number; rows: number }>("terminal:remote_resized", (event) => {
       if (event.payload.sessionId === sessionIdRef.current) {
         const { cols, rows } = event.payload;
-        // Resize xterm.js to match the new PTY dimensions
-        try { term.resize(cols, rows); } catch { /* container not visible */ }
+        if (cols === 0 && rows === 0) {
+          // Mobile left terminal screen — restore desktop dimensions
+          requestAnimationFrame(() => {
+            try { fitRef.current?.fit(); } catch { /* container not visible */ }
+          });
+        } else {
+          // Resize xterm.js to match the new PTY dimensions
+          try { term.resize(cols, rows); } catch { /* container not visible */ }
+        }
       }
     }).then((fn) => { unlistenRemoteResized = fn; });
 
