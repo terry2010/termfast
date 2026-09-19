@@ -28,7 +28,8 @@ package com.termfast.app.agent
  *   - Cell.getBold(): Boolean
  *   - Cell.getReverse(): Boolean
  *   - Cell.getUnderline(): Int
- *   - Cell.getFgColor-0d7_KjU(): Long (inline class, accessed via raw long)
+ *   - Cell.getFgColor-0d7_KjU(): Long (Compose Color value class — sRGB packs
+ *     A<<56|R<<48|G<<40|B<<32; decoded by ScreenScraper.decodeColorChannels)
  */
 
 /** Plain data class for a scraped screen line (no termlib dependency). */
@@ -242,7 +243,8 @@ object TermlibAccess {
     /**
      * Get the fg color of a cell.
      * The termlib Cell uses an inline class for fgColor (getFgColor-0d7_KjU).
-     * The raw long value encodes RGB in the lower 24 bits.
+     * The raw long is an androidx.compose.ui.graphics.Color — sRGB packs
+     * A<<56|R<<48|G<<40|B<<32 (see ScreenScraper.decodeColorChannels).
      */
     private fun getCellFgColor(cell: Any): Long {
         return try {

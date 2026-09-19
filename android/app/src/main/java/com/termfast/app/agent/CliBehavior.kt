@@ -384,11 +384,11 @@ object CodexBehavior : CliBehavior {
         dismiss = !ctx.isMultiQuestion,
     )
     override fun toggle(option: String, index: Int, ctx: BehaviorContext) = ActionResult(
-        steps = listOf(KeystrokeStep(" ")),
-        dismiss = false,
+        steps = listOf(KeystrokeStep(AnswerSubmitter.toggleCodexOption(index, ctx.cursorPos))),
+        dismiss = false, newCursorPos = index,
     )
     override fun submitMultiSelect(ctx: BehaviorContext) = ActionResult(
-        steps = listOf(KeystrokeStep("\r")), dismiss = true,
+        steps = listOf(KeystrokeStep(AnswerSubmitter.submitCodexMultiSelect())), dismiss = true,
     )
     override fun textAnswer(option: String, text: String, index: Int, ctx: BehaviorContext) = ActionResult(
         steps = listOf(
@@ -407,7 +407,8 @@ object CodexBehavior : CliBehavior {
         dismiss = false, newCursorPos = 0,
     )
     override fun confirm(hasAnswers: Boolean, ctx: BehaviorContext) = ActionResult(
-        steps = listOf(KeystrokeStep("\r")), dismiss = true,
+        steps = listOf(KeystrokeStep(if (ctx.isMultiSelect) AnswerSubmitter.submitCodexMultiSelect() else "\r")),
+        dismiss = true,
     )
     override fun lastQuestionIndex(totalTabs: Int) = totalTabs - 2
     override fun hidePrev(ui: UiState) = false

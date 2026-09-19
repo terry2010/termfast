@@ -29,6 +29,12 @@ object AgentStatusMonitor {
     /** Per-session last seen terminal title (for re-detection on title change). */
     private val lastTitles = ConcurrentHashMap<String, String>()
 
+    /** Per-session tracked option cursor position (for relative arrow navigation). */
+    private val cursorPositions = ConcurrentHashMap<String, Int>()
+
+    /** Per-session last seen question signature (resets tracked cursor on change). */
+    private val lastQuestions = ConcurrentHashMap<String, String>()
+
     /** Minimum interval between snapshot processing (ms). */
     private const val MIN_PARSE_INTERVAL_MS = 200L
 
@@ -164,6 +170,10 @@ object AgentStatusMonitor {
      */
     private fun updateStatusState(sessionId: String, state: AgentState, snapshot: ScrapedSnapshot?) {
         if (state.status != AgentStatus.BLOCKED) {
+            // Left blocked — clear question signature + tracked cursor
+            // (mirrors desktop shouldResetOverlay → devinCursorPosRef = 0)
+            lastQuestions.remove(sessionId)
+            cursorPositions.remove(sessionId)
             statusStates[sessionId] = AgentStatusState(
                 status = state.status,
                 cli = state.cli,
@@ -193,6 +203,14 @@ object AgentStatusMonitor {
         val cursorIndex = extractCursorIndex(state.cli, screenText)
         val reviewAnswers = extractReviewAnswers(state.cli, screenText)
 
+        // New question while still blocked → reset tracked cursor to 0
+        // (mirrors desktop shouldResetOverlay → devinCursorPosRef = 0)
+        val questionKey = question ?: state.blockedMessage ?: ""
+        val prevQuestion = lastQuestions.put(sessionId, questionKey)
+        if (prevQuestion != null && prevQuestion != questionKey) {
+            cursorPositions.remove(sessionId)
+        }
+
         // Extract tab info for multi-question dialogs
         var activeTabIndex = -1
         var totalTabs = 0
@@ -220,6 +238,21 @@ object AgentStatusMonitor {
     }
 
     /**
+     * Periodic tick — drives time-based transitions (debounced status fires,
+     * done→idle decay, working→done timeout) even when no new output arrives.
+     * Called by TerminalScreen every 500ms (mirrors desktop useAgentStatus timer).
+     */
+    fun tickSession(sessionId: String) {
+        val state = states[sessionId] ?: return
+        val now = System.nanoTime() / 1_000_000
+        val before = state.status
+        AgentStateMachine.tick(state, now)
+        if (state.status != before) {
+            updateStatusState(sessionId, state, null)
+        }
+    }
+
+    /**
      * Reset the monitor state for a session (e.g. when terminal is closed).
      */
     fun resetSession(sessionId: String) {
@@ -227,6 +260,8 @@ object AgentStatusMonitor {
         statusStates.remove(sessionId)
         lastParseAt.remove(sessionId)
         lastTitles.remove(sessionId)
+        cursorPositions.remove(sessionId)
+        lastQuestions.remove(sessionId)
     }
 
     /**
@@ -243,14 +278,18 @@ object AgentStatusMonitor {
         val state = states[sessionId] ?: return ActionResult(emptyList(), false)
         val statusState = statusStates[sessionId] ?: return ActionResult(emptyList(), false)
         val behavior = CliBehaviorRegistry.getBehavior(state.cli)
+        // Screen-detected cursor index wins; fall back to the tracked position
+        // from previous actions (mirrors desktop devinCursorPosRef).
+        val cursorPos = statusState.cursorIndex ?: cursorPositions[sessionId] ?: 0
         val ctx = BehaviorContext(
             options = statusState.options,
             isMultiSelect = statusState.isMultiSelect,
             isMultiQuestion = statusState.isMultiQuestion,
             activeTabIndex = statusState.activeTabIndex,
             totalTabs = statusState.totalTabs,
+            cursorPos = cursorPos,
         )
-        return when (action) {
+        val result = when (action) {
             is AgentAction.Answer -> behavior.answer(action.option, action.index, ctx)
             is AgentAction.Toggle -> behavior.toggle(action.option, action.index, ctx)
             is AgentAction.SubmitMultiSelect -> behavior.submitMultiSelect(ctx)
@@ -260,6 +299,8 @@ object AgentStatusMonitor {
             is AgentAction.NextQuestion -> behavior.nextQuestion(ctx)
             is AgentAction.Confirm -> behavior.confirm(action.hasAnswers, ctx)
         }
+        result.newCursorPos?.let { cursorPositions[sessionId] = it }
+        return result
     }
 }
 

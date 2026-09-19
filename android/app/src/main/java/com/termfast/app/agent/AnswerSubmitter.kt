@@ -284,6 +284,21 @@ object AnswerSubmitter {
 
     // ── Codex ──────────────────────────────────────────────────────────────
 
+    /**
+     * Toggle a Codex multi-select option: relative arrow navigation to the
+     * target index, then Space (multi_select_picker toggles the cursor row).
+     */
+    fun toggleCodexOption(targetIndex: Int, currentPos: Int = 0): String {
+        return when {
+            targetIndex > currentPos -> "\u001B[B".repeat(targetIndex - currentPos) + " "
+            targetIndex < currentPos -> "\u001B[A".repeat(currentPos - targetIndex) + " "
+            else -> " "
+        }
+    }
+
+    /** Submit Codex multi-select (Enter confirms the picker). */
+    fun submitCodexMultiSelect(): String = "\r"
+
     private fun submitCodex(option: String, index: Int): String {
         val normalized = option.lowercase().trim()
         val hasNumberPrefix = Regex("^\\d+\\.\\s").containsMatchIn(option)

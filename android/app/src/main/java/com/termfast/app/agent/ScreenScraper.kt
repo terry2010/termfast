@@ -156,15 +156,49 @@ object ScreenScraper {
             if (cellPos in cells.indices) {
                 val cell = cells[cellPos]
                 if (cell.bold) return j
-                val fgColor = cell.fgColor
-                val r = ((fgColor shr 16) and 0xFF).toInt()
-                val g = ((fgColor shr 8) and 0xFF).toInt()
-                val b = (fgColor and 0xFF).toInt()
+                val (r, g, b) = decodeColorChannels(cell.fgColor)
                 if (r + g + b > 400) return j
             }
             searchStart = charPos + label.length
         }
         return -1
+    }
+
+    /**
+     * Decode a termlib cell color long into 0-255 RGB channels.
+     *
+     * The value is an androidx.compose.ui.graphics.Color: low 6 bits = color
+     * space index; for sRGB (index 0) the 8-bit channels are packed as
+     * A<<56 | R<<48 | G<<40 | B<<32. Other color spaces store 16-bit
+     * half-float channels at the same offsets.
+     */
+    internal fun decodeColorChannels(color: Long): Triple<Int, Int, Int> {
+        val colorSpaceId = (color and 0x3F).toInt()
+        return if (colorSpaceId == 0) {
+            Triple(
+                ((color ushr 48) and 0xFF).toInt(),
+                ((color ushr 40) and 0xFF).toInt(),
+                ((color ushr 32) and 0xFF).toInt(),
+            )
+        } else {
+            Triple(
+                (halfToFloat(((color ushr 48) and 0xFFFF).toInt()) * 255).toInt().coerceIn(0, 255),
+                (halfToFloat(((color ushr 32) and 0xFFFF).toInt()) * 255).toInt().coerceIn(0, 255),
+                (halfToFloat(((color ushr 16) and 0xFFFF).toInt()) * 255).toInt().coerceIn(0, 255),
+            )
+        }
+    }
+
+    /** Decode an IEEE 754 half-precision float (binary16). */
+    private fun halfToFloat(h: Int): Float {
+        val sign = if ((h and 0x8000) != 0) -1f else 1f
+        val exp = (h ushr 10) and 0x1F
+        val mant = h and 0x3FF
+        return when {
+            exp == 0 -> sign * (mant / 1024f) * 6.103515625e-5f  // 2^-14
+            exp == 31 -> if (mant == 0) sign * Float.POSITIVE_INFINITY else Float.NaN
+            else -> sign * (1f + mant / 1024f) * Math.pow(2.0, (exp - 15).toDouble()).toFloat()
+        }
     }
 
     /**

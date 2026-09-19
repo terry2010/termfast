@@ -96,8 +96,9 @@ object CliDetector {
         if (Regex("Enter\\s*to\\s*select.*(?:Tab/Arrow|Tab).*Esc\\s*to\\s*cancel", RegexOption.IGNORE_CASE).containsMatchIn(screenText)) {
             return CliType.CLAUDE_CODE
         }
-        // Claude Code: permission dialog footer
-        if (Regex("Esc\\s*to\\s*cancel.*Tab\\s*to\\s*amend.*ctrl\\+e\\s*to\\s*explain", RegexOption.IGNORE_CASE).containsMatchIn(screenText)) {
+        // Claude Code: permission dialog footer — "ctrl+e to explain" may be
+        // absent in short variants (Write/Create file dialog).
+        if (Regex("Esc\\s*to\\s*cancel.*Tab\\s*to\\s*amend", RegexOption.IGNORE_CASE).containsMatchIn(screenText)) {
             return CliType.CLAUDE_CODE
         }
         // Claude Code: multi-question tab row
@@ -120,6 +121,14 @@ object CliDetector {
 
         // Codex: progress spinner
         if (Regex("•.*\\(\\d+s\\s*•\\s*esc\\s+to\\s+interrupt\\)").containsMatchIn(screenText)) {
+            return CliType.CODEX
+        }
+        // Codex: startup banner ">_ OpenAI Codex (vX.Y.Z)"
+        if (Regex(">_\\s+OpenAI\\s+Codex", RegexOption.IGNORE_CASE).containsMatchIn(screenText)) {
+            return CliType.CODEX
+        }
+        // Codex: idle prompt "› Ask Codex to do anything"
+        if (Regex("›\\s*Ask\\s+Codex\\s+to\\s+do\\s+anything", RegexOption.IGNORE_CASE).containsMatchIn(screenText)) {
             return CliType.CODEX
         }
         // Codex: "codex>" prompt

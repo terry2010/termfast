@@ -143,6 +143,20 @@ fun TerminalScreen(
         }
     }
 
+    // Periodic tick for time-based state transitions (debounced WORKING fire,
+    // done→idle decay) even when no new output arrives — mirrors the desktop
+    // useAgentStatus 500ms interval timer.
+    LaunchedEffect(sessionId) {
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            com.termfast.app.agent.AgentStatusMonitor.tickSession(sessionId)
+            if (!agentSheetUserToggled) {
+                val status = com.termfast.app.agent.AgentStatusMonitor.getStatusState(sessionId)
+                showAgentSheet = status.status == com.termfast.app.agent.AgentStatus.BLOCKED
+            }
+        }
+    }
+
     // "New terminal created" hint — shown for 3s when this server has >1
     //   active terminal sessions. Tapping it opens the terminals list.
     val snackbarHostState = remember { SnackbarHostState() }

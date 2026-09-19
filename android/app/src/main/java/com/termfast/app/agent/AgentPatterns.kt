@@ -107,6 +107,12 @@ private val devinPatterns = CliPatterns(
                 return@CliPatterns "Approve command execution?"
             }
         }
+        // Fallback: extract the action from "⏺ <action>" line (e.g. "⏺ Writing /tmp/test.txt")
+        // Devin's file edit/write permission dialog format.
+        for (line in lines) {
+            val m = Regex("^[⏺●]\\s+(.+)").find(line.trim())
+            if (m != null) return@CliPatterns "Approve: ${m.groupValues[1]}?"
+        }
         null
     },
     optionsExtractor = { text ->
@@ -378,7 +384,7 @@ private val claudeCodePatterns = CliPatterns(
         StatusPattern(AgentStatus.BLOCKED,
             Regex("Enter\\s*to\\s*select.*(?:Tab/Arrow|Tab).*Esc\\s*to\\s*cancel", RegexOption.IGNORE_CASE), 11),
         StatusPattern(AgentStatus.BLOCKED,
-            Regex("Esc\\s*to\\s*cancel.*Tab\\s*to\\s*amend.*ctrl\\+e\\s*to\\s*explain", RegexOption.IGNORE_CASE), 10),
+            Regex("Esc\\s*to\\s*cancel.*Tab\\s*to\\s*amend", RegexOption.IGNORE_CASE), 10),
         StatusPattern(AgentStatus.BLOCKED,
             Regex("←\\s+[☐☒].*✔\\s*Submit\\s*→"), 9),
         StatusPattern(AgentStatus.BLOCKED,
@@ -407,10 +413,10 @@ private val claudeCodePatterns = CliPatterns(
             if (hasNumberedOptions) return@CliPatterns lines[planQIdx].trim()
             return@CliPatterns "Would you like to proceed?"
         }
-        // Permission dialog
+        // Permission dialog: "Do you want to proceed?" / "Do you want to create <file>?" etc.
         for (line in lines) {
-            if (Regex("Do\\s*you\\s*want\\s*to\\s*proceed\\?", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
-                return@CliPatterns "Do you want to proceed?"
+            if (Regex("Do\\s*you\\s*want\\s*to\\s+\\S.*\\?", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
+                return@CliPatterns line.trim()
             }
         }
         // Trust dialog
@@ -489,9 +495,10 @@ private val claudeCodePatterns = CliPatterns(
             if (options.isNotEmpty()) return@CliPatterns options
             return@CliPatterns listOf("Yes", "No")
         }
-        // Permission dialog
+        // Permission dialog — "ctrl+e to explain" may be absent in short
+        // variants (Write/Create file dialog): match the shorter form.
         val permFooterIdx = lines.indexOfFirst {
-            Regex("Esc\\s*to\\s*cancel.*Tab\\s*to\\s*amend.*ctrl\\+e\\s*to\\s*explain", RegexOption.IGNORE_CASE).containsMatchIn(it)
+            Regex("Esc\\s*to\\s*cancel.*Tab\\s*to\\s*amend", RegexOption.IGNORE_CASE).containsMatchIn(it)
         }
         if (permFooterIdx >= 0) {
             val options = mutableListOf<String>()
@@ -589,8 +596,13 @@ private val codexPatterns = CliPatterns(
             Regex("Do you trust the contents of this directory\\?", RegexOption.IGNORE_CASE), 10),
         StatusPattern(AgentStatus.WORKING,
             Regex("•.*\\(\\d+s\\s*•\\s*esc\\s+to\\s+interrupt\\)"), 8),
+        // New TUI spinner: "• Working" / "• Thinking" (no timer)
+        StatusPattern(AgentStatus.WORKING,
+            Regex("^•\\s+(?:Working|Thinking)\\b", setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE)), 7),
         StatusPattern(AgentStatus.IDLE,
             Regex("^\\s*(?:❯|›|codex>)\\s*$", RegexOption.MULTILINE), 5),
+        StatusPattern(AgentStatus.IDLE,
+            Regex("›\\s*Ask\\s+Codex\\s+to\\s+do\\s+anything", RegexOption.IGNORE_CASE), 5),
     ),
     questionExtractor = { text ->
         val lines = text.split("\n")
@@ -648,8 +660,13 @@ private val codexPatterns = CliPatterns(
             if (m != null) {
                 val full = m.groupValues[1].trim()
                 val labelOnly = full.replace(Regex("\\s{2,}.+$"), "").trim()
+                    .replace(Regex("^(\\d+\\.\\s*)\\[[xX✓✔ ]\\]\\s*"), "$1")
                 opts.add(labelOnly.ifEmpty { full })
+                continue
             }
+            // Multi-select picker rows: "› [x] Label" / "  [ ] Label" (unnumbered)
+            val cm = Regex("^\\s*[› ]\\s*\\[[xX✓✔ ]\\]\\s+(.+)$").matchEntire(lines[i])
+            if (cm != null) opts.add(cm.groupValues[1].trim())
         }
         if (opts.isNotEmpty()) return@CliPatterns opts
         // Legacy approval prompt
@@ -667,12 +684,52 @@ private val codexPatterns = CliPatterns(
         }
         null
     },
-    multiSelectDetector = null,
+    multiSelectDetector = { text ->
+        // Codex multi_select_picker renders "[x]"/"[ ]" checkboxes toggled by
+        // Space (codex-rs/tui/src/bottom_pane/multi_select_picker.rs).
+        // Require ≥1 checked box or ≥2 checkbox rows — a lone "[ ]" in normal
+        // output while blocked shouldn't flip the dialog into multi-select mode.
+        var rows = 0
+        var checked = false
+        for (line in text.split("\n")) {
+            // Require the same ›/space row prefix as optionsExtractor and
+            // cursorIndexExtractor — a column-0 "[x]" line would set
+            // isMultiSelect without extractable options otherwise.
+            if (Regex("^\\s*[› ]\\s*(?:\\d+\\.\\s+)?\\[[xX✓✔ ]\\]\\s+\\S").containsMatchIn(line)) {
+                rows++
+                if (Regex("\\[[xX✓✔]\\]").containsMatchIn(line)) checked = true
+            }
+        }
+        checked || rows >= 2
+    },
     multiQuestionDetector = { text ->
         Regex("^\\s*Question\\s+\\d+/\\d+", RegexOption.MULTILINE).containsMatchIn(text)
     },
     reviewAnswersExtractor = null,
-    cursorIndexExtractor = null,
+    cursorIndexExtractor = { text ->
+        // "›" marks the highlighted option row in Codex pickers.
+        val lines = text.split("\n")
+        var contentStartIdx = -1
+        for (i in lines.indices) {
+            if (Regex("^\\s*Question\\s+\\d+/\\d+", RegexOption.IGNORE_CASE).containsMatchIn(lines[i]) ||
+                Regex("^\\s*Would you like to ", RegexOption.IGNORE_CASE).containsMatchIn(lines[i]) ||
+                Regex("^\\s*Do you want to approve ", RegexOption.IGNORE_CASE).containsMatchIn(lines[i])) {
+                contentStartIdx = i; break
+            }
+        }
+        val startIdx = if (contentStartIdx >= 0) contentStartIdx else 0
+        var idx = 0
+        var found = -1
+        for (i in startIdx until lines.size) {
+            val isOption = Regex("^\\s*[› ]\\s*\\d+\\.\\s+.+$").matches(lines[i]) ||
+                Regex("^\\s*[› ]\\s*\\[[xX✓✔ ]\\]\\s+.+$").matches(lines[i])
+            if (isOption) {
+                if (Regex("^\\s*›").containsMatchIn(lines[i])) { found = idx; break }
+                idx++
+            }
+        }
+        if (found >= 0) found else null
+    },
 )
 
 // === SECTION 5 END ===

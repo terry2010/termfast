@@ -116,4 +116,96 @@ class ScreenScraperTest {
         val result = ScreenScraper.extractTabInfo(snapshot)
         assertNull(result)
     }
+
+    // ── Positive tab-detection cases ──
+
+    private fun makeLineWithCells(text: String, boldRanges: List<IntRange> = emptyList(),
+                                  reverseRanges: List<IntRange> = emptyList(),
+                                  fgColorRanges: List<Pair<IntRange, Long>> = emptyList()): ScrapedLine {
+        val cells = text.mapIndexed { i, c ->
+            val bold = boldRanges.any { i in it }
+            val reverse = reverseRanges.any { i in it }
+            val fg = fgColorRanges.firstOrNull { i in it.first }?.second ?: 0L
+            ScrapedCell(c, bold, reverse, 0, fg, 1)
+        }
+        return ScrapedLine(text = text, cells = cells)
+    }
+
+    @Test
+    fun testExtractTabInfoClaudeFormatActiveByReverse() {
+        // "← ☐ Lang ☐ OS ✔ Submit →" — second tab has reverse video
+        val text = "← ☐ Lang  ☐ OS  ✔ Submit →"
+        val osStart = text.indexOf("OS")
+        val line = makeLineWithCells(text, reverseRanges = listOf(osStart until osStart + 2))
+        val result = ScreenScraper.extractTabInfo(makeSnapshot(listOf(line)))
+        assertNotNull(result)
+        assertEquals(listOf("Lang", "OS", "Submit"), result.labels)
+        assertEquals(1, result.activeIndex)
+    }
+
+    @Test
+    fun testExtractTabInfoClaudeFormatNoActive() {
+        val line = makeLine("← ☐ Lang  ☐ OS  ✔ Submit →")
+        val result = ScreenScraper.extractTabInfo(makeSnapshot(listOf(line)))
+        assertNotNull(result)
+        assertEquals(3, result.labels.size)
+        assertEquals(-1, result.activeIndex)
+    }
+
+    @Test
+    fun testExtractTabInfoDevinFormatActiveByBold() {
+        val text = "── Build · Test ──"
+        val testStart = text.indexOf("Test")
+        val line = makeLineWithCells(text, boldRanges = listOf(testStart until testStart + 4))
+        val result = ScreenScraper.extractTabInfo(makeSnapshot(listOf(line)))
+        assertNotNull(result)
+        assertEquals(listOf("Build", "Test"), result.labels)
+        assertEquals(1, result.activeIndex)
+    }
+
+    @Test
+    fun testExtractTabInfoDevinFormatActiveByFgColor() {
+        // Compose sRGB Color: A<<56 | R<<48 | G<<40 | B<<32, colorspace id 0.
+        // Bright blue 0xFF89B4FA → r+g+b = 137+180+250 = 567 > 400
+        val brightBlue = (0xFFL shl 56) or (0x89L shl 48) or (0xB4L shl 40) or (0xFAL shl 32)
+        val text = "── Build · Test ──"
+        val testStart = text.indexOf("Test")
+        val line = makeLineWithCells(text, fgColorRanges = listOf((testStart until testStart + 4) to brightBlue))
+        val result = ScreenScraper.extractTabInfo(makeSnapshot(listOf(line)))
+        assertNotNull(result)
+        assertEquals(1, result.activeIndex)
+    }
+
+    @Test
+    fun testExtractTabInfoDevinFormatDimColorNotActive() {
+        // Dim gray should NOT be detected as active (sum < 400)
+        val dimGray = (0xFFL shl 56) or (0x40L shl 48) or (0x40L shl 40) or (0x40L shl 32)
+        val text = "── Build · Test ──"
+        val testStart = text.indexOf("Test")
+        val line = makeLineWithCells(text, fgColorRanges = listOf((testStart until testStart + 4) to dimGray))
+        val result = ScreenScraper.extractTabInfo(makeSnapshot(listOf(line)))
+        assertNotNull(result)
+        assertEquals(-1, result.activeIndex)
+    }
+
+    @Test
+    fun testDecodeColorChannelsSrgb() {
+        // sRGB: A<<56|R<<48|G<<40|B<<32, colorspace id = 0
+        val color = (0xFFL shl 56) or (0x12L shl 48) or (0x34L shl 40) or (0x56L shl 32)
+        val (r, g, b) = ScreenScraper.decodeColorChannels(color)
+        assertEquals(0x12, r)
+        assertEquals(0x34, g)
+        assertEquals(0x56, b)
+    }
+
+    @Test
+    fun testDecodeColorChannelsHalfFloat() {
+        // Non-sRGB colorspace id != 0 → 16-bit half-float channels.
+        // half-float 1.0 = 0x3C00, 0.5 = 0x3800, 0.0 = 0x0000
+        val color = (0x3C00L shl 48) or (0x3800L shl 32) or (0x0000L shl 16) or 1L
+        val (r, g, b) = ScreenScraper.decodeColorChannels(color)
+        assertEquals(255, r)
+        assertEquals(127, g)
+        assertEquals(0, b)
+    }
 }

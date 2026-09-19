@@ -136,4 +136,31 @@ class CliDetectorTest {
         val screen = "user@host:~$ "
         assertEquals(CliType.DEVIN, CliDetector.detectCli(title, screen))
     }
+
+    // === Codex / Claude screen detection (FP2 porting gaps) ===
+
+    @Test
+    fun testDetectCliCodexBanner() {
+        val screen = ">_ OpenAI Codex (v0.42.0)\n› Ask Codex to do anything"
+        assertEquals(CliType.CODEX, CliDetector.detectCliFromScreen(screen))
+    }
+
+    @Test
+    fun testDetectCliCodexIdlePrompt() {
+        val screen = "some output\n› Ask Codex to do anything"
+        assertEquals(CliType.CODEX, CliDetector.detectCliFromScreen(screen))
+    }
+
+    @Test
+    fun testDetectCliCodexPrompt() {
+        val screen = "user$ \n codex> \n"
+        assertEquals(CliType.CODEX, CliDetector.detectCliFromScreen(screen))
+    }
+
+    @Test
+    fun testDetectCliClaudeShortPermissionFooter() {
+        // Write/Create file dialog: no "ctrl+e to explain" in footer
+        val screen = "Do you want to create /tmp/foo.txt?\nEsc to cancel · Tab to amend"
+        assertEquals(CliType.CLAUDE_CODE, CliDetector.detectCliFromScreen(screen))
+    }
 }

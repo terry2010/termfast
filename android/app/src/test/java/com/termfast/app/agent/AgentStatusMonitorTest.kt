@@ -167,4 +167,79 @@ class AgentStatusMonitorTest {
         assertNotNull(result)
         AgentStatusMonitor.resetSession(sessionId)
     }
+
+    // === tickSession (periodic 500ms tick from TerminalScreen) ===
+
+    @Test
+    fun testTickSessionUnknownSession() {
+        // Should not crash on a session with no monitor state
+        AgentStatusMonitor.tickSession("nonexistent-tick-session")
+    }
+
+    @Test
+    fun testTickSessionFiresPendingDebouncedTransition() {
+        // notifyOutput schedules a debounced WORKING (fires after 500ms).
+        // tickSession must drive the transition even with no new snapshot.
+        val sessionId = "test-tick-debounce"
+        AgentStatusMonitor.resetSession(sessionId)
+        // Set CLI via title signal (unknown CLI → output won't schedule WORKING)
+        AgentStatusMonitor.onOscSignal(sessionId, AgentSignal.Title(CliType.CODEX, "codex"))
+        // Output while UNKNOWN→ schedules debounced WORKING
+        AgentStatusMonitor.onOutput(sessionId)
+        // Before debounce window: status not yet WORKING
+        val before = AgentStatusMonitor.getStatusState(sessionId)
+        assertEquals(AgentStatus.UNKNOWN, before.status)
+        // Wait past the 500ms debounce window, then tick
+        Thread.sleep(600)
+        AgentStatusMonitor.tickSession(sessionId)
+        val after = AgentStatusMonitor.getStatusState(sessionId)
+        assertEquals(AgentStatus.WORKING, after.status)
+        AgentStatusMonitor.resetSession(sessionId)
+    }
+
+    // === cursor position tracking / reset ===
+
+    @Test
+    fun testCursorPosResetsOnNewQuestion() {
+        // Toggle to cursor 2 in question 1, then question 2 appears:
+        // tracked cursor must reset to 0 (desktop: shouldResetOverlay → devinCursorPosRef = 0)
+        val sessionId = "test-cursor-reset"
+        AgentStatusMonitor.resetSession(sessionId)
+        AgentStatusMonitor.onOscSignal(sessionId, AgentSignal.Title(CliType.CODEX, "codex"))
+        AgentStatusMonitor.processSnapshot(sessionId, makeSnapshot(
+            "Question 1/2\nPick features\n› [ ] A\n  [ ] B\n  [ ] C\nenter to submit all", "codex"))
+        assertEquals(AgentStatus.BLOCKED, AgentStatusMonitor.getStatusState(sessionId).status)
+        // Toggle option 2 from cursor 0 → tracked cursor becomes 2
+        AgentStatusMonitor.executeAction(sessionId, AgentAction.Toggle("C", 2))
+        // Question 2 appears while still blocked (no › marker → cursorIndex
+        // extraction returns null, so the tracked position is the fallback)
+        Thread.sleep(250)
+        AgentStatusMonitor.processSnapshot(sessionId, makeSnapshot(
+            "Question 2/2\nPick more\n  [ ] X\n  [ ] Y\n  [ ] Z\nenter to submit all", "codex"))
+        assertEquals(AgentStatus.BLOCKED, AgentStatusMonitor.getStatusState(sessionId).status)
+        // Toggle option 2 again — if cursor reset, needs Down×2+Space;
+        // if still tracked at 2, it would send only " "
+        val result = AgentStatusMonitor.executeAction(sessionId, AgentAction.Toggle("Z", 2))
+        assertEquals("[B[B ", result.steps[0].data,
+            "New question must reset tracked cursor to 0")
+        AgentStatusMonitor.resetSession(sessionId)
+    }
+
+    @Test
+    fun testCursorPosPersistsAcrossToggles() {
+        // Same question, consecutive toggles navigate relative to last position
+        val sessionId = "test-cursor-persist"
+        AgentStatusMonitor.resetSession(sessionId)
+        AgentStatusMonitor.onOscSignal(sessionId, AgentSignal.Title(CliType.CODEX, "codex"))
+        AgentStatusMonitor.processSnapshot(sessionId, makeSnapshot(
+            "Question 1/1\nPick features\n  [ ] A\n  [ ] B\n  [ ] C\nenter to submit all", "codex"))
+        assertEquals(AgentStatus.BLOCKED, AgentStatusMonitor.getStatusState(sessionId).status)
+        // No › marker → cursorIndex null → falls back to tracked position
+        AgentStatusMonitor.executeAction(sessionId, AgentAction.Toggle("C", 2))
+        // Toggle option 0: from tracked cursor 2 → Up×2+Space
+        val result = AgentStatusMonitor.executeAction(sessionId, AgentAction.Toggle("A", 0))
+        assertEquals("[A[A ", result.steps[0].data,
+            "Consecutive toggles must navigate relative to tracked cursor")
+        AgentStatusMonitor.resetSession(sessionId)
+    }
 }
