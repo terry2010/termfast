@@ -1,7 +1,7 @@
 ---
 name: auditor
 description: 甲方专家审计 agent，在所有功能点开发完成并通过 reviewer 评审后，对照 design doc 对整个项目做整体验收审计
-model: GLM-5.2 High
+model: SWE-2 High
 allowed-tools:
   - read
   - grep

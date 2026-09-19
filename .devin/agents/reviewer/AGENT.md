@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: 只读评审 agent，对功能点改动做独立评审，逐条核对验收标准并输出带证据的报告
-model: GLM-5.2 High
+model: SWE-2 High
 allowed-tools:
   - read
   - grep
