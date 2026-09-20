@@ -220,12 +220,22 @@ pub async fn generate_unique_session_name(
 /// Enables mouse mode so wheel scrolling enters copy-mode — without it, wheel
 /// events are swallowed and scrollback (which lives inside tmux, not the
 /// terminal) is unreachable.
+/// Rebinds MouseDragEnd1Pane to copy-selection-no-clear: the default
+/// copy-selection-and-cancel exits copy-mode on mouse release, which makes the
+/// selection vanish instantly and snaps the view back to the bottom.
+/// set-clipboard on pipes copies to the outer terminal via OSC52 (xterm.js 6
+/// supports it) so selections land in the system clipboard. Bindings/options
+/// are tmux-server global (not per-session), so this only needs to run once
+/// per server — harmless to repeat on every attach.
 pub fn build_attach_command(session_name: &str) -> String {
     let name = shell_escape(session_name);
     format!(
         "tmux set-option -t {name} window-size manual 2>/dev/null; \
 tmux set-option -t {name} allow-passthrough on 2>/dev/null; \
 tmux set-option -t {name} mouse on 2>/dev/null; \
+tmux set-option -g set-clipboard on 2>/dev/null; \
+tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-no-clear 2>/dev/null; \
+tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-no-clear 2>/dev/null; \
 tmux attach -t {name}\n"
     )
 }
