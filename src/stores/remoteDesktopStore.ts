@@ -45,6 +45,16 @@ interface RemoteDesktopStore {
   setRemoteTriggers: (pairingId: string, triggers: TriggerInstance[]) => void;
 }
 
+const mapPeer = (p: any): RemotePeer => ({
+  pairingId: p.pairing_id,
+  pairingKeyHex: p.pairing_key_hex,
+  relayUrl: p.relay_url,
+  jwt: p.jwt,
+  peerName: p.peer_name,
+  peerRole: p.peer_role,
+  online: !!p.is_online,
+});
+
 export const useRemoteDesktopStore = create<RemoteDesktopStore>((set) => ({
   peers: [],
   loading: false,
@@ -56,22 +66,25 @@ export const useRemoteDesktopStore = create<RemoteDesktopStore>((set) => ({
 
   loadPeers: async () => {
     set({ loading: true, error: null });
+    // Fast path: local pairing_store only (no backend HTTP) — populates the
+    // list instantly and marks `loaded` so onboarding can decide.
+    try {
+      const local = await ipcInvoke<{ pairings: RemotePeer[] }>(
+        "ipc_list_desktop_pairings_local"
+      );
+      set({ peers: (local.pairings || []).map(mapPeer), loading: false, loaded: true });
+    } catch (e: any) {
+      set({ error: String(e?.message || e), loading: false });
+    }
+    // Full merge (backend online status + revoked reconciliation) refreshes
+    // the list afterwards; failure just leaves peers as-is from local data.
     try {
       const data = await ipcInvoke<{ pairings: RemotePeer[] }>(
         "ipc_list_desktop_pairings"
       );
-      const pairings = (data.pairings || []).map((p: any) => ({
-        pairingId: p.pairing_id,
-        pairingKeyHex: p.pairing_key_hex,
-        relayUrl: p.relay_url,
-        jwt: p.jwt,
-        peerName: p.peer_name,
-        peerRole: p.peer_role,
-        online: !!p.is_online,
-      }));
-      set({ peers: pairings, loading: false, loaded: true });
+      set({ peers: (data.pairings || []).map(mapPeer) });
     } catch (e: any) {
-      set({ error: String(e?.message || e), loading: false });
+      set({ error: String(e?.message || e) });
     }
   },
 

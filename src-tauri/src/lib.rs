@@ -444,6 +444,7 @@ pub fn run() {
             ipc_remote_trigger_update,
             ipc_remote_trigger_remove,
             ipc_list_desktop_pairings,
+            ipc_list_desktop_pairings_local,
             ipc_initiate_desktop_pairing,
         ])
         .build(tauri::generate_context!())
@@ -4415,6 +4416,28 @@ async fn ipc_list_desktop_pairings(
     }
 
     Ok(serde_json::json!({ "pairings": merged }))
+}
+
+/// Fast local-only variant of ipc_list_desktop_pairings: reads pairing_store
+/// without the backend HTTP merge. The sidebar and first-run onboarding get
+/// data instantly; the full command refreshes online status afterwards.
+#[tauri::command]
+async fn ipc_list_desktop_pairings_local() -> Result<serde_json::Value, String> {
+    let pairings: Vec<serde_json::Value> = pairing_store::load()
+        .into_iter()
+        .filter(|p| p.pairing_type == "desktop")
+        .map(|p| serde_json::json!({
+            "pairing_id": p.pairing_id,
+            "pairing_key_hex": p.pairing_key_hex,
+            "relay_url": p.relay_url,
+            "jwt": p.jwt,
+            "pairing_type": "desktop",
+            "peer_name": p.peer_name,
+            "peer_role": p.peer_role,
+            "is_online": false,
+        }))
+        .collect();
+    Ok(serde_json::json!({ "pairings": pairings }))
 }
 
 /// Initiate a desktop-to-desktop pairing from the desktop (not phone).
