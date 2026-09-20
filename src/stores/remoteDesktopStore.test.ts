@@ -13,6 +13,7 @@ describe("remoteDesktopStore", () => {
       error: null,
       activeConnection: null,
       remoteTerminals: [],
+      loaded: false,
     });
     mockInvoke.mockReset();
   });
@@ -23,7 +24,7 @@ describe("remoteDesktopStore", () => {
   });
 
   it("loadPeers maps backend pairing fields to RemotePeer", async () => {
-    mockInvoke.mockResolvedValueOnce({
+    mockInvoke.mockResolvedValue({
       pairings: [
         {
           pairing_id: "dpair-1",
@@ -63,19 +64,19 @@ describe("remoteDesktopStore", () => {
   });
 
   it("loadPeers handles empty pairings", async () => {
-    mockInvoke.mockResolvedValueOnce({ pairings: [] });
+    mockInvoke.mockResolvedValue({ pairings: [] });
     await useRemoteDesktopStore.getState().loadPeers();
     expect(useRemoteDesktopStore.getState().peers).toEqual([]);
   });
 
   it("loadPeers handles missing pairings field", async () => {
-    mockInvoke.mockResolvedValueOnce({});
+    mockInvoke.mockResolvedValue({});
     await useRemoteDesktopStore.getState().loadPeers();
     expect(useRemoteDesktopStore.getState().peers).toEqual([]);
   });
 
   it("loadPeers sets error on IPC failure", async () => {
-    mockInvoke.mockRejectedValueOnce(new Error("IPC error"));
+    mockInvoke.mockRejectedValue(new Error("IPC error"));
     await useRemoteDesktopStore.getState().loadPeers();
     const state = useRemoteDesktopStore.getState();
     expect(state.loading).toBe(false);
