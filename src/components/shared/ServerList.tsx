@@ -142,6 +142,13 @@ export function ServerList({
     loadPeers();
   });
 
+  // Listen for desktop_pair_added: a DESKTOP_PAIR frame just arrived and
+  // stored a new desktop pairing — reload so it shows in the sidebar
+  // immediately (RemoteDesktopList listens to the same event).
+  useTauriEvent("desktop_pair_added", () => {
+    loadPeers();
+  });
+
   // Hover-expand state for collapsed sidebar: sidebar expands when hovered,
   // overlays the right content, and auto-collapses on mouse leave. The expand
   // button at the top is excluded from the hover trigger.
