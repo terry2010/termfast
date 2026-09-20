@@ -165,12 +165,16 @@ pub async fn sync_upload_config(pairing_jwt: &str, ciphertext: &str, nonce: &str
     Ok(body)
 }
 
-pub async fn list_devices(token: &str, desktop_device_id: &str) -> Result<Value, String> {
-    let url = if desktop_device_id.is_empty() {
-        format!("{}/devices", BACKEND_URL)
-    } else {
-        format!("{}/devices?desktop_device_id={}", BACKEND_URL, desktop_device_id)
-    };
+pub async fn list_devices(token: &str, desktop_device_id: &str, include_revoked: bool) -> Result<Value, String> {
+    let mut url = format!("{}/devices", BACKEND_URL);
+    let mut sep = "?";
+    if !desktop_device_id.is_empty() {
+        url.push_str(&format!("{}desktop_device_id={}", sep, desktop_device_id));
+        sep = "&";
+    }
+    if include_revoked {
+        url.push_str(&format!("{}include_revoked=1", sep));
+    }
     let resp = client()
         .get(&url)
         .header("Authorization", format!("Bearer {}", token))

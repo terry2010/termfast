@@ -2770,7 +2770,7 @@ async fn ipc_pairing_upload_config(pairing_jwt: String, ciphertext: String, nonc
 
 #[tauri::command]
 async fn ipc_pairing_list_devices(token: String, desktop_device_id: String) -> Result<serde_json::Value, String> {
-    pairing::list_devices(&token, &desktop_device_id).await
+    pairing::list_devices(&token, &desktop_device_id, false).await
 }
 
 #[tauri::command]
@@ -3524,7 +3524,7 @@ async fn import_desktop_pairings_from_backend(
     _local_ids: &std::collections::HashSet<String>,
 ) -> usize {
     let device_id = get_this_device_id();
-    let resp = match pairing::list_devices(jwt, &device_id).await {
+    let resp = match pairing::list_devices(jwt, &device_id, false).await {
         Ok(resp) => resp,
         Err(e) => {
             tracing::warn!("import_desktop_pairings: backend query failed: {}", e);
@@ -4224,7 +4224,7 @@ async fn ipc_list_desktop_pairings(
     let mut revoked_backend_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(token) = token {
         let device_id = get_this_device_id();
-        match pairing::list_devices(&token, &device_id).await {
+        match pairing::list_devices(&token, &device_id, true).await {
             Ok(resp) => {
                 let devs = resp.get("devices").and_then(|v| v.as_array())
                     .cloned()
