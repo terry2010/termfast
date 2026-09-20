@@ -570,108 +570,15 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
 
     // Set desktop_pair_callback on RemoteServer
     let handle_for_cb = handle.clone();
-    let rcm_for_cb = rcm.clone();
     let tm_for_cb = {
         let app_state = handle.state::<AppState>();
         let tm = app_state.tunnel_manager.lock().await.clone();
         tm
     };
     if let Some(ref tm) = tm_for_cb {
-        tm.remote_server().set_desktop_pair_callback(Box::new(
-            move |msg: termfast_daemon::remote_server::DesktopPairMessage| {
-                let pairing_id = msg.pairing_id.clone();
-                let pairing_key_hex = msg.pairing_key_hex.clone();
-                let peer_ecdh_public_key = msg.peer_ecdh_public_key.clone();
-                let relay_url = msg.relay_url.clone();
-                let peer_name = msg.peer_name.clone();
-                let role = msg.role.clone();
-                let pairing_jwt = msg.pairing_jwt.clone();
-                let handle = handle_for_cb.clone();
-                let handle_for_emit = handle_for_cb.clone();
-                let rcm = rcm_for_cb.clone();
-                Box::pin(async move {
-                    let (pairing_key, stored_key_hex) = if !peer_ecdh_public_key.is_empty() {
-                        let shared_hex = ecdh_key_store::compute_shared_secret_hex(&peer_ecdh_public_key)?;
-                        let key = decode_hex_32(&shared_hex)
-                            .map_err(|e| format!("decode ECDH shared secret: {}", e))?;
-                        (key, shared_hex)
-                    } else if !pairing_key_hex.is_empty() {
-                        let key = decode_hex_32(&pairing_key_hex)
-                            .map_err(|e| format!("decode key: {}", e))?;
-                        (key, pairing_key_hex.clone())
-                    } else {
-                        return Err("no pairing key: both pairing_key_hex and peer_ecdh_public_key are empty".to_string());
-                    };
-
-                    pairing_store::save(pairing_store::StoredPairing {
-                        pairing_id: pairing_id.clone(),
-                        pairing_key_hex: stored_key_hex.clone(),
-                        relay_url: relay_url.clone(),
-                        jwt: pairing_jwt.clone(),
-                        pairing_type: "desktop".to_string(),
-                        peer_name: peer_name.clone(),
-                        peer_role: role.clone(),
-                    });
-
-                    if role == "server" {
-                        let user_jwt = get_user_jwt(&handle).await
-                            .ok_or_else(|| "no user JWT available".to_string())?;
-                        let tm = {
-                            let app_state = handle.state::<AppState>();
-                            let tm = app_state.tunnel_manager.lock().await.clone();
-                            tm
-                        };
-                        if let Some(tm) = tm {
-                            tm.start_tunnel(
-                                pairing_id.clone(),
-                                pairing_key,
-                                relay_url.clone(),
-                                user_jwt,
-                            ).await?;
-                        }
-                    } else if role == "client" {
-                        let app_handle = handle.clone();
-                        let config = termfast_daemon::remote_client::RemoteClientConfig {
-                            relay_url: relay_url.clone(),
-                            pairing_jwt: pairing_jwt.clone(),
-                            pairing_id: pairing_id.clone(),
-                            pairing_key,
-                        };
-                        rcm.start_client(
-                            config,
-                            move |pid, frame_type, terminal_id, payload| {
-                                use tauri::Emitter;
-                                use base64::Engine;
-                                let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
-                                let _ = app_handle.emit("remote_client_frame", serde_json::json!({
-                                    "pairing_id": pid,
-                                    "frame_type": frame_type,
-                                    "terminal_id": terminal_id,
-                                    "data": data_b64,
-                                }));
-                            },
-                            move |pid, connected| {
-                                use tauri::Emitter;
-                                let _ = handle.emit("remote_client_state", serde_json::json!({
-                                    "pairing_id": pid,
-                                    "connected": connected,
-                                }));
-                            },
-                        ).await?;
-                    } else {
-                        return Err(format!("unknown role: {}", role));
-                    }
-                    // Notify frontend that a new desktop pairing was added
-                    use tauri::Emitter;
-                    let _ = handle_for_emit.emit("desktop_pair_added", serde_json::json!({
-                        "pairing_id": pairing_id,
-                        "peer_name": peer_name,
-                        "role": role,
-                    }));
-                    Ok(())
-                })
-            },
-        ));
+        tm.remote_server().set_desktop_pair_callback(
+            build_desktop_pair_callback(handle_for_cb.clone()),
+        );
     }
 
     // Set trigger_callback on RemoteServer (for server-role desktops)
@@ -824,6 +731,121 @@ async fn setup_daemon_after_start(handle: &tauri::AppHandle, daemon: EmbeddedDae
     rcm.set_trigger_callback(trigger_fn);
 
     tracing::info!("Tauri app state initialized with event forwarding");
+}
+
+/// Build the DESKTOP_PAIR frame handler callback.
+///
+/// Must be registered on EVERY RemoteServer instance — both in
+/// setup_daemon_after_start (when tunnel_manager already exists) and in the
+/// lazy-init path of ipc_tunnel_start (when it's created later). If missing,
+/// an incoming DESKTOP_PAIR frame is answered with pair_error and the
+/// desktop pairing is silently dropped (no local store, no tunnel).
+fn build_desktop_pair_callback(
+    handle: tauri::AppHandle,
+) -> termfast_daemon::remote_server::DesktopPairCallback {
+    Box::new(
+        move |msg: termfast_daemon::remote_server::DesktopPairMessage| {
+            let pairing_id = msg.pairing_id.clone();
+            let pairing_key_hex = msg.pairing_key_hex.clone();
+            let peer_ecdh_public_key = msg.peer_ecdh_public_key.clone();
+            let relay_url = msg.relay_url.clone();
+            let peer_name = msg.peer_name.clone();
+            let role = msg.role.clone();
+            let pairing_jwt = msg.pairing_jwt.clone();
+            let handle = handle.clone();
+            let handle_for_emit = handle.clone();
+            Box::pin(async move {
+                let (pairing_key, stored_key_hex) = if !peer_ecdh_public_key.is_empty() {
+                    let shared_hex = ecdh_key_store::compute_shared_secret_hex(&peer_ecdh_public_key)?;
+                    let key = decode_hex_32(&shared_hex)
+                        .map_err(|e| format!("decode ECDH shared secret: {}", e))?;
+                    (key, shared_hex)
+                } else if !pairing_key_hex.is_empty() {
+                    let key = decode_hex_32(&pairing_key_hex)
+                        .map_err(|e| format!("decode key: {}", e))?;
+                    (key, pairing_key_hex.clone())
+                } else {
+                    return Err("no pairing key: both pairing_key_hex and peer_ecdh_public_key are empty".to_string());
+                };
+
+                pairing_store::save(pairing_store::StoredPairing {
+                    pairing_id: pairing_id.clone(),
+                    pairing_key_hex: stored_key_hex.clone(),
+                    relay_url: relay_url.clone(),
+                    jwt: pairing_jwt.clone(),
+                    pairing_type: "desktop".to_string(),
+                    peer_name: peer_name.clone(),
+                    peer_role: role.clone(),
+                });
+
+                if role == "server" {
+                    let user_jwt = get_user_jwt(&handle).await
+                        .ok_or_else(|| "no user JWT available".to_string())?;
+                    let tm = {
+                        let app_state = handle.state::<AppState>();
+                        let tm = app_state.tunnel_manager.lock().await.clone();
+                        tm
+                    };
+                    if let Some(tm) = tm {
+                        tm.start_tunnel(
+                            pairing_id.clone(),
+                            pairing_key,
+                            relay_url.clone(),
+                            user_jwt,
+                        ).await?;
+                    }
+                } else if role == "client" {
+                    // Look up RemoteClientManager lazily — it may not exist
+                    // yet if this callback was registered before
+                    // setup_daemon_after_start finished initializing it.
+                    let rcm_opt = {
+                        let app_state = handle.state::<AppState>();
+                        let rcm = app_state.remote_client_manager.lock().await.clone();
+                        rcm
+                    };
+                    let rcm = rcm_opt.ok_or_else(|| "remote client manager not initialized".to_string())?;
+                    let app_handle = handle.clone();
+                    let config = termfast_daemon::remote_client::RemoteClientConfig {
+                        relay_url: relay_url.clone(),
+                        pairing_jwt: pairing_jwt.clone(),
+                        pairing_id: pairing_id.clone(),
+                        pairing_key,
+                    };
+                    rcm.start_client(
+                        config,
+                        move |pid, frame_type, terminal_id, payload| {
+                            use tauri::Emitter;
+                            use base64::Engine;
+                            let data_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                            let _ = app_handle.emit("remote_client_frame", serde_json::json!({
+                                "pairing_id": pid,
+                                "frame_type": frame_type,
+                                "terminal_id": terminal_id,
+                                "data": data_b64,
+                            }));
+                        },
+                        move |pid, connected| {
+                            use tauri::Emitter;
+                            let _ = handle.emit("remote_client_state", serde_json::json!({
+                                "pairing_id": pid,
+                                "connected": connected,
+                            }));
+                        },
+                    ).await?;
+                } else {
+                    return Err(format!("unknown role: {}", role));
+                }
+                // Notify frontend that a new desktop pairing was added
+                use tauri::Emitter;
+                let _ = handle_for_emit.emit("desktop_pair_added", serde_json::json!({
+                    "pairing_id": pairing_id,
+                    "peer_name": peer_name,
+                    "role": role,
+                }));
+                Ok(())
+            })
+        },
+    )
 }
 
 /// Helper: forward a request to the daemon handler and return the result.
@@ -3055,6 +3077,15 @@ async fn ipc_tunnel_start(
                         tracing::info!("trigger_callback set on RemoteServer (lazily initialized tunnel_manager)");
                     }
                 }
+                // Set desktop pair callback (same lazy-init concern — without
+                // it, a DESKTOP_PAIR frame arriving when tunnel_manager was
+                // created lazily gets pair_error and the pairing is dropped).
+                // The callback resolves RemoteClientManager lazily at call
+                // time, so it's safe to register before RCM is initialized.
+                tm.remote_server().set_desktop_pair_callback(
+                    build_desktop_pair_callback(app.clone()),
+                );
+                tracing::info!("desktop_pair_callback set on RemoteServer (lazily initialized tunnel_manager)");
                 // Set remote resize callback: when mobile sends RESIZE, the desktop
                 // PTY is resized to mobile dimensions. Notify frontend so xterm.js
                 // can re-fit (avoiding stale TUI content in the background).
@@ -4186,29 +4217,35 @@ async fn ipc_list_desktop_pairings(
             .find(|p| p.pairing_type == "mobile" && !p.jwt.is_empty())
             .map(|p| p.jwt.clone())
     };
-    let backend_pairings: Vec<serde_json::Value> = match token {
-        Some(token) => {
-            let device_id = get_this_device_id();
-            match pairing::list_devices(&token, &device_id).await {
-                Ok(resp) => {
-                    let devs = resp.get("devices").and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    devs.into_iter()
-                        .filter(|d| {
-                            d.get("pairing_type").and_then(|v| v.as_str()) == Some("desktop")
-                                && d.get("status").and_then(|v| v.as_str()) == Some("completed")
-                        })
-                        .collect()
-                }
-                Err(e) => {
-                    tracing::warn!("ipc_list_desktop_pairings: backend query failed: {}", e);
-                    Vec::new()
+    // Backend desktop pairings, split by status. Revoked IDs are tracked
+    // separately so stale local copies can be dropped below (a revoked
+    // pairing would otherwise show up as a ghost "local-only" entry).
+    let mut backend_pairings: Vec<serde_json::Value> = Vec::new();
+    let mut revoked_backend_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(token) = token {
+        let device_id = get_this_device_id();
+        match pairing::list_devices(&token, &device_id).await {
+            Ok(resp) => {
+                let devs = resp.get("devices").and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                for d in devs {
+                    if d.get("pairing_type").and_then(|v| v.as_str()) != Some("desktop") {
+                        continue;
+                    }
+                    let pid = d.get("pairing_id").and_then(|v| v.as_str()).unwrap_or("");
+                    match d.get("status").and_then(|v| v.as_str()) {
+                        Some("completed") => backend_pairings.push(d),
+                        Some("revoked") => { revoked_backend_ids.insert(pid.to_string()); }
+                        _ => {}
+                    }
                 }
             }
+            Err(e) => {
+                tracing::warn!("ipc_list_desktop_pairings: backend query failed: {}", e);
+            }
         }
-        None => Vec::new(),
-    };
+    }
 
     // 3. Merge: backend records are authoritative; local provides key+jwt
     // Get RemoteClientManager to query connection status (for client-role pairings)
@@ -4314,12 +4351,19 @@ async fn ipc_list_desktop_pairings(
         merged.push(entry);
     }
 
-    // 4. Add local-only desktop pairings (not in backend, e.g. revoked on
-    //    backend but still in local store)
+    // 4. Add local-only desktop pairings (not in backend, e.g. created while
+    //    the backend was unreachable). Pairings the backend knows as revoked
+    //    are dropped from the local store entirely — they'd otherwise linger
+    //    as ghost entries and keep failing tunnel restores on every startup.
     let backend_ids: std::collections::HashSet<String> = backend_pairings.iter()
         .filter_map(|bp| bp.get("pairing_id").and_then(|v| v.as_str()).map(|s| s.to_string()))
         .collect();
     for lp in &local_desktop {
+        if revoked_backend_ids.contains(&lp.pairing_id) {
+            tracing::info!("ipc_list_desktop_pairings: dropping revoked pairing {}", lp.pairing_id);
+            pairing_store::remove(&lp.pairing_id);
+            continue;
+        }
         if !backend_ids.contains(&lp.pairing_id) {
             // Query connection status based on role (same logic as above)
             let is_online = if lp.peer_role == "server" {
