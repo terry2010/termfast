@@ -4223,8 +4223,13 @@ async fn ipc_list_desktop_pairings(
     let mut backend_pairings: Vec<serde_json::Value> = Vec::new();
     let mut revoked_backend_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(token) = token {
-        let device_id = get_this_device_id();
-        match pairing::list_devices(&token, &device_id, true).await {
+        let this_device_id = get_this_device_id();
+        // Unfiltered query (empty device_id): revoked IDs must be collected
+        // account-wide. A pairing stored under a renamed device id (e.g.
+        // "mac-mini.lan-terry" → "mac-mini.local-terry-ebe0") would never
+        // match the device filter, so its stale local copy would linger
+        // forever as a ghost entry.
+        match pairing::list_devices(&token, "", true).await {
             Ok(resp) => {
                 let devs = resp.get("devices").and_then(|v| v.as_array())
                     .cloned()
@@ -4235,7 +4240,20 @@ async fn ipc_list_desktop_pairings(
                     }
                     let pid = d.get("pairing_id").and_then(|v| v.as_str()).unwrap_or("");
                     match d.get("status").and_then(|v| v.as_str()) {
-                        Some("completed") => backend_pairings.push(d),
+                        Some("completed") => {
+                            // Merge only pairings involving this device:
+                            // device-id prefix match, or a pairing_id already
+                            // known locally (the device may have been renamed
+                            // since the pairing was created).
+                            let d_id = d.get("desktop_device_id").and_then(|v| v.as_str()).unwrap_or("");
+                            let m_id = d.get("mobile_device_id").and_then(|v| v.as_str()).unwrap_or("");
+                            if local_by_id.contains_key(pid)
+                                || device_id_matches(d_id, &this_device_id)
+                                || device_id_matches(m_id, &this_device_id)
+                            {
+                                backend_pairings.push(d);
+                            }
+                        }
                         Some("revoked") => { revoked_backend_ids.insert(pid.to_string()); }
                         _ => {}
                     }
@@ -4362,6 +4380,12 @@ async fn ipc_list_desktop_pairings(
         if revoked_backend_ids.contains(&lp.pairing_id) {
             tracing::info!("ipc_list_desktop_pairings: dropping revoked pairing {}", lp.pairing_id);
             pairing_store::remove(&lp.pairing_id);
+            if let Some(ref rcm) = rcm {
+                rcm.stop_client(&lp.pairing_id).await;
+            }
+            if let Some(ref tm) = tm {
+                tm.stop_tunnel(&lp.pairing_id).await;
+            }
             continue;
         }
         if !backend_ids.contains(&lp.pairing_id) {
