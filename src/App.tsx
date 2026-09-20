@@ -10,6 +10,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { useServerStore } from "@/stores/serverStore";
 import { useConfigStore } from "@/stores/configStore";
+import { useRemoteDesktopStore } from "@/stores/remoteDesktopStore";
 import { useTriggerStore } from "@/stores/triggerStore";
 import i18n, { asyncResolveLanguage } from "@/i18n/config";
 import { useDaemonEvents } from "@/hooks/useDaemonEvents";
@@ -45,6 +46,7 @@ export default function App() {
 
   const servers = useServerStore((s) => s.servers);
   const setServers = useServerStore((s) => s.setServers);
+  const remotePeers = useRemoteDesktopStore((s) => s.peers);
   const config = useConfigStore((s) => s.config);
   const setConfig = useConfigStore((s) => s.setConfig);
   const loadTemplates = useTriggerStore((s) => s.loadTemplates);
@@ -314,15 +316,15 @@ export default function App() {
     };
   }, [servers]);
 
-  // Show onboarding on first run (no servers and no config)
+  // Show onboarding on first run (no servers, no paired devices, no config)
   useEffect(() => {
-    if (servers.length === 0 && !config) {
+    if (servers.length === 0 && remotePeers.length === 0 && !config) {
       setShowOnboarding(true);
-    } else if (servers.length > 0) {
-      // Hide onboarding once servers are loaded
+    } else if (servers.length > 0 || remotePeers.length > 0) {
+      // Hide onboarding once servers or paired devices are loaded
       setShowOnboarding(false);
     }
-  }, [servers.length, config]);
+  }, [servers.length, remotePeers.length, config]);
 
   // Apply theme — reads config.general.theme ("system" | "light" | "dark")
   useEffect(() => {
