@@ -7,25 +7,13 @@ import { mockTauri, getCallsFor } from "./fixtures";
 
 // === SECTION 1 END ===
 
-// Onboarding shows when there are no servers
+// Onboarding shows when there are no servers.
+// config: null simulates a true first run — no config file yet, so
+// ipc_get_config returns null and the app treats this as "no config".
 test.beforeEach(async ({ page }) => {
   await mockTauri(page, {
     servers: [],
-    config: {
-      version: 1,
-      general: {
-        auto_start: false, minimize_to_tray: true, theme: "system", language: "en",
-        log_level: "info", max_log_entries: 1000, log_to_file: false, log_dir: "",
-        log_max_days: 30, log_max_size_mb: 10, system_proxy_server_id: null,
-        proxy_test_url: "https://example.com", crash_reporting: false,
-        suppress_firewall_badge: false,
-      },
-      trigger_templates: [
-        { id: "tpl_firewalld", name: "Firewalld IP Update", trigger_type: "OnIpChange", type: "OnIpChange", description: "Update firewalld", built_in: true, commands: ["firewall-cmd --add-source={{.NewIP}}"], timeout_secs: 30, template_hash: "abc123" },
-        { id: "tpl_ufw", name: "UFW IP Update", trigger_type: "OnIpChange", type: "OnIpChange", description: "Update ufw", built_in: true, commands: ["ufw allow from {{.NewIP}}"], timeout_secs: 30, template_hash: "def456" },
-      ],
-      servers: [],
-    },
+    config: null,
   });
 });
 

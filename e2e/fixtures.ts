@@ -268,7 +268,10 @@ export async function mockTauri(
   page: Page,
   options: {
     servers?: MockServer[];
-    config?: MockConfig;
+    /** Pass `null` to simulate first run (no config file → ipc_get_config
+     * returns null). The internal store still keeps a default config so
+     * template/system-proxy lookups keep working. */
+    config?: MockConfig | null;
     /** Local triggers (for __local__ server) */
     localTriggers?: any[];
     /** Override specific IPC responses */
@@ -279,10 +282,13 @@ export async function mockTauri(
 ): Promise<void> {
   const servers = options.servers ?? defaultServers();
   const config = options.config ?? defaultConfig();
+  // What ipc_get_config returns: explicit `config: null` means "no config file
+  // yet" (true first run); omitted or an object means a config exists.
+  const configResponse = options.config === undefined ? config : options.config;
   const localTriggers = options.localTriggers ?? [];
 
   await page.addInitScript(
-    ({ servers, config, localTriggers }) => {
+    ({ servers, config, configResponse, localTriggers }) => {
       // Deep clone so the page owns its copy
       const store = {
         servers: JSON.parse(JSON.stringify(servers)) as any[],
@@ -311,7 +317,11 @@ export async function mockTauri(
             let result: any;
             switch (cmd) {
               case "ipc_get_config":
-                result = store.config;
+                result = configResponse;
+                break;
+              case "ipc_list_desktop_pairings_local":
+              case "ipc_list_desktop_pairings":
+                result = { pairings: [] };
                 break;
               case "ipc_list_servers":
                 // Return full server objects (the store expects ServerState)
@@ -624,7 +634,7 @@ export async function mockTauri(
         convertFileSrc: (path: string) => path,
       };
     },
-    { servers, config, localTriggers },
+    { servers, config, configResponse, localTriggers },
   );
 }
 
