@@ -23,6 +23,9 @@ export interface RemoteTerminal {
 interface RemoteDesktopStore {
   peers: RemotePeer[];
   loading: boolean;
+  // True once the first loadPeers() succeeds — onboarding waits for this
+  // before deciding the user has no paired devices.
+  loaded: boolean;
   error: string | null;
   // Currently connected pairing_id
   activeConnection: string | null;
@@ -45,6 +48,7 @@ interface RemoteDesktopStore {
 export const useRemoteDesktopStore = create<RemoteDesktopStore>((set) => ({
   peers: [],
   loading: false,
+  loaded: false,
   error: null,
   activeConnection: null,
   remoteTerminals: [],
@@ -65,7 +69,7 @@ export const useRemoteDesktopStore = create<RemoteDesktopStore>((set) => ({
         peerRole: p.peer_role,
         online: !!p.is_online,
       }));
-      set({ peers: pairings, loading: false });
+      set({ peers: pairings, loading: false, loaded: true });
     } catch (e: any) {
       set({ error: String(e?.message || e), loading: false });
     }

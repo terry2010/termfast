@@ -47,6 +47,7 @@ export default function App() {
   const servers = useServerStore((s) => s.servers);
   const setServers = useServerStore((s) => s.setServers);
   const remotePeers = useRemoteDesktopStore((s) => s.peers);
+  const peersLoaded = useRemoteDesktopStore((s) => s.loaded);
   const config = useConfigStore((s) => s.config);
   const setConfig = useConfigStore((s) => s.setConfig);
   const loadTemplates = useTriggerStore((s) => s.loadTemplates);
@@ -99,8 +100,9 @@ export default function App() {
     })();
 
     // Load config + apply language.  Wrapped in a function so it can be
-    // re-invoked when the daemon:ready event fires.
-    const loadConfig = async () => {
+    // re-invoked when the daemon:ready event fires. Returns whether the IPC
+    // succeeded (daemon responsive) so first-run onboarding waits for real data.
+    const loadConfig = async (): Promise<boolean> => {
       try {
         const data = await ipcInvoke<any>("ipc_get_config");
         if (data) {
@@ -127,19 +129,29 @@ export default function App() {
           const detected = await asyncResolveLanguage("system");
           i18n.changeLanguage(detected);
         }
+        return true;
       } catch (e) {
         console.warn("[App] load config failed:", String(e));
+        return false;
       }
     };
 
     // Load server list.  Wrapped so daemon:ready can re-trigger it.
-    const loadServerList = async () => {
+    const loadServerList = async (): Promise<boolean> => {
       try {
         const data = await ipcInvoke<{ servers: any[] }>("ipc_list_servers");
         if (data?.servers) setServers(data.servers);
+        return true;
       } catch (e) {
         console.warn("[App] load servers failed:", String(e));
+        return false;
       }
+    };
+
+    const loadInitialData = async () => {
+      const okConfig = await loadConfig();
+      const okServers = await loadServerList();
+      if (okConfig || okServers) setDataReady(true);
     };
 
     // Try auto-unlock with cached key on startup (no UI blocking).
@@ -147,8 +159,7 @@ export default function App() {
       // Silently ignore — user can unlock manually in settings.
     });
 
-    loadConfig();
-    loadServerList();
+    loadInitialData();
 
     // Restore remote tunnels on startup (survives app restart)
     // Try to refresh token first if it might be expired
@@ -185,8 +196,7 @@ export default function App() {
     // the embedded daemon takes a few seconds to initialise.
     let daemonReadyUnlisten: (() => void) | undefined;
     listen("daemon:ready", () => {
-      loadConfig();
-      loadServerList();
+      loadInitialData();
       // Restore tunnels after daemon is ready (handles slow Windows startup
       // where ipc_restore_tunnels fires before daemon is initialized)
       restoreTunnels();
@@ -247,6 +257,9 @@ export default function App() {
 
   // UI state for modals
   const [showOnboarding, setShowOnboarding] = useState(false);
+  // Becomes true once the first config/server-list IPC succeeds — onboarding
+  // waits for this (and the first successful peers load) before deciding.
+  const [dataReady, setDataReady] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showAddServer, setShowAddServer] = useState(false);
@@ -316,15 +329,17 @@ export default function App() {
     };
   }, [servers]);
 
-  // Show onboarding on first run (no servers, no paired devices, no config)
+  // Show onboarding on first run (no servers, no paired devices, no config).
+  // Waits for the initial data loads to finish first — otherwise the empty
+  // pre-load state would flash the guide for users who do have pairings.
   useEffect(() => {
+    if (!dataReady || !peersLoaded) return;
     if (servers.length === 0 && remotePeers.length === 0 && !config) {
       setShowOnboarding(true);
-    } else if (servers.length > 0 || remotePeers.length > 0) {
-      // Hide onboarding once servers or paired devices are loaded
+    } else {
       setShowOnboarding(false);
     }
-  }, [servers.length, remotePeers.length, config]);
+  }, [dataReady, peersLoaded, servers.length, remotePeers.length, config]);
 
   // Apply theme — reads config.general.theme ("system" | "light" | "dark")
   useEffect(() => {
