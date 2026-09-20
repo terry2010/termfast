@@ -48,6 +48,18 @@ body {
   display: none;
 }
 
+/* xterm.js 6 uses a VS Code-style scrollbar that auto-hides when idle
+   (.invisible = opacity 0 + pointer-events none). Keep it always visible so
+   users can see and drag it — otherwise scrollback looks nonexistent. */
+.xterm .xterm-scrollable-element > .scrollbar {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.invisible {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
 /* Input styling */
 .input {
   width: 100%;
