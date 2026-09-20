@@ -49,8 +49,9 @@ body {
 }
 
 /* xterm.js 6 uses a VS Code-style scrollbar that auto-hides when idle
-   (.invisible = opacity 0 + pointer-events none). Keep it always visible so
-   users can see and drag it — otherwise scrollback looks nonexistent. */
+   (.invisible = opacity 0 + pointer-events none). Keep it always visible but
+   restyle as a macOS-native overlay scrollbar: thin translucent thumb, no
+   track — subtle but discoverable, same look on Windows/Linux. */
 .xterm .xterm-scrollable-element > .scrollbar {
   opacity: 1 !important;
   pointer-events: auto !important;
@@ -58,6 +59,19 @@ body {
 .xterm .xterm-scrollable-element > .scrollbar.invisible {
   opacity: 1 !important;
   pointer-events: auto !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 10px !important;
+  background: transparent !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical .slider {
+  left: 2px !important;
+  width: 6px !important;
+  border-radius: 3px !important;
+  background: rgba(128, 128, 128, 0.35) !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical .slider:hover {
+  background: rgba(128, 128, 128, 0.6) !important;
 }
 
 /* Input styling */

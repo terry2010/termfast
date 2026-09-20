@@ -217,11 +217,15 @@ pub async fn generate_unique_session_name(
 /// Uses window-size=manual so each client can resize to its own dimensions
 /// on attach (via resize-window). The last client to attach gets full view.
 /// Enables allow-passthrough for ZModem (rz/sz) support through tmux (3.3+).
+/// Enables mouse mode so wheel scrolling enters copy-mode — without it, wheel
+/// events are swallowed and scrollback (which lives inside tmux, not the
+/// terminal) is unreachable.
 pub fn build_attach_command(session_name: &str) -> String {
     let name = shell_escape(session_name);
     format!(
         "tmux set-option -t {name} window-size manual 2>/dev/null; \
 tmux set-option -t {name} allow-passthrough on 2>/dev/null; \
+tmux set-option -t {name} mouse on 2>/dev/null; \
 tmux attach -t {name}\n"
     )
 }
@@ -246,6 +250,8 @@ pub fn build_new_session_exec_command(
     // The last client to attach/resize gets the full view.
     // allow-passthrough: let ZModem (rz/sz) control sequences pass through tmux
     // to the client (tmux 3.3+). Wrapped in 2>/dev/null for older tmux versions.
+    // mouse on: wheel scroll enters copy-mode so scrollback is reachable
+    // (scrollback lives inside tmux, not in the client terminal's buffer).
     format!(
         "tmux new -s {name} -d \
 && tmux set-option -t {name} @termfast true \
@@ -254,6 +260,7 @@ pub fn build_new_session_exec_command(
 && tmux set-option -t {name} @termfast_server {srv} \
 && tmux set-option -t {name} @termfast_size {size} \
 && tmux set-option -t {name} window-size manual \
+&& tmux set-option -t {name} mouse on \
 && tmux set-option -t {name} allow-passthrough on 2>/dev/null"
     )
 }
